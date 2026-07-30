@@ -61,6 +61,7 @@
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <set>
 #include <string>
 
@@ -90,7 +91,7 @@ namespace {
         if (cur->is_success() && !cur->chunks().empty()) {
             const auto& chunk = cur->chunks().front();
             for (size_t c = 0; c < chunk.column_count(); ++c) {
-                s.insert(std::string(chunk.data[c].type().alias()));
+                s.insert(std::string(chunk.data[c].name()));
             }
         }
         return s;
@@ -99,7 +100,7 @@ namespace {
     size_t col_of(const cursor_t_ptr& cur, const std::string& alias) {
         const auto& chunk = cur->chunks().front();
         for (size_t c = 0; c < chunk.column_count(); ++c) {
-            if (std::string(chunk.data[c].type().alias()) == alias) {
+            if (std::string(chunk.data[c].name()) == alias) {
                 return c;
             }
         }
@@ -152,7 +153,7 @@ namespace {
 // The flattened storage model itself: dotted INSERT targets become real columns
 // named with '/' separators, and rows that omit a target leave it NULL.
 TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/storage");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/storage"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -173,7 +174,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
 
 // ->> and #>> : scalar extraction. Every spelling of the same path must agree.
 TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/extract");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/extract"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -226,7 +227,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
 // -> and #> : object expansion. These are table-valued — they widen the projection
 // to one column per child, which is why they cannot terminate a scalar chain.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_object") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/expand");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/expand"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -276,7 +277,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_object") {
 
 // - and #- : project everything EXCEPT the named key/subtree.
 TEST_CASE("integration::cpp::test_jsonb_support::delete_keys") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/delete");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/delete"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -315,7 +316,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_keys") {
 // ? / ?| / ?& : per-row existence. "Exists" means the column exists in the schema
 // AND this row's value is not null — so a ragged row tests false, as in postgres.
 TEST_CASE("integration::cpp::test_jsonb_support::existence_predicates") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/exists");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/exists"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -342,7 +343,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::existence_predicates") {
 
 // Navigation as a predicate, and as the WHERE of a DML statement.
 TEST_CASE("integration::cpp::test_jsonb_support::predicates_and_dml") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/dml");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/dml"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -381,7 +382,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::predicates_and_dml") {
 
 // Navigated values inside expressions. The parenthesised form is the supported one.
 TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/expr");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/expr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -429,7 +430,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
 // The operators are not gated on relkind: they work over an ordinary fixed-schema
 // table too, where they degrade to plain column access plus an is-not-null test.
 TEST_CASE("integration::cpp::test_jsonb_support::regular_table") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/regular");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/regular"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -453,7 +454,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::regular_table") {
 
 // Navigation on either side of a two-table join.
 TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/join");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/join"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -486,7 +487,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
 // Flattened columns survive a WAL/disk round-trip, and navigation still resolves
 // against the restored catalog.
 TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/persist", true, true);
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/persist"), true, true);
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -519,7 +520,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
 // to an outer query — the CTE / derived-table route loses the alias (see
 // clean_rejections). INSERT ... SELECT into dotted targets works as well.
 TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/view");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/view"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -544,7 +545,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
 // target order. It used to skip that step and append a row in which even the
 // plain columns were NULL (the projection-named columns matched nothing).
 TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_to_target_columns") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/insert_select");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/insert_select"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -583,7 +584,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
 // navigation_over_missing_key_still_errors). This was pinned as an unsupported
 // rejection until the predicate/scan layer was generalized upstream.
 TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/nav_cmp");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/nav_cmp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -606,7 +607,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
 // Everything that is NOT supported must fail loudly. This case exists so that a
 // future change cannot quietly start returning a wrong answer for any of them.
 TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/reject");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/reject"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -665,7 +666,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
 // It must be a clean rejection instead (expanding one row into several columns has
 // no meaning under grouping).
 TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_grouping") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/gb_reject");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/gb_reject"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -691,7 +692,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_
 // half-working. (The failure MODE differs per feature — type rejection, unknown
 // function, or plain syntax error — but none of them execute.)
 TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/std");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/std"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -740,7 +741,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
 // uninitialized parameter: a per-run-varying garbage constant repeated on every
 // row. Both halves were individually correct — only the two together corrupted.
 TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_the_column") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/cast_arith");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/cast_arith"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -780,7 +781,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_th
 // read back. The write side and the read side share one codec, so any depth and
 // either spelling (dotted or pg-array) round-trip.
 TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segments") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/depth");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/depth"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -812,7 +813,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segm
 // (arr[0] -> "arr/0") instead of dereferencing the A_Indices node as a string,
 // which used to throw an uncaught std::exception.
 TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/subscript");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/subscript"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -834,7 +835,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
 // the insert), and it comes into existence — with the earlier rows null — only
 // once some row supplies a concrete value.
 TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_absent") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/null_insert");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/null_insert"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -868,7 +869,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_
 // it removes SEVERAL top-level keys at once. The bare `- 'key'` form still removes
 // one key, and `#- 'a.b'` still deletes a nested path — the three are distinct.
 TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/del_arr");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/del_arr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -910,7 +911,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
 // nothing, so the select item silently vanished and the caller got fewer columns
 // than it asked for, with no indication that anything went wrong.
 TEST_CASE("integration::cpp::test_jsonb_support::zero_match_expand_is_an_error") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/zero_exp");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/zero_exp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -945,7 +946,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::zero_match_expand_is_an_error")
 // behavior so a future escaping change is a deliberate, visible flip rather than a
 // silent one.
 TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_share_storage") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/sep");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/sep"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -969,7 +970,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_
 // object key (a prefix of stored columns) is present iff a child is; and one
 // absent key no longer poisons an any-of another key satisfies.
 TEST_CASE("integration::cpp::test_jsonb_support::existence_over_missing_key") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/missing");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/missing"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -1002,7 +1003,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::existence_over_missing_key") {
 // select-list / compare paths to synthesize a typed NULL leaf for a flagged key,
 // a larger change than the existence rewrite; pinned so the deferral is visible.
 TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_still_errors") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/missing_nav");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/missing_nav"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -1017,7 +1018,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_sti
 // literal), a numeric key is stringified, a NULL key is a clean error, and none
 // of these crash the process — the three things get_str_value used to get wrong.
 TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/key_operand");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/key_operand"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -1070,7 +1071,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
 // leaves it BIGINT. (Compare with bug_cast_nav_in_arithmetic_is_garbage, where
 // the same no-op cast additionally corrupts the arithmetic that follows.)
 TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_over_navigation_is_a_noop") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/cast_noop");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/cast_noop"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -1088,7 +1089,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_over_navigation_is_a_n
 // produced column was ambiguous ("path not found") — while scalar navigation was
 // already side-aware. Now all three resolve to the side the operator named.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_aware") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/join_expand");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/join_expand"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -1128,7 +1129,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_awar
 // one of the joined tables — which is what makes the failure above a resolution
 // bug rather than a missing feature.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subtree") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/join_expand_ok");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/join_expand_ok"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
@@ -1150,7 +1151,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subt
 // column, so the root cause is join name resolution rather than jsonb; it is
 // pinned here because navigation has no way to disambiguate at all.)
 TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_leftmost_value") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/join3");
+    auto config = make_test_config(test_temp_path("test_jsonb_matrix/join3"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());

@@ -209,18 +209,21 @@ namespace services::index {
         });
     }
 
-    manager_index_t::~manager_index_t() {
+    void manager_index_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         pump_cv_.notify_all();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Drain messages delivered after the loop exited so each deleter runs.
+        // Drain whatever the loop did not get to. Each message_ptr destructor runs cleanup_fn_,
+        // which cancels the sender's future slot — without this the senders would await forever.
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr reclaim{raw};
         }
     }
+
+    manager_index_t::~manager_index_t() { stop_loop(); }
 
     auto manager_index_t::make_type() const noexcept -> const char* { return "manager_index"; }
 
@@ -228,7 +231,22 @@ namespace services::index {
     manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         // Deliver only: release into inbox_ and wake the loop. ALL processing
         // happens on loop_thread_.
-        inbox_.push(msg.release());
+        //
+        // Both refusals below let `msg` destruct HERE. That is the whole point: ~message runs
+        // cleanup_fn_, which sets operation_canceled on the sender's future slot, so the awaiting
+        // coroutine resumes with a cancellation instead of blocking on a reply that will never be
+        // produced. Reporting `success` for a message nobody will read is what turned a shutdown
+        // race into a hang.
+        if (!loop_running_.load(std::memory_order_acquire)) {
+            return {false, actor_zeta::detail::enqueue_result::queue_closed};
+        }
+        auto* raw = msg.release();
+        if (!inbox_.push(raw)) {
+            // push() could not obtain a node. `raw` is already un-owned, so take it back rather
+            // than leaking a message whose future would then never resolve.
+            actor_zeta::mailbox::message_ptr reclaim{raw};
+            return {false, actor_zeta::detail::enqueue_result::queue_closed};
+        }
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
@@ -844,10 +862,11 @@ namespace services::index {
         const core::date::timezone_offset_t bootstrap_tz{};
         uint64_t global_row = 0;
         for (const auto& chunk : chunks) {
+            const auto bindings = engine->bind(chunk);
             for (uint64_t i = 0; i < chunk.size() && global_row < row_count; ++i, ++global_row) {
                 const auto row_id = static_cast<int64_t>(global_row);
                 guarded_index_row(log_, "bootstrap_repopulate", table_oid, row_id, [&] {
-                    engine->insert_row(chunk, i, row_id, /*txn_id=*/0, bootstrap_tz);
+                    engine->insert_row(bindings, i, row_id, /*txn_id=*/0, bootstrap_tz);
                 });
             }
         }
@@ -876,12 +895,13 @@ namespace services::index {
         // start_row_id, stopping after `count` rows (the committed/appended total).
         uint64_t inserted = 0;
         for (const auto& chunk : data) {
+            const auto bindings = engine->bind(chunk);
             for (uint64_t i = 0; i < chunk.size() && inserted < count; i++) {
                 const auto row_id = static_cast<int64_t>(start_row_id + inserted);
                 // NB: `inserted` advances for every row, failure or not — the row-id is positional,
                 // so skipping the increment would silently re-point every later entry at the wrong row.
                 guarded_index_row(log_, "insert_rows", table_oid, row_id, [&] {
-                    engine->insert_row(chunk, i, row_id, txn_id, ctx.session_tz);
+                    engine->insert_row(bindings, i, row_id, txn_id, ctx.session_tz);
                 });
                 ++inserted;
             }
@@ -909,10 +929,11 @@ namespace services::index {
         // row-id of the k-th row across the concatenated chunks).
         size_t deleted = 0;
         for (const auto& chunk : data) {
+            const auto bindings = engine->bind(chunk);
             for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
                 const auto row_id = row_ids[deleted];
                 guarded_index_row(log_, "delete_rows", table_oid, row_id, [&] {
-                    engine->mark_delete_row(chunk, i, row_id, txn_id, ctx.session_tz);
+                    engine->mark_delete_row(bindings, i, row_id, txn_id, ctx.session_tz);
                 });
                 ++deleted;
             }
@@ -943,10 +964,11 @@ namespace services::index {
         // A throw here used to skip the insert half entirely, leaving the new keys unindexed.
         size_t deleted = 0;
         for (const auto& chunk : old_data) {
+            const auto bindings = engine->bind(chunk);
             for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
                 const auto row_id = row_ids[deleted];
                 guarded_index_row(log_, "update_rows(old)", table_oid, row_id, [&] {
-                    engine->mark_delete_row(chunk, i, row_id, txn_id, ctx.session_tz);
+                    engine->mark_delete_row(bindings, i, row_id, txn_id, ctx.session_tz);
                 });
                 ++deleted;
             }
@@ -956,10 +978,11 @@ namespace services::index {
         // new_start_row_id (aligned positionally to the deleted old rows).
         size_t inserted = 0;
         for (const auto& chunk : new_data) {
+            const auto bindings = engine->bind(chunk);
             for (uint64_t i = 0; i < chunk.size() && inserted < row_ids.size(); i++) {
                 const auto row_id = new_start_row_id + static_cast<int64_t>(inserted);
                 guarded_index_row(log_, "update_rows(new)", table_oid, row_id, [&] {
-                    engine->insert_row(chunk, i, row_id, txn_id, ctx.session_tz);
+                    engine->insert_row(bindings, i, row_id, txn_id, ctx.session_tz);
                 });
                 ++inserted;
             }
@@ -1283,10 +1306,11 @@ namespace services::index {
         if (row_count != 0) {
             uint64_t global = 0;
             for (const auto& chunk : chunks) {
+                const auto bindings = engine_after->bind(chunk);
                 for (uint64_t i = 0; i < chunk.size() && global < row_count; ++i) {
                     const auto row_id = static_cast<int64_t>(global);
                     guarded_index_row(log_, "repopulate_table", table_oid, row_id, [&] {
-                        engine_after->insert_row(chunk, i, row_id, /*txn_id=*/0, session_tz);
+                        engine_after->insert_row(bindings, i, row_id, /*txn_id=*/0, session_tz);
                     });
                     ++global;
                 }
@@ -1562,10 +1586,11 @@ namespace services::index {
             }
             uint64_t global = 0;
             for (const auto& chunk : physical_data) {
+                const auto bindings = engine->bind(chunk);
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     const auto row_id = static_cast<int64_t>(physical_row_start + global);
                     guarded_index_row(log_, "wal_replay(insert)", table_oid, row_id, [&] {
-                        engine->insert_row(chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
+                        engine->insert_row(bindings, static_cast<size_t>(i), row_id, txn_id, session_tz);
                     });
                     ++global;
                 }
@@ -1593,10 +1618,11 @@ namespace services::index {
             } else {
                 size_t global = 0;
                 for (const auto& chunk : physical_data) {
+                    const auto bindings = engine->bind(chunk);
                     for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i) {
                         const auto row_id = row_ids[global];
                         guarded_index_row(log_, "wal_replay(delete)", table_oid, row_id, [&] {
-                            engine->mark_delete_row(chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
+                            engine->mark_delete_row(bindings, static_cast<size_t>(i), row_id, txn_id, session_tz);
                         });
                         ++global;
                     }
@@ -1622,10 +1648,11 @@ namespace services::index {
                 // vector order maps to physical_row_start + g (the engine's contract).
                 uint64_t global = 0;
                 for (const auto& chunk : physical_data) {
+                    const auto bindings = engine->bind(chunk);
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         const auto row_id = static_cast<int64_t>(physical_row_start + global);
                         guarded_index_row(log_, "wal_replay(update-new)", table_oid, row_id, [&] {
-                            engine->insert_row(chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
+                            engine->insert_row(bindings, static_cast<size_t>(i), row_id, txn_id, session_tz);
                         });
                         ++global;
                     }

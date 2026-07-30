@@ -8,7 +8,12 @@ namespace components::operators {
     public:
         explicit operator_raw_data_t(vector::data_chunk_t&& chunk);
         explicit operator_raw_data_t(const vector::data_chunk_t& chunk);
-        explicit operator_raw_data_t(const std::pmr::vector<vector::data_chunk_t>& chunks);
+        // The resource is an ARGUMENT, not something read back out of the input: a chunk vector
+        // can legitimately be empty (a literal carrier with no rows yet), and there is no such
+        // thing as a sensible default to fall back to for one (rule 6). Every caller already
+        // holds the resource its plan node lives on.
+        operator_raw_data_t(std::pmr::memory_resource* resource,
+                            const std::pmr::vector<vector::data_chunk_t>& chunks);
 
         std::pmr::memory_resource* resource() const noexcept override;
 

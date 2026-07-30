@@ -43,8 +43,8 @@ namespace components::planner::optimizer {
             if (expr.params().size() != 2) {
                 return false;
             }
-            return std::holds_alternative<core::parameter_id_t>(expr.params()[0]) &&
-                   std::holds_alternative<core::parameter_id_t>(expr.params()[1]);
+            return is_parameter(expr.params()[0]) &&
+                   is_parameter(expr.params()[1]);
         }
 
         // Try to fold a scalar arithmetic expression with constant params.
@@ -60,36 +60,47 @@ namespace components::planner::optimizer {
                 return false;
             }
 
-            auto left_id = std::get<core::parameter_id_t>(expr.params()[0]);
-            auto right_id = std::get<core::parameter_id_t>(expr.params()[1]);
+            auto left_id = as_parameter(expr.params()[0]);
+            auto right_id = as_parameter(expr.params()[1]);
 
-            const auto& left_val = parameters->parameter(left_id);
-            const auto& right_val = parameters->parameter(right_id);
+            const auto* left_val = parameters->parameter(left_id);
+            const auto* right_val = parameters->parameter(right_id);
 
-            // Skip if either is NULL
-            if (left_val.is_null() || right_val.is_null()) {
+            // Skip if either operand is unbound (nothing to compute with) or NULL.
+            if (!left_val || !right_val || left_val->is_null() || right_val->is_null()) {
                 return false;
             }
 
-            // TODO: this is even worse than using logical_value_t...
-            // TODO(L4): skipped — the only non-throwing alternatives are this 1-element-vector
-            // boxing or a brand-new scalar arithmetic helper (a new abstraction, forbidden).
-            // logical_value_t::sum/subtract/... throw on unprocessable types, and this function
-            // returns bool (cannot propagate an error), so switching to them would add a throw.
-            // Create single-element vectors from the values
-            vector_t left_vec(resource, left_val, 1);
-            vector_t right_vec(resource, right_val, 1);
+            // Boxed into one-element vectors so the fold runs through the SAME producer that
+            // would execute the expression un-folded. logical_value_t::arithmetic is the cheaper
+            // scalar path and no longer throws, but it is a DIFFERENT producer: its result type
+            // is whatever C++ promotion yields, so folding `tinyint + tinyint` through it would
+            // answer INTEGER where the plan (and the kernel) say TINYINT, and a folded constant
+            // is the expression's type. Folding must not change the answer's type, so the kernel
+            // stays until the two producers agree on the narrow-integer and BOOLEAN arms.
+            vector_t left_vec(resource, *left_val, 1);
+            vector_t right_vec(resource, *right_val, 1);
 
             auto result_vec = compute_binary_arithmetic(resource, op, left_vec, right_vec, 1);
-            auto result_val = result_vec.value(0);
+            if (result_vec.has_error()) {
+                // Not foldable (a non-numeric operand pair reached the kernel): leave the
+                // expression for the executor to reject with a real error.
+                return false;
+            }
+            auto result_val = result_vec.value().value(0);
 
-            // Overwrite left_id's value with the computed result (reuse existing ID
-            // to avoid issues with new IDs not surviving actor message copy chain)
-            parameters->set_parameter(left_id, std::move(result_val));
+            // The folded result gets its OWN slot. `$n` placeholders are de-duplicated
+            // statement-wide (one slot per distinct `$n`, see transformer::add_param_value),
+            // so the left operand's slot is generally shared with other expressions:
+            // writing the result there rebound `$n` itself and every sibling predicate
+            // reading it silently saw the folded value. A fresh id is safe — the plan
+            // carries parameter_node_t by intrusive_ptr and this rule runs inside the
+            // executor, after the mailbox crossing, so the runtime reads the same object.
+            auto result_id = parameters->add_parameter(std::move(result_val));
 
-            // Replace params: single param = left_id
+            // Replace params: single param = the folded constant
             expr.params().clear();
-            expr.append_param(left_id);
+            expr.append_param(result_id);
             return true;
         }
 
@@ -130,18 +141,23 @@ namespace components::planner::optimizer {
             }
 
             // Both sides must be parameter_id_t
-            if (!std::holds_alternative<core::parameter_id_t>(expr.left()) ||
-                !std::holds_alternative<core::parameter_id_t>(expr.right())) {
+            if (!is_parameter(expr.left()) ||
+                !is_parameter(expr.right())) {
                 return;
             }
 
-            auto left_id = std::get<core::parameter_id_t>(expr.left());
-            auto right_id = std::get<core::parameter_id_t>(expr.right());
+            auto left_id = as_parameter(expr.left());
+            auto right_id = as_parameter(expr.right());
 
-            const auto& left_val = parameters->parameter(left_id);
-            const auto& right_val = parameters->parameter(right_id);
+            const auto* left_val = parameters->parameter(left_id);
+            const auto* right_val = parameters->parameter(right_id);
+            // An unbound operand is not a constant, so this comparison is not foldable. Leave it
+            // for the runtime, which reads the binding that exists by then.
+            if (!left_val || !right_val) {
+                return;
+            }
 
-            auto [ok, result] = eval_compare(expr.type(), left_val, right_val);
+            auto [ok, result] = eval_compare(expr.type(), *left_val, *right_val);
             if (ok) {
                 expr.set_type(result ? compare_type::all_true : compare_type::all_false);
             } else {
@@ -189,16 +205,16 @@ namespace components::planner::optimizer {
         // because the assignment destroys the expression_ptr which may
         // free the scalar expression (use-after-free if we hold a reference).
         void try_promote_scalar(param_storage& slot) {
-            if (!std::holds_alternative<expression_ptr>(slot)) {
+            if (!is_expr(slot)) {
                 return;
             }
-            auto& nested = std::get<expression_ptr>(slot);
+            auto& nested = as_expr(slot);
             if (!nested || nested->group() != expression_group::scalar) {
                 return;
             }
             auto* ns = static_cast<scalar_expression_t*>(nested.get());
-            if (ns->params().size() == 1 && std::holds_alternative<core::parameter_id_t>(ns->params()[0])) {
-                auto id = std::get<core::parameter_id_t>(ns->params()[0]);
+            if (ns->params().size() == 1 && is_parameter(ns->params()[0])) {
+                auto id = as_parameter(ns->params()[0]);
                 slot = id;
             }
         }
@@ -208,10 +224,10 @@ namespace components::planner::optimizer {
         void
         fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t* scalar, parameter_node_t* parameters) {
             for (auto& param : scalar->params()) {
-                if (!std::holds_alternative<expression_ptr>(param)) {
+                if (!is_expr(param)) {
                     continue;
                 }
-                fold_expression(resource, std::get<expression_ptr>(param), parameters);
+                fold_expression(resource, as_expr(param), parameters);
                 try_promote_scalar(param);
             }
             try_fold_scalar(resource, *scalar, parameters);
@@ -222,12 +238,12 @@ namespace components::planner::optimizer {
             for (auto& child : comp->children()) {
                 fold_expression(resource, child, parameters);
             }
-            if (std::holds_alternative<expression_ptr>(comp->left())) {
-                fold_expression(resource, std::get<expression_ptr>(comp->left()), parameters);
+            if (is_expr(comp->left())) {
+                fold_expression(resource, as_expr(comp->left()), parameters);
                 try_promote_scalar(comp->left());
             }
-            if (std::holds_alternative<expression_ptr>(comp->right())) {
-                fold_expression(resource, std::get<expression_ptr>(comp->right()), parameters);
+            if (is_expr(comp->right())) {
+                fold_expression(resource, as_expr(comp->right()), parameters);
                 try_promote_scalar(comp->right());
             }
             try_fold_compare(*comp, parameters);

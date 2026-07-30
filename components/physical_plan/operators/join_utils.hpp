@@ -22,6 +22,47 @@ namespace components::operators::join_detail {
         return v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
+    // The join's output schema: one record per output column, carrying the column's NAME
+    // and catalog identity next to its type (M3-B5).
+    //
+    // A join is the one operator that MERGES two inputs into a single chunk, and the
+    // merged chunk records the split nowhere — which side a column came from survives
+    // only as its name. A bare `vector<complex_logical_type>` used to carry that name
+    // implicitly, inside the type's alias slot, which is exactly the slot this stage
+    // takes away; the same list would then arrive at the output chunk naming nothing.
+    // Carrying `{attoid, name, type}` says out loud what was being smuggled.
+    //
+    // column_schema_t is move-only by design (a defaulted copy would take the string's
+    // allocator from std::pmr's DEFAULT resource), so a record is never copied out of an
+    // input chunk — it is rebuilt against the owner's resource with clone().
+    using output_schema_t = std::pmr::vector<vector::column_schema_t>;
+
+    // The chunk one flush emits: built from the joined schema, with each column given
+    // BOTH halves of its identity — the name and the attoid — from the schema record
+    // rather than from the type it happens to be constructed out of. The type is where a
+    // name still lives today, so building from types alone would keep working and stop
+    // the day the slot goes; reading the record cannot.
+    inline vector::data_chunk_t
+    make_output_chunk(std::pmr::memory_resource* resource, const output_schema_t& schema, uint64_t capacity) {
+        std::pmr::vector<types::complex_logical_type> types(resource);
+        types.reserve(schema.size());
+        for (const auto& record : schema) {
+            types.push_back(record.type);
+        }
+        vector::data_chunk_t chunk(resource, types, capacity);
+        for (uint64_t i = 0; i < schema.size(); i++) {
+            // The guard skips a copy, it does not decide anything: while a name still
+            // rides inside the type, the column was born holding it and the store is
+            // redundant; once it does not, the guard always fires. vector_t::name() is
+            // total — an unnamed column answers with an empty view.
+            if (chunk.data[i].name() != std::string_view{schema[i].name}) {
+                chunk.set_column_name(i, schema[i].name);
+            }
+            chunk.set_column_attoid(i, schema[i].attoid);
+        }
+        return chunk;
+    }
+
     // Computes the joined output schema and the per-side column→output-slot maps.
     //
     // The output schema is assembled in LOGICAL [left, right] order regardless of
@@ -44,14 +85,15 @@ namespace components::operators::join_detail {
     // Duplicate (same-aliased) columns across the two sides stay addressable via
     // their table qualifier; USING/NATURAL column-merging is resolved at the logical
     // layer (validate_logical_plan.cpp), not here.
-    inline void compute_join_layout(const vector::data_chunk_t& left_front,
+    inline void compute_join_layout(std::pmr::memory_resource* resource,
+                                    const vector::data_chunk_t& left_front,
                                     const vector::data_chunk_t& right_front,
                                     bool swapped,
-                                    std::pmr::vector<types::complex_logical_type>& res_types,
+                                    output_schema_t& res_schema,
                                     std::vector<size_t>& indices_left,
                                     std::vector<size_t>& indices_right) {
-        auto left_types = left_front.types();   // probe types
-        auto right_types = right_front.types(); // build types
+        const auto& left_schema = left_front.schema();   // probe columns
+        const auto& right_schema = right_front.schema(); // build columns
         const size_t left_col_count = left_front.column_count();
         const size_t right_col_count = right_front.column_count();
 
@@ -59,26 +101,28 @@ namespace components::operators::join_detail {
         indices_right.clear();
         indices_left.reserve(left_col_count);
         indices_right.reserve(right_col_count);
+        res_schema.clear();
+        res_schema.reserve(left_col_count + right_col_count);
 
         if (!swapped) {
             // Probe == logical-left, build == logical-right.
-            res_types = left_types;
             for (size_t i = 0; i < left_col_count; ++i) {
                 indices_left.emplace_back(i);
+                res_schema.emplace_back(left_schema[i].clone(resource));
             }
             for (size_t i = 0; i < right_col_count; ++i) {
                 indices_right.emplace_back(left_col_count + i);
-                res_types.push_back(right_types[i]);
+                res_schema.emplace_back(right_schema[i].clone(resource));
             }
         } else {
             // Build == logical-left, probe == logical-right.
-            res_types = right_types;
             for (size_t i = 0; i < right_col_count; ++i) {
                 indices_right.emplace_back(i);
+                res_schema.emplace_back(right_schema[i].clone(resource));
             }
             for (size_t i = 0; i < left_col_count; ++i) {
                 indices_left.emplace_back(right_col_count + i);
-                res_types.push_back(left_types[i]);
+                res_schema.emplace_back(left_schema[i].clone(resource));
             }
         }
     }
@@ -107,16 +151,16 @@ namespace components::operators::join_detail {
     class join_builder {
     public:
         join_builder(std::pmr::memory_resource* resource,
-                     const std::pmr::vector<types::complex_logical_type>& out_types,
+                     const output_schema_t& out_schema,
                      const std::vector<size_t>& indices_left,
                      const std::vector<size_t>& indices_right,
                      chunks_vector_t& out_chunks)
             : resource_(resource)
-            , out_types_(out_types)
+            , out_schema_(out_schema)
             , indices_left_(indices_left)
             , indices_right_(indices_right)
             , out_chunks_(out_chunks)
-            , cur_(resource, out_types, vector::DEFAULT_VECTOR_CAPACITY)
+            , cur_(make_output_chunk(resource, out_schema, vector::DEFAULT_VECTOR_CAPACITY))
             , buf_left_rows_(resource)
             , buf_right_chunks_(resource)
             , buf_right_rows_(resource) {}
@@ -221,7 +265,7 @@ namespace components::operators::join_detail {
 
             cur_.set_cardinality(n);
             out_chunks_.emplace_back(std::move(cur_));
-            cur_ = vector::data_chunk_t(resource_, out_types_, vector::DEFAULT_VECTOR_CAPACITY);
+            cur_ = make_output_chunk(resource_, out_schema_, vector::DEFAULT_VECTOR_CAPACITY);
             filled_ = 0;
             left_chunk_ = nullptr;
             buf_left_rows_.clear();
@@ -265,7 +309,7 @@ namespace components::operators::join_detail {
         }
 
         std::pmr::memory_resource* resource_;
-        const std::pmr::vector<types::complex_logical_type>& out_types_;
+        const output_schema_t& out_schema_;
         const std::vector<size_t>& indices_left_;
         const std::vector<size_t>& indices_right_;
         chunks_vector_t& out_chunks_;
@@ -303,16 +347,16 @@ namespace components::operators::join_detail {
     class eager_join_builder {
     public:
         eager_join_builder(std::pmr::memory_resource* resource,
-                           const std::pmr::vector<types::complex_logical_type>& out_types,
+                           const output_schema_t& out_schema,
                            const std::vector<size_t>& indices_left,
                            const std::vector<size_t>& indices_right,
                            chunks_vector_t& out_chunks)
             : resource_(resource)
-            , out_types_(out_types)
+            , out_schema_(out_schema)
             , indices_left_(indices_left)
             , indices_right_(indices_right)
             , out_chunks_(out_chunks)
-            , cur_(resource, out_types, vector::DEFAULT_VECTOR_CAPACITY)
+            , cur_(make_output_chunk(resource, out_schema, vector::DEFAULT_VECTOR_CAPACITY))
             , idx1_(resource, uint64_t{1}) {}
 
         // Matched (L row li) × (R row rj): copy both source rows into the output now.
@@ -335,7 +379,7 @@ namespace components::operators::join_detail {
             }
             cur_.set_cardinality(filled_);
             out_chunks_.emplace_back(std::move(cur_));
-            cur_ = vector::data_chunk_t(resource_, out_types_, vector::DEFAULT_VECTOR_CAPACITY);
+            cur_ = make_output_chunk(resource_, out_schema_, vector::DEFAULT_VECTOR_CAPACITY);
             filled_ = 0;
         }
 
@@ -365,7 +409,7 @@ namespace components::operators::join_detail {
         }
 
         std::pmr::memory_resource* resource_;
-        const std::pmr::vector<types::complex_logical_type>& out_types_;
+        const output_schema_t& out_schema_;
         const std::vector<size_t>& indices_left_;
         const std::vector<size_t>& indices_right_;
         chunks_vector_t& out_chunks_;

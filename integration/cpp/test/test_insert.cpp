@@ -15,6 +15,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/operations_helper.hpp>
 #include <variant>
 
@@ -32,7 +33,7 @@ using key = expressions::key_t;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_collection::insert") {
-    auto config = test_create_config("/tmp/test_collection_insert");
+    auto config = test_create_config(test_temp_path("test_collection_insert"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -40,9 +41,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
-    types.emplace(types.begin(), types.front());
-    types[1].set_alias("count_duplicate");
+    // A column's name sits BESIDE its type in the schema record (M3-B5), so the duplicate
+    // below is a second record and not a second copy of a self-naming type.
+    auto schema = gen_schema(dispatcher->resource());
+    schema.insert(schema.begin(), schema.front().clone(dispatcher->resource()));
+    schema[1].name = "count_duplicate";
 
     std::vector<table::column_definition_t> columns_simple;
     std::vector<table::column_definition_t> columns_not_null;
@@ -52,21 +55,21 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
     INFO("set up column definitions");
     {
-        columns_simple.reserve(types.size());
-        columns_not_null.reserve(types.size());
-        columns_null_defaults.reserve(types.size());
-        columns_value_defaults.reserve(types.size());
-        columns_value_defaults_not_null.reserve(types.size());
+        columns_simple.reserve(schema.size());
+        columns_not_null.reserve(schema.size());
+        columns_null_defaults.reserve(schema.size());
+        columns_value_defaults.reserve(schema.size());
+        columns_value_defaults_not_null.reserve(schema.size());
 
-        for (const auto& type : types) {
-            columns_simple.emplace_back(type.alias(), type);
+        for (const auto& column : schema) {
+            columns_simple.emplace_back(std::string{column.name}, column.type);
         }
-        for (const auto& type : types) {
-            columns_not_null.emplace_back(type.alias(), type, true);
+        for (const auto& column : schema) {
+            columns_not_null.emplace_back(std::string{column.name}, column.type, true);
         }
-        for (const auto& type : types) {
-            columns_null_defaults.emplace_back(type.alias(),
-                                               type,
+        for (const auto& column : schema) {
+            columns_null_defaults.emplace_back(std::string{column.name},
+                                               column.type,
                                                false,
                                                types::logical_value_t{dispatcher->resource(), types::logical_type::NA});
         }
@@ -75,17 +78,17 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         // and the subsequent explicit-column INSERTs fail validation
         // because the catalog has UNKNOWN types until the first INSERT
         // registers pg_computed_column rows.
-        for (const auto& type : types) {
-            columns_value_defaults.emplace_back(type.alias(),
-                                                type,
+        for (const auto& column : schema) {
+            columns_value_defaults.emplace_back(std::string{column.name},
+                                                column.type,
                                                 false,
-                                                types::logical_value_t{dispatcher->resource(), type});
+                                                types::logical_value_t{dispatcher->resource(), column.type});
         }
-        for (const auto& type : types) {
-            columns_value_defaults_not_null.emplace_back(type.alias(),
-                                                         type,
+        for (const auto& column : schema) {
+            columns_value_defaults_not_null.emplace_back(std::string{column.name},
+                                                         column.type,
                                                          true,
-                                                         types::logical_value_t{dispatcher->resource(), type});
+                                                         types::logical_value_t{dispatcher->resource(), column.type});
         }
     }
 
@@ -112,7 +115,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     {
         // is the same for all
         auto full_insert = [&](const collection_name_t& collection) {
-            auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
+            auto chunk = gen_data_chunk(kNumInserts, 0, schema, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 table_database_name,
@@ -136,11 +139,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     INFO("reordered insert");
     {
         // is the same for all
-        auto swapped_types = types;
-        std::swap(swapped_types[0], swapped_types[1]);
+        auto swapped_schema = components::vector::clone_schema(dispatcher->resource(), schema);
+        std::swap(swapped_schema[0], swapped_schema[1]);
 
         auto reordered_insert = [&](const collection_name_t& collection) {
-            auto chunk = gen_data_chunk(kNumInserts, 0, swapped_types, dispatcher->resource());
+            auto chunk = gen_data_chunk(kNumInserts, 0, swapped_schema, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 table_database_name,
@@ -164,11 +167,12 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     INFO("insert with conversions");
     {
         // is the same for all
-        auto changed_types = types;
-        changed_types[0] = types::complex_logical_type{types::logical_type::INTEGER, "count_but_integer"};
+        auto changed_schema = components::vector::clone_schema(dispatcher->resource(), schema);
+        changed_schema[0].name = "count_but_integer";
+        changed_schema[0].type = types::complex_logical_type{types::logical_type::INTEGER};
 
         auto insert_with_conversion = [&](const collection_name_t& collection) {
-            auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());
+            auto chunk = gen_data_chunk(kNumInserts, 0, changed_schema, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 table_database_name,
@@ -192,16 +196,16 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     INFO("partial insert");
     {
         // is the same for all
-        auto partial_types = types;
-        partial_types.erase(partial_types.begin() + 1);
+        auto partial_schema = components::vector::clone_schema(dispatcher->resource(), schema);
+        partial_schema.erase(partial_schema.begin() + 1);
         std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
-        fields.reserve(partial_types.size());
-        for (const auto& type : partial_types) {
-            fields.emplace_back(dispatcher->resource(), type.alias());
+        fields.reserve(partial_schema.size());
+        for (const auto& column : partial_schema) {
+            fields.emplace_back(dispatcher->resource(), std::string{column.name});
         }
 
         auto partial_insert = [&](const collection_name_t& collection) {
-            auto chunk = gen_data_chunk(kNumInserts, 0, partial_types, dispatcher->resource());
+            auto chunk = gen_data_chunk(kNumInserts, 0, partial_schema, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 table_database_name,
@@ -324,17 +328,17 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     INFO("partial insert in reverse order");
     {
         // is the same for all
-        auto reversed_partial_types = types;
-        reversed_partial_types.erase(reversed_partial_types.begin() + 1);
-        std::reverse(reversed_partial_types.begin(), reversed_partial_types.end());
+        auto reversed_partial_schema = components::vector::clone_schema(dispatcher->resource(), schema);
+        reversed_partial_schema.erase(reversed_partial_schema.begin() + 1);
+        std::reverse(reversed_partial_schema.begin(), reversed_partial_schema.end());
         std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
-        fields.reserve(reversed_partial_types.size());
-        for (const auto& type : reversed_partial_types) {
-            fields.emplace_back(dispatcher->resource(), type.alias());
+        fields.reserve(reversed_partial_schema.size());
+        for (const auto& column : reversed_partial_schema) {
+            fields.emplace_back(dispatcher->resource(), std::string{column.name});
         }
 
         auto reversed_partial_insert = [&](const collection_name_t& collection) {
-            auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
+            auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_schema, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 table_database_name,
@@ -456,13 +460,13 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     {
         // is the same for all
         std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
-        fields.reserve(types.size());
-        for (const auto& type : types) {
-            fields.emplace_back(dispatcher->resource(), "invalid_key_" + type.alias());
+        fields.reserve(schema.size());
+        for (const auto& column : schema) {
+            fields.emplace_back(dispatcher->resource(), "invalid_key_" + std::string{column.name});
         }
 
         auto invalid_keys_insert = [&](const collection_name_t& collection) {
-            auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
+            auto chunk = gen_data_chunk(kNumInserts, 0, schema, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 table_database_name,
@@ -482,5 +486,65 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         invalid_keys_insert(table_collection_name_null_defaults);
         invalid_keys_insert(table_collection_name_value_defaults);
         invalid_keys_insert(table_collection_name_value_defaults_not_null);
+    }
+}
+
+// `INSERT INTO t (<named columns>) SELECT <more columns>` — the transformer's
+// arity check lives in the VALUES path only, so an INSERT ... SELECT reaches the
+// validator with key_translation() shorter than the incoming schema. The validator
+// then walked key_translation()[i] for i < incoming.size(): an out-of-bounds read
+// whenever the incoming width happened to equal the table width. PostgreSQL rejects
+// this shape ("INSERT has more expressions than target columns").
+TEST_CASE("integration::cpp::test_collection::insert_select_column_count_mismatch") {
+    auto config = test_create_config(test_temp_path("test_insert_select_arity"));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    for (const auto* sql : {"CREATE DATABASE ins;",
+                            "CREATE TABLE ins.src (x BIGINT, y BIGINT);",
+                            "CREATE TABLE ins.dst (p BIGINT, q BIGINT);",
+                            "INSERT INTO ins.src (x, y) VALUES (1, 2);"}) {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
+    }
+
+    INFO("1 target column, 2 source columns, 2 table columns -> rejected, not an OOB read");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO ins.dst (p) SELECT x, y FROM ins.src;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("the rejected statement inserted nothing");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM ins.dst;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("the matching-arity form still works");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO ins.dst (p, q) SELECT x, y FROM ins.src;");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT p, q FROM ins.dst;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 2);
+    }
+
+    INFO("a narrower target list than the table is still a partial insert, not an error");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO ins.dst (p) SELECT x FROM ins.src;");
+        REQUIRE(cur->is_success());
     }
 }

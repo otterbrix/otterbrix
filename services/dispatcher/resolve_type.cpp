@@ -11,10 +11,14 @@ namespace services::dispatcher {
         const auto lt = components::catalog::pg_name_to_logical_type(ct.type_name());
         if (lt == components::types::logical_type::UNKNOWN)
             return false;
-        const std::string alias = ct.has_alias() ? ct.alias() : std::string{};
+        // Replacing the type would drop the FIELD name it carries when `ct` is a composite
+        // type's field — the one name that is a property of the type, because it is what
+        // addresses the field. A COLUMN's name was never here to be preserved after M3-B5:
+        // it lives on the column_definition_t whose type this is.
+        const std::string field_name = ct.field_name();
         ct = components::types::complex_logical_type{lt};
-        if (!alias.empty())
-            ct.set_alias(alias);
+        if (!field_name.empty())
+            ct.set_field_name(field_name);
         return true;
     }
 
@@ -33,10 +37,10 @@ namespace services::dispatcher {
         }
         if (!md)
             return;
-        const std::string alias = ct.has_alias() ? ct.alias() : std::string{};
+        const std::string field_name = ct.field_name();
         ct = md->type;
-        if (!alias.empty())
-            ct.set_alias(alias);
+        if (!field_name.empty())
+            ct.set_field_name(field_name);
     }
 
     void resolve_column_definitions(std::vector<components::table::column_definition_t>& cols,
@@ -56,10 +60,10 @@ namespace services::dispatcher {
                 const size_t sz = arr_ext->size();
                 if (inner.type() == components::types::logical_type::UNKNOWN) {
                     resolve_one_type(inner, idx);
-                    std::string alias = ct.has_alias() ? ct.alias() : std::string{};
+                    std::string field_name = ct.field_name();
                     ct = components::types::complex_logical_type::create_array(inner, sz);
-                    if (!alias.empty())
-                        ct.set_alias(alias);
+                    if (!field_name.empty())
+                        ct.set_field_name(field_name);
                 }
             }
             if (ct.type() == components::types::logical_type::LIST) {
@@ -68,10 +72,10 @@ namespace services::dispatcher {
                 auto inner = list_ext->node();
                 if (inner.type() == components::types::logical_type::UNKNOWN) {
                     resolve_one_type(inner, idx);
-                    std::string alias = ct.has_alias() ? ct.alias() : std::string{};
+                    std::string field_name = ct.field_name();
                     ct = components::types::complex_logical_type::create_list(inner);
-                    if (!alias.empty())
-                        ct.set_alias(alias);
+                    if (!field_name.empty())
+                        ct.set_field_name(field_name);
                 }
             }
         }

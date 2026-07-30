@@ -21,7 +21,6 @@ namespace components::logical_plan {
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
     private:
-        hash_t hash_impl() const final;
         std::string to_string_impl() const final;
 
         types::complex_logical_type type_;

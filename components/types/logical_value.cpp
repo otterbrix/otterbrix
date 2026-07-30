@@ -41,6 +41,27 @@ namespace components::types {
                     return false;
             }
         }
+
+        // The types whose data_ holds a heap std::vector<logical_value_t>. Every other type keeps its
+        // payload inline in data_ (STRING_LITERAL keeps a std::string* there), so reinterpreting data_
+        // as a vector pointer reads unrelated bytes. destroy_heap and children() must agree on this
+        // list. Note it is NOT complex_logical_type::is_nested(), which covers only STRUCT/LIST/ARRAY
+        // and would leave MAP/UNION/VARIANT/TIME_TZ/INTERVAL misclassified.
+        constexpr bool holds_child_vector(logical_type t) noexcept {
+            switch (t) {
+                case logical_type::TIME_TZ:
+                case logical_type::INTERVAL:
+                case logical_type::LIST:
+                case logical_type::ARRAY:
+                case logical_type::MAP:
+                case logical_type::STRUCT:
+                case logical_type::UNION:
+                case logical_type::VARIANT:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     } // namespace
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
@@ -53,17 +74,10 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 heap_delete(str_ptr());
                 break;
-            case logical_type::TIME_TZ:
-            case logical_type::INTERVAL:
-            case logical_type::LIST:
-            case logical_type::ARRAY:
-            case logical_type::MAP:
-            case logical_type::STRUCT:
-            case logical_type::UNION:
-            case logical_type::VARIANT:
-                heap_delete(vec_ptr());
-                break;
             default:
+                if (holds_child_vector(type_.type())) {
+                    heap_delete(vec_ptr());
+                }
                 break;
         }
         data_ = 0;
@@ -75,6 +89,7 @@ namespace components::types {
     logical_value_t::logical_value_t(std::pmr::memory_resource* r, complex_logical_type type)
         : type_(std::move(type))
         , resource_(r) {
+        assert(r && "logical_value_t requires an explicit memory resource");
         switch (type_.type()) {
             case logical_type::HUGEINT:
                 data128_ = 0;
@@ -365,6 +380,8 @@ namespace components::types {
 
     core::result_wrapper_t<logical_value_t> logical_value_t::cast_as(const complex_logical_type& type,
                                                                      core::date::timezone_offset_t session_tz) const {
+        // The value's payload is already in the target's shape; the target's NAME is the
+        // caller's column, and a value does not carry one.
         if (type_ == type) {
             return logical_value_t(*this);
         }
@@ -556,7 +573,7 @@ namespace components::types {
             if (type_.type() == logical_type::STRING_LITERAL) {
                 auto string_val = value<std::string_view>();
                 for (const auto& entry : static_cast<const enum_logical_type_extension*>(type.extension())->entries()) {
-                    if (entry.type().alias() == string_val) {
+                    if (entry.type().label() == string_val) {
                         logical_value_t result(resource_, type);
                         result.data_ = entry.data_;
                         return result;
@@ -652,7 +669,9 @@ namespace components::types {
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 
-    void logical_value_t::set_alias(const std::string& alias) { type_.set_alias(alias); }
+    void logical_value_t::set_field_name(const std::string& field_name) { type_.set_field_name(field_name); }
+
+    void logical_value_t::set_label(const std::string& label) { type_.set_label(label); }
 
     size_t logical_value_t::hash() const noexcept {
         size_t h = std::hash<uint8_t>{}(static_cast<uint8_t>(type_.type()));
@@ -707,7 +726,8 @@ namespace components::types {
                 return le.type_ == re.type_ && le == re;
             });
         }
-        assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
+        assert(type_ == rhs.type_ &&
+               "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
             case logical_type::BOOLEAN:
             case logical_type::TINYINT:
@@ -788,7 +808,8 @@ namespace components::types {
             const auto& rv = *rhs.vec_ptr();
             return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
         }
-        assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
+        assert(type_ == rhs.type_ &&
+               "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
             case logical_type::BOOLEAN:
                 return static_cast<bool>(data_) < static_cast<bool>(rhs.data_);
@@ -880,12 +901,13 @@ namespace components::types {
     }
 
     const std::vector<logical_value_t>& logical_value_t::children() const {
-        // A NULL value carries no payload: data_ is zero, so dereferencing
-        // vec_ptr() is UB. NULL rows are ordinary result data — reading a
-        // nullable nested column via children() must be safe and yield "no
-        // elements", with is_null() staying the semantic null check.
+        // Only a payload-owning type keeps a heap vector behind data_. For anything else data_ holds
+        // the value itself (a BIGINT's data_ IS the integer; a STRING_LITERAL's is a std::string*), so
+        // dereferencing vec_ptr() reinterprets unrelated bytes as a vector — a segfault for the former,
+        // a plausible-looking non-empty result for the latter. A NULL value owns no payload either.
+        // Both read as "no elements", with is_null() staying the semantic null check.
         static const std::vector<logical_value_t> empty;
-        if (is_null()) {
+        if (!holds_child_vector(type_.type()) || !data_) {
             return empty;
         }
         return *vec_ptr();
@@ -972,7 +994,7 @@ namespace components::types {
         const auto& enum_values =
             reinterpret_cast<const enum_logical_type_extension*>(enum_type.extension())->entries();
         auto it = std::find_if(enum_values.begin(), enum_values.end(), [key](const logical_value_t& v) {
-            return v.type().alias() == key;
+            return v.type().label() == key;
         });
         if (it == enum_values.end()) {
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1018,18 +1040,32 @@ namespace components::types {
         assert(keys.size() == values.size());
         logical_value_t result(r, complex_logical_type{logical_type::NA});
         result.type_ = complex_logical_type::create_map(r, key_type, value_type);
-        auto keys_value = create_array(r, key_type, keys);
-        auto values_value = create_array(r, value_type, values);
-        result.data_ = reinterpret_cast<uint64_t>(
-            result.heap_new<std::vector<logical_value_t>>(std::vector{std::move(keys_value), std::move(values_value)}));
+        // A MAP is physically a LIST of struct<"key","value">, so a MAP value's children are its
+        // entry structs -- one per pair, not a [keys array, values array] pair of columns. That is
+        // the shape vector_t::set_value stores, vector_t::value() returns, the Arrow map appender
+        // exports and python_object_t::from_value reads. Each entry carries the map's own element
+        // struct type so set_value accepts it without a cast.
+        const auto& entry_type = result.type_.child_type();
+        std::vector<logical_value_t> entries;
+        entries.reserve(keys.size());
+        for (size_t i = 0; i < keys.size(); ++i) {
+            entries.push_back(create_struct(r, entry_type, {keys[i], values[i]}));
+        }
+        result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(std::move(entries)));
         return result;
     }
 
     logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r,
                                                 const complex_logical_type& type,
                                                 const std::vector<logical_value_t>& values) {
+        assert(type.type() == logical_type::MAP);
+        // type.child_types() would static_cast the map extension to a struct extension; the key and
+        // value types live on the map extension itself.
+        const auto* map_extension = static_cast<const map_logical_type_extension*>(type.extension());
         std::vector<logical_value_t> map_keys;
         std::vector<logical_value_t> map_values;
+        map_keys.reserve(values.size());
+        map_values.reserve(values.size());
         for (auto& val : values) {
             assert(val.type().type() == logical_type::STRUCT);
             auto& children = val.children();
@@ -1037,9 +1073,9 @@ namespace components::types {
             map_keys.push_back(children[0]);
             map_values.push_back(children[1]);
         }
-        auto& key_type = type.child_types()[0];
-        auto& value_type = type.child_types()[1];
-        return create_map(r, key_type, value_type, std::move(map_keys), std::move(map_values));
+        // Rebuilt rather than stored as-is so the entry structs carry the map's own element struct
+        // type, which is what a MAP vector's element vector is typed as.
+        return create_map(r, map_extension->key(), map_extension->value(), map_keys, map_values);
     }
 
     logical_value_t logical_value_t::create_list(std::pmr::memory_resource* r,
@@ -1085,40 +1121,105 @@ namespace components::types {
         return create_struct(r, complex_logical_type::create_variant(r), std::move(values));
     }
 
-    /*
-    * TODO: absl::int128 does not have implementations for all operations
-    * Add them in operations_helper.hpp
-    */
-    // SQL three-valued logic: an arithmetic operation with any NULL operand is NULL. This is
-    // the single chokepoint every scalar sum/subtract/mult/divide/modulus dispatches through,
-    // so guarding NULL here keeps a NULL operand from being read as a zero payload — which is
-    // both wrong (NULL + 1 would be 1) and unsafe (NULL used as a divisor would divide by zero).
-    template<typename OP, typename GET>
-    logical_value_t op(const logical_value_t& value, GET getter_function) {
-        if (value.is_null()) {
-            return logical_value_t{value.resource(), complex_logical_type{logical_type::NA}};
-        }
-        OP operation{};
-        return logical_value_t{value.resource(), operation((value.*getter_function)())};
-    }
-
-    template<typename OP, typename GET>
-    logical_value_t op(const logical_value_t& value1, const logical_value_t& value2, GET getter_function) {
-        auto* r = value1.resource() ? value1.resource() : value2.resource();
-        if (value1.is_null() || value2.is_null()) {
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-        OP operation{};
-        return logical_value_t{r, operation((value1.*getter_function)(), (value2.*getter_function)())};
-    }
-
-    // session timezone cancels out in arithmetics, so we don't have to pass it
-    constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
-
     namespace {
-        // Mixed-type numeric operands of sum/subtract/mult/divide/modulus are promoted
-        // to one common type before the per-type dispatch. Both casts are
-        // numeric-to-numeric (see promote_type) and cannot fail, hence the assert.
+        // Applies OP to both operands read through the SAME accessor. Sound only when the two
+        // operands share a logical_type: reading one operand through the other's type is a
+        // payload misread, not a conversion (an INTERVAL read as int32 yields pointer bits).
+        template<typename OP, typename GET>
+        logical_value_t
+        apply(std::pmr::memory_resource* r, const logical_value_t& v1, const logical_value_t& v2, GET getter) {
+            OP operation{};
+            return logical_value_t{r, operation((v1.*getter)(), (v2.*getter)())};
+        }
+
+        // The integer arms, shared by every operator -- and the only arms `%` has, since
+        // std::modulus<> is `%`, which no floating-point type defines.
+        template<typename OP>
+        std::optional<logical_value_t> integral_arms(std::pmr::memory_resource* r,
+                                                     logical_type type,
+                                                     const logical_value_t& v1,
+                                                     const logical_value_t& v2) {
+            switch (type) {
+                case logical_type::BOOLEAN:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<bool>);
+                case logical_type::TINYINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<int8_t>);
+                case logical_type::UTINYINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<uint8_t>);
+                case logical_type::SMALLINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<int16_t>);
+                case logical_type::USMALLINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<uint16_t>);
+                case logical_type::INTEGER:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<int32_t>);
+                case logical_type::UINTEGER:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<uint32_t>);
+                case logical_type::BIGINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<int64_t>);
+                case logical_type::UBIGINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<uint64_t>);
+                case logical_type::HUGEINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<int128_t>);
+                case logical_type::UHUGEINT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<uint128_t>);
+                default:
+                    return std::nullopt;
+            }
+        }
+
+        template<typename OP>
+        std::optional<logical_value_t> floating_arms(std::pmr::memory_resource* r,
+                                                     logical_type type,
+                                                     const logical_value_t& v1,
+                                                     const logical_value_t& v2) {
+            switch (type) {
+                case logical_type::FLOAT:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<float>);
+                case logical_type::DOUBLE:
+                    return apply<OP>(r, v1, v2, &logical_value_t::value<double>);
+                default:
+                    return std::nullopt;
+            }
+        }
+
+        // Both operands share v1's logical_type here.
+        std::optional<logical_value_t> same_type_arms(std::pmr::memory_resource* r,
+                                                      vector::arithmetic_op op,
+                                                      const logical_value_t& v1,
+                                                      const logical_value_t& v2) {
+            const auto type = v1.type().type();
+            switch (op) {
+                case vector::arithmetic_op::add: {
+                    // `+` over strings is concatenation -- the one arm no other operator has.
+                    if (type == logical_type::STRING_LITERAL) {
+                        return apply<std::plus<>>(r, v1, v2, &logical_value_t::value<std::string>);
+                    }
+                    auto integral = integral_arms<std::plus<>>(r, type, v1, v2);
+                    return integral ? std::move(integral) : floating_arms<std::plus<>>(r, type, v1, v2);
+                }
+                case vector::arithmetic_op::subtract: {
+                    auto integral = integral_arms<std::minus<>>(r, type, v1, v2);
+                    return integral ? std::move(integral) : floating_arms<std::minus<>>(r, type, v1, v2);
+                }
+                case vector::arithmetic_op::multiply: {
+                    auto integral = integral_arms<std::multiplies<>>(r, type, v1, v2);
+                    return integral ? std::move(integral) : floating_arms<std::multiplies<>>(r, type, v1, v2);
+                }
+                case vector::arithmetic_op::divide: {
+                    auto integral = integral_arms<std::divides<>>(r, type, v1, v2);
+                    return integral ? std::move(integral) : floating_arms<std::divides<>>(r, type, v1, v2);
+                }
+                case vector::arithmetic_op::mod:
+                    return integral_arms<std::modulus<>>(r, type, v1, v2);
+            }
+            return std::nullopt;
+        }
+
+        // session timezone cancels out in arithmetics, so we don't have to pass it
+        constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
+
+        // Mixed-type numeric operands are promoted to one common type before the per-type
+        // dispatch. Both casts are numeric-to-numeric (see promote_type) and cannot fail.
         struct promoted_operands_t {
             logical_value_t lhs;
             logical_value_t rhs;
@@ -1136,298 +1237,116 @@ namespace components::types {
             assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
             return {std::move(lhs.value()), std::move(rhs.value())};
         }
-    } // namespace
 
-    logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
+        constexpr auto one_day_us = std::chrono::duration_cast<core::date::microseconds>(core::date::days{1});
 
-        if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
-            return sum(lhs, rhs);
-        }
+        // DATE / TIMESTAMP(_TZ) / TIME(_TZ) / INTERVAL shifted by an INTERVAL. `+` and `-`
+        // differ only in the sign applied to the interval, so both arrive here.
+        std::optional<logical_value_t> shift_by_interval(std::pmr::memory_resource* r,
+                                                         const logical_value_t& value,
+                                                         const core::date::interval_t& raw,
+                                                         bool negate) {
+            using namespace core::date;
+            const int sign = negate ? -1 : 1;
+            const interval_t iv{raw.time * sign, raw.day * sign, raw.month * sign};
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::FLOAT:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<float>);
-            case logical_type::DOUBLE:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<double>);
-            case logical_type::STRING_LITERAL:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::string>);
-            default:
-                break;
-        }
-        // Temporal arithmetic (scalar-scalar path used by predicate evaluation)
-        using namespace core::date;
-        const auto t1 = value1.type().type();
-        const auto t2 = value2.type().type();
-        auto* r = value1.resource() ? value1.resource() : value2.resource();
-        // DATE + INTERVAL → DATE
-        if (t1 == logical_type::DATE && t2 == logical_type::INTERVAL) {
-            const auto d = value1.value<date_t>().value;
-            const auto iv = value2.value<interval_t>();
-            auto sd = pg_epoch + std::chrono::days{d.count()};
-            if (iv.month.count())
-                sd = apply_months(sd, iv.month.count());
-            sd += std::chrono::days{iv.day.count()};
-            return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
-        }
-        // INTERVAL + DATE → DATE
-        if (t1 == logical_type::INTERVAL && t2 == logical_type::DATE) {
-            return logical_value_t::sum(value2, value1);
-        }
-        // TIMESTAMP/TZ + INTERVAL → TIMESTAMP/TZ
-        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) && t2 == logical_type::INTERVAL) {
-            const auto ts = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
-                                                            : value1.value<timestamptz_t>().value;
-            const auto iv = value2.value<interval_t>();
-            auto [d, tod] = split_timestamp(ts);
-            auto sd = pg_epoch + std::chrono::days{d.count()};
-            if (iv.month.count())
-                sd = apply_months(sd, iv.month.count());
-            sd += std::chrono::days{iv.day.count()};
-            const auto result = from_sys_days_us(sd, tod + iv.time);
-            if (t1 == logical_type::TIMESTAMP) {
-                return logical_value_t{r, timestamp_t{result}};
+            // Months are calendar-relative (a month is not a fixed number of days), so they are
+            // applied to the civil date; days and time are plain durations.
+            const auto shifted_date = [&](days from_epoch) {
+                auto sd = pg_epoch + std::chrono::days{from_epoch.count()};
+                if (iv.month.count()) {
+                    sd = apply_months(sd, iv.month.count());
+                }
+                return sd + std::chrono::days{iv.day.count()};
+            };
+            // TIME has no date to carry an overflow into, so it wraps within the day.
+            const auto wrapped_time = [&](microseconds t) {
+                auto result = (t + iv.time) % one_day_us;
+                if (result.count() < 0) {
+                    result += one_day_us;
+                }
+                return result;
+            };
+
+            switch (value.type().type()) {
+                case logical_type::DATE: {
+                    const auto sd = shifted_date(value.value<date_t>().value);
+                    return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
+                }
+                case logical_type::TIMESTAMP:
+                case logical_type::TIMESTAMP_TZ: {
+                    const bool tz = value.type().type() == logical_type::TIMESTAMP_TZ;
+                    const auto ts = tz ? value.value<timestamptz_t>().value : value.value<timestamp_t>().value;
+                    auto [d, tod] = split_timestamp(ts);
+                    const auto result = from_sys_days_us(shifted_date(d), tod + iv.time);
+                    if (tz) {
+                        return logical_value_t{r, timestamptz_t{result}};
+                    }
+                    return logical_value_t{r, timestamp_t{result}};
+                }
+                case logical_type::TIME:
+                    return logical_value_t{r, core::date::time_t{wrapped_time(value.value<core::date::time_t>().value)}};
+                case logical_type::TIME_TZ: {
+                    // The offset rides along untouched; only the local time moves.
+                    const auto tz = value.value<timetz_t>();
+                    return logical_value_t{r, timetz_t{wrapped_time(tz.time), tz.zone}};
+                }
+                case logical_type::INTERVAL: {
+                    const auto base = value.value<interval_t>();
+                    return logical_value_t{r,
+                                           interval_t{base.time + iv.time, base.day + iv.day, base.month + iv.month}};
+                }
+                default:
+                    return std::nullopt;
             }
-            return logical_value_t{r, timestamptz_t{result}};
-        }
-        // INTERVAL + TIMESTAMP/TZ → TIMESTAMP/TZ
-        if (t1 == logical_type::INTERVAL && (t2 == logical_type::TIMESTAMP || t2 == logical_type::TIMESTAMP_TZ)) {
-            return logical_value_t::sum(value2, value1);
-        }
-        // INTERVAL + INTERVAL → INTERVAL
-        if (t1 == logical_type::INTERVAL && t2 == logical_type::INTERVAL) {
-            const auto iv1 = value1.value<interval_t>();
-            const auto iv2 = value2.value<interval_t>();
-            return logical_value_t{r, interval_t{iv1.time + iv2.time, iv1.day + iv2.day, iv1.month + iv2.month}};
-        }
-        constexpr auto one_day = std::chrono::duration_cast<microseconds>(days{1});
-        // TIME + INTERVAL → TIME (wrap-around)
-        if (t1 == logical_type::TIME && t2 == logical_type::INTERVAL) {
-            auto result = (value1.value<core::date::time_t>().value + value2.value<interval_t>().time) % one_day;
-            if (result.count() < 0)
-                result += one_day;
-            return logical_value_t{r, core::date::time_t{result}};
-        }
-        // INTERVAL + TIME → TIME (commutative)
-        if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME) {
-            return logical_value_t::sum(value2, value1);
-        }
-        // TIME_TZ + INTERVAL → TIME_TZ (apply to local time, preserve offset)
-        if (t1 == logical_type::TIME_TZ && t2 == logical_type::INTERVAL) {
-            const auto tz = value1.value<timetz_t>();
-            auto result = (tz.time + value2.value<interval_t>().time) % one_day;
-            if (result.count() < 0)
-                result += one_day;
-            return logical_value_t{r, timetz_t{result, tz.zone}};
-        }
-        // INTERVAL + TIME_TZ → TIME_TZ (commutative)
-        if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME_TZ) {
-            return logical_value_t::sum(value2, value1);
-        }
-        throw std::runtime_error("logical_value_t::sum unable to process given types");
-    }
-
-    logical_value_t logical_value_t::subtract(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
-        if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
-            return subtract(lhs, rhs);
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::FLOAT:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<float>);
-            case logical_type::DOUBLE:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<double>);
-            default:
-                break;
-        }
-        using namespace core::date;
-        const auto t1 = value1.type().type();
-        const auto t2 = value2.type().type();
-        auto* r = value1.resource() ? value1.resource() : value2.resource();
-        constexpr auto one_day = std::chrono::duration_cast<microseconds>(days{1});
-        // DATE - INTERVAL → DATE
-        if (t1 == logical_type::DATE && t2 == logical_type::INTERVAL) {
-            const auto iv = value2.value<interval_t>();
-            auto sd = pg_epoch + std::chrono::days{value1.value<date_t>().value.count()};
-            if (iv.month.count())
-                sd = apply_months(sd, -iv.month.count());
-            sd -= std::chrono::days{iv.day.count()};
-            return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
-        }
-        // TIMESTAMP/TZ - INTERVAL → TIMESTAMP/TZ
-        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) && t2 == logical_type::INTERVAL) {
-            const auto ts = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
-                                                            : value1.value<timestamptz_t>().value;
-            const auto iv = value2.value<interval_t>();
-            auto [d, tod] = split_timestamp(ts);
-            auto sd = pg_epoch + std::chrono::days{d.count()};
-            if (iv.month.count())
-                sd = apply_months(sd, -iv.month.count());
-            sd -= std::chrono::days{iv.day.count()};
-            const auto result = from_sys_days_us(sd, tod - iv.time);
-            if (t1 == logical_type::TIMESTAMP) {
-                return logical_value_t{r, timestamp_t{result}};
+        // TEMPORAL - TEMPORAL -> INTERVAL. Only `-` has these arms.
+        std::optional<logical_value_t>
+        temporal_difference(std::pmr::memory_resource* r, const logical_value_t& v1, const logical_value_t& v2) {
+            using namespace core::date;
+            const auto t1 = v1.type().type();
+            const auto t2 = v2.type().type();
+            const auto is_timestamp = [](logical_type t) {
+                return t == logical_type::TIMESTAMP || t == logical_type::TIMESTAMP_TZ;
+            };
+            if (t1 == logical_type::DATE && t2 == logical_type::DATE) {
+                return logical_value_t{
+                    r,
+                    interval_t{microseconds{0}, v1.value<date_t>().value - v2.value<date_t>().value, months{0}}};
             }
-            return logical_value_t{r, timestamptz_t{result}};
-        }
-        // TIME - INTERVAL → TIME (wrap-around)
-        if (t1 == logical_type::TIME && t2 == logical_type::INTERVAL) {
-            auto result = (value1.value<core::date::time_t>().value - value2.value<interval_t>().time) % one_day;
-            if (result.count() < 0)
-                result += one_day;
-            return logical_value_t{r, core::date::time_t{result}};
-        }
-        // TIME_TZ - INTERVAL → TIME_TZ (wrap-around, preserve offset)
-        if (t1 == logical_type::TIME_TZ && t2 == logical_type::INTERVAL) {
-            const auto tz = value1.value<timetz_t>();
-            auto result = (tz.time - value2.value<interval_t>().time) % one_day;
-            if (result.count() < 0)
-                result += one_day;
-            return logical_value_t{r, timetz_t{result, tz.zone}};
-        }
-        // INTERVAL - INTERVAL → INTERVAL
-        if (t1 == logical_type::INTERVAL && t2 == logical_type::INTERVAL) {
-            const auto iv1 = value1.value<interval_t>();
-            const auto iv2 = value2.value<interval_t>();
-            return logical_value_t{r, interval_t{iv1.time - iv2.time, iv1.day - iv2.day, iv1.month - iv2.month}};
-        }
-        // DATE - DATE → INTERVAL (days component)
-        if (t1 == logical_type::DATE && t2 == logical_type::DATE) {
-            return logical_value_t{
-                r,
-                interval_t{microseconds{0}, value1.value<date_t>().value - value2.value<date_t>().value, months{0}}};
-        }
-        // TIMESTAMP/TZ - TIMESTAMP/TZ → INTERVAL (µs component)
-        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) &&
-            (t2 == logical_type::TIMESTAMP || t2 == logical_type::TIMESTAMP_TZ)) {
-            const auto ts1 = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
-                                                             : value1.value<timestamptz_t>().value;
-            const auto ts2 = (t2 == logical_type::TIMESTAMP) ? value2.value<timestamp_t>().value
-                                                             : value2.value<timestamptz_t>().value;
-            return logical_value_t{r, interval_t{ts1 - ts2, days{0}, months{0}}};
-        }
-        // TIME - TIME → INTERVAL
-        if (t1 == logical_type::TIME && t2 == logical_type::TIME) {
-            return logical_value_t{
-                r,
-                interval_t{value1.value<core::date::time_t>().value - value2.value<core::date::time_t>().value,
-                           days{0},
-                           months{0}}};
-        }
-        // TIME_TZ - TIME_TZ → INTERVAL (UTC-normalized)
-        if (t1 == logical_type::TIME_TZ && t2 == logical_type::TIME_TZ) {
-            const auto tz1 = value1.value<timetz_t>();
-            const auto tz2 = value2.value<timetz_t>();
-            const auto utc1 = tz1.time - std::chrono::duration_cast<microseconds>(tz1.zone);
-            const auto utc2 = tz2.time - std::chrono::duration_cast<microseconds>(tz2.zone);
-            return logical_value_t{r, interval_t{utc1 - utc2, days{0}, months{0}}};
-        }
-        throw std::runtime_error("logical_value_t::subtract unable to process given types");
-    }
-
-    logical_value_t logical_value_t::mult(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
+            if (is_timestamp(t1) && is_timestamp(t2)) {
+                const auto a =
+                    t1 == logical_type::TIMESTAMP ? v1.value<timestamp_t>().value : v1.value<timestamptz_t>().value;
+                const auto b =
+                    t2 == logical_type::TIMESTAMP ? v2.value<timestamp_t>().value : v2.value<timestamptz_t>().value;
+                return logical_value_t{r, interval_t{a - b, days{0}, months{0}}};
+            }
+            if (t1 == logical_type::TIME && t2 == logical_type::TIME) {
+                return logical_value_t{
+                    r,
+                    interval_t{v1.value<core::date::time_t>().value - v2.value<core::date::time_t>().value,
+                               days{0},
+                               months{0}}};
+            }
+            if (t1 == logical_type::TIME_TZ && t2 == logical_type::TIME_TZ) {
+                // Normalized to UTC first: two wall-clock times at different offsets are not
+                // the same instant, so subtracting them as written would answer the offset gap.
+                const auto a = v1.value<timetz_t>();
+                const auto b = v2.value<timetz_t>();
+                const auto utc_a = a.time - std::chrono::duration_cast<microseconds>(a.zone);
+                const auto utc_b = b.time - std::chrono::duration_cast<microseconds>(b.zone);
+                return logical_value_t{r, interval_t{utc_a - utc_b, days{0}, months{0}}};
+            }
+            return std::nullopt;
         }
 
-        if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
-            return mult(lhs, rhs);
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::FLOAT:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<float>);
-            case logical_type::DOUBLE:
-                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<double>);
-            default:
-                break;
-        }
-        auto* r = value1.resource() ? value1.resource() : value2.resource();
-        const auto t1 = value1.type().type();
-        const auto t2 = value2.type().type();
-        auto as_double = [](const logical_value_t& v) -> double {
+        // The scaling factor of INTERVAL * n / INTERVAL / n. Total over is_numeric(), which is
+        // the only precondition the callers below establish.
+        std::optional<double> as_double(const logical_value_t& v) {
             switch (v.type().type()) {
+                case logical_type::BOOLEAN:
+                    return static_cast<double>(v.value<bool>());
                 case logical_type::TINYINT:
                     return static_cast<double>(v.value<int8_t>());
                 case logical_type::UTINYINT:
@@ -1444,539 +1363,129 @@ namespace components::types {
                     return static_cast<double>(v.value<int64_t>());
                 case logical_type::UBIGINT:
                     return static_cast<double>(v.value<uint64_t>());
+                case logical_type::HUGEINT:
+                    return static_cast<double>(v.value<int128_t>());
+                case logical_type::UHUGEINT:
+                    return static_cast<double>(v.value<uint128_t>());
                 case logical_type::FLOAT:
                     return static_cast<double>(v.value<float>());
                 case logical_type::DOUBLE:
                     return v.value<double>();
                 default:
-                    return 0.0;
-            }
-        };
-        using namespace core::date;
-        // INTERVAL * numeric → INTERVAL
-        if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
-            const double f = as_double(value2);
-            const auto iv = value1.value<interval_t>();
-            return logical_value_t{
-                r,
-                interval_t{microseconds{std::llround(static_cast<double>(iv.time.count()) * f)},
-                           days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) * f))},
-                           months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) * f))}}};
-        }
-        // numeric * INTERVAL → INTERVAL (commutative)
-        if (is_numeric(t1) && t2 == logical_type::INTERVAL) {
-            return logical_value_t::mult(value2, value1);
-        }
-        throw std::runtime_error("logical_value_t::mult unable to process given types");
-    }
-
-    logical_value_t logical_value_t::divide(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        // Division by zero: return 0 of the appropriate type
-        if (!value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            auto zero = logical_value_t{r, value2.type()};
-            if (value2 == zero) {
-                auto result_type = value1.is_null() ? value2.type() : value1.type();
-                return logical_value_t{r, result_type};
+                    return std::nullopt;
             }
         }
 
-        if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
-            return divide(lhs, rhs);
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::FLOAT:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<float>);
-            case logical_type::DOUBLE:
-                return op<std::divides<>>(value1, value2, &logical_value_t::value<double>);
-            default:
-                break;
-        }
-        // INTERVAL / numeric → INTERVAL
-        // (division by zero already handled above — value2 == zero returns null)
-        const auto t1 = value1.type().type();
-        const auto t2 = value2.type().type();
-        if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            const double f = [&]() -> double {
-                switch (t2) {
-                    case logical_type::TINYINT:
-                        return static_cast<double>(value2.value<int8_t>());
-                    case logical_type::UTINYINT:
-                        return static_cast<double>(value2.value<uint8_t>());
-                    case logical_type::SMALLINT:
-                        return static_cast<double>(value2.value<int16_t>());
-                    case logical_type::USMALLINT:
-                        return static_cast<double>(value2.value<uint16_t>());
-                    case logical_type::INTEGER:
-                        return static_cast<double>(value2.value<int32_t>());
-                    case logical_type::UINTEGER:
-                        return static_cast<double>(value2.value<uint32_t>());
-                    case logical_type::BIGINT:
-                        return static_cast<double>(value2.value<int64_t>());
-                    case logical_type::UBIGINT:
-                        return static_cast<double>(value2.value<uint64_t>());
-                    case logical_type::FLOAT:
-                        return static_cast<double>(value2.value<float>());
-                    case logical_type::DOUBLE:
-                        return value2.value<double>();
-                    default:
-                        return 0.0;
-                }
-            }();
+        logical_value_t
+        scale_interval(std::pmr::memory_resource* r, const core::date::interval_t& iv, double factor, bool divide) {
             using namespace core::date;
-            const auto iv = value1.value<interval_t>();
-            return logical_value_t{
-                r,
-                interval_t{microseconds{std::llround(static_cast<double>(iv.time.count()) / f)},
-                           days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) / f))},
-                           months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) / f))}}};
-        }
-        throw std::runtime_error("logical_value_t::divide unable to process given types");
-    }
-
-    logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
+            const auto scaled = [&](int64_t component) {
+                const auto x = static_cast<double>(component);
+                return std::llround(divide ? x / factor : x * factor);
+            };
+            return logical_value_t{r,
+                                   interval_t{microseconds{scaled(iv.time.count())},
+                                              days{static_cast<int32_t>(scaled(iv.day.count()))},
+                                              months{static_cast<int32_t>(scaled(iv.month.count()))}}};
         }
 
-        if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
-            return modulus(lhs, rhs);
+        std::optional<logical_value_t> temporal_arms(std::pmr::memory_resource* r,
+                                                     vector::arithmetic_op op,
+                                                     const logical_value_t& v1,
+                                                     const logical_value_t& v2) {
+            const auto t1 = v1.type().type();
+            const auto t2 = v2.type().type();
+            switch (op) {
+                case vector::arithmetic_op::add:
+                    // TEMPORAL + INTERVAL, in either operand order -- addition commutes.
+                    if (t2 == logical_type::INTERVAL) {
+                        return shift_by_interval(r, v1, v2.value<core::date::interval_t>(), false);
+                    }
+                    if (t1 == logical_type::INTERVAL) {
+                        return shift_by_interval(r, v2, v1.value<core::date::interval_t>(), false);
+                    }
+                    return std::nullopt;
+                case vector::arithmetic_op::subtract:
+                    // Subtraction does not commute: INTERVAL - TEMPORAL is not a thing.
+                    if (t2 == logical_type::INTERVAL) {
+                        return shift_by_interval(r, v1, v2.value<core::date::interval_t>(), true);
+                    }
+                    return temporal_difference(r, v1, v2);
+                case vector::arithmetic_op::multiply:
+                case vector::arithmetic_op::divide: {
+                    const bool divide = op == vector::arithmetic_op::divide;
+                    if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
+                        auto factor = as_double(v2);
+                        return factor ? std::optional<logical_value_t>{scale_interval(
+                                            r, v1.value<core::date::interval_t>(), *factor, divide)}
+                                      : std::nullopt;
+                    }
+                    // Only `*` commutes here: n / INTERVAL is not an interval (and
+                    // arithmetic_result_type answers NA for it).
+                    if (!divide && is_numeric(t1) && t2 == logical_type::INTERVAL) {
+                        auto factor = as_double(v1);
+                        return factor ? std::optional<logical_value_t>{scale_interval(
+                                            r, v2.value<core::date::interval_t>(), *factor, false)}
+                                      : std::nullopt;
+                    }
+                    return std::nullopt;
+                }
+                case vector::arithmetic_op::mod:
+                    return std::nullopt;
+            }
+            return std::nullopt;
+        }
+    } // namespace
+
+    core::result_wrapper_t<logical_value_t> logical_value_t::arithmetic(std::pmr::memory_resource* resource,
+                                                                       vector::arithmetic_op op,
+                                                                       const logical_value_t& lhs,
+                                                                       const logical_value_t& rhs) {
+        assert(resource && "logical_value_t::arithmetic requires an explicit memory resource");
+
+        // SQL three-valued logic: an arithmetic operation with any NULL operand is NULL. This is
+        // the single chokepoint every scalar arithmetic dispatches through, so guarding NULL here
+        // keeps a NULL operand from being read as a zero payload -- which is both wrong (NULL + 1
+        // would be 1) and unsafe (NULL used as a divisor would divide by zero).
+        if (lhs.is_null() || rhs.is_null()) {
+            return logical_value_t{resource, complex_logical_type{logical_type::NA}};
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::divide unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::exponent(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
+        // A zero divisor answers a zero of the result type. `/` and `%` share one divisor and so
+        // share this guard: without it `%` executed an integer remainder by zero, which is UB --
+        // SIGFPE on x86, a silent wrong answer on AArch64.
+        //
+        // Only a NUMBER can be a zero divisor. The guard used to build a typed default of the
+        // divisor's type and compare against it whatever that type was, and for an INTERVAL
+        // divisor that default carries an EMPTY child vector while interval equality reads
+        // children [0..2] -- so `5 / INTERVAL` crashed inside the guard meant to protect it.
+        if ((op == vector::arithmetic_op::divide || op == vector::arithmetic_op::mod) &&
+            is_numeric(rhs.type().type())) {
+            const logical_value_t zero{resource, rhs.type()};
+            if (rhs == zero) {
+                return logical_value_t{resource, lhs.type()};
+            }
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<pow<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<pow<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<pow<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::exponent unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::sqr_root(const logical_value_t& value) {
-        if (value.is_null()) {
-            return value;
+        if (needs_numeric_promotion(lhs, rhs)) {
+            auto promoted = promote_numeric_operands(lhs, rhs);
+            return arithmetic(resource, op, promoted.lhs, promoted.rhs);
         }
 
-        switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return op<sqrt<>>(value, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<sqrt<>>(value, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<sqrt<>>(value, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<sqrt<>>(value, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<sqrt<>>(value, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<sqrt<>>(value, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<sqrt<>>(value, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<sqrt<>>(value, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<sqrt<>>(value, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<sqrt<>>(value, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<sqrt<>>(value, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::sqr_root unable to process given types");
+        // The per-type arms read BOTH operands through ONE accessor, so they may run only for two
+        // operands of the same logical_type -- which, after the promotion above, is every numeric
+        // pair. A mixed pair falls through to the temporal arms.
+        if (lhs.type().type() == rhs.type().type()) {
+            if (auto same = same_type_arms(resource, op, lhs, rhs)) {
+                return std::move(*same);
+            }
         }
-    }
-
-    logical_value_t logical_value_t::cube_root(const logical_value_t& value) {
-        if (value.is_null()) {
-            return value;
+        if (auto temporal = temporal_arms(resource, op, lhs, rhs)) {
+            return std::move(*temporal);
         }
 
-        switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return op<cbrt<>>(value, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<cbrt<>>(value, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<cbrt<>>(value, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<cbrt<>>(value, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<cbrt<>>(value, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<cbrt<>>(value, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<cbrt<>>(value, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<cbrt<>>(value, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<cbrt<>>(value, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<cbrt<>>(value, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<cbrt<>>(value, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::cube_root unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::factorial(const logical_value_t& value) {
-        if (value.is_null()) {
-            return value;
-        }
-
-        switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return op<fact<>>(value, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<fact<>>(value, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<fact<>>(value, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<fact<>>(value, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<fact<>>(value, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<fact<>>(value, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<fact<>>(value, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<fact<>>(value, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<fact<>>(value, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<fact<>>(value, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<fact<>>(value, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::factorial unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::absolute(const logical_value_t& value) {
-        if (value.is_null()) {
-            return value;
-        }
-
-        switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return op<abs<>>(value, &logical_value_t::value<bool>);
-            case logical_type::UTINYINT:
-            case logical_type::USMALLINT:
-            case logical_type::UINTEGER:
-            case logical_type::UBIGINT:
-            case logical_type::UHUGEINT:
-                return value;
-            case logical_type::TINYINT:
-                return op<abs<>>(value, &logical_value_t::value<int8_t>);
-            case logical_type::SMALLINT:
-                return op<abs<>>(value, &logical_value_t::value<int16_t>);
-            case logical_type::INTEGER:
-                return op<abs<>>(value, &logical_value_t::value<int32_t>);
-            case logical_type::BIGINT:
-                return op<abs<>>(value, &logical_value_t::value<int64_t>);
-            case logical_type::HUGEINT:
-                return op<abs<>>(value, &logical_value_t::value<int128_t>);
-            case logical_type::FLOAT:
-                return op<abs<>>(value, &logical_value_t::value<float>);
-            case logical_type::DOUBLE:
-                return op<abs<>>(value, &logical_value_t::value<double>);
-            default:
-                throw std::runtime_error("logical_value_t::absolute unable to process given types");
-        }
-    }
-    logical_value_t logical_value_t::bit_and(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::bit_and unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::bit_or(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::bit_or unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::bit_xor(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::bit_xor unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::bit_not(const logical_value_t& value) {
-        if (value.is_null()) {
-            return value;
-        }
-
-        switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return op<std::bit_not<>>(value, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::bit_not<>>(value, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::bit_not<>>(value, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::bit_not<>>(value, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::bit_not unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::bit_shift_l(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<shift_left<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<shift_left<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<shift_left<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::bit_shift_l unable to process given types");
-        }
-    }
-
-    logical_value_t logical_value_t::bit_shift_r(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<shift_right<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<shift_right<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<shift_right<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                throw std::runtime_error("logical_value_t::bit_shift_r unable to process given types");
-        }
+        return core::error_t{core::error_code_t::arithmetics_failure,
+                             std::pmr::string{"arithmetic: unsupported operand types", resource}};
     }
 
     bool serialize_type_matches(const complex_logical_type& expected_type, const complex_logical_type& actual_type) {
@@ -1997,7 +1506,7 @@ namespace components::types {
         const auto stored = enum_val.value<int32_t>();
         for (const auto& entry : ext->entries()) {
             if (entry.value<int32_t>() == stored) {
-                return entry.type().alias() == target;
+                return entry.type().label() == target;
             }
         }
         return false;

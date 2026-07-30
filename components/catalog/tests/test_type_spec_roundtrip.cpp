@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
 using namespace components::catalog;
@@ -144,9 +145,9 @@ TEST_CASE("catalog::type_spec::map_roundtrip") {
 
 TEST_CASE("catalog::type_spec::struct_roundtrip") {
     auto f1 = complex_logical_type{logical_type::INTEGER};
-    f1.set_alias("x");
+    f1.set_field_name("x");
     auto f2 = complex_logical_type{logical_type::STRING_LITERAL};
-    f2.set_alias("y");
+    f2.set_field_name("y");
     std::pmr::vector<complex_logical_type> point_fields(g_resource);
     point_fields.push_back(f1);
     point_fields.push_back(f2);
@@ -158,17 +159,17 @@ TEST_CASE("catalog::type_spec::struct_roundtrip") {
     REQUIRE(t2.type() == logical_type::STRUCT);
     const auto& fields = t2.child_types();
     REQUIRE(fields.size() == 2);
-    REQUIRE(fields[0].alias() == "x");
+    REQUIRE(fields[0].field_name() == "x");
     REQUIRE(fields[0].type() == logical_type::INTEGER);
-    REQUIRE(fields[1].alias() == "y");
+    REQUIRE(fields[1].field_name() == "y");
     REQUIRE(fields[1].type() == logical_type::STRING_LITERAL);
 }
 
 TEST_CASE("catalog::type_spec::union_roundtrip") {
     auto m1 = complex_logical_type{logical_type::INTEGER};
-    m1.set_alias("i");
+    m1.set_field_name("i");
     auto m2 = complex_logical_type{logical_type::STRING_LITERAL};
-    m2.set_alias("s");
+    m2.set_field_name("s");
     std::pmr::vector<complex_logical_type> union_members(g_resource);
     union_members.push_back(m1);
     union_members.push_back(m2);
@@ -181,8 +182,8 @@ TEST_CASE("catalog::type_spec::union_roundtrip") {
     // child_types()[0] is the hidden tag; real members start at [1]
     const auto& ch = t2.child_types();
     REQUIRE(ch.size() >= 3);
-    REQUIRE(ch[1].alias() == "i");
-    REQUIRE(ch[2].alias() == "s");
+    REQUIRE(ch[1].field_name() == "i");
+    REQUIRE(ch[2].field_name() == "s");
 }
 
 TEST_CASE("catalog::type_spec::variant_roundtrip") {
@@ -196,9 +197,9 @@ TEST_CASE("catalog::type_spec::variant_roundtrip") {
 
 TEST_CASE("catalog::type_spec::nested_list_of_struct") {
     auto f1 = complex_logical_type{logical_type::FLOAT};
-    f1.set_alias("lat");
+    f1.set_field_name("lat");
     auto f2 = complex_logical_type{logical_type::FLOAT};
-    f2.set_alias("lon");
+    f2.set_field_name("lon");
     std::pmr::vector<complex_logical_type> coord_fields(g_resource);
     coord_fields.push_back(f1);
     coord_fields.push_back(f2);
@@ -212,7 +213,7 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
     REQUIRE(t2.child_type().type() == logical_type::STRUCT);
     const auto& fields = t2.child_type().child_types();
     REQUIRE(fields.size() == 2);
-    REQUIRE(fields[0].alias() == "lat");
+    REQUIRE(fields[0].field_name() == "lat");
 }
 
 TEST_CASE("catalog::type_spec::decimal_with_old_name_compat") {
@@ -235,4 +236,35 @@ TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
     // accidentally-valid input — we only verify no exception is thrown.
     auto t = decode_type_spec(g_resource, "garbage_that_is_not_valid_type_spec");
     (void) t; // result type is implementation-defined for garbage input
+}
+
+TEST_CASE("catalog::type_spec::enum_roundtrip") {
+    // Characterization: an ENUM's persisted spec carries its labels inline, and
+    // decode must hand back labels that still resolve a value by name. This is the
+    // only on-disk contract that depends on where an entry label is stored.
+    std::vector<logical_value_t> entries;
+    entries.emplace_back(g_resource, 0);
+    entries.back().set_label("even");
+    entries.emplace_back(g_resource, 1);
+    entries.back().set_label("odd");
+    auto t = complex_logical_type::create_enum("oddness_t", std::move(entries));
+
+    auto spec = encode_type_spec(t);
+    REQUIRE(spec == "ENUM:oddness_t:even=0,odd=1");
+
+    auto t2 = decode_type_spec(g_resource, spec);
+    REQUIRE(t2.type() == logical_type::ENUM);
+    REQUIRE(t2.type_name() == "oddness_t");
+    const auto* ext = static_cast<const enum_logical_type_extension*>(t2.extension());
+    REQUIRE(ext != nullptr);
+    REQUIRE(ext->entries().size() == 2);
+    REQUIRE(ext->entries()[0].value<int32_t>() == 0);
+    REQUIRE(ext->entries()[1].value<int32_t>() == 1);
+    // Labels must survive well enough to answer a by-name lookup.
+    REQUIRE(logical_value_t::create_enum(g_resource, t2, std::string_view{"odd"}).value<int32_t>() == 1);
+    REQUIRE(logical_value_t::create_enum(g_resource, t2, std::string_view{"even"}).value<int32_t>() == 0);
+    REQUIRE(logical_value_t::create_enum(g_resource, t2, std::string_view{"none"}).type().type() ==
+            logical_type::NA);
+    // Re-encoding the decoded type reproduces the same bytes.
+    REQUIRE(encode_type_spec(t2) == spec);
 }

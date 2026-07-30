@@ -1,7 +1,6 @@
 #pragma once
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <functional>
 
 namespace components::sort {
 

@@ -61,7 +61,7 @@ namespace components::operators {
         void retain_(const vector::data_chunk_t& chunk,
                      uint64_t row,
                      uint64_t hash,
-                     const std::pmr::vector<types::complex_logical_type>& types,
+                     const vector::schema_t& schema,
                      std::pmr::memory_resource* res);
     };
 

@@ -11,19 +11,17 @@ namespace components::logical_plan {
 
     const types::complex_logical_type& node_create_type_t::type() const noexcept { return type_; }
 
-    hash_t node_create_type_t::hash_impl() const { return 0; }
-
     std::string node_create_type_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_type: name: " << type_.type_name() << ", fields:[ ";
         if (type_.type() == types::logical_type::ENUM) {
             const auto& entries = static_cast<const types::enum_logical_type_extension*>(type_.extension())->entries();
             for (const auto& entry : entries) {
-                stream << entry.type().alias() << '=' << entry.value<int>() << ' ';
+                stream << entry.type().label() << '=' << entry.value<int>() << ' ';
             }
         } else {
             for (const auto& entry : type_.child_types()) {
-                stream << entry.alias() << ' ';
+                stream << entry.field_name() << ' ';
             }
         }
         stream << "]";

@@ -57,20 +57,23 @@ namespace components::vector {
         vector_auxiliary_type type_;
 
     public:
+        // Down-cast to a concrete auxiliary-data type, or nullptr when this is not that type.
+        // A pointer, not a reference: the mismatch used to throw, and components/vector raises
+        // errors instead of throwing -- a reference has no way to say "wrong type".
         template<class TARGET>
-        TARGET& cast() {
+        TARGET* cast() noexcept {
             if (type_ != TARGET::TYPE) {
-                throw std::logic_error("Failed to cast vector auxiliary data to type - type mismatch");
+                return nullptr;
             }
-            return reinterpret_cast<TARGET&>(*this);
+            return reinterpret_cast<TARGET*>(this);
         }
 
         template<class TARGET>
-        const TARGET& cast() const {
+        const TARGET* cast() const noexcept {
             if (type_ != TARGET::TYPE) {
-                throw std::logic_error("Failed to cast vector auxiliary data to type - type mismatch");
+                return nullptr;
             }
-            return reinterpret_cast<const TARGET&>(*this);
+            return reinterpret_cast<const TARGET*>(this);
         }
     };
 
@@ -169,7 +172,11 @@ namespace components::vector {
         void reserve(uint64_t capacity);
         void append(const vector_t& node, uint64_t size, uint64_t offset = 0);
         void append(const vector_t& node, const indexing_vector_t& indexing, uint64_t size, uint64_t offset = 0);
-        void push_back(types::logical_value_t&& node);
+        // Appends node as the next element of the child vector. The element vector can refuse
+        // it (a mistyped or wrong-shaped value), and that has to reach the caller: the list row
+        // being built records an offset/length span covering this element, so a dropped element
+        // leaves the row pointing at storage that was never written.
+        [[nodiscard]] core::error_t push_back(types::logical_value_t&& node);
         uint64_t size() const noexcept { return size_; }
         uint64_t capacity() const noexcept { return capacity_; }
         void set_size(uint64_t size) noexcept { size_ = size; }

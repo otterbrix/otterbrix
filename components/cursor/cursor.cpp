@@ -7,25 +7,41 @@ namespace components::cursor {
         vector::data_chunk_t empty_chunk(std::pmr::memory_resource* resource) {
             return vector::data_chunk_t(resource, std::pmr::vector<types::complex_logical_type>{resource});
         }
+
+        // Deep-copy a chunk's schema into the cursor's own descriptor. column_schema_t is
+        // move-only on purpose — a defaulted copy would take the string's allocator from
+        // std::pmr's DEFAULT resource — so each record is rebuilt against this cursor's.
+        void mirror_schema(std::pmr::memory_resource* resource,
+                           const std::pmr::vector<vector::column_schema_t>& schema,
+                           std::pmr::vector<vector::column_schema_t>& out) {
+            out.clear();
+            out.reserve(schema.size());
+            for (const auto& record : schema) {
+                out.emplace_back(resource);
+                out.back().attoid = record.attoid;
+                out.back().name.assign(record.name.data(), record.name.size());
+                out.back().type = record.type;
+            }
+        }
     } // namespace
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource)
         : chunks_(resource)
-        , type_data_(resource)
+        , columns_(resource)
         , error_(core::error_t::no_error()) {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, const core::error_t& error)
         : chunks_(resource)
-        , type_data_(resource)
+        , columns_(resource)
         , error_(error) {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, core::error_t&& error)
         : chunks_(resource)
-        , type_data_(resource)
+        , columns_(resource)
         , error_(std::move(error)) {
         chunks_.emplace_back(empty_chunk(resource));
     }
@@ -33,22 +49,21 @@ namespace components::cursor {
     cursor_t::cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk)
         : size_(chunk.size())
         , chunks_(resource)
-        , type_data_(resource)
+        , columns_(resource)
         , error_(core::error_t::no_error()) {
         // Strip placeholder columns (created by projected_cols scans to keep
         // storage indices stable for downstream operators). User-facing
         // iteration should only see real data.
         chunk.drop_unprojected_placeholders();
-        // Mirror final column shape into type_data_ so callers querying the
-        // result's typed-column descriptor see one entry per output column.
-        const auto& chunk_types = chunk.types();
-        type_data_.assign(chunk_types.begin(), chunk_types.end());
+        // Mirror the final column shape into the descriptor so callers querying the result's
+        // column metadata see one entry per output column — name, type and identity.
+        mirror_schema(resource, chunk.schema(), columns_);
         chunks_.emplace_back(std::move(chunk));
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
         : chunks_(std::move(chunks), resource)
-        , type_data_(resource)
+        , columns_(resource)
         , error_(core::error_t::no_error()) {
         // Keep the chunks as-is (each ≤DEFAULT_VECTOR_CAPACITY); never combine into one
         // oversized chunk. Drop placeholder columns per chunk (same shape across all).
@@ -61,15 +76,13 @@ namespace components::cursor {
         if (chunks_.empty()) {
             chunks_.emplace_back(empty_chunk(resource));
         }
-        const auto& chunk_types = chunks_.front().types();
-        type_data_.assign(chunk_types.begin(), chunk_types.end());
+        mirror_schema(resource, chunks_.front().schema(), columns_);
     }
 
-    cursor_t::cursor_t(std::pmr::memory_resource* resource,
-                       std::pmr::vector<components::types::complex_logical_type>&& types)
-        : size_(types.size())
+    cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::column_schema_t>&& columns)
+        : size_(columns.size())
         , chunks_(resource)
-        , type_data_(std::move(types))
+        , columns_(std::move(columns))
         , error_(core::error_t::no_error()) {
         chunks_.emplace_back(empty_chunk(resource));
     }
@@ -79,12 +92,10 @@ namespace components::cursor {
     // genuinely need raw per-chunk column vectors (and must iterate chunks themselves).
     std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() { return chunks_; }
     const std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() const { return chunks_; }
-    std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() { return type_data_; }
-    const std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() const { return type_data_; }
+    const std::pmr::vector<vector::column_schema_t>& cursor_t::columns() const { return columns_; }
 
     std::size_t cursor_t::size() const { return size_; }
-    std::size_t cursor_t::column_count() const { return type_data_.size(); }
-    std::size_t cursor_t::column_index(std::string_view key) const { return chunks_.front().column_index(key); }
+    std::size_t cursor_t::column_count() const { return columns_.size(); }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
     void cursor_t::advance() { ++current_index_; }
     index_t cursor_t::current_index() const { return current_index_; }
@@ -145,7 +156,7 @@ namespace components::cursor {
     }
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource,
-                             std::pmr::vector<components::types::complex_logical_type>&& types) {
-        return cursor_t_ptr{new cursor_t(resource, std::move(types))};
+                             std::pmr::vector<vector::column_schema_t>&& columns) {
+        return cursor_t_ptr{new cursor_t(resource, std::move(columns))};
     }
 } // namespace components::cursor

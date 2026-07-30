@@ -17,8 +17,6 @@ namespace components::logical_plan {
         , kind_(kind)
         , ref_dbname_(std::move(ref_dbname)) {}
 
-    hash_t node_create_constraint_t::hash_impl() const { return 0; }
-
     std::string node_create_constraint_t::to_string_impl() const {
         std::stringstream s;
         s << "$create_constraint: " << dbname_ << "." << relname_ << " name=" << name_

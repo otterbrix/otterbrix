@@ -1,6 +1,6 @@
 #include "operator_sort.hpp"
 
-#include "arithmetic_eval.hpp"
+#include "projection_executor.hpp"
 
 #include <algorithm>
 #include <components/vector/vector_operations.hpp>
@@ -42,13 +42,14 @@ namespace components::operators {
     core::error_t operator_sort_t::sort_merge(pipeline::context_t* pipeline_context,
                                               chunks_vector_t& in_chunks,
                                               chunks_vector_t& out_chunks) {
-        // All input chunks share the same schema. Capture original (pre-computed) column count
-        // and types from the first chunk.
+        // All input chunks share the same schema. Capture the original (pre-computed) column
+        // count and the input's SCHEMA — not its types: the output chunks below are the ones a
+        // user reads, and a type list has carried no column name since M3-B5.
         size_t first_computed_col = 0;
-        std::pmr::vector<types::complex_logical_type> out_types{resource_};
+        vector::schema_t out_schema{resource_};
         if (!in_chunks.empty()) {
             first_computed_col = in_chunks.front().data.size();
-            out_types = in_chunks.front().types();
+            out_schema = vector::clone_schema(resource_, in_chunks.front().schema());
         }
 
         // Phase 1: per-chunk evaluate computed keys (mutating chunk) + local sort.
@@ -62,12 +63,13 @@ namespace components::operators {
                 continue;
             }
             for (const auto& ck : computed_keys_) {
-                auto result_vec = evaluate_arithmetic(resource_,
-                                                      ck.op,
-                                                      ck.operands,
-                                                      chunk,
-                                                      pipeline_context->parameters,
-                                                      pipeline_context->session_tz);
+                auto result_vec = evaluate_scalar(resource_,
+                                                  ck.op,
+                                                  ck.operands,
+                                                  chunk,
+                                                  pipeline_context->function_registry,
+                                                  pipeline_context->parameters,
+                                                  pipeline_context->session_tz);
                 if (result_vec.has_error()) {
                     return result_vec.error();
                 }
@@ -90,8 +92,8 @@ namespace components::operators {
         if (!computed_keys_.empty() && out_cols_effective > first_computed_col) {
             out_cols_effective = first_computed_col;
         }
-        if (out_types.size() > out_cols_effective) {
-            out_types.erase(out_types.begin() + static_cast<ptrdiff_t>(out_cols_effective), out_types.end());
+        if (out_schema.size() > out_cols_effective) {
+            out_schema.erase(out_schema.begin() + static_cast<ptrdiff_t>(out_cols_effective), out_schema.end());
         }
 
         // Phase 2: k-way merge via min-heap.
@@ -124,7 +126,7 @@ namespace components::operators {
         int64_t limit_val = limit_.limit();
         uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val) : std::numeric_limits<uint64_t>::max();
 
-        vector::data_chunk_t cur(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
+        auto cur = vector::make_chunk(resource_, out_schema, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t cur_filled = 0;
         uint64_t produced = 0;
 
@@ -134,7 +136,7 @@ namespace components::operators {
             }
             cur.set_cardinality(cur_filled);
             out_chunks.emplace_back(std::move(cur));
-            cur = vector::data_chunk_t(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
+            cur = vector::make_chunk(resource_, out_schema, vector::DEFAULT_VECTOR_CAPACITY);
             cur_filled = 0;
         };
 
@@ -174,7 +176,9 @@ namespace components::operators {
         }
 
         if (out_chunks.empty()) {
-            out_chunks.emplace_back(resource_, out_types, 0);
+            // An empty result still describes its columns: a zero-row answer that named
+            // nothing is what four "silent" drain sites used to hand a user.
+            out_chunks.emplace_back(vector::make_chunk(resource_, out_schema, 0));
         }
         return core::error_t::no_error();
     }

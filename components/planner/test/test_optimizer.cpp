@@ -6,12 +6,15 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sequence.hpp>
@@ -27,6 +30,7 @@
 #include <components/planner/optimizer/rules/hash_join.hpp>
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/planner/optimizer/rules/pushdown_filter.hpp>
+#include <components/planner/optimizer/rules/pushdown_limit.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
 #include <services/collection/context_storage.hpp>
@@ -73,9 +77,11 @@ TEST_CASE("optimizer::scalar_fold_add") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    REQUIRE(std::holds_alternative<core::parameter_id_t>(s->params()[0]));
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 5);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 5);
 }
 
 // ================================================================
@@ -100,8 +106,11 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 7);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 7);
 }
 
 // ================================================================
@@ -126,8 +135,11 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 20);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 20);
 }
 
 // ================================================================
@@ -152,8 +164,11 @@ TEST_CASE("optimizer::scalar_fold_divide") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 3);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 3);
 }
 
 // ================================================================
@@ -178,8 +193,11 @@ TEST_CASE("optimizer::scalar_fold_mod") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 1);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 1);
 }
 
 // ================================================================
@@ -493,8 +511,11 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
     // Scalar should fold to 1 param = 5
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 5);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 5);
 
     // Compare should stay eq (not folded since one side is key)
     auto* c = static_cast<compare_expression_t*>(comp.get());
@@ -611,8 +632,11 @@ TEST_CASE("optimizer::deep_nested_scalar") {
     // Inner folds: 2+3=5, outer folds: 5*4=20
     auto* s = static_cast<scalar_expression_t*>(outer.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 20);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 20);
 }
 
 // ================================================================
@@ -647,8 +671,11 @@ TEST_CASE("optimizer::triple_nested_scalar") {
 
     auto* s = static_cast<scalar_expression_t*>(add_outer.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 21);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<int64_t>() == 21);
 }
 
 // ================================================================
@@ -673,8 +700,11 @@ TEST_CASE("optimizer::scalar_fold_double") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<double>() == Catch::Approx(4.0));
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<double>() == Catch::Approx(4.0));
 }
 
 // ================================================================
@@ -699,8 +729,11 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<double>() == Catch::Approx(7.5));
+    REQUIRE(is_parameter(s->params()[0]));
+    auto new_id = as_parameter(s->params()[0]);
+    const auto* p_new_id = params->parameter(new_id);
+    REQUIRE(p_new_id != nullptr);
+    REQUIRE(p_new_id->value<double>() == Catch::Approx(7.5));
 }
 
 // ================================================================
@@ -879,7 +912,9 @@ TEST_CASE("optimizer::param_copy_survives") {
 
     // Overwrite id0 with 5 (like optimizer does)
     params->set_parameter(id0, components::types::logical_value_t(&resource, int64_t(5)));
-    REQUIRE(params->parameter(id0).value<int64_t>() == 5);
+    const auto* p_id0 = params->parameter(id0);
+    REQUIRE(p_id0 != nullptr);
+    REQUIRE(p_id0->value<int64_t>() == 5);
 
     // take_parameters (like dispatcher does)
     auto taken = params->take_parameters();
@@ -901,6 +936,48 @@ TEST_CASE("optimizer::param_copy_survives") {
     storage_parameters moved = std::move(copy2);
     REQUIRE(moved.parameters.count(id0) == 1);
     REQUIRE(moved.parameters.at(id0).value<int64_t>() == 5);
+}
+
+// ================================================================
+// Folding must not collide with ids the node's counter never minted.
+//
+// The plan API (and the python binding, and the view-body merge) install
+// parameter ids of the CALLER's choosing — the node's counter stays at 0.
+// The fold then asks next_id() for a fresh slot; a bare counter hands back
+// an OCCUPIED id, the storage's emplace silently keeps the caller's value,
+// and the folded expression is rewritten to read it: $0 + $1 evaluates to
+// $0. No error anywhere.
+// ================================================================
+TEST_CASE("optimizer::scalar_fold_does_not_collide_with_explicit_ids") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    // Plan-API style: explicit ids, the node's own counter untouched.
+    params->add_parameter(core::parameter_id_t{0}, components::types::logical_value_t(&resource, int64_t(90)));
+    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(&resource, int64_t(10)));
+
+    auto scalar = make_scalar_expression(&resource, scalar_type::add);
+    scalar->append_param(core::parameter_id_t{0});
+    scalar->append_param(core::parameter_id_t{1});
+
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(scalar));
+    auto node = make_match_with_expr(&resource, comp);
+
+    auto result = components::planner::optimize(&resource, node, params.get());
+
+    auto* s = static_cast<scalar_expression_t*>(scalar.get());
+    REQUIRE(s->params().size() == 1);
+    REQUIRE(is_parameter(s->params()[0]));
+    auto folded_id = as_parameter(s->params()[0]);
+    const auto* folded = params->parameter(folded_id);
+    REQUIRE(folded != nullptr);
+    REQUIRE(folded->value<int64_t>() == 100);
+
+    // The caller's bindings survive untouched.
+    REQUIRE(params->parameter(core::parameter_id_t{0})->value<int64_t>() == 90);
+    REQUIRE(params->parameter(core::parameter_id_t{1})->value<int64_t>() == 10);
 }
 
 static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
@@ -1222,11 +1299,11 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
 //
 // The comma-join uses UNQUALIFIED column names, so validate_schema stamps BOTH
 // equi keys side=left over the merged [ak, ap, bk] schema (the same_schema path)
-// and stamps output_types() on the scan children. Because both keys are side=left,
+// and stamps output_schema() on the scan children. Because both keys are side=left,
 // detect_equi_columns cannot accept the cross join as-is.
 //
 // promote_cross_joins classifies the equi keys by PATH RANGE against the intact
-// stamped scans (left_width = scan_a.output_types().size() == 2): ak -> merged
+// stamped scans (left_width = scan_a.output_schema().size() == 2): ak -> merged
 // idx 0 (left range), bk -> merged idx 2 (right range). It moves the eq onto a
 // fresh INNER join, re-localizes + re-sides the right-range key (merged 2 ->
 // right-local 0, side=right), and keeps the non-join lt filter as the residual
@@ -1234,18 +1311,19 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
 // promoted inner join to algo()==hash.
 //
 // The scans are driven through the REAL validate_schema (never hand-stamped) so
-// key.side()/key.path()/output_types() are exactly what the SQL pipeline produces
+// key.side()/key.path()/output_schema() are exactly what the SQL pipeline produces
 // (make_agg 5-arg would stamp the wrapper, not the scans).
 // ================================================================
 namespace {
     // A raw BIGINT scan, left UNstamped on purpose: validate_schema derives and
-    // stamps its output_types() from the data chunk (the test must not hand-stamp).
+    // stamps its output_schema() from the data chunk (the test must not hand-stamp).
     static node_ptr make_promote_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
-        std::pmr::vector<components::types::complex_logical_type> types(r);
+        components::vector::schema_t schema(r);
         for (const char* name : cols) {
-            types.emplace_back(components::types::logical_type::BIGINT, name);
+            schema.push_back(gen_column(r, name, components::types::complex_logical_type{
+                                                     components::types::logical_type::BIGINT}));
         }
-        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
+        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, schema, r);
         return make_node_raw_data(r, std::move(chunk));
     }
 } // namespace
@@ -1288,13 +1366,13 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     outer->append_child(
         make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
 
-    // Drive the REAL validator: stamps key.side()/key.path() and output_types().
+    // Drive the REAL validator: stamps key.side()/key.path() and output_schema().
     auto validated = services::dispatcher::validate_schema(&resource, nullptr, outer.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // Precondition the promote rule relies on: the scans carry their columns in
-    // output_types() (left_width == 2, right_width == 1).
-    REQUIRE(scan_a->output_types().size() == 2);
-    REQUIRE(scan_b->output_types().size() == 1);
+    // output_schema() (left_width == 2, right_width == 1).
+    REQUIRE(scan_a->output_schema().size() == 2);
+    REQUIRE(scan_b->output_schema().size() == 1);
 
     // Rule under test, then the hash-selection that runs after it in optimize().
     node_ptr out = components::planner::optimizer::promote_cross_joins(&resource, outer);
@@ -1595,7 +1673,7 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
 // union branch (positional column identity: union output column i == branch
 // column i). The residual (a conjunct a branch does not expose identically)
 // stays above the union. Built through the REAL validate_schema so union +
-// branch output_types()/key paths are exactly what the SQL pipeline stamps.
+// branch output_schema()/key paths are exactly what the SQL pipeline stamps.
 //
 // Helper: return a branch's match child (a node_match_t among children[1..]).
 // ================================================================
@@ -1613,7 +1691,7 @@ namespace {
     }
 
     // Build aggregate[ union{all}(raw[left_cols], raw[right_cols]), match(where) ]
-    // and drive validate_schema so the union/branches carry output_types() and the
+    // and drive validate_schema so the union/branches carry output_schema() and the
     // match keys carry stamped paths.
     static node_ptr build_union_over_where(std::pmr::memory_resource* r,
                                            components::logical_plan::parameter_node_t* params,
@@ -1747,6 +1825,7 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
         REQUIRE(m != nullptr);
         auto* cmp = static_cast<compare_expression_t*>(m->expressions()[0].get());
         REQUIRE(cmp->type() == compare_type::gt);
+        REQUIRE(is_key(cmp->left()));
         REQUIRE(as_key(cmp->left()).as_string() == "a");
     }
 }
@@ -1763,21 +1842,17 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
 // key's merged path (t1.id->0, t2.id->2); bucketing by path()[0] vs
 // left_width routes t1.id below t1 and t2.id below t2.
 //
-// A scan carries its columns in output_types() (has_output_types() true,
+// A scan carries its columns in output_schema() (has_output_schema() true,
 // so left_width is known); keys carry a stamped merged path (pruned_key),
 // exactly the post-validate_schema shape.
 // ================================================================
 namespace {
-    // aggregate_t{db,rel} scan carrying its columns ONLY in output_types()
-    // (the disk-scan shape). has_output_types() is true, so pushdown reads a
+    // aggregate_t{db,rel} scan carrying its columns ONLY in output_schema()
+    // (the disk-scan shape). has_output_schema() is true, so pushdown reads a
     // known left_width off children()[0].
-    node_aggregate_ptr join_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
+    node_aggregate_ptr join_scan(std::pmr::memory_resource* r, std::initializer_list<std::string_view> cols) {
         auto agg = make_node_aggregate(r, pdb(), prel());
-        std::pmr::vector<components::types::complex_logical_type> out(r);
-        for (const char* c : cols) {
-            out.emplace_back(components::types::logical_type::BIGINT, c);
-        }
-        agg->set_output_types(std::move(out));
+        agg->set_output_schema(planner_test::bigint_schema(r, cols));
         return agg;
     }
 } // namespace
@@ -2211,14 +2286,10 @@ namespace { namespace eag {
     node_aggregate_ptr leaf(std::pmr::memory_resource* r,
                             const char* rel,
                             components::catalog::oid_t oid,
-                            std::initializer_list<const char*> cols) {
+                            std::initializer_list<std::string_view> cols) {
         auto a = make_node_aggregate(r, core::dbname_t{"db"}, core::relname_t{rel});
         a->set_table_oid(oid);
-        std::pmr::vector<components::types::complex_logical_type> types(r);
-        for (const char* c : cols) {
-            types.emplace_back(components::types::logical_type::BIGINT, c);
-        }
-        a->set_output_types(std::move(types));
+        a->set_output_schema(planner_test::bigint_schema(r, cols));
         return a;
     }
 
@@ -2346,4 +2417,159 @@ TEST_CASE("optimizer::eager_aggregation::cross_side_reference_is_not_pushed") {
     auto outer = eag::make_join_agg(&resource, "min", /*hash=*/true, /*key_path=*/0, /*agg_arg_path=*/3);
     components::planner::optimizer::eager_aggregation(&resource, outer);
     REQUIRE(eag::pushed_partial(outer) == nullptr);
+}
+
+// ================================================================
+// Characterization pin for node_aggregate_t child-role classification.
+//
+// Five sites classify an aggregate's children by type, each with its OWN
+// policy. These cases pin the two things a shared role accessor must not
+// disturb: the CHILD STORAGE ORDER (to_string renders children in it and
+// ~214 golden plan strings depend on that), and pushdown_limit's per-shape
+// stamping decision, which is the one classification whose `default:` and
+// `select_t` handling differ from every other site.
+// ================================================================
+namespace {
+    namespace role_pin {
+        using namespace components::logical_plan;
+
+        node_aggregate_ptr make_agg(std::pmr::memory_resource* r) {
+            return make_node_aggregate(r, core::dbname_t{database_name}, core::relname_t{collection_name});
+        }
+        node_ptr make_limit_child(std::pmr::memory_resource* r, int64_t limit, int64_t offset = 0) {
+            return make_node_limit(r,
+                                   core::dbname_t{database_name},
+                                   core::relname_t{collection_name},
+                                   limit_t{limit, offset});
+        }
+        node_ptr make_sort_child(std::pmr::memory_resource* r) {
+            std::vector<expression_ptr> exprs;
+            exprs.emplace_back(make_sort_expression(key(r, "field"), sort_order::asc));
+            return make_node_sort(r, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+        }
+        node_ptr make_match_child(std::pmr::memory_resource* r) {
+            return make_node_match(r,
+                                   core::dbname_t{database_name},
+                                   core::relname_t{collection_name},
+                                   make_compare_expression(r, compare_type::all_true));
+        }
+        node_ptr make_group_child(std::pmr::memory_resource* r) {
+            return make_node_group(r, core::dbname_t{database_name}, core::relname_t{collection_name});
+        }
+        node_ptr make_select_child(std::pmr::memory_resource* r) {
+            return make_node_select(r, core::dbname_t{database_name}, core::relname_t{collection_name});
+        }
+        node_ptr make_having_child(std::pmr::memory_resource* r) {
+            return make_node_having(r,
+                                    core::dbname_t{database_name},
+                                    core::relname_t{collection_name},
+                                    make_compare_expression(r, compare_type::all_true));
+        }
+    } // namespace role_pin
+} // namespace
+
+TEST_CASE("optimizer::aggregate_role_pin::child_storage_order_is_the_render_order") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto agg = role_pin::make_agg(&resource);
+    // Deliberately scrambled relative to the pipeline order (source, match, group,
+    // having, sort, select): a role accessor must NOT reorder children_.
+    auto select_child = role_pin::make_select_child(&resource);
+    auto having_child = role_pin::make_having_child(&resource);
+    auto limit_child = role_pin::make_limit_child(&resource, 5);
+    auto sort_child = role_pin::make_sort_child(&resource);
+    auto group_child = role_pin::make_group_child(&resource);
+    auto match_child = role_pin::make_match_child(&resource);
+    for (const auto& c : {select_child, having_child, limit_child, sort_child, group_child, match_child}) {
+        agg->append_child(c);
+    }
+
+    REQUIRE(agg->children().size() == 6);
+    CHECK(agg->children()[0]->type() == node_type::select_t);
+    CHECK(agg->children()[1]->type() == node_type::having_t);
+    CHECK(agg->children()[2]->type() == node_type::limit_t);
+    CHECK(agg->children()[3]->type() == node_type::sort_t);
+    CHECK(agg->children()[4]->type() == node_type::group_t);
+    CHECK(agg->children()[5]->type() == node_type::match_t);
+
+    // to_string concatenates children in storage order — the golden-string contract.
+    const std::string rendered = agg->to_string();
+    size_t cursor = 0;
+    for (const auto& c : agg->children()) {
+        const std::string piece = c->to_string();
+        const size_t at = rendered.find(piece, cursor);
+        INFO("piece not found in storage order: " << piece);
+        REQUIRE(at != std::string::npos);
+        cursor = at + piece.size();
+    }
+}
+
+TEST_CASE("optimizer::aggregate_role_pin::pushdown_limit_per_shape_stamping") {
+    auto resource = core::pmr::otterbrix_resource();
+    constexpr int64_t k_limit = 7;
+    constexpr int64_t k_offset = 3;
+    constexpr int64_t k_cap = k_limit + k_offset;
+
+    SECTION("sort wins over match: only the sort is capped") {
+        auto agg = role_pin::make_agg(&resource);
+        auto match_child = role_pin::make_match_child(&resource);
+        auto sort_child = role_pin::make_sort_child(&resource);
+        agg->append_child(match_child);
+        agg->append_child(sort_child);
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(static_cast<node_sort_t*>(sort_child.get())->read_cap().limit() == k_cap);
+        CHECK(static_cast<node_match_t*>(match_child.get())->read_cap().limit() == limit_t::unlimit().limit());
+        CHECK(agg->read_cap().limit() == limit_t::unlimit().limit());
+    }
+    SECTION("group by: nothing is capped") {
+        auto agg = role_pin::make_agg(&resource);
+        auto match_child = role_pin::make_match_child(&resource);
+        agg->append_child(match_child);
+        agg->append_child(role_pin::make_group_child(&resource));
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(static_cast<node_match_t*>(match_child.get())->read_cap().limit() == limit_t::unlimit().limit());
+        CHECK(agg->read_cap().limit() == limit_t::unlimit().limit());
+    }
+    SECTION("having is NOT a role here: it falls to default and blocks as a non-scan source") {
+        auto agg = role_pin::make_agg(&resource);
+        auto match_child = role_pin::make_match_child(&resource);
+        agg->append_child(match_child);
+        agg->append_child(role_pin::make_having_child(&resource));
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(static_cast<node_match_t*>(match_child.get())->read_cap().limit() == limit_t::unlimit().limit());
+        CHECK(agg->read_cap().limit() == limit_t::unlimit().limit());
+    }
+    SECTION("select is IGNORED: a plain projection scan still caps the aggregate itself") {
+        auto agg = role_pin::make_agg(&resource);
+        agg->append_child(role_pin::make_select_child(&resource));
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(agg->read_cap().limit() == k_cap);
+        CHECK(agg->read_cap().offset() == 0);
+    }
+    SECTION("where scan: the match is capped, not the aggregate") {
+        auto agg = role_pin::make_agg(&resource);
+        auto match_child = role_pin::make_match_child(&resource);
+        agg->append_child(match_child);
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(static_cast<node_match_t*>(match_child.get())->read_cap().limit() == k_cap);
+        CHECK(agg->read_cap().limit() == limit_t::unlimit().limit());
+    }
+    SECTION("non-scan source (nested aggregate): nothing is capped") {
+        auto agg = role_pin::make_agg(&resource);
+        agg->append_child(role_pin::make_agg(&resource));
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(agg->read_cap().limit() == limit_t::unlimit().limit());
+    }
+    SECTION("distinct: nothing is capped even on a plain scan") {
+        auto agg = role_pin::make_agg(&resource);
+        agg->set_distinct(true);
+        agg->append_child(role_pin::make_limit_child(&resource, k_limit, k_offset));
+        components::planner::optimizer::pushdown_limit(&resource, agg);
+        CHECK(agg->read_cap().limit() == limit_t::unlimit().limit());
+    }
 }

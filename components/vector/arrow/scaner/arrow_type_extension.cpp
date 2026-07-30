@@ -35,26 +35,6 @@ namespace components::vector::arrow {
         return h_extension;
     }
 
-    type_info::type_info()
-        : type() {}
-
-    type_info::type_info(const types::complex_logical_type& type)
-        : alias(type.alias())
-        , type(type.type()) {}
-
-    type_info::type_info(std::string alias)
-        : alias(std::move(alias))
-        , type(types::logical_type::ANY) {}
-
-    size_t type_info::hash() const {
-        auto h_type_id = std::hash<uint8_t>()(static_cast<uint8_t>(type));
-        auto h_alias = std::hash<std::string_view>()(alias.c_str());
-        boost::hash_combine(h_type_id, h_alias);
-        return h_type_id;
-    }
-
-    bool type_info::operator==(const type_info& other) const { return alias == other.alias && type == other.type; }
-
     std::string arrow_extension_metadata_t::extension_name() const { return extension_name_; }
 
     std::string arrow_extension_metadata_t::vendor_name() const { return vendor_name_; }

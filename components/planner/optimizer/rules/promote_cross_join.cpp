@@ -46,14 +46,13 @@ namespace components::planner::optimizer {
             if (kl.path().size() != 1 || kr.path().size() != 1) {
                 return false;
             }
-            const size_t pl = kl.path()[0];
-            const size_t pr = kr.path()[0];
-            const size_t total = left_width + right_width;
-            const bool l_left = pl < left_width;
-            const bool l_right = pl >= left_width && pl < total;
-            const bool r_left = pr < left_width;
-            const bool r_right = pr >= left_width && pr < total;
-            return (l_left && r_right) || (l_right && r_left);
+            // Straddling iff the two operands land on OPPOSITE inputs of this boundary.
+            // An out-of-range ordinal (an outer-scope key) matches neither.
+            using side = node_join_t::merged_side;
+            const side sl = node_join_t::side_of(kl.path()[0], left_width, right_width);
+            const side sr = node_join_t::side_of(kr.path()[0], left_width, right_width);
+            return (sl == side::left_input && sr == side::right_input) ||
+                   (sl == side::right_input && sr == side::left_input);
         }
 
         // Promote every CROSS join in a (left-deep / bushy) join subtree to an INNER
@@ -68,7 +67,7 @@ namespace components::planner::optimizer {
         // children widths — not the outer schema.
         //
         // Widths are read from the ORIGINAL stamped children BEFORE promoting them: a
-        // promoted inner join is a fresh node with no output_types(), but it shares the
+        // promoted inner join is a fresh node with no output_schema(), but it shares the
         // cross join's schema, so the captured widths stay valid.
         //
         // Returns the (possibly new) subtree root. A leaf / non-join subtree, an
@@ -90,10 +89,13 @@ namespace components::planner::optimizer {
             }
 
             // Capture this join's boundary from the intact stamped children first.
-            const bool classifiable = join->type() == join_type::cross && join->children()[0]->has_output_types() &&
-                                      join->children()[1]->has_output_types();
-            const size_t left_width = classifiable ? join->children()[0]->output_types().size() : 0;
-            const size_t right_width = classifiable ? join->children()[1]->output_types().size() : 0;
+            // This rule's degradation policy for an unstamped child: not a promotable
+            // boundary at all — leave the join CROSS.
+            const auto lw = join->left_width();
+            const auto rw = join->right_width();
+            const bool classifiable = join->type() == join_type::cross && lw.has_value() && rw.has_value();
+            const size_t left_width = classifiable ? *lw : 0;
+            const size_t right_width = classifiable ? *rw : 0;
 
             // Recurse into children first — nested cross joins live in child[0] (left-deep).
             auto new_left = promote_join_subtree(resource, join->children()[0], conjuncts, claimed, any_claimed);
@@ -155,22 +157,14 @@ namespace components::planner::optimizer {
             inner->append_child(new_left);
             inner->append_child(new_right);
             inner->append_expression(picked);
-            // Stamp the promoted join's own output schema = left ++ right output_types in
+            // Stamp the promoted join's own output schema = left ++ right output_schema in
             // logical [left, right] order. The validator stamps a cross join, but a fresh
             // make_node_join is unstamped; every consumer then reads a reliable left_width
-            // from children()[i]->output_types() — a PARENT promoted join (nested left-deep)
+            // from children()[i]->output_schema() — a PARENT promoted join (nested left-deep)
             // and pushdown_filter, which re-localizes a pushed right-side conjunct by that
             // left_width. The promoted children preserve their pre-promotion widths, so this
-            // equals the width of the cross join it replaces. Built on `resource`.
-            std::pmr::vector<components::types::complex_logical_type> merged{resource};
-            merged.reserve(new_left->output_types().size() + new_right->output_types().size());
-            for (const auto& t : new_left->output_types()) {
-                merged.push_back(t);
-            }
-            for (const auto& t : new_right->output_types()) {
-                merged.push_back(t);
-            }
-            inner->set_output_types(std::move(merged));
+            // equals the width of the cross join it replaces.
+            inner->recompute_output_schema();
             return inner;
         }
 
@@ -203,10 +197,12 @@ namespace components::planner::optimizer {
             if (join->children().size() < 2) {
                 return true;
             }
-            const bool classifiable = join->type() == join_type::cross && join->children()[0]->has_output_types() &&
-                                      join->children()[1]->has_output_types();
-            const size_t left_width = classifiable ? join->children()[0]->output_types().size() : 0;
-            const size_t right_width = classifiable ? join->children()[1]->output_types().size() : 0;
+            // Same degradation policy as promote_join_subtree, which this simulates.
+            const auto lw = join->left_width();
+            const auto rw = join->right_width();
+            const bool classifiable = join->type() == join_type::cross && lw.has_value() && rw.has_value();
+            const size_t left_width = classifiable ? *lw : 0;
+            const size_t right_width = classifiable ? *rw : 0;
 
             const bool left_all = simulate_all_boundaries_claim(join->children()[0], conjuncts, claimed);
             const bool right_all = simulate_all_boundaries_claim(join->children()[1], conjuncts, claimed);
@@ -227,7 +223,7 @@ namespace components::planner::optimizer {
         }
 
         // Collect the left-deep spine leaves in FROM (merged) order. A leaf must be a base
-        // table-scan: a childless node carrying output_types (a childless aggregate_t for
+        // table-scan: a childless node carrying output_schema (a childless aggregate_t for
         // SSB, or a node_data raw scan in tests). An aggregate_t WITH a child (sub-select /
         // CTE) is NOT a base scan -> bail. Deliberately NOT gated on node_type == data_t:
         // SSB's leaves are aggregate_t, so that gate would reject the very case this fixes.
@@ -248,7 +244,7 @@ namespace components::planner::optimizer {
             if (!node->children().empty()) {
                 return false; // sub-select / CTE / non-scan in a leaf position
             }
-            if (!node->has_output_types()) {
+            if (!node->has_output_schema()) {
                 return false;
             }
             leaves.push_back(node);
@@ -499,7 +495,7 @@ namespace components::planner::optimizer {
                 }
             }
 
-            // (1b) Spine leaves + widths/offsets from output_types() (FROM/merged order).
+            // (1b) Spine leaves + widths/offsets from output_schema() (FROM/merged order).
             std::pmr::vector<node_ptr> leaves{resource};
             if (!collect_spine_leaves(source, leaves)) {
                 return source; // non-scan leaf / sub-select
@@ -514,7 +510,7 @@ namespace components::planner::optimizer {
             size_t n = 0;
             for (const auto& lf : leaves) {
                 offset_old.push_back(n);
-                const size_t w = lf->output_types().size();
+                const size_t w = lf->output_schema().size();
                 if (w == 0) {
                     return source; // unstamped leaf
                 }
@@ -662,7 +658,7 @@ namespace components::planner::optimizer {
             }
 
             // (4) Commit. Rebuild the CROSS chain fact-first over the ORIGINAL leaf scans
-            // (oids flow); stamp each new cross join's output_types = left ++ right
+            // (oids flow); stamp each new cross join's output_schema = left ++ right
             // BOTTOM-UP so a parent reads its freshly-stamped child's width.
             node_ptr new_source = leaves[new_order[0]];
             for (size_t pos = 1; pos < new_order.size(); ++pos) {
@@ -671,15 +667,7 @@ namespace components::planner::optimizer {
                 cross->append_child(new_source);
                 cross->append_child(dim);
                 cross->append_expression(make_compare_expression(resource, compare_type::all_true));
-                std::pmr::vector<complex_logical_type> merged{resource};
-                merged.reserve(new_source->output_types().size() + dim->output_types().size());
-                for (const auto& t : new_source->output_types()) {
-                    merged.push_back(t);
-                }
-                for (const auto& t : dim->output_types()) {
-                    merged.push_back(t);
-                }
-                cross->set_output_types(std::move(merged));
+                cross->recompute_output_schema();
                 new_source = cross;
             }
 

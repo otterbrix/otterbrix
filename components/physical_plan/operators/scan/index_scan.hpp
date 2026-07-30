@@ -55,7 +55,7 @@ namespace components::operators {
             pos_ = 0;
             end_ = 0;
             row_ids_vec_.clear();
-            guard_types_.clear();
+            guard_schema_.clear();
             batch_.clear();
             batch_pos_ = 0;
         }
@@ -92,9 +92,11 @@ namespace components::operators {
         //   pos_ / end_  : the [pos_, end_) window over row_ids_vec_ AFTER offset/limit (the fetch range).
         //   batch_ / batch_pos_ : the disk-batched chunks of the window + the read cursor over them.
         //   drained_  : batch_ exhausted ⇒ source exhausted.
-        //   emitted_any_ / guard_types_: if the scan drains having produced zero rows, emit ONE
+        //   emitted_any_ / guard_schema_: if the scan drains having produced zero rows, emit ONE
         //               schema'd 0-row guard chunk (scalar aggregate COUNT=0 / OUTER-join NULL-pad),
-        //               then the 0-column drain sentinel.
+        //               then the 0-column drain sentinel. That guard is the USER's result for an
+        //               index probe that matches nothing, so it is built from the relation's
+        //               schema records — its columns are named and identified, not merely typed.
         bool opened_{false};
         bool fetched_{false};
         bool drained_{false};
@@ -102,7 +104,7 @@ namespace components::operators {
         size_t pos_{0};
         size_t end_{0};
         std::pmr::vector<int64_t> row_ids_vec_{resource_};
-        std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
+        vector::schema_t guard_schema_{resource_};
         // Buffered fetched batches: the single whole-window storage_fetch returns the disk-batched
         // chunks here; source_next emits them one-per-call.
         std::pmr::vector<vector::data_chunk_t> batch_{resource_};

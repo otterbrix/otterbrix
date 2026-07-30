@@ -93,8 +93,8 @@ namespace components::operators {
         // populate hits an actor_zeta nested-await bug (full_scan crashes when
         // driven from inside this operator's outer await). REFRESH MATERIALIZED
         // VIEW populates later via its own INSERT-SELECT plan. body_op_ holds
-        // the compiled body plan but is intentionally not driven here.
-        (void) body_op_;
+        // the compiled body plan but is intentionally not driven here — it is a
+        // member, so nothing needs to be said to the compiler about it.
         mark_executed();
     }
 

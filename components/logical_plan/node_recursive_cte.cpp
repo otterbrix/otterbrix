@@ -14,8 +14,6 @@ namespace components::logical_plan {
         append_child(std::move(recursive));
     }
 
-    hash_t node_recursive_cte_t::hash_impl() const { return 0; }
-
     std::string node_recursive_cte_t::to_string_impl() const {
         return "recursive_cte(" + std::string(cte_name_) + ", " + (all_ ? "all" : "distinct") + ")";
     }

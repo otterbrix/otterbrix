@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -37,15 +38,18 @@ namespace {
 
     vector::data_chunk_t make_chunk(std::pmr::memory_resource* resource,
                                     std::initializer_list<std::pair<const char*, types::logical_type>> names) {
-        std::pmr::vector<types::complex_logical_type> cols(resource);
+        // The column NAME goes beside the type, not inside it (M3-B5).
+        vector::schema_t cols(resource);
         for (auto& [n, t] : names) {
-            cols.emplace_back(t);
-            cols.back().set_alias(n);
+            vector::column_schema_t record{resource};
+            record.name = n;
+            record.type = types::complex_logical_type{t};
+            cols.push_back(std::move(record));
         }
-        vector::data_chunk_t chunk(resource, cols, 2);
+        auto chunk = vector::make_chunk(resource, cols, 2);
         for (size_t c = 0; c < cols.size(); ++c) {
             for (size_t r = 0; r < 2; ++r) {
-                switch (cols[c].type()) {
+                switch (cols[c].type.type()) {
                     case types::logical_type::INTEGER:
                         chunk.set_value(c, r, static_cast<int32_t>(r + 1));
                         break;
@@ -130,7 +134,7 @@ namespace {
 } // namespace
 
 TEST_CASE("group by over node_data: integer key (control, passes)") {
-    auto config = test_create_config("/tmp/otterbrix_group_by_node_data_int");
+    auto config = test_create_config(test_temp_path("otterbrix_group_by_node_data_int"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -166,7 +170,7 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
 }
 
 TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {
-    auto config = test_create_config("/tmp/otterbrix_group_by_node_data_str");
+    auto config = test_create_config(test_temp_path("otterbrix_group_by_node_data_str"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -183,5 +187,5 @@ TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {
     REQUIRE(cursor->size() == 2);
     // Each campaign joins exactly one product: COUNT == 1 per group and
     // AVG(price) is the row's own price.
-    REQUIRE(cursor->type_data().size() == 3);
+    REQUIRE(cursor->columns().size() == 3);
 }

@@ -15,22 +15,27 @@ namespace services::planner::impl {
                        const components::logical_plan::node_ptr& node,
                        const components::logical_plan::storage_parameters* params) {
         const auto* node_update = static_cast<const components::logical_plan::node_update_t*>(node.get());
-        auto returning = build_returning_columns(context.resource, node_update->returning(), params);
+        std::pmr::vector<components::operators::select_column_t> returning(context.resource);
+        if (!build_returning_columns(context.resource, node_update->returning(), params, returning)) {
+            // Defensive guard tripped: return nullptr -> executor surfaces the error
+            // (rule 9: no throw on the operator-build path).
+            return nullptr;
+        }
 
         // Forward the plan-resolved RETURNING output types (stamped on the update node by
         // validate_schema) onto the RETURNING projection columns, mirroring the SELECT path
-        // (create_plan_aggregate -> operator_select_t::set_output_types). evaluate_projection
+        // (create_plan_aggregate -> operator_select_t::set_output_schema). evaluate_projection
         // reads select_column_t::result_type AUTHORITATIVELY for coalesce/case_when/deep-field
         // columns, so a RETURNING projection over zero affected rows stays correctly typed
-        // instead of collapsing to an untyped (NA) column. No RETURNING -> output_types() empty
-        // -> guard skips (no-op). Column order is aligned by construction: build_returning_columns
+        // instead of collapsing to an untyped (NA) column. No RETURNING -> node->produces_rows()
+        // is false and there is nothing to forward. Column order is aligned by construction: build_returning_columns
         // walks node_update->returning() in order producing one select_column_t per scalar expr,
         // and validate_schema resolves/expands the SAME returning() vector in the SAME order, so
-        // returning[i] corresponds to output_types()[i]. No data-derived fallback (rule 6).
-        if (node->has_output_types()) {
-            const auto& output_types = node->output_types();
-            for (size_t i = 0; i < returning.size() && i < output_types.size(); ++i) {
-                returning[i].result_type = output_types[i];
+        // returning[i] corresponds to output_schema()[i]. No data-derived fallback (rule 6).
+        if (node->produces_rows()) {
+            const auto& output_schema = node->output_schema();
+            for (size_t i = 0; i < returning.size() && i < output_schema.size(); ++i) {
+                returning[i].result_type = output_schema[i].type;
             }
         }
 
@@ -79,7 +84,9 @@ namespace services::planner::impl {
                                                                       context.log.clone(),
                                                                       table_oid,
                                                                       nullptr,
-                                                                      components::logical_plan::limit_t::unlimit())),
+                                                                      components::logical_plan::limit_t::unlimit(),
+                                                                      std::vector<size_t>{},
+                                                                      context.table_metadata_for(table_oid))),
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }

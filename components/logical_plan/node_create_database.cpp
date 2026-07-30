@@ -11,8 +11,6 @@ namespace components::logical_plan {
         , dbname_(std::move(static_cast<std::string&>(dbname)))
         , if_not_exists_(if_not_exists) {}
 
-    hash_t node_create_database_t::hash_impl() const { return 0; }
-
     std::string node_create_database_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_database" << (if_not_exists_ ? "_if_not_exists" : "") << ": " << dbname_;

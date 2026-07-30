@@ -24,19 +24,29 @@ namespace components::cursor {
         explicit cursor_t(std::pmr::memory_resource* resource, core::error_t&& error);
         explicit cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
         explicit cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks);
-        explicit cursor_t(std::pmr::memory_resource* resource,
-                          std::pmr::vector<components::types::complex_logical_type>&& types);
+        explicit cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::column_schema_t>&& columns);
 
         // Raw access to the result batch. Row access that may span chunks must go
         // through value()/row() — never index a single chunk by a global row id.
         std::pmr::vector<vector::data_chunk_t>& chunks();
         const std::pmr::vector<vector::data_chunk_t>& chunks() const;
-        std::pmr::vector<components::types::complex_logical_type>& type_data();
-        const std::pmr::vector<components::types::complex_logical_type>& type_data() const;
+
+        // The result's column descriptor — one record per output column, {attoid, name, type}.
+        // This is the source column_count() reports and the one every binding reads: the C
+        // ABI's cursor_column_name / cursor_column_logical_type / cursor_get_value_by_name,
+        // the python wrapper, and rust and C# through the C ABI.
+        //
+        // It is the cursor's OWN carrier, and it has to be (M3-B5). Until B5 the descriptor
+        // was a list of types and a column's name was inside its type, which meant the cursor
+        // could not name a column whose type named itself — a STRUCT column answered with the
+        // type's name — and could not name one at all once the name left the type. It is a
+        // deep copy taken once at construction and never re-synced, which is deliberate and
+        // pinned: chunks() hands out a NON-const reference, so a rename after construction
+        // moves the chunk's schema and not this (test_cursor.cpp).
+        const std::pmr::vector<vector::column_schema_t>& columns() const;
 
         std::size_t size() const;
         std::size_t column_count() const;
-        std::size_t column_index(std::string_view key) const;
 
         bool has_next() const;
         void advance();
@@ -58,7 +68,7 @@ namespace components::cursor {
         std::size_t size_{};
         index_t current_index_{start_index};
         std::pmr::vector<vector::data_chunk_t> chunks_;
-        std::pmr::vector<components::types::complex_logical_type> type_data_;
+        std::pmr::vector<vector::column_schema_t> columns_;
         core::error_t error_;
     };
 
@@ -70,6 +80,6 @@ namespace components::cursor {
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource,
-                             std::pmr::vector<components::types::complex_logical_type>&& types);
+                             std::pmr::vector<vector::column_schema_t>&& columns);
 
 } // namespace components::cursor

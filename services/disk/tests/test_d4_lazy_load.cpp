@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -34,7 +35,7 @@ using namespace disk_test_helpers;
 
 namespace {
     std::string d4_dir() {
-        static std::string p = "/tmp/test_otterbrix_d4_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_d4");
         return p;
     }
     void cleanup() { std::filesystem::remove_all(d4_dir()); }
@@ -47,7 +48,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;

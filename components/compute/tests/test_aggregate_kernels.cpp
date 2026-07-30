@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
+#include <core/operations_helper.hpp>
 
 using namespace components::compute;
 using namespace components::types;
@@ -209,7 +210,98 @@ TEST_CASE("components::compute::aggregate::batch_accumulates_across_chunks") {
         REQUIRE_FALSE(res.has_error());
         const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
         REQUIRE(vals.size() == 1);
-        REQUIRE(vals[0].value<int32_t>() == 3); // (1+2+3+4+5) / 5
+        // AVG is a real-valued ratio, so the mean of an INTEGER column is a DOUBLE
+        // (see avg_over_integers_is_a_double_mean). This group's mean happens to be
+        // a whole number, which is why reading it as int32 used to look right.
+        REQUIRE(vals[0].type().type() == logical_type::DOUBLE);
+        REQUIRE(core::is_equals(vals[0].value<double>(), 3.0)); // (1+2+3+4+5) / 5
+    }
+}
+
+// AVG is a REAL-valued aggregate: sum / count is a ratio, so the mean of an
+// integral column is a DOUBLE, never the input's integral type. Averaging in the
+// input type performs INTEGER division (mean of {1,2} == 1, not 1.5), and a caller
+// reading the cell as a double sees a reinterpreted integer bit pattern instead.
+// The declared kernel output type must say DOUBLE too, otherwise the plan-time
+// stamped column type (validate_logical_plan resolves it from this signature)
+// disagrees with the value the kernel produces.
+TEST_CASE("components::compute::aggregate::avg_over_integers_is_a_double_mean") {
+    aggregate_registry_fixture fx;
+    auto* fn = fx.get("avg");
+    REQUIRE(fn != nullptr);
+
+    auto chunk_of = [&](logical_type type, std::initializer_list<int64_t> vals) {
+        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        types.emplace_back(type);
+        data_chunk_t chunk(&fx.resource, types, vals.size());
+        uint64_t row = 0;
+        for (int64_t v : vals) {
+            switch (type) {
+                case logical_type::INTEGER:
+                    chunk.set_value(0, row++, static_cast<int32_t>(v));
+                    break;
+                case logical_type::BIGINT:
+                    chunk.set_value(0, row++, v);
+                    break;
+                default:
+                    chunk.set_value(0, row++, static_cast<double>(v));
+                    break;
+            }
+        }
+        chunk.set_cardinality(vals.size());
+        return chunk;
+    };
+
+    SECTION("INTEGER column: mean of {1,2} is 1.5") {
+        auto chunk = chunk_of(logical_type::INTEGER, {1, 2});
+        auto res = fn->execute(chunk, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        REQUIRE(vals.size() == 1);
+        REQUIRE(vals[0].type().type() == logical_type::DOUBLE);
+        REQUIRE(core::is_equals(vals[0].value<double>(), 1.5));
+    }
+
+    SECTION("BIGINT column: mean of {1,2,2} is 5/3") {
+        auto chunk = chunk_of(logical_type::BIGINT, {1, 2, 2});
+        auto res = fn->execute(chunk, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        REQUIRE(vals.size() == 1);
+        REQUIRE(vals[0].type().type() == logical_type::DOUBLE);
+        REQUIRE(core::is_equals(vals[0].value<double>(), 5.0 / 3.0));
+    }
+
+    SECTION("DOUBLE column keeps its exact mean") {
+        auto chunk = chunk_of(logical_type::DOUBLE, {1, 2});
+        auto res = fn->execute(chunk, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        REQUIRE(vals.size() == 1);
+        REQUIRE(vals[0].type().type() == logical_type::DOUBLE);
+        REQUIRE(core::is_equals(vals[0].value<double>(), 1.5));
+    }
+
+    SECTION("the DECLARED kernel output type is DOUBLE for an integral input") {
+        // The plan-time stamped column type: validate_logical_plan resolves an
+        // aggregate's output type through exactly this signature lookup, so a
+        // signature saying "same type as the input" would type a zero-row AVG
+        // column BIGINT while a non-empty one carries a DOUBLE value.
+        std::pmr::vector<complex_logical_type> in_types(&fx.resource);
+        in_types.emplace_back(logical_type::BIGINT);
+        bool matched = false;
+        for (const auto& sig : fn->get_signatures()) {
+            if (!sig.matches_inputs(in_types)) {
+                continue;
+            }
+            matched = true;
+            REQUIRE(sig.output_types.size() == 1);
+            auto resolved = sig.output_types.front().resolve(&fx.resource, in_types);
+            REQUIRE_FALSE(resolved.has_error());
+            REQUIRE(resolved.value().type() == logical_type::DOUBLE);
+            break;
+        }
+        REQUIRE(matched);
     }
 }
 

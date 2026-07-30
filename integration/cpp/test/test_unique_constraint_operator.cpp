@@ -70,6 +70,16 @@ namespace {
         return op->has_error();
     }
 
+    // A chunk's columns are named ON THE COLUMNS (M3-B5), and the unique-constraint operator
+    // resolves its groups BY NAME — so a write-set built from a bare type list has to be named
+    // here, where a type list used to carry the names itself.
+    void name_columns(vector::data_chunk_t& chunk, std::initializer_list<std::string_view> names) {
+        uint64_t index = 0;
+        for (const auto name : names) {
+            chunk.set_column_name(index++, name);
+        }
+    }
+
 } // namespace
 
 // The single-column within-batch trio (duplicate caught / distinct pass / single
@@ -83,10 +93,9 @@ TEST_CASE("unique constraint operator: composite key duplicate is caught", "[uni
     // Two columns (a,b) form one UNIQUE constraint. Rows 0 and 2 share (1,9).
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
-    cols.back().set_alias("a");
     cols.emplace_back(types::logical_type::BIGINT);
-    cols.back().set_alias("b");
     vector::data_chunk_t chunk(&resource, cols, 3);
+    name_columns(chunk, {"a", "b"});
     // (a,b) = (1,9), (1,8), (1,9)
     chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
     chunk.set_value(1, 0, types::logical_value_t(&resource, int64_t(9)));
@@ -103,10 +112,9 @@ TEST_CASE("unique constraint operator: composite key with differing second colum
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
-    cols.back().set_alias("a");
     cols.emplace_back(types::logical_type::BIGINT);
-    cols.back().set_alias("b");
     vector::data_chunk_t chunk(&resource, cols, 2);
+    name_columns(chunk, {"a", "b"});
     // (1,9) and (1,8) differ in b → no violation.
     chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
     chunk.set_value(1, 0, types::logical_value_t(&resource, int64_t(9)));
@@ -123,8 +131,8 @@ TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[uni
     // so this is NOT a violation.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
-    cols.back().set_alias("id");
     vector::data_chunk_t chunk(&resource, cols, 2);
+    name_columns(chunk, {"id"});
     chunk.data[0].set_null(0, true);
     chunk.data[0].set_null(1, true);
     chunk.set_cardinality(2);
@@ -146,8 +154,8 @@ TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught",
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::DOUBLE);
-    cols.back().set_alias("score");
     vector::data_chunk_t chunk(&resource, cols, 2);
+    name_columns(chunk, {"score"});
     const double nan = std::numeric_limits<double>::quiet_NaN();
     chunk.set_value(0, 0, types::logical_value_t(&resource, nan));
     chunk.set_value(0, 1, types::logical_value_t(&resource, nan));
@@ -160,8 +168,8 @@ TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", 
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::DOUBLE);
-    cols.back().set_alias("score");
     vector::data_chunk_t chunk(&resource, cols, 2);
+    name_columns(chunk, {"score"});
     chunk.set_value(0, 0, types::logical_value_t(&resource, 0.0));
     chunk.set_value(0, 1, types::logical_value_t(&resource, -0.0));
     chunk.set_cardinality(2);

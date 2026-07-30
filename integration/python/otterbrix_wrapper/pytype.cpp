@@ -148,7 +148,7 @@ namespace otterbrix {
             const auto& children = type_.child_types();
             for (idx_t i = 0; i < children.size(); i++) {
                 const auto& child = children[i];
-                if (string_utils::ci_equals(child.alias(), name)) {
+                if (string_utils::ci_equals(child.field_name(), name)) {
                     return std::make_shared<otterbrix_py_type_t>(child);
                 }
             }
@@ -324,7 +324,7 @@ namespace otterbrix {
                 return member;
             }
             members.push_back(std::move(member.value()));
-            members.back().set_alias(name);
+            members.back().set_field_name(name);
         }
 
         return core::error_t(core::error_code_t::unimplemented_yet,
@@ -408,7 +408,7 @@ namespace otterbrix {
                 return type_;
             }
             children.push_back(std::move(type_.value()));
-            children.back().set_alias(name);
+            children.back().set_field_name(name);
         }
         return complex_logical_type::create_struct("struct", std::move(children));
     }
@@ -514,7 +514,7 @@ namespace otterbrix {
             const auto& struct_children = type_.child_types();
             for (idx_t i = 0; i < struct_children.size(); i++) {
                 auto& child = struct_children[i];
-                children.append(py::make_tuple(child.alias(), std::make_shared<otterbrix_py_type_t>(child)));
+                children.append(py::make_tuple(child.field_name(), std::make_shared<otterbrix_py_type_t>(child)));
             }
             return children;
         }

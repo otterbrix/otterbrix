@@ -20,7 +20,6 @@ namespace components::logical_plan {
         const std::string& dbname() const noexcept { return dbname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string dbname_;

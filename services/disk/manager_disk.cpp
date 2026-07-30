@@ -71,6 +71,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_dropped_columns>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
@@ -258,6 +259,19 @@ namespace services::disk {
         auto new_table = std::make_unique<components::table::data_table_t>(*table_, idx);
         table_ = std::move(new_table);
         return true;
+    }
+
+    components::table::data_table_t::column_compaction_t
+    table_storage_t::compact_dropped_columns(const std::pmr::vector<std::uint32_t>& dead_attoids,
+                                             uint64_t compact_watermark) {
+        if (!table_) {
+            return {};
+        }
+        // No mode test. The rebuild narrows this table IN PLACE — the data_table_t object
+        // survives, so the storage adapter's reference stays valid and no caller has to be
+        // told — and it goes through the same collection rebuild data_table_t::compact runs
+        // on DISK tables at every checkpoint.
+        return table_->compact_dropped_columns(dead_attoids, compact_watermark);
     }
 
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* resource,
@@ -509,6 +523,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::compact_relkind_g_storage, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_dropped_columns>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::compact_dropped_columns, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>: {

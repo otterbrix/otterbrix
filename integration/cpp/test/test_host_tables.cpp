@@ -12,6 +12,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/types.hpp>
 
 using namespace components;
@@ -34,7 +35,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::host_tables::sql_insert_into_node_created_table") {
-    auto config = test_create_config("/tmp/test_host_tables/kafka_repro");
+    auto config = test_create_config(test_temp_path("test_host_tables/kafka_repro"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -95,7 +96,7 @@ TEST_CASE("integration::cpp::host_tables::sql_insert_into_node_created_table") {
 }
 
 TEST_CASE("integration::cpp::host_tables::restart_readback") {
-    auto config = test_create_config("/tmp/test_host_tables/restart");
+    auto config = test_create_config(test_temp_path("test_host_tables/restart"));
     test_clear_directory(config);
 
     INFO("phase 1: host DB + metadata table via plain DDL/DML");

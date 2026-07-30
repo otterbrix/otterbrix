@@ -15,12 +15,17 @@ namespace services::planner::impl {
                        const components::logical_plan::storage_parameters* params = nullptr);
 
     // Build physical projection columns from a DML node's RETURNING expression
-    // list (scalar get_field / arithmetic / constant / star_expand). Returns an
-    // empty vector when `returning` is empty (no RETURNING clause). Shared by
+    // list (scalar get_field / arithmetic / constant / star_expand) into `columns`,
+    // which stays empty when `returning` is empty (no RETURNING clause). Shared by
     // create_plan_insert / _update / _delete.
-    std::pmr::vector<components::operators::select_column_t>
+    //
+    // Returns false on a defensive validation failure so the caller can return
+    // nullptr -> executor surfaces the error (rule 9: no throw on the
+    // operator-build path).
+    [[nodiscard]] bool
     build_returning_columns(std::pmr::memory_resource* resource,
                             const std::pmr::vector<components::expressions::expression_ptr>& returning,
-                            const components::logical_plan::storage_parameters* params);
+                            const components::logical_plan::storage_parameters* params,
+                            std::pmr::vector<components::operators::select_column_t>& columns);
 
 } // namespace services::planner::impl

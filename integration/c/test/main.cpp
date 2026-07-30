@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include "../otterbrix.h"
 
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // C-API boundary tests.
@@ -45,7 +47,7 @@ namespace {
         otterbrix_ptr ptr{nullptr};
 
         explicit test_db_t(const std::string& tag) {
-            base = "/tmp/otterbrix_c_test_" + tag + "_" + std::to_string(::getpid());
+            base = test_temp_path("otterbrix_c_test_" + tag);
             log_path = base + "/log";
             wal_path = base + "/wal";
             disk_path = base + "/disk";
@@ -237,6 +239,92 @@ TEST_CASE("c-api: cursor_column_name returns nullptr for OOB index", "[c-api][cu
 }
 
 // --------------------------------------------------------------------------
+// M3-B2 characterization: the column NAMES the C ABI publishes, across the
+// shapes a name can come from. C# and Rust reach the engine through exactly
+// these entry points, so this is the whole binding surface for column identity.
+//
+// cursor_column_name and cursor_get_value_by_name read the cursor's own
+// descriptor (cursor_t::columns()), NOT the result chunk. The two sources are
+// not interchangeable (see components/cursor/tests/test_cursor.cpp,
+// two_sources_of_column_identity), so these pin what the descriptor answers and
+// will fail loudly if a reader is ever repointed at the chunk.
+// --------------------------------------------------------------------------
+
+namespace {
+
+    // The column names a cursor publishes, in order, freeing each as it goes.
+    std::vector<std::string> c_api_column_names(cursor_ptr cur) {
+        std::vector<std::string> names;
+        for (int32_t col = 0; col < cursor_column_count(cur); ++col) {
+            char* name = cursor_column_name(cur, col);
+            REQUIRE(name != nullptr);
+            names.emplace_back(name);
+            otterbrix_free_string(name);
+        }
+        return names;
+    }
+
+} // namespace
+
+TEST_CASE("c-api: cursor_column_name publishes the query's column names", "[c-api][cursor]") {
+    test_db_t t("col_name_shapes");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE namesdb;");
+    run_ok(t.ptr, "CREATE TABLE namesdb.t (id bigint, label string, price double);");
+    run_ok(t.ptr, "INSERT INTO namesdb.t (id, label, price) VALUES (1, 'a', 1.5), (2, 'b', 2.5);");
+
+    // No SECTIONs here on purpose: Catch2 re-runs the whole body once per section, and
+    // test_db_t's paths are keyed by tag, so four sections would stand four engines up on
+    // one directory and the second would inherit the first's catalog.
+
+    INFO("explicit projection keeps the source column names, in order");
+    {
+        cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT price, id FROM namesdb.t ORDER BY id;")));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        REQUIRE(c_api_column_names(cur) == std::vector<std::string>{"price", "id"});
+        release_cursor(cur);
+    }
+
+    INFO("AS renames the published column");
+    {
+        cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT id AS ident, label AS text FROM namesdb.t;")));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        REQUIRE(c_api_column_names(cur) == std::vector<std::string>{"ident", "text"});
+
+        // The renamed column resolves by its NEW name and not by its old one.
+        value_ptr by_new = cursor_get_value_by_name(cur, 0, sv(std::string("ident")));
+        REQUIRE(by_new != nullptr);
+        release_value(by_new);
+        REQUIRE(cursor_get_value_by_name(cur, 0, sv(std::string("id"))) == nullptr);
+        release_cursor(cur);
+    }
+
+    INFO("SELECT * publishes every table column");
+    {
+        cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT * FROM namesdb.t ORDER BY id;")));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        REQUIRE(c_api_column_names(cur) == std::vector<std::string>{"id", "label", "price"});
+        release_cursor(cur);
+    }
+
+    INFO("EXPLAIN publishes a single QUERY PLAN column");
+    {
+        // EXPLAIN's column name is WRITTEN once, at renderer_postgres.cpp:210, and read
+        // back only here — the renderer itself reads no column name at all.
+        cursor_ptr cur = execute_sql(t.ptr, sv(std::string("EXPLAIN SELECT id FROM namesdb.t;")));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        REQUIRE(cursor_column_count(cur) == 1);
+        REQUIRE(c_api_column_names(cur) == std::vector<std::string>{"QUERY PLAN"});
+        release_cursor(cur);
+    }
+}
+
+// --------------------------------------------------------------------------
 // Logical type reporting for a known SELECT. Mirrors
 // ddl.rs::cursor_reports_logical_type_for_basic_types.
 // --------------------------------------------------------------------------
@@ -377,5 +465,112 @@ TEST_CASE("c-api: cursor_get_value returns nullptr for OOB row/column", "[c-api]
     REQUIRE(cursor_get_value(cur, 100, 0) == nullptr);
     REQUIRE(cursor_get_value(cur, 0, 100) == nullptr);
 
+    release_cursor(cur);
+}
+
+// --------------------------------------------------------------------------
+// cursor_get_value_by_name: the name->value contract every binding rides on.
+// It walks the cursor's columns() and answers the FIRST column whose name
+// matches, or nullptr when no column carries the name. The python binding
+// (integration/python/sql/wrapper_cursor.cpp, wrapper_cursor::get_) runs the
+// same loop and returns py::none() in the same "no such name" case, pinned by
+// integration/python/tests/test_dynamic_schema.py:114.
+// --------------------------------------------------------------------------
+
+TEST_CASE("c-api: cursor_get_value_by_name resolves a present name and rejects an absent one",
+          "[c-api][value]") {
+    test_db_t t("value_by_name");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE namedb;");
+    run_ok(t.ptr, "CREATE TABLE namedb.t (num bigint, label string);");
+    run_ok(t.ptr, "INSERT INTO namedb.t (num, label) VALUES (7, 'seven');");
+
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT num, label FROM namedb.t;")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_success(cur));
+    REQUIRE(cursor_column_count(cur) == 2);
+
+    value_ptr num = cursor_get_value_by_name(cur, 0, sv(std::string("num")));
+    REQUIRE(num != nullptr);
+    REQUIRE(value_is_int(num));
+    REQUIRE(value_get_int(num) == 7);
+    release_value(num);
+
+    value_ptr label = cursor_get_value_by_name(cur, 0, sv(std::string("label")));
+    REQUIRE(label != nullptr);
+    REQUIRE(value_is_string(label));
+    char* text = value_get_string(label);
+    REQUIRE(text != nullptr);
+    REQUIRE(std::string(text) == "seven");
+    otterbrix_free_string(text);
+    release_value(label);
+
+    // No column carries this name -> nullptr, never a fabricated or out-of-range read.
+    REQUIRE(cursor_get_value_by_name(cur, 0, sv(std::string("no_such_column"))) == nullptr);
+    // Casing is not folded: the lookup is an exact alias match.
+    REQUIRE(cursor_get_value_by_name(cur, 0, sv(std::string("NUM"))) == nullptr);
+
+    release_cursor(cur);
+}
+
+// A computing table can carry two columns of one name and different physical
+// type (mirrors integration/cpp/test/test_computed_schema.cpp). Both reach the
+// result, so the name has two right answers; cursor_get_value_by_name commits
+// to the first one. This pin records that commitment.
+TEST_CASE("c-api: cursor_get_value_by_name answers the FIRST of two same-named columns", "[c-api][value]") {
+    test_db_t t("value_by_name_dup");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE dupdb;");
+    run_ok(t.ptr, "CREATE TABLE dupdb.mt ();");
+    run_ok(t.ptr, "INSERT INTO dupdb.mt (id, val) VALUES (1, 1), (2, 2);");
+    run_ok(t.ptr, "INSERT INTO dupdb.mt (id, val) VALUES (3, 'hello');");
+
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT * FROM dupdb.mt ORDER BY id;")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_success(cur));
+    REQUIRE(cursor_size(cur) == 3);
+    REQUIRE(cursor_column_count(cur) == 3);
+
+    // Locate both 'val' columns by position.
+    int32_t first_val = -1;
+    int32_t second_val = -1;
+    for (int32_t col = 0; col < cursor_column_count(cur); ++col) {
+        char* name = cursor_column_name(cur, col);
+        REQUIRE(name != nullptr);
+        const bool is_val = std::string(name) == "val";
+        otterbrix_free_string(name);
+        if (!is_val) {
+            continue;
+        }
+        if (first_val < 0) {
+            first_val = col;
+        } else if (second_val < 0) {
+            second_val = col;
+        }
+    }
+    REQUIRE(first_val >= 0);
+    REQUIRE(second_val > first_val);
+    // The two answers are genuinely different columns, not a repeated one.
+    REQUIRE(cursor_column_logical_type(cur, first_val) != cursor_column_logical_type(cur, second_val));
+
+    // Row 0 (id = 1) has a value in exactly one of the two 'val' columns.
+    value_ptr by_name = cursor_get_value_by_name(cur, 0, sv(std::string("val")));
+    value_ptr at_first = cursor_get_value(cur, 0, first_val);
+    value_ptr at_second = cursor_get_value(cur, 0, second_val);
+    REQUIRE(by_name != nullptr);
+    REQUIRE(at_first != nullptr);
+    REQUIRE(at_second != nullptr);
+
+    REQUIRE(value_is_null(at_first) != value_is_null(at_second));
+    // by_name matched the FIRST of the two.
+    REQUIRE(value_is_null(by_name) == value_is_null(at_first));
+    REQUIRE(value_is_int(by_name) == value_is_int(at_first));
+    REQUIRE(value_is_string(by_name) == value_is_string(at_first));
+
+    release_value(at_second);
+    release_value(at_first);
+    release_value(by_name);
     release_cursor(cur);
 }

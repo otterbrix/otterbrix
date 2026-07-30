@@ -10,18 +10,6 @@ namespace components::planner::optimizer {
     namespace {
         namespace lp = components::logical_plan;
 
-        // The effective limit for an aggregate is carried by its limit_t child
-        // (the same source create_plan_aggregate and the executor read). Unlimit
-        // when there is none.
-        lp::limit_t aggregate_limit(const lp::node_ptr& aggregate) {
-            for (const auto& child : aggregate->children()) {
-                if (child->type() == lp::node_type::limit_t) {
-                    return static_cast<const lp::node_limit_t*>(child.get())->limit();
-                }
-            }
-            return lp::limit_t::unlimit();
-        }
-
         bool is_effective(const lp::limit_t& limit) noexcept {
             return limit.limit() != lp::limit_t::unlimit().limit() || limit.offset() != 0;
         }
@@ -34,11 +22,20 @@ namespace components::planner::optimizer {
             if (node->type() != lp::node_type::aggregate_t) {
                 return;
             }
-            const lp::limit_t limit = aggregate_limit(node);
+            auto* aggregate = static_cast<lp::node_aggregate_t*>(node.get());
+            // This rule's own reading of the roles: a projection ($select) is irrelevant
+            // to where the cap lands, and everything that is NOT a role — including a
+            // HAVING — counts as a non-scan source that blocks capping.
+            const auto roles = aggregate->pipeline();
+
+            // The effective limit is carried by the limit_t child (the same source
+            // create_plan_aggregate and the executor read). Unlimit when there is none.
+            const lp::limit_t limit = roles.limit
+                                          ? static_cast<const lp::node_limit_t*>(roles.limit.get())->limit()
+                                          : lp::limit_t::unlimit();
             if (!is_effective(limit)) {
                 return;
             }
-            auto* aggregate = static_cast<lp::node_aggregate_t*>(node.get());
 
             // DISTINCT is a FLAG on the aggregate and operator_distinct is layered
             // ABOVE the terminal scan — capping any source below would dedup too few
@@ -48,29 +45,10 @@ namespace components::planner::optimizer {
                 return;
             }
 
-            lp::node_ptr match_child;
-            lp::node_ptr sort_child;
-            bool has_group = false;
-            bool has_nonscan = false;
-            for (const auto& child : node->children()) {
-                switch (child->type()) {
-                    case lp::node_type::match_t:
-                        match_child = child;
-                        break;
-                    case lp::node_type::sort_t:
-                        sort_child = child;
-                        break;
-                    case lp::node_type::group_t:
-                        has_group = true;
-                        break;
-                    case lp::node_type::limit_t:
-                    case lp::node_type::select_t:
-                        break;
-                    default:
-                        has_nonscan = true; // UNION / recursive-CTE / join / data source
-                        break;
-                }
-            }
+            const lp::node_ptr& match_child = roles.match;
+            const lp::node_ptr& sort_child = roles.sort;
+            const bool has_group = roles.group != nullptr;
+            const bool has_nonscan = roles.source != nullptr || roles.having != nullptr;
 
             const lp::limit_t read_cap{limit.head_cap(), 0};
 

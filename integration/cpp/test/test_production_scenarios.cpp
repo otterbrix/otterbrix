@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -22,7 +23,7 @@
 // Test 1: Scale test — INSERT 100K rows, GROUP BY, aggregates
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::scale_100k_group_by") {
-    auto config = test_create_config("/tmp/otterbrix/production/scale_100k");
+    auto config = test_create_config(test_temp_path("otterbrix/production/scale_100k"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -91,7 +92,7 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
 // Test 2: Multi-table JOIN + aggregates (2 JOINs)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::multi_table_join") {
-    auto config = test_create_config("/tmp/otterbrix/production/multi_join");
+    auto config = test_create_config(test_temp_path("otterbrix/production/multi_join"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -201,7 +202,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
 // Test 3: NULL in JOIN keys — SQL standard: NULL = NULL → UNKNOWN (false)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::null_join_keys") {
-    auto config = test_create_config("/tmp/otterbrix/production/null_join");
+    auto config = test_create_config(test_temp_path("otterbrix/production/null_join"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -321,7 +322,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
 // Test 4: Unicode strings
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::unicode_strings") {
-    auto config = test_create_config("/tmp/otterbrix/production/unicode");
+    auto config = test_create_config(test_temp_path("otterbrix/production/unicode"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -405,7 +406,7 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
 // Test 5: Concurrent INSERT (2 threads)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::concurrent_insert") {
-    auto config = test_create_config("/tmp/otterbrix/production/concurrent_insert");
+    auto config = test_create_config(test_temp_path("otterbrix/production/concurrent_insert"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -484,7 +485,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
 // Test 6: Concurrent read + write
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::concurrent_read_write") {
-    auto config = test_create_config("/tmp/otterbrix/production/concurrent_rw");
+    auto config = test_create_config(test_temp_path("otterbrix/production/concurrent_rw"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -563,7 +564,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
 // Test 7: Large batch checkpoint (100K rows)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
-    auto config = test_create_config("/tmp/otterbrix/production/large_checkpoint");
+    auto config = test_create_config(test_temp_path("otterbrix/production/large_checkpoint"));
     test_clear_directory(config);
 
     // Compute expected sum: sum of i*1.5 for i=0..99999 = 1.5 * (99999*100000/2) = 1.5 * 4999950000 = 7499925000
@@ -643,7 +644,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
 // Test 8: Complex WHERE with nested AND/OR
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::complex_where") {
-    auto config = test_create_config("/tmp/otterbrix/production/complex_where");
+    auto config = test_create_config(test_temp_path("otterbrix/production/complex_where"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -732,7 +733,7 @@ TEST_CASE("integration::cpp::production::complex_where") {
 // Test 9: Corrupted .otbx recovery
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/production/corrupted_otbx");
+    auto config = test_create_config(test_temp_path("otterbrix/production/corrupted_otbx"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert, checkpoint");
@@ -850,7 +851,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 // Test 10: WAL segment rotation under load
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::wal_segment_rotation") {
-    auto config = test_create_config("/tmp/otterbrix/production/wal_rotation");
+    auto config = test_create_config(test_temp_path("otterbrix/production/wal_rotation"));
     test_clear_directory(config);
     // disk.on = true for catalog persistence (needed for restart recovery)
     // Table uses in-memory storage (no WITH storage='disk') so data comes from WAL replay
@@ -944,7 +945,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 // Test 11: Compaction + checkpoint cycle (VACUUM + CHECKPOINT + restart)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/production/compaction_cycle");
+    auto config = test_create_config(test_temp_path("otterbrix/production/compaction_cycle"));
     test_clear_directory(config);
 
     INFO("phase 1: insert 1000, delete 80%, vacuum, checkpoint");
@@ -1060,7 +1061,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 // this Debug-build case to a few seconds while still meaningfully driving the
 // disk-backed append + full-scan path end to end.
 TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
-    auto config = test_create_config("/tmp/otterbrix/production/large_scan_segfault");
+    auto config = test_create_config(test_temp_path("otterbrix/production/large_scan_segfault"));
     test_clear_directory(config);
     // DISK-backed so write-through evicts filled segments and large inserts stay
     // bounded.
@@ -1215,7 +1216,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
 // WAL stays on so the user rows survive the reopen and the post-reopen
 // aggregate can be value-checked end to end.
 TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoint") {
-    auto config = test_create_config("/tmp/otterbrix/production/reopen_resolve_columns");
+    auto config = test_create_config(test_temp_path("otterbrix/production/reopen_resolve_columns"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = true;

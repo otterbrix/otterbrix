@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <sstream>
 #include <string>
 
@@ -85,7 +86,7 @@ namespace {
 // --- A: index created BEFORE the rows; NULL position and batching vary -------------------
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_middle_separate_inserts") {
-    auto config = test_create_config("/tmp/test_idx_null/a1");
+    auto config = test_create_config(test_temp_path("test_idx_null/a1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -102,7 +103,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_middle_separate_inserts"
 }
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_middle_one_batch") {
-    auto config = test_create_config("/tmp/test_idx_null/a2");
+    auto config = test_create_config(test_temp_path("test_idx_null/a2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -118,7 +119,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_middle_one_batch") {
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_is_first_key") {
     // The INVENT mode: a leading NULL latches stored_type_ = NA and poisons the ordering.
-    auto config = test_create_config("/tmp/test_idx_null/a3");
+    auto config = test_create_config(test_temp_path("test_idx_null/a3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -133,7 +134,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_is_first_key") {
 }
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_last") {
-    auto config = test_create_config("/tmp/test_idx_null/a4");
+    auto config = test_create_config(test_temp_path("test_idx_null/a4"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -151,7 +152,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_last") {
 
 TEST_CASE("integration::cpp::idx_null::backfill_null_middle") {
     // The originally reported bug.
-    auto config = test_create_config("/tmp/test_idx_null/b2");
+    auto config = test_create_config(test_temp_path("test_idx_null/b2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -166,7 +167,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_null_middle") {
 }
 
 TEST_CASE("integration::cpp::idx_null::backfill_null_first") {
-    auto config = test_create_config("/tmp/test_idx_null/b3");
+    auto config = test_create_config(test_temp_path("test_idx_null/b3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -181,7 +182,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_null_first") {
 }
 
 TEST_CASE("integration::cpp::idx_null::backfill_separate_inserts_null_middle") {
-    auto config = test_create_config("/tmp/test_idx_null/b1");
+    auto config = test_create_config(test_temp_path("test_idx_null/b1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -201,7 +202,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_separate_inserts_null_middle") {
 
 TEST_CASE("integration::cpp::idx_null::all_rows_null") {
     // The sharpest form of INVENT: with every key NULL, `WHERE x = 0` returned every row.
-    auto config = test_create_config("/tmp/test_idx_null/d2");
+    auto config = test_create_config(test_temp_path("test_idx_null/d2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -220,7 +221,7 @@ TEST_CASE("integration::cpp::idx_null::all_rows_null") {
 }
 
 TEST_CASE("integration::cpp::idx_null::null_only_then_values") {
-    auto config = test_create_config("/tmp/test_idx_null/d3");
+    auto config = test_create_config(test_temp_path("test_idx_null/d3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -241,7 +242,7 @@ TEST_CASE("integration::cpp::idx_null::null_only_then_values") {
 
 TEST_CASE("integration::cpp::idx_null::no_nulls_baseline") {
     // Sanity: an index over a NULL-free column must keep working exactly as before.
-    auto config = test_create_config("/tmp/test_idx_null/d1");
+    auto config = test_create_config(test_temp_path("test_idx_null/d1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -262,7 +263,7 @@ TEST_CASE("integration::cpp::idx_null::no_nulls_baseline") {
 // --- D: index maintenance under UPDATE / DELETE -----------------------------------------
 
 TEST_CASE("integration::cpp::idx_null::update_null_to_value_adds_index_entry") {
-    auto config = test_create_config("/tmp/test_idx_null/e1");
+    auto config = test_create_config(test_temp_path("test_idx_null/e1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -282,7 +283,7 @@ TEST_CASE("integration::cpp::idx_null::update_null_to_value_adds_index_entry") {
 }
 
 TEST_CASE("integration::cpp::idx_null::update_value_to_null_removes_index_entry") {
-    auto config = test_create_config("/tmp/test_idx_null/e2");
+    auto config = test_create_config(test_temp_path("test_idx_null/e2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -301,7 +302,7 @@ TEST_CASE("integration::cpp::idx_null::update_value_to_null_removes_index_entry"
 }
 
 TEST_CASE("integration::cpp::idx_null::delete_null_and_value_rows") {
-    auto config = test_create_config("/tmp/test_idx_null/e3");
+    auto config = test_create_config(test_temp_path("test_idx_null/e3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -330,7 +331,7 @@ TEST_CASE("integration::cpp::idx_null::delete_null_and_value_rows") {
 
 TEST_CASE("integration::cpp::idx_null::text_column_with_null") {
     // The CRASH mode: comparing a typed string against an NA dereferenced a null string pointer.
-    auto config = test_create_config("/tmp/test_idx_null/f1");
+    auto config = test_create_config(test_temp_path("test_idx_null/f1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -353,7 +354,7 @@ TEST_CASE("integration::cpp::idx_null::null_constant_predicates") {
     // Regression guard for the ordering change: a NULL *constant* makes every comparison UNKNOWN,
     // so all of these must return 0 rows — with and without an index. If the zonemap or the
     // per-row compare ever starts treating a NULL constant as an ordinary value, this catches it.
-    auto config = test_create_config("/tmp/test_idx_null/g1");
+    auto config = test_create_config(test_temp_path("test_idx_null/g1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -377,7 +378,7 @@ TEST_CASE("integration::cpp::idx_null::null_constant_predicates") {
 TEST_CASE("integration::cpp::idx_null::sibling_index_survives_null_column") {
     // insert_row loops over every index of the table in one coroutine, so a throw on the NULL
     // column's index used to kill the sibling index's entries for the same batch too.
-    auto config = test_create_config("/tmp/test_idx_null/h1");
+    auto config = test_create_config(test_temp_path("test_idx_null/h1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -399,7 +400,7 @@ TEST_CASE("integration::cpp::idx_null::sibling_index_survives_null_column") {
 // --- H: a batch larger than one vector (1024 rows) ---------------------------------------
 
 TEST_CASE("integration::cpp::idx_null::large_batch_with_scattered_nulls") {
-    auto config = test_create_config("/tmp/test_idx_null/i1");
+    auto config = test_create_config(test_temp_path("test_idx_null/i1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -442,7 +443,7 @@ TEST_CASE("integration::cpp::idx_null::large_batch_with_scattered_nulls") {
 // --- I: persistence — the index must be rebuilt correctly across a restart ---------------
 
 TEST_CASE("integration::cpp::idx_null::survives_restart") {
-    auto config = test_create_config("/tmp/test_idx_null/j1");
+    auto config = test_create_config(test_temp_path("test_idx_null/j1"));
     test_clear_directory(config);
     {
         test_spaces space(config);
@@ -469,7 +470,7 @@ TEST_CASE("integration::cpp::idx_null::survives_restart") {
 // --- J: an absent jsonb key on a computing table -----------------------------------------
 
 TEST_CASE("integration::cpp::idx_null::computing_table_absent_key") {
-    auto config = test_create_config("/tmp/test_idx_null/k1");
+    auto config = test_create_config(test_temp_path("test_idx_null/k1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -484,4 +485,88 @@ TEST_CASE("integration::cpp::idx_null::computing_table_absent_key") {
     REQUIRE(run(d, "CREATE INDEX ik1 ON ix.k1i (x);").ok);
     both(d, "ix.k1i", "ix.k1p", "x = 0", 1);
     both(d, "ix.k1i", "ix.k1p", "x >= 0", 2);
+}
+
+// --- K: the chunk's column set is NOT the table's column set -----------------------------
+//
+// index_engine resolves an index key to a chunk column by ALIAS. That rule only shows itself
+// when the chunk carries a different set — or a different order — of columns than the table
+// declares, which is exactly what the fixtures above never do: every one of them writes all of
+// (id, x) every time, so column ordinal and column alias agree and an ordinal-based resolution
+// would pass the whole suite. These two cases separate them.
+
+TEST_CASE("integration::cpp::idx_null::partial_column_list_per_insert") {
+    // Each INSERT names a different subset of (id, a, b), so 'b' sits at a different ordinal in
+    // each chunk — and is absent from one of them entirely. Resolving by ordinal would index 'a'
+    // (or 'id') under b's index, which the b = 7 / b = 9 probes below would catch.
+    auto config = test_create_config(test_temp_path("test_idx_null/l1"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE TABLE ix.l1i (id INT, a BIGINT, b BIGINT);").ok);
+    REQUIRE(run(d, "CREATE TABLE ix.l1p (id INT, a BIGINT, b BIGINT);").ok);
+    REQUIRE(run(d, "CREATE INDEX il1 ON ix.l1i (b);").ok);
+    for (auto* t : {"ix.l1i", "ix.l1p"}) {
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,b) VALUES (1,100);").ok);      // b at ordinal 1
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,a,b) VALUES (2,7,200);").ok);  // b at ordinal 2
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (b,id,a) VALUES (300,3,8);").ok);  // b at ordinal 0
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,a) VALUES (4,9);").ok);        // no b at all
+    }
+    both(d, "ix.l1i", "ix.l1p", "b = 100", 1);
+    both(d, "ix.l1i", "ix.l1p", "b = 200", 1);
+    both(d, "ix.l1i", "ix.l1p", "b = 300", 1);
+    both(d, "ix.l1i", "ix.l1p", "b = 7", 0);  // 7 is a's value on row 2, never b's
+    both(d, "ix.l1i", "ix.l1p", "b = 8", 0);  // 8 is a's value on row 3
+    both(d, "ix.l1i", "ix.l1p", "b = 9", 0);  // row 4 has no b — nothing to index
+    both(d, "ix.l1i", "ix.l1p", "b = 2", 0);  // 2 is id's value on row 2
+    both(d, "ix.l1i", "ix.l1p", "b >= 100", 3);
+    both(d, "ix.l1i", "ix.l1p", "b IS NULL", 1);
+}
+
+TEST_CASE("integration::cpp::idx_null::add_column_then_create_index") {
+    // ALTER TABLE ADD COLUMN appends 'b' to the schema, so the rows written BEFORE it and the rows
+    // written after it disagree about how many columns a chunk has. CREATE INDEX then backfills
+    // over both generations. Resolving by ordinal would read whatever happens to sit where 'b'
+    // ended up, and would differ between the pre- and post-ALTER rows.
+    auto config = test_create_config(test_temp_path("test_idx_null/l2"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    for (auto* t : {"ix.l2i", "ix.l2p"}) {
+        REQUIRE(run(d, std::string("CREATE TABLE ") + t + " (id INT, a BIGINT);").ok);
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,a) VALUES (1,11),(2,22);").ok);
+        REQUIRE(run(d, std::string("ALTER TABLE ") + t + " ADD COLUMN b BIGINT;").ok);
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,a,b) VALUES (3,33,300);").ok);
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,b) VALUES (4,400);").ok);
+    }
+    // Built only now, so the backfill walks rows from both schema generations.
+    REQUIRE(run(d, "CREATE INDEX il2 ON ix.l2i (b);").ok);
+
+    both(d, "ix.l2i", "ix.l2p", "b = 300", 1);
+    both(d, "ix.l2i", "ix.l2p", "b = 400", 1);
+    both(d, "ix.l2i", "ix.l2p", "b = 11", 0); // a's value on a pre-ALTER row
+    both(d, "ix.l2i", "ix.l2p", "b = 22", 0);
+    both(d, "ix.l2i", "ix.l2p", "b = 33", 0); // a's value on a post-ALTER row
+    both(d, "ix.l2i", "ix.l2p", "b >= 300", 2);
+    both(d, "ix.l2i", "ix.l2p", "b IS NULL", 2); // the two pre-ALTER rows
+
+    // Rows written after the index exists must land in it too — including ones whose column list
+    // is narrower than, or ordered differently from, the post-ALTER schema the backfill just saw.
+    // The backfill reads storage, so every chunk it walks carries the full schema; only these
+    // later INSERTs make the chunk shape vary for an index that is already live.
+    for (auto* t : {"ix.l2i", "ix.l2p"}) {
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,a,b) VALUES (5,55,500);").ok);
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (id,b) VALUES (6,600);").ok);
+        REQUIRE(run(d, std::string("INSERT INTO ") + t + " (b,id) VALUES (700,7);").ok);
+    }
+    both(d, "ix.l2i", "ix.l2p", "b = 500", 1);
+    both(d, "ix.l2i", "ix.l2p", "b = 600", 1);
+    both(d, "ix.l2i", "ix.l2p", "b = 700", 1);
+    both(d, "ix.l2i", "ix.l2p", "b = 55", 0); // a's value, never b's
+    both(d, "ix.l2i", "ix.l2p", "b = 6", 0);  // id's value on the narrow-list row
+    both(d, "ix.l2i", "ix.l2p", "b = 7", 0);
+    both(d, "ix.l2i", "ix.l2p", "b >= 300", 5);
+    both(d, "ix.l2i", "ix.l2p", "b IS NULL", 2);
 }

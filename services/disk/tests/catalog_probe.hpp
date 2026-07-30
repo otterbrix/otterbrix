@@ -459,7 +459,7 @@ namespace services::disk::test_probe {
                         ft = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
                 }
             }
-            ft.set_alias(f.attname);
+            ft.set_field_name(f.attname);
             child_types.push_back(std::move(ft));
         }
         auto struct_t = components::types::complex_logical_type::create_struct(name, child_types);

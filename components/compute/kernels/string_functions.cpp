@@ -176,6 +176,18 @@ namespace {
     // ------------------------------------------------------------------
     // Makers (mirror make_sum_func style from aggregate.cpp).
     // ------------------------------------------------------------------
+
+    // add_kernel fails in exactly two ways: the function's kernel slots are exhausted, or the
+    // kernel's input count disagrees with the function's arity. Both are fixed by the literals
+    // written a few lines above each call (available_kernel_slots=N, arity::…), so neither can
+    // start failing on data — only on an edit that desynchronises the two. When that happens the
+    // maker must produce NOTHING, because a `substring` registered with one of its two overloads
+    // silently missing resolves for some argument counts and misses for others.
+    bool attach_kernel(row_function& fn, std::pmr::memory_resource* resource, row_kernel kernel) {
+        const auto status = fn.add_kernel(resource, std::move(kernel));
+        assert(!status.contains_error() && "string kernel does not fit its function's slots/arity");
+        return !status.contains_error();
+    }
     std::unique_ptr<row_function> make_substring_func(std::pmr::memory_resource* resource,
                                                       const std::string& name,
                                                       const std::string& short_doc,
@@ -191,13 +203,17 @@ namespace {
                                 {input_type::make_string(), input_type::make_integer()},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k2(std::move(sig2), row_substring_2);
-        (void) fn->add_kernel(resource, std::move(k2));
+        if (!attach_kernel(*fn, resource, std::move(k2))) {
+            return nullptr;
+        }
 
         kernel_signature_t sig3(function_type_t::row,
                                 {input_type::make_string(), input_type::make_integer(), input_type::make_integer()},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k3(std::move(sig3), row_substring_3);
-        (void) fn->add_kernel(resource, std::move(k3));
+        if (!attach_kernel(*fn, resource, std::move(k3))) {
+            return nullptr;
+        }
 
         return fn;
     }
@@ -214,7 +230,9 @@ namespace {
                                {input_type::make_string()},
                                {output_type::fixed(logical_type::BIGINT)});
         row_kernel k(std::move(sig), row_length);
-        (void) fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
 
         return fn;
     }
@@ -231,9 +249,28 @@ namespace {
                                {input_type::make_string(), input_type::make_string(), input_type::make_string()},
                                {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k(std::move(sig), row_regexp_replace);
-        (void) fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
 
         return fn;
+    }
+
+    // The uid add_function hands back is the ONLY handle to a registered function: a registration
+    // that errored leaves the name simply absent, and every later lookup of it misses with nothing
+    // anywhere saying why. register_string_functions is void — as are register_default_functions
+    // and all of its call sites — so there is no error channel to return into from here; the
+    // result is consumed at the one place that still knows which function it belonged to.
+    void register_checked(function_registry_t& r, std::unique_ptr<row_function> fn) {
+        assert(fn && "string function maker failed to attach its kernels");
+        if (!fn) {
+            return;
+        }
+        [[maybe_unused]] const auto uid = r.add_function(std::move(fn));
+        // Registration is confirmed by the uid resolving back to a live entry — the property every
+        // later lookup depends on, and the only observable consequence of a silent failure.
+        assert(!uid.has_error() && r.get_function(uid.value()) != nullptr &&
+               "registered string function is not reachable by its uid");
     }
 
 } // namespace
@@ -242,16 +279,19 @@ namespace components::compute {
 
     // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5,6,7 in function.hpp
     void register_string_functions(function_registry_t& r) {
-        (void) r.add_function(make_substring_func(r.resource(),
-                                                  "substring",
-                                                  "Returns substring",
-                                                  "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
-        (void) r.add_function(
+        register_checked(r,
+                         make_substring_func(r.resource(),
+                                             "substring",
+                                             "Returns substring",
+                                             "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
+        register_checked(
+            r,
             make_length_func(r.resource(), "length", "Returns byte length", "LENGTH(s) -> int64 (bytes, not chars)"));
-        (void) r.add_function(make_regexp_replace_func(r.resource(),
-                                                       "regexp_replace",
-                                                       "Regex substitution",
-                                                       "REGEXP_REPLACE(s, pattern, replacement)"));
+        register_checked(r,
+                         make_regexp_replace_func(r.resource(),
+                                                  "regexp_replace",
+                                                  "Regex substitution",
+                                                  "REGEXP_REPLACE(s, pattern, replacement)"));
     }
 
 } // namespace components::compute

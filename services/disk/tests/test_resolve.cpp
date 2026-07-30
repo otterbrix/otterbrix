@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
@@ -42,7 +43,7 @@ namespace {
     }
 
     std::string resolve_dir() {
-        static std::string p = "/tmp/test_otterbrix_resolve_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_resolve");
         return p;
     }
     void cleanup() { std::filesystem::remove_all(resolve_dir()); }
@@ -55,7 +56,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -205,14 +206,17 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                   std::move(scols));
     }
     {
-        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        // A write-set's columns are routed BY NAME by the storage append, and a name lives on
+        // the COLUMN (M3-B5) — so the chunk is built from a schema.
+        components::vector::schema_t schema(&fx.resource);
         for (auto n : {"k", "payload"}) {
-            complex_logical_type t{logical_type::BIGINT};
-            t.set_alias(n);
-            types.push_back(std::move(t));
+            components::vector::column_schema_t record{&fx.resource};
+            record.name = n;
+            record.type = complex_logical_type{logical_type::BIGINT};
+            schema.push_back(std::move(record));
         }
         constexpr std::uint64_t nrows = 4;
-        auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, nrows);
+        auto chunk = std::make_unique<data_chunk_t>(components::vector::make_chunk(&fx.resource, schema, nrows));
         chunk->set_cardinality(nrows);
         const std::int64_t kvals[nrows] = {10, 20, 20, 30};
         const std::int64_t pvals[nrows] = {100, 200, 201, 300};

@@ -45,6 +45,7 @@
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 using namespace components;
 using namespace components::cursor;
@@ -62,7 +63,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", "[.][bounded-exec]") {
-    auto config = test_create_config("/tmp/test_bounded_execution");
+    auto config = test_create_config(test_temp_path("test_bounded_execution"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

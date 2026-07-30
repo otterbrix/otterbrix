@@ -23,7 +23,6 @@ namespace components::logical_plan {
         const std::pmr::vector<types::complex_logical_type>& inputs() const noexcept { return inputs_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string function_name_;

@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -54,7 +55,7 @@ using expressions::sort_order;
 static const std::string db = "starjoindb";
 
 TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
-    auto config = test_create_config("/tmp/test_star_join_e2e/rows");
+    auto config = test_create_config(test_temp_path("test_star_join_e2e/rows"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -143,13 +144,17 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
 namespace {
 
     node_data_ptr make_scan(std::pmr::memory_resource* res, std::initializer_list<const char*> cols) {
-        std::pmr::vector<types::complex_logical_type> types(res);
+        // The column NAME the join / WHERE keys resolve against lives on the COLUMN (M3-B5).
+        vector::schema_t schema(res);
         for (const char* name : cols) {
-            types.emplace_back(types::logical_type::BIGINT, name);
+            vector::column_schema_t record{res};
+            record.name = name;
+            record.type = types::complex_logical_type{types::logical_type::BIGINT};
+            schema.push_back(std::move(record));
         }
-        vector::data_chunk_t chunk(res, types, 1);
+        auto chunk = vector::make_chunk(res, schema, 1);
         chunk.set_cardinality(1);
-        for (size_t i = 0; i < types.size(); ++i) {
+        for (size_t i = 0; i < schema.size(); ++i) {
             chunk.set_value(i, 0, static_cast<int64_t>(i + 1));
         }
         return make_node_raw_data(res, std::move(chunk));
@@ -334,7 +339,7 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
 // under the Hash Join for MIN/MAX and NOT for SUM (which is excluded).
 // ============================================================================
 TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
-    auto config = test_create_config("/tmp/test_eager_agg/rows");
+    auto config = test_create_config(test_temp_path("test_eager_agg/rows"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -420,7 +425,7 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
 // unchanged with the partial physically pushed.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_safe") {
-    auto config = test_create_config("/tmp/test_eager_agg/dup");
+    auto config = test_create_config(test_temp_path("test_eager_agg/dup"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;

@@ -64,34 +64,46 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, std::pmr::memory_re
     return gen_data_chunk(size, 0, resource);
 }
 
-components::vector::data_chunk_t gen_data_chunk(size_t size, int start, std::pmr::memory_resource* resource) {
+components::vector::column_schema_t gen_column(std::pmr::memory_resource* resource,
+                                               std::string_view name,
+                                               components::types::complex_logical_type type) {
+    components::vector::column_schema_t record{resource};
+    record.name.assign(name.data(), name.size());
+    record.type = std::move(type);
+    return record;
+}
+
+components::vector::schema_t gen_schema(std::pmr::memory_resource* resource) {
     using namespace components::types;
     constexpr size_t array_size = 5;
 
-    std::pmr::vector<complex_logical_type> types(resource);
+    components::vector::schema_t schema(resource);
+    schema.push_back(gen_column(resource, "count", complex_logical_type{logical_type::BIGINT}));
+    schema.push_back(gen_column(resource, "count_str", complex_logical_type{logical_type::STRING_LITERAL}));
+    schema.push_back(gen_column(resource, "count_double", complex_logical_type{logical_type::DOUBLE}));
+    schema.push_back(gen_column(resource, "count_bool", complex_logical_type{logical_type::BOOLEAN}));
+    schema.push_back(
+        gen_column(resource, "count_array", complex_logical_type::create_array(logical_type::UBIGINT, array_size)));
+    schema.push_back(gen_column(resource, "count_decimal", complex_logical_type::create_decimal(15, 7)));
+    return schema;
+}
 
-    types.emplace_back(logical_type::BIGINT, "count");
-    types.emplace_back(logical_type::STRING_LITERAL, "count_str");
-    types.emplace_back(logical_type::DOUBLE, "count_double");
-    types.emplace_back(logical_type::BOOLEAN, "count_bool");
-    types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "count_array"));
-    types.emplace_back(complex_logical_type::create_decimal(15, 7, "count_decimal"));
-
-    return gen_data_chunk(size, start, types, resource);
+components::vector::data_chunk_t gen_data_chunk(size_t size, int start, std::pmr::memory_resource* resource) {
+    return gen_data_chunk(size, start, gen_schema(resource), resource);
 }
 
 components::vector::data_chunk_t gen_data_chunk(size_t size,
                                                 int start,
-                                                const std::pmr::vector<components::types::complex_logical_type>& types,
+                                                const components::vector::schema_t& schema,
                                                 std::pmr::memory_resource* resource) {
     using namespace components::types;
 
-    components::vector::data_chunk_t chunk(resource, types, size);
+    auto chunk = components::vector::make_chunk(resource, schema, size);
     chunk.set_cardinality(size);
 
-    for (size_t column = 0; column < types.size(); column++) {
+    for (size_t column = 0; column < schema.size(); column++) {
         for (size_t row = 1; row <= size; row++) {
-            chunk.set_value(column, row - 1, impl::gen_value(row, start, types[column], resource));
+            chunk.set_value(column, row - 1, impl::gen_value(row, start, schema[column].type, resource));
         }
     }
 

@@ -21,13 +21,15 @@ namespace services::planner::impl {
                    t == scalar_type::unary_minus;
         }
 
-        // Build a select_column_t from a scalar_expression_t
-        components::operators::select_column_t
-        make_select_column_scalar(std::pmr::memory_resource* resource,
-                                  const components::expressions::scalar_expression_t* expr,
-                                  const components::logical_plan::storage_parameters* storage_params) {
-            components::operators::select_column_t col(resource);
-
+        // Build a select_column_t from a scalar_expression_t into `col`.
+        //
+        // Returns false on a defensive validation failure so the caller can return nullptr ->
+        // executor surfaces the error (rule 9: no throw on the operator-build path). Mirrors
+        // add_group_scalar in create_plan_group.cpp.
+        bool make_select_column_scalar(std::pmr::memory_resource* resource,
+                                       const components::expressions::scalar_expression_t* expr,
+                                       const components::logical_plan::storage_parameters* storage_params,
+                                       components::operators::select_column_t& col) {
             // Determine output alias
             if (!expr->key().storage().empty()) {
                 col.key.name = std::pmr::string(expr->key().storage().back(), resource);
@@ -36,9 +38,14 @@ namespace services::planner::impl {
             switch (expr->type()) {
                 case scalar_type::get_field: {
                     col.type = components::operators::select_column_t::kind::field_ref;
+                    // The operand of a field reference names a column. A bound parameter or a
+                    // nested expression there is not a column reference.
+                    if (!expr->params().empty() && !components::expressions::is_key(expr->params().front())) {
+                        return false;
+                    }
                     auto field = expr->params().empty()
                                      ? expr->key()
-                                     : std::get<components::expressions::key_t>(expr->params().front());
+                                     : components::expressions::as_key(expr->params().front());
                     col.key.type = components::operators::group_key_t::kind::column;
                     col.key.full_path = field.path();
                     // Validation always resolves a concrete side; carry it so a
@@ -55,10 +62,14 @@ namespace services::planner::impl {
                     col.type = components::operators::select_column_t::kind::constant;
                     col.key.type = components::operators::group_key_t::kind::column;
                     if (!expr->params().empty() &&
-                        std::holds_alternative<core::parameter_id_t>(expr->params().front()) && storage_params) {
-                        auto id = std::get<core::parameter_id_t>(expr->params().front());
+                        components::expressions::is_parameter(expr->params().front()) && storage_params) {
+                        auto id = components::expressions::as_parameter(expr->params().front());
                         col.constant_param_id = id;
-                        col.constant_value = storage_params->parameters.at(id);
+                        const auto* bound = components::logical_plan::get_parameter(storage_params, id);
+                        if (!bound) {
+                            return false;
+                        }
+                        col.constant_value = *bound;
                     }
                     break;
                 }
@@ -69,19 +80,23 @@ namespace services::planner::impl {
                         std::pmr::vector<components::operators::group_key_t::coalesce_entry>(resource);
                     for (const auto& param : expr->params()) {
                         components::operators::group_key_t::coalesce_entry entry(resource);
-                        if (std::holds_alternative<components::expressions::key_t>(param)) {
-                            auto& k = std::get<components::expressions::key_t>(param);
+                        if (components::expressions::is_key(param)) {
+                            auto& k = components::expressions::as_key(param);
                             entry.type = components::operators::group_key_t::coalesce_entry::source::column;
                             assert(!k.path().empty() && "coalesce column path must be resolved before execution");
                             entry.col_index = k.path()[0];
                             entry.constant = components::types::logical_value_t(
                                 resource,
                                 components::types::complex_logical_type{components::types::logical_type::NA});
-                        } else if (std::holds_alternative<core::parameter_id_t>(param) && storage_params) {
-                            auto id = std::get<core::parameter_id_t>(param);
+                        } else if (components::expressions::is_parameter(param) && storage_params) {
+                            auto id = components::expressions::as_parameter(param);
                             entry.type = components::operators::group_key_t::coalesce_entry::source::constant;
                             entry.col_index = 0;
-                            entry.constant = storage_params->parameters.at(id);
+                            const auto* bound = components::logical_plan::get_parameter(storage_params, id);
+                            if (!bound) {
+                                return false;
+                            }
+                            entry.constant = *bound;
                         } else {
                             entry.type = components::operators::group_key_t::coalesce_entry::source::constant;
                             entry.col_index = 0;
@@ -101,13 +116,13 @@ namespace services::planner::impl {
                     size_t i = 0;
                     while (i + 3 < params.size()) {
                         components::operators::group_key_t::case_clause clause(resource);
-                        if (std::holds_alternative<components::expressions::key_t>(params[i])) {
-                            auto& k = std::get<components::expressions::key_t>(params[i]);
+                        if (components::expressions::is_key(params[i])) {
+                            auto& k = components::expressions::as_key(params[i]);
                             assert(!k.path().empty() && "case_when condition path must be resolved before execution");
                             clause.condition_col = k.path()[0];
                         }
-                        if (std::holds_alternative<components::expressions::expression_ptr>(params[i + 1])) {
-                            auto& cmp_expr = std::get<components::expressions::expression_ptr>(params[i + 1]);
+                        if (components::expressions::is_expr(params[i + 1])) {
+                            auto& cmp_expr = components::expressions::as_expr(params[i + 1]);
                             if (cmp_expr->group() == expression_group::compare) {
                                 auto* cmp =
                                     static_cast<const components::expressions::compare_expression_t*>(cmp_expr.get());
@@ -118,27 +133,35 @@ namespace services::planner::impl {
                         } else {
                             clause.cmp = components::expressions::compare_type::eq;
                         }
-                        if (std::holds_alternative<core::parameter_id_t>(params[i + 2]) && storage_params) {
-                            clause.condition_value =
-                                storage_params->parameters.at(std::get<core::parameter_id_t>(params[i + 2]));
+                        if (components::expressions::is_parameter(params[i + 2]) && storage_params) {
+                            const auto* bound = components::logical_plan::get_parameter(
+                                storage_params, components::expressions::as_parameter(params[i + 2]));
+                            if (!bound) {
+                                return false;
+                            }
+                            clause.condition_value = *bound;
                         } else {
                             clause.condition_value = components::types::logical_value_t(
                                 resource,
                                 components::types::complex_logical_type{components::types::logical_type::NA});
                         }
-                        if (std::holds_alternative<components::expressions::key_t>(params[i + 3])) {
-                            auto& k = std::get<components::expressions::key_t>(params[i + 3]);
+                        if (components::expressions::is_key(params[i + 3])) {
+                            auto& k = components::expressions::as_key(params[i + 3]);
                             clause.res_type = components::operators::group_key_t::case_clause::result_source::column;
                             assert(!k.path().empty() && "case_when result path must be resolved before execution");
                             clause.res_col = k.path()[0];
                             clause.res_constant = components::types::logical_value_t(
                                 resource,
                                 components::types::complex_logical_type{components::types::logical_type::NA});
-                        } else if (std::holds_alternative<core::parameter_id_t>(params[i + 3]) && storage_params) {
+                        } else if (components::expressions::is_parameter(params[i + 3]) && storage_params) {
                             clause.res_type = components::operators::group_key_t::case_clause::result_source::constant;
                             clause.res_col = 0;
-                            clause.res_constant =
-                                storage_params->parameters.at(std::get<core::parameter_id_t>(params[i + 3]));
+                            const auto* bound = components::logical_plan::get_parameter(
+                                storage_params, components::expressions::as_parameter(params[i + 3]));
+                            if (!bound) {
+                                return false;
+                            }
+                            clause.res_constant = *bound;
                         } else {
                             clause.res_type = components::operators::group_key_t::case_clause::result_source::constant;
                             clause.res_col = 0;
@@ -151,14 +174,18 @@ namespace services::planner::impl {
                     }
                     // else clause
                     if (i < params.size()) {
-                        if (std::holds_alternative<components::expressions::key_t>(params[i])) {
-                            auto& k = std::get<components::expressions::key_t>(params[i]);
+                        if (components::expressions::is_key(params[i])) {
+                            auto& k = components::expressions::as_key(params[i]);
                             col.key.else_type = components::operators::group_key_t::else_source::column;
                             col.key.else_col = k.path().empty() ? 0 : k.path()[0];
-                        } else if (std::holds_alternative<core::parameter_id_t>(params[i]) && storage_params) {
+                        } else if (components::expressions::is_parameter(params[i]) && storage_params) {
                             col.key.else_type = components::operators::group_key_t::else_source::constant;
-                            col.key.else_constant =
-                                storage_params->parameters.at(std::get<core::parameter_id_t>(params[i]));
+                            const auto* bound = components::logical_plan::get_parameter(
+                                storage_params, components::expressions::as_parameter(params[i]));
+                            if (!bound) {
+                                return false;
+                            }
+                            col.key.else_constant = *bound;
                         } else {
                             col.key.else_type = components::operators::group_key_t::else_source::null_value;
                         }
@@ -179,24 +206,27 @@ namespace services::planner::impl {
                     break;
                 }
             }
-            return col;
+            return true;
         }
 
     } // namespace
 
-    std::pmr::vector<components::operators::select_column_t>
-    build_returning_columns(std::pmr::memory_resource* resource,
-                            const std::pmr::vector<components::expressions::expression_ptr>& returning,
-                            const components::logical_plan::storage_parameters* params) {
-        std::pmr::vector<components::operators::select_column_t> columns(resource);
+    bool build_returning_columns(std::pmr::memory_resource* resource,
+                                 const std::pmr::vector<components::expressions::expression_ptr>& returning,
+                                 const components::logical_plan::storage_parameters* params,
+                                 std::pmr::vector<components::operators::select_column_t>& columns) {
         columns.reserve(returning.size());
         for (const auto& expr : returning) {
             if (expr && expr->group() == expression_group::scalar) {
                 auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
-                columns.push_back(make_select_column_scalar(resource, scalar_expr, params));
+                components::operators::select_column_t col(resource);
+                if (!make_select_column_scalar(resource, scalar_expr, params, col)) {
+                    return false;
+                }
+                columns.push_back(std::move(col));
             }
         }
-        return columns;
+        return true;
     }
 
     components::operators::operator_ptr create_plan_select(const context_storage_t& context,
@@ -214,7 +244,13 @@ namespace services::planner::impl {
         for (const auto& expr : node->expressions()) {
             if (expr->group() == expression_group::scalar) {
                 auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
-                op->add_column(make_select_column_scalar(plan_resource, scalar_expr, params));
+                components::operators::select_column_t col(plan_resource);
+                if (!make_select_column_scalar(plan_resource, scalar_expr, params, col)) {
+                    // Defensive guard tripped: return nullptr -> executor surfaces the error
+                    // (rule 9: no throw on the operator-build path).
+                    return nullptr;
+                }
+                op->add_column(std::move(col));
             }
         }
 

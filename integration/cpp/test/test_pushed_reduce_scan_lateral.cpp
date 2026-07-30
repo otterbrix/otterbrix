@@ -1,5 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <set>
@@ -16,21 +18,8 @@ using namespace components::cursor;
 // (its correlated parameter changes per outer row). The cache must not perturb the
 // per-outer-row aggregate results — this pins them across the re-drives.
 
-namespace {
-
-    int find_column(const cursor_t& cur, std::string_view name) {
-        for (uint64_t i = 0; i < cur.column_count(); ++i) {
-            if (cur.chunks().front().data[i].type().alias() == name) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    }
-
-} // namespace
-
 TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_redrive") {
-    auto config = test_create_config("/tmp/test_pushed_reduce_scan_lateral");
+    auto config = test_create_config(test_temp_path("test_pushed_reduce_scan_lateral"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -59,17 +48,16 @@ TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_re
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
 
-    int id_i = find_column(*cur, "id");
-    int s_i = find_column(*cur, "s");
-    REQUIRE(id_i >= 0);
-    REQUIRE(s_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t s_i = test_column_index(*cur, "s");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(s_i != test_column_not_found);
 
     // id=1 -> inner v {100,101} -> sum 201; id=2 -> inner v {200} -> sum 200.
     // The cache must NOT change these results.
     std::multiset<std::pair<int64_t, int64_t>> got;
     for (uint64_t r = 0; r < cur->size(); ++r) {
-        got.emplace(cur->value(static_cast<uint64_t>(id_i), r).value<int64_t>(),
-                    cur->value(static_cast<uint64_t>(s_i), r).value<int64_t>());
+        got.emplace(cur->value(id_i, r).value<int64_t>(), cur->value(s_i, r).value<int64_t>());
     }
     std::multiset<std::pair<int64_t, int64_t>> expected{{1, 201}, {2, 200}};
     REQUIRE(got == expected);

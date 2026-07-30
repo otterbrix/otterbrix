@@ -171,6 +171,14 @@ namespace services::disk {
                                                                            components::catalog::oid_t table_oid,
                                                                            std::set<std::string> live_attnames);
 
+        // Physical column compaction for an ordinary (relkind='r') relation, keyed by the
+        // columns' catalog identity rather than by their names.
+        actor_zeta::unique_future<std::uint64_t>
+        compact_dropped_columns(execution_context_t ctx,
+                                components::catalog::oid_t table_oid,
+                                std::pmr::vector<components::catalog::oid_t> dead_attoids,
+                                std::uint64_t compact_watermark);
+
         // Storage management
         actor_zeta::unique_future<void> create_storage(session_id_t session,
                                                        components::catalog::oid_t table_oid,
@@ -189,9 +197,19 @@ namespace services::disk {
         actor_zeta::unique_future<void> drop_storage_many(session_id_t session,
                                                           std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Storage queries
-        actor_zeta::unique_future<std::pmr::vector<components::types::complex_logical_type>>
-        storage_types(session_id_t session, components::catalog::oid_t table_oid);
+        // Storage queries.
+        // The relation's SCHEMA — one {attoid, name, type} record per physical storage column,
+        // in storage order. Not a bare type list: every caller of this needs to know which
+        // column each entry IS (an empty-result guard has to name its columns, a resolve has to
+        // match the catalog's columns against the storage's), and a type list answered that only
+        // by accident, through the name that currently rides inside the type.
+        //
+        // OWNERSHIP: built fresh on the owning agent, from ITS OWN column_definition_t list, and
+        // MOVED across the mailbox — the reply is the caller's, and the agent keeps nothing
+        // pointing into it (rule 10). Empty when the oid is not owned here or is a record-only
+        // marker: there is no storage, so there are no columns to describe.
+        actor_zeta::unique_future<components::vector::schema_t> storage_types(session_id_t session,
+                                                                              components::catalog::oid_t table_oid);
         actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session,
                                                                components::catalog::oid_t table_oid);
         // Storage data operations.
@@ -347,6 +365,7 @@ namespace services::disk {
                                                             &disk_contract::read_chunks_by_key,
                                                             &disk_contract::read_chunks_by_keys,
                                                             &disk_contract::compact_relkind_g_storage,
+                                                            &disk_contract::compact_dropped_columns,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,
                                                             &disk_contract::storage_dropped_committed,

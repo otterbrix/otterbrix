@@ -13,8 +13,6 @@ namespace components::logical_plan {
         , parameters_(std::move(parameters))
         , body_sql_(std::move(static_cast<std::string&>(body_sql))) {}
 
-    hash_t node_create_macro_t::hash_impl() const { return 0; }
-
     std::string node_create_macro_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_macro: " << macroname_;

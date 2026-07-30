@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -37,7 +38,7 @@ using session_id_t = components::session::session_id_t;
 namespace {
     using namespace disk_test_helpers;
     std::string wal_cat_dir() {
-        static std::string p = "/tmp/test_otterbrix_walcat_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_walcat");
         return p;
     }
     void cleanup_dir(const std::string& d) { std::filesystem::remove_all(d); }
@@ -56,7 +57,7 @@ namespace {
         // mutations still hit storage via direct_append_sync but emit no WAL records.
         // Mirrors the production "WAL off" path and the bootstrap_alone_no_wal scenario.
         explicit fixture(const std::string& dir, bool wire_wal = true)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
                 configuration::config_wal c;
@@ -143,7 +144,7 @@ namespace {
     }
 
     std::size_t pg_catalog_physical_count(const std::string& dir) {
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        auto log = initialization_logger("python", test_temp_path("docker_logs"));
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
@@ -159,7 +160,7 @@ namespace {
     }
 
     std::size_t pg_catalog_records_for(const std::string& dir, const std::string& collection) {
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        auto log = initialization_logger("python", test_temp_path("docker_logs"));
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
@@ -182,7 +183,7 @@ namespace {
         components::catalog::oid_t table_oid;
     };
     std::vector<phys_rec_t> pg_catalog_physical_sequence(const std::string& dir) {
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        auto log = initialization_logger("python", test_temp_path("docker_logs"));
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
@@ -358,7 +359,7 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
         test_create_table(fx, ns_oid, "t", cols);
     }
     // Read all records and verify pg_catalog records all carry the right database tag.
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = initialization_logger("python", test_temp_path("docker_logs"));
     configuration::config_wal c;
     c.path = dir;
     c.on = true;

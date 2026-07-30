@@ -16,18 +16,23 @@ namespace components::index {
         return this;
     }
 
+    // Tag-checked downcast: a null or foreign body is rejected before the cast rather than
+    // dereferenced as a nullptr (what dynamic_cast produced here).
     bool hash_single_field_index_t::impl_t::equals(const iterator_impl_t* other) const {
-        return iterator_ == dynamic_cast<const impl_t*>(other)->iterator_; //todo
+        const auto* rhs = same_kind_as<impl_t>(other);
+        return rhs != nullptr && iterator_ == rhs->iterator_;
     }
 
     bool hash_single_field_index_t::impl_t::not_equals(const iterator_impl_t* other) const {
-        return iterator_ != dynamic_cast<const impl_t*>(other)->iterator_; //todo
+        const auto* rhs = same_kind_as<impl_t>(other);
+        return rhs == nullptr || iterator_ != rhs->iterator_;
     }
 
     index_t::iterator::iterator_impl_t* hash_single_field_index_t::impl_t::copy() const { return new impl_t(*this); }
 
     hash_single_field_index_t::impl_t::impl_t(const_iterator iterator)
-        : iterator_(iterator) {}
+        : iterator_impl_t(iterator_kind)
+        , iterator_(iterator) {}
 
     auto hash_single_field_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t)
         -> void {

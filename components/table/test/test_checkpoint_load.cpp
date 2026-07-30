@@ -7,6 +7,7 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <functional>
@@ -14,7 +15,7 @@
 
 namespace {
     std::string test_db_path() {
-        static std::string path = "/tmp/test_otterbrix_checkpoint_load_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = test_temp_path("test_otterbrix_checkpoint_load.otbx");
         return path;
     }
 
@@ -1004,6 +1005,156 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
         REQUIRE(loaded->column_count() == NUM_COLS);
 
         scan_and_verify_pg_attr(*loaded, NUM_COLS, TOTAL_ROWS);
+    }
+
+    cleanup_test_file();
+}
+
+// A column's catalog identity (pg_attribute.attoid) is what append routing and
+// projection are supposed to key on. It has to come back off disk: a storage whose
+// columns lost their identity on reopen silently falls back to matching by name, so
+// the same table would route by identity while the process lives and by name after a
+// restart. The pre-versioning table-metadata stream wrote {name, type, not_null} only.
+TEST_CASE("checkpoint_load: column attoid survives checkpoint and reload") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    constexpr std::uint32_t ID_ATTOID = 40001;
+    constexpr std::uint32_t SCORE_ATTOID = 40002;
+    constexpr uint64_t NUM_ROWS = 64;
+
+    meta_block_pointer_t table_pointer;
+
+    // write phase — two columns, each carrying the identity CREATE TABLE minted for it
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("id", logical_type::BIGINT);
+        columns.emplace_back("score", logical_type::BIGINT);
+        columns[0].set_attoid(ID_ATTOID);
+        columns[1].set_attoid(SCORE_ATTOID);
+        auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "attoid_table");
+
+        {
+            // Scoped: the append state holds pinned buffer handles, and checkpoint
+            // recycles those blocks — it must run after the state is released.
+            auto types = table->copy_types();
+            data_chunk_t chunk(&env.resource, types, NUM_ROWS);
+            chunk.set_cardinality(NUM_ROWS);
+            for (uint64_t i = 0; i < NUM_ROWS; i++) {
+                chunk.set_value(0, i, static_cast<int64_t>(i));
+                chunk.set_value(1, i, static_cast<int64_t>(i * 10));
+            }
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data{0, 0});
+        }
+        REQUIRE(table->calculate_size() == NUM_ROWS);
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
+        table_pointer = writer.get_block_pointer();
+
+        database_header_t header;
+        header.initialize();
+        bm.write_header(header);
+    }
+
+    // read phase — identity, not just name/type, comes back
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+
+        REQUIRE(loaded->table_name() == "attoid_table");
+        REQUIRE(loaded->column_count() == 2);
+        REQUIRE(loaded->calculate_size() == NUM_ROWS);
+        const auto& cols = loaded->columns();
+        REQUIRE(cols[0].name() == "id");
+        REQUIRE(cols[1].name() == "score");
+        REQUIRE(cols[0].attoid() == ID_ATTOID);
+        REQUIRE(cols[1].attoid() == SCORE_ATTOID);
+    }
+
+    cleanup_test_file();
+}
+
+// Compatibility guard for the table-metadata stream. This writes the PRE-VERSIONING
+// byte layout by hand — name, then {name, type, not_null} per column, then the row
+// group pointers, with no leading magic — and requires load_from_disk to still read
+// it. A file written by a build from before the attoid field must keep loading; its
+// columns simply have no identity, which is the true answer for them.
+TEST_CASE("checkpoint_load: pre-versioning table metadata still loads") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    meta_block_pointer_t table_pointer;
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        // ---- old layout, verbatim ----
+        writer.write_string(std::string("legacy_table"));
+        writer.write<uint32_t>(2);
+        writer.write_string(std::string("a"));
+        writer.write<uint8_t>(static_cast<uint8_t>(logical_type::BIGINT));
+        writer.write<uint8_t>(0);
+        writer.write_string(std::string("b"));
+        writer.write<uint8_t>(static_cast<uint8_t>(logical_type::DOUBLE));
+        writer.write<uint8_t>(1);
+        writer.write<uint32_t>(0); // no row groups
+        writer.flush();
+        table_pointer = writer.get_block_pointer();
+
+        database_header_t header;
+        header.initialize();
+        bm.write_header(header);
+    }
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+
+        REQUIRE(loaded->table_name() == "legacy_table");
+        REQUIRE(loaded->column_count() == 2);
+        REQUIRE(loaded->calculate_size() == 0);
+        const auto& cols = loaded->columns();
+        REQUIRE(cols[0].name() == "a");
+        REQUIRE(cols[0].type().type() == logical_type::BIGINT);
+        REQUIRE_FALSE(cols[0].is_not_null());
+        REQUIRE(cols[1].name() == "b");
+        REQUIRE(cols[1].type().type() == logical_type::DOUBLE);
+        REQUIRE(cols[1].is_not_null());
+        // No identity in the old format — the reader must not invent one.
+        REQUIRE(cols[0].attoid() == 0);
+        REQUIRE(cols[1].attoid() == 0);
     }
 
     cleanup_test_file();

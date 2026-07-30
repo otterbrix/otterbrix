@@ -65,7 +65,7 @@ namespace components::vector::arrow {
                     auto& child = struct_info->get_child(i);
                     auto& child_name = type_.child_name(i);
                     new_children.emplace_back(child.type(true));
-                    new_children.back().set_alias(child_name);
+                    new_children.back().set_field_name(child_name);
                 }
                 return types::complex_logical_type::create_struct(type_.type_name(), std::move(new_children));
             }
@@ -88,9 +88,9 @@ namespace components::vector::arrow {
                 new_children.reserve(union_info->child_count());
                 for (size_t i = 0; i < union_info->child_count(); i++) {
                     auto& child = union_info->get_child(i);
-                    auto& child_name = type_.child_types()[i].alias();
+                    auto& child_name = type_.child_types()[i].field_name();
                     new_children.emplace_back(child.type(true));
-                    new_children.back().set_alias(child_name);
+                    new_children.back().set_field_name(child_name);
                 }
                 return types::complex_logical_type::create_union(std::move(new_children));
             }
@@ -360,7 +360,7 @@ namespace components::vector::arrow {
                 }
                 children.emplace_back(std::move(child_res.value()));
                 child_types.emplace_back(children.back()->type());
-                child_types.back().set_alias(schema.children[type_idx]->name);
+                child_types.back().set_field_name(schema.children[type_idx]->name);
             }
             auto type_info = std::make_unique<arrow_struct_info>(std::move(children));
             auto struct_type = std::make_unique<arrow_type>(
@@ -393,7 +393,7 @@ namespace components::vector::arrow {
                 }
                 children.emplace_back(std::move(child_res.value()));
                 members.emplace_back(children.back()->type());
-                members.back().set_alias(type->name);
+                members.back().set_field_name(type->name);
             }
 
             auto type_info = std::make_unique<arrow_struct_info>(std::move(children));
@@ -416,7 +416,7 @@ namespace components::vector::arrow {
                 }
                 children.emplace_back(std::move(child_res.value()));
                 members.emplace_back(children.back()->type());
-                members.back().set_alias(type->name);
+                members.back().set_field_name(type->name);
             }
 
             auto type_info = std::make_unique<arrow_struct_info>(std::move(children));
@@ -440,9 +440,9 @@ namespace components::vector::arrow {
             auto value_type = std::move(value_type_res.value());
             std::pmr::vector<types::complex_logical_type> key_value(resource);
             key_value.emplace_back(key_type->type());
-            key_value.back().set_alias("key");
+            key_value.back().set_field_name("key");
             key_value.emplace_back(value_type->type());
-            key_value.back().set_alias("value");
+            key_value.back().set_field_name("value");
 
             auto map_type = types::complex_logical_type::create_map(resource, key_type->type(), value_type->type());
             std::vector<std::shared_ptr<arrow_type>> children;

@@ -29,7 +29,6 @@ namespace components::operators {
         // Single-column UINTEGER (database_oid) schema, built once (TASK C10).
         // Always emitted, even on miss, so downstream sees a consistent schema.
         output_schema_.emplace_back(types::logical_type::UINTEGER);
-        output_schema_.back().set_alias("database_oid");
     }
 
     operator_resolve_database_t::operator_resolve_database_t(
@@ -42,7 +41,6 @@ namespace components::operators {
         , target_node_(target_node)
         , output_schema_(resource) {
         output_schema_.emplace_back(types::logical_type::UINTEGER);
-        output_schema_.back().set_alias("database_oid");
     }
 
     actor_zeta::unique_future<void> operator_resolve_database_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -51,6 +49,10 @@ namespace components::operators {
         // Output chunk built from the constructor-cached schema (TASK C10).
         // Always emitted, even on miss, so downstream sees a consistent schema.
         vector::data_chunk_t out_chunk(resource_, output_schema_);
+        // The output column's NAME goes on the column, not inside its type (M3-B5). It is
+        // user-visible — this chunk becomes the result a cursor hands to the C ABI and the
+        // bindings — so it is stamped, not dropped.
+        out_chunk.set_column_name(0, "database_oid");
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             out_chunk.set_cardinality(0);

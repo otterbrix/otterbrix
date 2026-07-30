@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -37,7 +38,7 @@ using namespace disk_test_helpers;
 
 namespace {
     std::string persist_dir() {
-        static std::string p = "/tmp/test_otterbrix_persistence_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_persistence");
         return p;
     }
 
@@ -49,7 +50,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -828,6 +829,183 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         // seed_commit_clock is idempotent / never lowers.
         txn_mgr.seed_commit_clock(1);
         REQUIRE(txn_mgr.published_horizon() == max_cid);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// 15. test_column_attoid_survives_restart: a storage column's catalog identity
+// (pg_attribute.attoid) is what append routing and projection key on. It has to come
+// back after a reopen, or the same table routes by identity while the process lives
+// and by name after a restart — the divergence that blocks ALTER TABLE DROP COLUMN
+// (#602) from moving a column's physical position.
+//
+// This is the IN_MEMORY leg: no .otbx for the user table, so the storage shell is
+// rebuilt by rehydrate_in_memory_user_storages_sync out of pg_attribute — the very
+// row that holds the attoid.
+TEST_CASE("services::disk::persistence::test_column_attoid_survives_restart") {
+    auto dir = persist_dir() + "/attoid_rehydrate";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    constexpr oid_t main_db = well_known_oid::main_database;
+    oid_t ns_oid = 0;
+    oid_t tbl_oid = 0;
+    std::uint32_t id_attoid = 0;
+    std::uint32_t label_attoid = 0;
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        ns_oid = test_create_namespace(fd, "attoid_ns");
+
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("id", components::types::logical_type::BIGINT);
+        cols.emplace_back("label", components::types::logical_type::STRING_LITERAL);
+        // build_create_table_writes mints one attoid per column and stamps it back
+        // onto the definition; the same vector then becomes the storage's column list.
+        tbl_oid = test_create_table(fd, ns_oid, "ident", cols);
+        REQUIRE(cols.size() == 2);
+        REQUIRE(cols[0].attoid() != 0);
+        REQUIRE(cols[1].attoid() != 0);
+        id_attoid = cols[0].attoid();
+        label_attoid = cols[1].attoid();
+
+        fd.invoke(&manager_disk_t::create_storage_with_columns, session_id_t{}, tbl_oid, main_db, cols);
+
+        // Baseline: before the restart the storage does know its columns' identities.
+        auto live = fd.manager->storage_column_attoids_sync(tbl_oid);
+        REQUIRE(live.size() == 2);
+        REQUIRE(live[0] == id_attoid);
+        REQUIRE(live[1] == label_attoid);
+
+        fd.checkpoint();
+    }
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        fd2.manager->load_user_table_storages_sync();
+        fd2.manager->rehydrate_in_memory_user_storages_sync();
+
+        REQUIRE(fd2.manager->has_storage(tbl_oid));
+        auto back = fd2.manager->storage_column_attoids_sync(tbl_oid);
+        REQUIRE(back.size() == 2);
+        REQUIRE(back[0] == id_attoid);
+        REQUIRE(back[1] == label_attoid);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// 16. test_column_attoid_restamped_after_wal_replay: the WAL leg of the same
+// invariant. A table created after the last catalog checkpoint is invisible to
+// rehydrate_in_memory_user_storages_sync (it runs BEFORE replay, so pg_class does not
+// know the table yet); its storage is instead synthesised during user-record replay
+// from the WAL chunk's own column schema. data_chunk_binary carries no attoid — that
+// codec has no version field, so its header cannot be widened — which means every
+// storage born that way starts identity-less while pg_attribute, replayed moments
+// earlier from the system records, holds the identity.
+//
+// Phase 2 reproduces that order exactly: recover, then replay the catalog rows, then
+// synthesise the storage from a name+type-only column list.
+TEST_CASE("services::disk::persistence::test_column_attoid_restamped_after_wal_replay") {
+    auto dir = persist_dir() + "/attoid_wal";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    constexpr oid_t main_db = well_known_oid::main_database;
+    oid_t ns_oid = 0;
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        ns_oid = test_create_namespace(fd, "wal_attoid_ns");
+        fd.checkpoint();
+    }
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        fd2.manager->load_user_table_storages_sync();
+        fd2.manager->rehydrate_in_memory_user_storages_sync();
+        fd2.manager->restore_oid_generator_sync();
+
+        // --- simulated WAL replay, in production order ---
+        // (a) system records: the CREATE TABLE catalog rows, minting the identities.
+        std::vector<components::table::column_definition_t> catalog_cols;
+        catalog_cols.emplace_back("id", components::types::logical_type::BIGINT);
+        catalog_cols.emplace_back("label", components::types::logical_type::STRING_LITERAL);
+        const oid_t tbl_oid = test_create_table(fd2, ns_oid, "wal_ident", catalog_cols);
+        REQUIRE(catalog_cols[0].attoid() != 0);
+        REQUIRE(catalog_cols[1].attoid() != 0);
+
+        // (b) user records: storage synthesised from the chunk schema — name and type
+        //     only, exactly what base_spaces builds out of data_chunk_t::schema().
+        std::vector<components::table::column_definition_t> chunk_cols;
+        chunk_cols.emplace_back("id", components::types::logical_type::BIGINT);
+        chunk_cols.emplace_back("label", components::types::logical_type::STRING_LITERAL);
+        REQUIRE(chunk_cols[0].attoid() == 0);
+        fd2.invoke(&manager_disk_t::create_storage_with_columns,
+                   session_id_t{},
+                   tbl_oid,
+                   main_db,
+                   std::move(chunk_cols));
+        // (c) recovery's closing step: hand the identity-less columns the identity
+        //     pg_attribute already holds. This runs once, after replay, when every
+        //     storage exists and the catalog is complete.
+        fd2.manager->restamp_user_storage_attoids_sync();
+        // --- end of replay ---
+
+        REQUIRE(fd2.manager->has_storage(tbl_oid));
+        auto back = fd2.manager->storage_column_attoids_sync(tbl_oid);
+        REQUIRE(back.size() == 2);
+        REQUIRE(back[0] == catalog_cols[0].attoid());
+        REQUIRE(back[1] == catalog_cols[1].attoid());
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// 17. test_disk_column_attoid_survives_restart: the disk-backed leg. A table created
+// WITH (storage = 'disk') keeps its rows in a .otbx, so on reopen its storage comes
+// back through load_user_table_storages_sync -> data_table_t::load_from_disk, never
+// through rehydrate. The identity therefore has to be IN the file: the pre-versioning
+// column record held {name, type, not_null} only.
+TEST_CASE("services::disk::persistence::test_disk_column_attoid_survives_restart") {
+    auto dir = persist_dir() + "/attoid_disk";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    constexpr oid_t main_db = well_known_oid::main_database;
+    oid_t ns_oid = 0;
+    oid_t tbl_oid = 0;
+    std::uint32_t id_attoid = 0;
+    std::uint32_t label_attoid = 0;
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        ns_oid = test_create_namespace(fd, "attoid_disk_ns");
+
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("id", components::types::logical_type::BIGINT);
+        cols.emplace_back("label", components::types::logical_type::STRING_LITERAL);
+        tbl_oid = test_create_table(fd, ns_oid, "disk_ident", cols);
+        REQUIRE(cols[0].attoid() != 0);
+        REQUIRE(cols[1].attoid() != 0);
+        id_attoid = cols[0].attoid();
+        label_attoid = cols[1].attoid();
+
+        fd.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, tbl_oid, main_db, cols);
+        // .otbx path layout mirrors manager_disk_t::create_storage_disk:
+        //   <config.path>/<db_oid>/<tbl_oid>/table.otbx
+        const auto otbx = std::filesystem::path(dir) / std::to_string(static_cast<unsigned>(main_db)) /
+                          std::to_string(static_cast<unsigned>(tbl_oid)) / "table.otbx";
+        REQUIRE(std::filesystem::exists(otbx));
+        fd.checkpoint();
+    }
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        fd2.manager->load_user_table_storages_sync();
+        // Deliberately no rehydrate here: a disk-backed table is already loaded by the
+        // walk above, and rehydrate skips every oid that has a storage. The .otbx is the
+        // only possible source of these identities.
+        REQUIRE(fd2.manager->has_storage(tbl_oid));
+        auto back = fd2.manager->storage_column_attoids_sync(tbl_oid);
+        REQUIRE(back.size() == 2);
+        REQUIRE(back[0] == id_attoid);
+        REQUIRE(back[1] == label_attoid);
     }
     std::filesystem::remove_all(dir);
 }

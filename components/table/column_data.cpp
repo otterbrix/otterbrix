@@ -51,16 +51,16 @@ namespace components::table {
         // set_membership_filter_t has multiple constants; zonemap pruning would need
         // to compute min(values), max(values) and intersect with the segment range. Until
         // Future wiring will add zonemap pruning; fall through to per-row dispatch (NO_PRUNING_POSSIBLE).
-        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::SET_MEMBERSHIP) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
-        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::COLUMN_COLUMN) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         // An expression_filter_t (WHERE f(col) OP const) has no single constant to bound a segment's
         // [min,max] against, and its layout is not a constant_filter_t — never cast it here.
-        if (dynamic_cast<const expression_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::EXPRESSION) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
 
@@ -140,15 +140,15 @@ namespace components::table {
         }
         // See check_zonemap above — set_membership_filter_t needs min(values)/max(values)
         // intersection logic, deferred to M4. Until then, no pruning for IN-list filters.
-        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::SET_MEMBERSHIP) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
-        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::COLUMN_COLUMN) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         // expression_filter_t is not a constant_filter_t and carries no single bound — no pruning.
-        if (dynamic_cast<const expression_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::EXPRESSION) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
 
@@ -569,8 +569,9 @@ namespace components::table {
                 error = fetch_state.fetch_error;
                 return filter_match_t::no;
             }
-            if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                return set->contains(result.value(0)) ? filter_match_t::yes : filter_match_t::no;
+            if (filter->filter_class == table_filter_type::SET_MEMBERSHIP) {
+                return filter->cast<set_membership_filter_t>().contains(result.value(0)) ? filter_match_t::yes
+                                                                                         : filter_match_t::no;
             }
             return filter->cast<constant_filter_t>().compare(result.value(0)) ? filter_match_t::yes
                                                                               : filter_match_t::no;
@@ -587,10 +588,11 @@ namespace components::table {
                 return filter_match_t::no;
             }
             // Dispatch handles constant_filter_t, set_membership_filter_t, and the string-only regex_filter_t.
-            if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                return set->contains(result.value(0)) ? filter_match_t::yes : filter_match_t::no;
+            if (filter->filter_class == table_filter_type::SET_MEMBERSHIP) {
+                return filter->cast<set_membership_filter_t>().contains(result.value(0)) ? filter_match_t::yes
+                                                                                         : filter_match_t::no;
             }
-            if (filter->filter_type == expressions::compare_type::regex) {
+            if (filter->filter_class == table_filter_type::REGEX) {
                 auto cell = result.value(0); // bind before value<string_view>() (chunk value is a temporary)
                 return filter->cast<regex_filter_t>().matches(cell.value<std::string_view>()) ? filter_match_t::yes
                                                                                               : filter_match_t::no;

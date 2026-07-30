@@ -51,7 +51,7 @@ namespace {
                 const auto& children = value.children();
                 const auto& child_types = value.type().child_types();
                 for (size_t i = 0; i < children.size() && i < child_types.size(); ++i) {
-                    result[py::str(child_types[i].alias())] = from_value(children[i]);
+                    result[py::str(child_types[i].field_name())] = from_value(children[i]);
                 }
                 return result;
             }
@@ -73,11 +73,11 @@ namespace {
 
     py::dict row_to_dict(const components::cursor::cursor_t& cursor, uint64_t row_idx) {
         py::dict result;
-        const auto& types = cursor.type_data();
+        const auto& columns = cursor.columns();
         for (uint64_t col = 0; col < cursor.column_count(); ++col) {
             auto value = cursor.value(col, row_idx);
-            if (col < types.size()) {
-                auto col_name = types[col].alias();
+            if (col < columns.size()) {
+                const std::string_view col_name{columns[col].name};
                 if (!col_name.empty()) {
                     result[py::str(col_name)] = from_value(value);
                 } else {
@@ -192,9 +192,9 @@ py::object wrapper_cursor::get_(const std::string& key) const {
     if (row < 0) {
         row = 0;
     }
-    const auto& types = ptr_->type_data();
+    const auto& columns = ptr_->columns();
     for (uint64_t col = 0; col < ptr_->column_count(); ++col) {
-        if (col < types.size() && types[col].alias() == key) {
+        if (col < columns.size() && std::string_view{columns[col].name} == key) {
             return from_value(ptr_->value(col, static_cast<uint64_t>(row)));
         }
     }
@@ -246,11 +246,11 @@ py::object wrapper_cursor::description() const {
     if (ptr_->size() == 0 && ptr_->column_count() == 0) {
         return py::none();
     }
-    const auto& types = ptr_->type_data();
+    const auto& columns = ptr_->columns();
     py::list desc;
-    for (uint64_t col = 0; col < types.size(); ++col) {
-        auto name = std::string(types[col].alias());
-        auto type_name = std::string(types[col].type_name());
+    for (uint64_t col = 0; col < columns.size(); ++col) {
+        auto name = std::string(columns[col].name);
+        auto type_name = std::string(columns[col].type.type_name());
         desc.append(py::make_tuple(name, type_name, py::none(), py::none(), py::none(), py::none(), py::none()));
     }
     return desc;

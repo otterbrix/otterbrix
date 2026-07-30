@@ -379,7 +379,7 @@ namespace components::planner::optimizer {
                 return;
             }
             // Single canonical source: a node's own validate_schema-stamped
-            // output_types() carries its VISIBLE column names (aliases) — this is the
+            // output_schema() carries its VISIBLE column names — this is the
             // set a predicate above the node references, and it is stamped for disk
             // scans (aggregate_t{db,rel}), in-memory data_t, subquery and join nodes
             // alike. Read it directly. Only when a node is UNstamped (an
@@ -387,13 +387,12 @@ namespace components::planner::optimizer {
             // branch appends) do we recurse into its children to the first stamped
             // node. Never recurse straight to a leaf: a renamed side (`… AS x`) carries
             // the pre-rename name at the leaf, which would mis-bucket a predicate on `x`.
-            if (node->has_output_types()) {
-                for (const auto& t : node->output_types()) {
-                    // A projected constant is stamped alias-less (no type extension);
-                    // complex_logical_type::alias() asserts on that, so guard with
-                    // has_alias(). Such a column can never match a predicate name.
-                    if (t.has_alias()) {
-                        cols.insert(t.alias());
+            if (node->has_output_schema()) {
+                for (const auto& column : node->output_schema()) {
+                    // A projected constant is stamped nameless. Such a column can never
+                    // match a predicate name, so it contributes nothing to the set.
+                    if (!column.name.empty()) {
+                        cols.insert(std::string{column.name});
                     }
                 }
                 return;
@@ -441,7 +440,9 @@ namespace components::planner::optimizer {
             if (!data) {
                 return std::nullopt;
             }
-            const auto& types = data->data_chunk().types();
+            // The chunk's own schema: the projection column is matched by NAME, and a chunk
+            // says what its columns are without the name having to be inside their types.
+            const auto& columns = data->data_chunk().schema();
             const auto& exprs = sel.expressions();
             const size_t hidden = sel.internal_aggregate_count;
             if (exprs.size() < hidden) {
@@ -460,10 +461,11 @@ namespace components::planner::optimizer {
                 }
                 const std::string out_name = sc->key().as_string();
                 bool found = false;
-                for (const auto& t : types) {
-                    // alias() asserts on an alias-less (extension-free) column type.
-                    if (t.has_alias() && t.alias() == out_name) {
-                        width += type_width(t);
+                for (const auto& column : columns) {
+                    // A nameless column matches no projection output name; the empty string
+                    // says so without a guard in front of the comparison.
+                    if (!column.name.empty() && std::string_view{column.name} == out_name) {
+                        width += type_width(column.type);
                         found = true;
                         break;
                     }
@@ -876,12 +878,16 @@ namespace components::planner::optimizer {
                     // columns occupy. A right-side column's merged path()[0] is
                     // left_width + its local index, so pushing a right-side filter into
                     // the right child requires subtracting left_width (relocalize_keys).
-                    // Read it from the child's stamped output_types() — reliable for a
+                    // Read it from the child's stamped output_schema() — reliable for a
                     // validator-stamped scan/cross join AND a promoted inner join (which
                     // promote_cross_join now stamps). MUST be captured BEFORE the left
-                    // bucket wraps children()[0] in an unstamped aggregate below.
-                    const bool left_width_known = join->children()[0]->has_output_types();
-                    const size_t left_width = left_width_known ? join->children()[0]->output_types().size() : 0;
+                    // bucket wraps children()[0] in an unstamped aggregate below. This
+                    // rule's degradation policy for an unstamped left child: no right-side
+                    // push at all — the conjunct stays in the residual (a safe no-op)
+                    // rather than becoming an out-of-range merged path.
+                    const auto left_width_opt = join->left_width();
+                    const bool left_width_known = left_width_opt.has_value();
+                    const size_t left_width = left_width_known ? *left_width_opt : 0;
 
                     // Only push below a row-preserving side of an outer join
                     // Left preserves left, right preserves right, full preserves none, inner/cross preserve both.
@@ -1021,20 +1027,20 @@ namespace components::planner::optimizer {
                 // when the branch wraps a join), so sharing leaves across branches would
                 // leak one branch's re-localized paths into the next branch's filter.
                 if (source->children().size() >= 2 && !match_child->expressions().empty() &&
-                    source->has_output_types()) {
-                    const auto& u_types = source->output_types();
+                    source->has_output_schema()) {
+                    const auto& u_columns = source->output_schema();
 
                     // name -> unique union output position (nullopt if absent or duplicated).
-                    // An alias-less output column (a projected constant carries no type
-                    // extension, and alias() asserts on that) can never match a WHERE
-                    // column name — skip it.
+                    // A nameless output column (a projected constant) can never match a WHERE
+                    // column name — an empty name matches nothing, so no guard is needed in
+                    // front of the comparison.
                     auto union_pos_of = [&](const std::string& name) -> std::optional<size_t> {
                         std::optional<size_t> found;
-                        for (size_t i = 0; i < u_types.size(); ++i) {
-                            if (!u_types[i].has_alias()) {
+                        for (size_t i = 0; i < u_columns.size(); ++i) {
+                            if (u_columns[i].name.empty()) {
                                 continue;
                             }
-                            if (u_types[i].alias() == name) {
+                            if (std::string_view{u_columns[i].name} == name) {
                                 if (found) {
                                     return std::nullopt; // ambiguous
                                 }
@@ -1043,14 +1049,14 @@ namespace components::planner::optimizer {
                         }
                         return found;
                     };
-                    // A branch exposes `name` identically iff its stamped output alias at
-                    // the union position equals `name` (alias-less => no match, guarded).
+                    // A branch exposes `name` identically iff its stamped output name at
+                    // the union position equals `name` (nameless => no match).
                     auto branch_identity = [](const node_ptr& branch, const std::string& name, size_t pos) {
-                        if (!branch || !branch->has_output_types()) {
+                        if (!branch || !branch->has_output_schema()) {
                             return false;
                         }
-                        const auto& b = branch->output_types();
-                        return pos < b.size() && b[pos].has_alias() && b[pos].alias() == name;
+                        const auto& b = branch->output_schema();
+                        return pos < b.size() && !b[pos].name.empty() && std::string_view{b[pos].name} == name;
                     };
 
                     auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
@@ -1221,38 +1227,24 @@ namespace components::planner::optimizer {
             // columns; DISTINCT ON dedups below the projection. Be conservative — leave the body
             // untouched (correct, just not pushed) when any is present. A bare SORT is fine: it is
             // row-preserving and the pushed match lands below it (base -> match -> sort).
-            node_ptr body_select = nullptr;
-            node_ptr body_match = nullptr;
-            bool body_blocked = body->is_distinct();
-            for (const auto& c : body->children()) {
-                switch (c->type()) {
-                    case node_type::limit_t:
-                    case node_type::group_t:
-                    case node_type::having_t:
-                        body_blocked = true;
-                        break;
-                    case node_type::select_t:
-                        body_select = c;
-                        break;
-                    case node_type::match_t:
-                        body_match = c;
-                        break;
-                    default:
-                        break;
-                }
-            }
-            if (body_blocked) {
+            // This rule's own reading of the roles: a SORT is invisible here (row-
+            // preserving), and so is the body's own `source` — neither blocks nor
+            // contributes.
+            const auto body_roles = body->pipeline();
+            const node_ptr& body_select = body_roles.select;
+            const node_ptr& body_match = body_roles.match;
+            if (body->is_distinct() || body_roles.limit || body_roles.group || body_roles.having) {
                 return node;
             }
 
             auto* sel = body_select ? static_cast<node_select_t*>(body_select.get()) : nullptr;
             // With no projection the body output IS the base scan in base order, so every base
-            // column is prefix-identity; take the base column set from the stamped output_types().
+            // column is prefix-identity; take the base column set from the stamped output_schema().
             std::set<std::string> base_cols;
-            if (!sel && source->has_output_types()) {
-                for (const auto& t : source->output_types()) {
-                    if (t.has_alias()) { // alias() asserts on an alias-less column type
-                        base_cols.insert(t.alias());
+            if (!sel && source->has_output_schema()) {
+                for (const auto& column : source->output_schema()) {
+                    if (!column.name.empty()) { // a nameless column matches no predicate name
+                        base_cols.insert(std::string{column.name});
                     }
                 }
             }

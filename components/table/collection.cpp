@@ -2,6 +2,8 @@
 
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
+
+#include <algorithm>
 #include <queue>
 
 #include "column_data.hpp"
@@ -296,8 +298,25 @@ namespace components::table {
         }
     }
 
+    namespace {
+        // The SHAPE question over two column lists: the two collections' column names are not
+        // what makes their storage mergeable. A free function rather than a local, so the
+        // operand does not become an unused variable once NDEBUG compiles the assert out.
+        // maybe_unused: its only caller is the assert below, which NDEBUG compiles out.
+        [[maybe_unused]] bool same_shapes(const std::pmr::vector<types::complex_logical_type>& lhs,
+                                          const std::pmr::vector<types::complex_logical_type>& rhs) {
+            return std::equal(lhs.begin(),
+                              lhs.end(),
+                              rhs.begin(),
+                              rhs.end(),
+                              [](const types::complex_logical_type& l, const types::complex_logical_type& r) {
+                                  return l == r;
+                              });
+        }
+    } // namespace
+
     void collection_t::merge_storage(collection_t& data) {
-        assert(data.types() == types_);
+        assert(same_shapes(data.types(), types_));
         auto start_index = row_start_ + static_cast<int64_t>(total_rows_.load());
         auto index = start_index;
         auto segments = data.row_groups_->move_segments();

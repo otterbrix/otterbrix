@@ -76,6 +76,7 @@ namespace components::planner {
                 // name is only meaningful when the INSERT carried an explicit column
                 // list (key_translation) — positional inserts may alias arbitrarily.
                 cc->set_column_defaults(ins->column_defaults());
+                cc->set_column_types(ins->column_types());
                 cc->set_write_set_named(!ins->key_translation().empty());
                 cc->append_child(cur);
                 cur = cc;
@@ -105,6 +106,7 @@ namespace components::planner {
                 cc->set_unique_groups(upd->unique_groups());
                 cc->set_table_oid(upd->table_oid());
                 cc->set_column_defaults(upd->column_defaults());
+                cc->set_column_types(upd->column_types());
                 // An UPDATE write-set is the gathered storage row — always named.
                 cc->set_write_set_named(true);
                 cc->append_child(cur);
@@ -318,7 +320,10 @@ namespace components::planner {
         // catalog row writes, body scan, and storage_append in one async coroutine.
         node_ptr rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cm = static_cast<logical_plan::node_create_matview_t*>(node.get());
-            const auto& cols = cm->inferred_columns();
+            // Non-const: build_create_table_writes stamps each column's minted attoid back
+            // onto the definition, and create_plan_create_matview copies this same vector
+            // into the operator that creates the matview's storage (M3-B4).
+            auto& cols = cm->inferred_columns();
             if (cols.empty()) {
                 // Schema derivation failed (see derive_matview_output_schema).
                 // Leave the node unchanged; physical_plan_generator returns
@@ -389,7 +394,7 @@ namespace components::planner {
                 std::vector<components::table::column_definition_t> field_cols;
                 field_cols.reserve(ct->type().child_types().size());
                 for (const auto& field : ct->type().child_types()) {
-                    std::string fname = field.has_alias() ? field.alias() : field.type_name();
+                    std::string fname = field.field_name();
                     if (field.type() == LT::STRUCT) {
                         auto unk = components::types::complex_logical_type::create_unknown(field.type_name(), fname);
                         field_cols.emplace_back(fname, std::move(unk));
@@ -557,9 +562,12 @@ namespace components::planner {
         //
         // Pre-conditions: enrich_logical_plan has stamped table_oid on the node.
         // No OIDs are pre-allocated; the add operator allocates its own attoid at
-        // execution time (one per clause) since attnum/attoid are per-row. The
-        // drop_column operator looks up the attoid by (table_oid, column_name) at
-        // execution time too.
+        // execution time (one per clause) since attnum/attoid are per-row. The rename
+        // primitive instead needs an EXISTING attoid: the executor re-runs enrich over
+        // this rewritten tree (executor::execute_plan_full, original_type ==
+        // alter_table_t) and its alter_column_t case resolves old_name against the
+        // table's column list. The regular-table drop primitive is deliberately left
+        // unstamped and therefore still no-ops — see that case for why.
         node_ptr rewrite_alter_table(std::pmr::memory_resource* r, node_ptr node) {
             auto* alter = static_cast<logical_plan::node_alter_table_t*>(node.get());
             const auto table_oid = alter->table_oid();
@@ -575,10 +583,7 @@ namespace components::planner {
                     if (col.type().type() == components::types::logical_type::UNKNOWN) {
                         const auto lt = catalog::pg_name_to_logical_type(col.type().type_name());
                         if (lt != components::types::logical_type::UNKNOWN) {
-                            const std::string alias = col.type().has_alias() ? col.type().alias() : std::string{};
                             col.type() = components::types::complex_logical_type{lt};
-                            if (!alias.empty())
-                                col.type().set_alias(alias);
                         }
                     }
                     auto add = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::add);

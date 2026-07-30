@@ -10,23 +10,34 @@ namespace components::operators {
     transfer_scan::transfer_scan(std::pmr::memory_resource* resource,
                                  components::catalog::oid_t table_oid,
                                  logical_plan::limit_t limit,
-                                 std::vector<size_t> projected_cols)
+                                 std::vector<size_t> projected_cols,
+                                 const components::logical_plan::resolved_table_metadata_t* table_md)
         : read_only_operator_t(resource, log_t{}, operator_type::transfer_scan)
         , table_oid_(table_oid)
         , limit_(limit)
-        , projected_cols_(std::move(projected_cols)) {}
+        , projected_cols_(std::move(projected_cols)) {
+        identity_projection_.adopt(table_md);
+        if (identity_projection_.engaged()) {
+            projected_cols_.clear();
+        }
+    }
 
-    vector::data_chunk_t transfer_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
+    vector::data_chunk_t transfer_scan::make_drain_chunk(const vector::schema_t& schema) {
+        // Engaged: the guard describes the LOGICAL schema, which `schema` (the storage schema)
+        // no longer is. An empty `schema` is still the 0-column drain sentinel and stays one.
+        if (identity_projection_.engaged() && !schema.empty()) {
+            return identity_projection_.make_guard_chunk();
+        }
         if (projected_cols_.empty()) {
-            return vector::data_chunk_t{resource_, types, 0};
+            return vector::make_chunk(resource_, schema, 0);
         }
         // Pruned-scan contract (PR #477): pruned scans emit FULL-WIDTH chunks whose
         // non-projected columns are buffer-less placeholders, so column ordinals stay
         // stable plan-wide (expression key paths are never remapped after prune_columns).
         // The schema'd 0-row empty-guard must honor the same shape as real batches —
-        // operators above index it by table ordinal. An empty `types` (the 0-column
+        // operators above index it by table ordinal. An empty `schema` (the 0-column
         // drain sentinel) still degrades to a 0-column chunk here.
-        return vector::data_chunk_t{resource_, types, projected_cols_, 0};
+        return vector::make_chunk(resource_, schema, projected_cols_, 0);
     }
 
     // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
@@ -36,7 +47,7 @@ namespace components::operators {
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     transfer_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {
-            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            co_return make_drain_chunk(vector::schema_t{resource_});
         }
 
         // No-table sentinel (no-FROM SELECT): emit ONE synthetic single-row batch that
@@ -110,20 +121,27 @@ namespace components::operators {
             drained_ = true;
             if (!emitted_any_) {
                 emitted_any_ = true;
-                if (!guard_types_loaded_) {
-                    guard_types_loaded_ = true;
+                if (!guard_schema_loaded_) {
+                    guard_schema_loaded_ = true;
                     auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                                      &services::disk::manager_disk_t::storage_types,
                                                      ctx->session,
                                                      table_oid_);
-                    guard_types_ = co_await std::move(tf);
+                    guard_schema_ = co_await std::move(tf);
                 }
-                co_return make_drain_chunk(guard_types_);
+                co_return make_drain_chunk(guard_schema_);
             }
-            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            co_return make_drain_chunk(vector::schema_t{resource_});
         }
 
         emitted_any_ = true;
+        // The batch left storage in PHYSICAL layout; every ordinal above this operator was
+        // resolved against the LOGICAL one. Disengaged (the two agree) this is not even a loop.
+        if (auto error = identity_projection_.apply(*batch); error.contains_error()) {
+            set_error(error);
+            mark_failed();
+            co_return error;
+        }
         co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
     }
 

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <components/types/operations_helper.hpp>
 #include <core/arithmetic_op.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::vector {
 
@@ -85,28 +86,32 @@ namespace components::vector {
         }
     };
 
-    // Compute binary arithmetic on two vectors (element-wise)
-    vector_t compute_binary_arithmetic(std::pmr::memory_resource* resource,
-                                       arithmetic_op op,
-                                       const vector_t& left,
-                                       const vector_t& right,
-                                       uint64_t count);
+    // Compute binary arithmetic on two vectors (element-wise).
+    // The result type is types::arithmetic_result_type(left, right, op) -- the same rule the
+    // planner types the column with -- including for count == 0. An operand pair the kernels
+    // cannot multiply (a non-numeric physical type) is an error, not an exception.
+    core::result_wrapper_t<vector_t> compute_binary_arithmetic(std::pmr::memory_resource* resource,
+                                                               arithmetic_op op,
+                                                               const vector_t& left,
+                                                               const vector_t& right,
+                                                               uint64_t count);
 
     // Compute arithmetic: vector op scalar
-    vector_t compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const vector_t& vec,
-                                              const types::logical_value_t& scalar,
-                                              uint64_t count);
+    core::result_wrapper_t<vector_t> compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const vector_t& vec,
+                                                                      const types::logical_value_t& scalar,
+                                                                      uint64_t count);
 
     // Compute arithmetic: scalar op vector
-    vector_t compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const types::logical_value_t& scalar,
-                                              const vector_t& vec,
-                                              uint64_t count);
+    core::result_wrapper_t<vector_t> compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const types::logical_value_t& scalar,
+                                                                      const vector_t& vec,
+                                                                      uint64_t count);
 
     // Compute unary negation
-    vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count);
+    core::result_wrapper_t<vector_t>
+    compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count);
 
 } // namespace components::vector

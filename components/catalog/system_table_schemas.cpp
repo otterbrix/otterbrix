@@ -478,7 +478,7 @@ namespace components::catalog {
             std::string out = "STRUCT(" + ext->type_name();
             for (const auto& f : ext->child_types()) {
                 out += ',';
-                out += f.alias();
+                out += f.field_name();
                 out += ':';
                 out += encode_type_nested(f);
             }
@@ -494,7 +494,7 @@ namespace components::catalog {
                 if (!first)
                     out += ',';
                 first = false;
-                out += children[i].alias();
+                out += children[i].field_name();
                 out += ':';
                 out += encode_type_nested(children[i]);
             }
@@ -587,7 +587,7 @@ namespace components::catalog {
                 std::string fname = read_token(s, pos);
                 ++pos; // ':'
                 auto ftype = parse_flat_type(resource, s, pos);
-                ftype.set_alias(fname);
+                ftype.set_field_name(fname);
                 fields.push_back(std::move(ftype));
             }
             if (pos < s.size() && s[pos] == ')')
@@ -601,7 +601,7 @@ namespace components::catalog {
                 std::string fname = read_token(s, pos);
                 ++pos; // ':'
                 auto ftype = parse_flat_type(resource, s, pos);
-                ftype.set_alias(fname);
+                ftype.set_field_name(fname);
                 fields.push_back(std::move(ftype));
             }
             while (pos < s.size() && s[pos] == ',') {
@@ -609,7 +609,7 @@ namespace components::catalog {
                 std::string fname = read_token(s, pos);
                 ++pos; // ':'
                 auto ftype = parse_flat_type(resource, s, pos);
-                ftype.set_alias(fname);
+                ftype.set_field_name(fname);
                 fields.push_back(std::move(ftype));
             }
             if (pos < s.size() && s[pos] == ')')
@@ -669,7 +669,7 @@ namespace components::catalog {
                         out += ',';
                     first = false;
                     const auto& etype = entry.type();
-                    out += etype.has_alias() ? etype.alias() : std::string{};
+                    out += etype.has_label() ? etype.label() : std::string{};
                     out += '=';
                     out += std::to_string(entry.value<std::int32_t>());
                 }
@@ -708,7 +708,7 @@ namespace components::catalog {
                             return types::complex_logical_type{LT::UNKNOWN};
                         }
                         components::types::logical_value_t lv(resource, v);
-                        lv.set_alias(label);
+                        lv.set_label(label);
                         entries.push_back(std::move(lv));
                     }
                     if (comma == std::string::npos)

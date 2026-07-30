@@ -26,17 +26,6 @@ namespace components::logical_plan {
         , disk_storage_(disk_storage)
         , if_not_exists_(if_not_exists) {}
 
-    std::pmr::vector<types::complex_logical_type> node_create_collection_t::schema() const {
-        std::pmr::vector<types::complex_logical_type> result(resource());
-        result.reserve(column_definitions_.size());
-        for (const auto& col : column_definitions_) {
-            result.push_back(col.type());
-        }
-        return result;
-    }
-
-    hash_t node_create_collection_t::hash_impl() const { return 0; }
-
     std::string node_create_collection_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_collection: " << relname_;

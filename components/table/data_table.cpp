@@ -88,13 +88,56 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
-    void data_table_t::adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) {
-        assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
-        column_definitions_.reserve(types.size());
-        for (const auto& type : types) {
-            column_definitions_.emplace_back(type.alias(), type);
+    void data_table_t::stamp_column_identity(vector::data_chunk_t& chunk) const {
+        const auto width = std::min<uint64_t>(chunk.column_count(), column_definitions_.size());
+        for (uint64_t i = 0; i < width; i++) {
+            chunk.set_column_attoid(i, column_definitions_[i].attoid());
+            // M3-B5: the NAME is stamped from the same source as the attoid, and it has to be,
+            // because a chunk built from copy_types() cannot carry one for every column. A
+            // scalar column's name used to ride along inside its type; a STRUCT column's never
+            // did — column_definition_t refuses to overwrite a self-naming type, so the type
+            // answers with the TYPE's name ("test_struct") and the column's name
+            // ("struct_column") had nowhere to be. The definition is the one place that knows
+            // both, so it is the one place that says both. (test_table.cpp pins the struct case.)
+            chunk.set_column_name(i, column_definitions_[i].name());
         }
-        row_groups_->adopt_types(std::pmr::vector<types::complex_logical_type>(types, resource_));
+    }
+
+    bool data_table_t::stamp_missing_attoid(std::string_view column_name, std::uint32_t attoid) {
+        if (attoid == 0) {
+            return false;
+        }
+        for (auto& col : column_definitions_) {
+            // Already identified: leave it alone. This is the guard that keeps the
+            // recovery path clear of set_attoid's immutability precondition entirely,
+            // rather than relying on the two values happening to agree.
+            if (col.attoid() != 0) {
+                continue;
+            }
+            if (std::string_view{col.name()} != column_name) {
+                continue;
+            }
+            col.set_attoid(attoid);
+            return true;
+        }
+        return false;
+    }
+
+    void data_table_t::adopt_schema(const std::pmr::vector<vector::column_schema_t>& schema) {
+        assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
+        column_definitions_.reserve(schema.size());
+        std::pmr::vector<types::complex_logical_type> types(resource_);
+        types.reserve(schema.size());
+        for (const auto& record : schema) {
+            // M3-B2/B5: a storage column's name is column identity, so it comes from the
+            // incoming chunk's schema record, where it is TOTAL — an unnamed column is named
+            // "". Read off the type instead, this asserted on a missing extension and
+            // dereferenced null in release for exactly the shape the WAL decoder produces for
+            // an unnamed column (data_chunk_binary.cpp), i.e. on the recovery path.
+            column_definitions_.emplace_back(std::string{record.name}, record.type);
+            types.push_back(record.type);
+        }
+        row_groups_->adopt_types(std::move(types));
     }
 
     void data_table_t::overlay_not_null(const std::string& col_name) {
@@ -237,6 +280,163 @@ namespace components::table {
             }
         }
         return true;
+    }
+
+    data_table_t::column_compaction_t
+    data_table_t::compact_dropped_columns(const std::pmr::vector<uint32_t>& dead_attoids, uint64_t compact_watermark) {
+        column_compaction_t outcome;
+        if (dead_attoids.empty() || column_definitions_.empty()) {
+            return outcome;
+        }
+
+        // Which storage slots survive, in the order they already sit in. Removing entries
+        // from a list preserves the relative order of what is left, which is the whole
+        // reason this makes the relation undisplaced: the survivors are the live logical
+        // columns in attnum order, so slot i ends up being logical ordinal i again without
+        // anything renumbering pg_attribute.
+        std::vector<uint64_t> survivors;
+        survivors.reserve(column_definitions_.size());
+        uint64_t doomed = 0;
+        for (uint64_t i = 0; i < column_definitions_.size(); i++) {
+            const auto attoid = column_definitions_[i].attoid();
+            // attoid 0 is INVALID_OID: the column has no catalog identity, so no entry in
+            // `dead_attoids` can be about it and it is kept. See the header.
+            const bool dead = attoid != 0 && std::find(dead_attoids.begin(), dead_attoids.end(), attoid) !=
+                                                 dead_attoids.end();
+            if (dead) {
+                ++doomed;
+            } else {
+                survivors.push_back(i);
+            }
+        }
+        if (doomed == 0) {
+            return outcome;
+        }
+        if (survivors.empty()) {
+            // A zero-column table is not a narrower table, it is a different object: every
+            // append and scan path indexes columns, and a chunk with no width addresses
+            // nothing. DROP COLUMN already refuses to remove a relation's last column, so
+            // this is unreachable from SQL and stays a refusal rather than an assert.
+            return outcome;
+        }
+
+        // MVCC gate — see compact(), which this rebuild is modelled on.
+        if (row_groups_->has_version_above(compact_watermark)) {
+            outcome.mvcc_refused = true;
+            return outcome;
+        }
+
+        std::pmr::vector<types::complex_logical_type> kept_types(resource_);
+        kept_types.reserve(survivors.size());
+        for (auto idx : survivors) {
+            kept_types.push_back(column_definitions_[idx].type());
+        }
+
+        auto new_collection = std::make_shared<collection_t>(
+            resource_,
+            row_groups_->block_manager(),
+            std::pmr::vector<types::complex_logical_type>(kept_types.begin(), kept_types.end(), resource_),
+            0);
+
+        const auto total = row_groups_->total_rows();
+        if (total > 0) {
+            table_append_state append_state(resource_);
+            // Like compact(), this is best-effort maintenance: an out_of_memory anywhere in
+            // the rebuild leaves the ORIGINAL collection and column list untouched (nothing
+            // is swapped until the rebuild has completed) and reports nothing removed.
+            if (new_collection->initialize_append(append_state).has_error()) {
+                return outcome;
+            }
+
+            std::vector<storage_index_t> column_ids;
+            column_ids.reserve(column_definitions_.size());
+            for (uint64_t i = 0; i < column_definitions_.size(); i++) {
+                column_ids.emplace_back(i);
+            }
+
+            table_scan_state state(resource_);
+            initialize_scan_with_offset(state, column_ids, 0, static_cast<int64_t>(total));
+
+            // The scan writes each column into the output slot its STORAGE index names
+            // (row_group_t::templated_scan resolves the destination as
+            // storage_index_t::primary_index, not as the loop counter), so it has to be
+            // given a full-width chunk. `narrow` then references only the surviving slots —
+            // no copy, the same buffers — and is what the append sees.
+            auto scan_types = copy_types();
+            vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
+            vector::data_chunk_t narrow(resource_, kept_types, vector::DEFAULT_VECTOR_CAPACITY);
+            while (true) {
+                state.table_state.scan(chunk);
+                if (chunk.size() == 0) {
+                    break;
+                }
+                // Referenced, not copied: `narrow`'s columns ARE the scanned chunk's
+                // surviving columns, so its capacity is the scanned chunk's capacity.
+                //
+                // Written out rather than through data_chunk_t::reference_columns because
+                // that helper resets the destination first, and reset() puts the capacity
+                // back to DEFAULT_VECTOR_CAPACITY — which the scan has already grown past
+                // whenever one call drains more than one vector (validate_chunk_capacity).
+                // The identity and name of each column are deliberately not carried over:
+                // the append reads neither, and the narrowed table names its columns from
+                // column_definitions_ below.
+                narrow.set_capacity(chunk.capacity());
+                for (std::size_t j = 0; j < survivors.size(); j++) {
+                    narrow.data[j].reference(chunk.data[survivors[j]]);
+                }
+                narrow.set_cardinality(chunk.size());
+                if (new_collection->append(narrow, append_state).has_error()) {
+                    return outcome;
+                }
+                chunk.reset();
+            }
+
+            new_collection->finalize_append(append_state, transaction_data{0, 0});
+        }
+        // scan state and buffer handles destroyed before swapping collection
+
+        auto old_collection = row_groups_;
+
+        // The two halves of "what this table is" move together: the row data and the column
+        // list that names it. Anything that read one without the other between these two
+        // statements would see a table that never existed — which is why they are adjacent
+        // and why nothing is co_awaited between them (this runs to completion inside one
+        // agent mailbox handler).
+        row_groups_ = std::move(new_collection);
+        std::vector<column_definition_t> kept;
+        kept.reserve(survivors.size());
+        for (auto idx : survivors) {
+            kept.emplace_back(column_definitions_[idx]);
+        }
+        column_definitions_ = std::move(kept);
+        // storage_oid/oid are POSITIONAL handles into the row-group layer, so they are
+        // renumbered onto the new width. attoid is not: it is the catalog identity, it
+        // survives the move, and it is what every reader now joins on.
+        for (uint64_t i = 0; i < column_definitions_.size(); i++) {
+            column_definitions_[i].set_oid(i);
+            column_definitions_[i].set_storage_oid(i);
+        }
+
+        // Return the outgoing collection's disk blocks to the free list. Identical in
+        // purpose and hazard to the reclaim at the end of compact() — see the ABA note
+        // there for why every mark_as_free is paired with unregister_block, and why the
+        // ids are deduplicated first.
+        if (old_collection) {
+            auto& block_manager = old_collection->block_manager();
+            if (!block_manager.in_memory()) {
+                std::pmr::vector<uint64_t> reclaimable{resource_};
+                old_collection->collect_disk_block_ids(reclaimable);
+                std::sort(reclaimable.begin(), reclaimable.end());
+                reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
+                for (uint64_t block_id : reclaimable) {
+                    block_manager.mark_as_free(block_id);
+                    block_manager.unregister_block(block_id);
+                }
+            }
+        }
+
+        outcome.removed = doomed;
+        return outcome;
     }
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
@@ -411,6 +611,9 @@ namespace components::table {
             types.push_back(col.type());
         }
         vector::data_chunk_t chunk(resource_, types);
+        // The chunk is reused across the whole segment walk, so one stamp covers every
+        // callback invocation (M3-B4).
+        stamp_column_identity(chunk);
 
         create_index_scan_state state(resource_);
 
@@ -522,22 +725,101 @@ namespace components::table {
         vector::indexing_vector_t sel_local_update(resource_, count);
         vector::indexing_vector_t sel_global_update(resource_, count);
 
-        auto update_count = count - vector::vector_ops::compare<std::greater_equal<>>(row_ids,
-                                                                                      max_row_id_vec,
-                                                                                      count,
-                                                                                      &sel_local_update,
-                                                                                      &sel_global_update);
+        auto local_count = vector::vector_ops::compare<std::greater_equal<>>(row_ids,
+                                                                             max_row_id_vec,
+                                                                             count,
+                                                                             &sel_local_update,
+                                                                             &sel_global_update);
+        if (local_count.has_error()) {
+            return local_count.convert_error<std::pair<int64_t, uint64_t>>();
+        }
+        auto update_count = count - local_count.value();
         if (update_count > 0) {
             updates_slice.slice(data, sel_global_update, update_count);
             updates_slice.flatten();
             row_ids_slice.slice(row_ids, sel_global_update, update_count);
             row_ids_slice.flatten(update_count);
 
-            // For now ids are fixed
-            std::vector<uint64_t> column_ids;
-            column_ids.reserve(column_count());
-            for (size_t i = 0; i < column_count(); i++) {
-                column_ids.emplace_back(i);
+            // Which storage column each update column addresses. row_group_t::update reads
+            // column_ids[i] as the destination of updates_slice.data[i].
+            //
+            // The identities come off `data` and not off `updates_slice`: the slice is a fresh
+            // chunk built from data.types(), and a type cannot carry an identity. Column i of one
+            // IS column i of the other, so the join answers for both.
+            //
+            // Same hierarchy the append matcher states out loud (agent_disk: identity outranks
+            // name outranks position). An UPDATE's chunk is built from the SCAN's, so its columns
+            // carry what the scan stamped — and after ALTER TABLE ... DROP COLUMN that chunk is
+            // NARROWER than the table, because the tombstoned column left the logical schema while
+            // its physical slot stayed. Position would write every column past the hole into its
+            // left neighbour.
+            const auto incoming_width = static_cast<size_t>(data.column_count());
+            std::vector<uint64_t> column_ids(incoming_width, 0);
+            std::vector<bool> resolved(incoming_width, false);
+            std::vector<bool> claimed(column_definitions_.size(), false);
+            // Pass 1 — catalog identity. An attoid is unique per relation, so it needs no
+            // disambiguation, and resolving all of one kind before any of the next is what makes
+            // "identity outranks name" hold regardless of column order.
+            for (size_t i = 0; i < incoming_width; i++) {
+                const auto attoid = data.data[i].attoid();
+                if (attoid == 0) { // catalog::INVALID_OID — nothing to look up
+                    continue;
+                }
+                for (size_t t = 0; t < column_definitions_.size(); t++) {
+                    if (claimed[t] || column_definitions_[t].attoid() != attoid) {
+                        continue;
+                    }
+                    column_ids[i] = t;
+                    resolved[i] = true;
+                    claimed[t] = true;
+                    break;
+                }
+            }
+            // Pass 2 — name. Not a fallback: it is the answer for an input that genuinely has no
+            // identity. This overload IS the replay path, and data_chunk_binary carries a column's
+            // name but not its attoid (that codec has no version field to widen).
+            for (size_t i = 0; i < incoming_width; i++) {
+                if (resolved[i]) {
+                    continue;
+                }
+                const auto name = data.data[i].name();
+                if (name.empty()) {
+                    continue;
+                }
+                for (size_t t = 0; t < column_definitions_.size(); t++) {
+                    if (claimed[t] || std::string_view{column_definitions_[t].name()} != name) {
+                        continue;
+                    }
+                    column_ids[i] = t;
+                    resolved[i] = true;
+                    claimed[t] = true;
+                    break;
+                }
+            }
+            // Pass 3 — position, last and only at equal width, and only for a column neither of
+            // the passes above spoke for. A NARROWER chunk cannot be read positionally at all:
+            // that is exactly the shape a post-DROP-COLUMN write has, and reading it by position
+            // is what would write every column past the hole into its left neighbour.
+            const bool positional = incoming_width == column_count();
+            for (size_t i = 0; i < incoming_width; i++) {
+                if (resolved[i] || !positional || claimed[i]) {
+                    continue;
+                }
+                column_ids[i] = i;
+                resolved[i] = true;
+                claimed[i] = true;
+            }
+            for (size_t i = 0; i < incoming_width; i++) {
+                if (resolved[i]) {
+                    continue;
+                }
+                // R6: an update column that addresses no storage column is an error. Dropping it
+                // silently would report a row updated that was not.
+                std::pmr::string message{"data_table_t::update: update column '", resource_};
+                const auto unresolved_name = data.data[i].name();
+                message.append(unresolved_name.data(), unresolved_name.size());
+                message += "' matches no column of this table";
+                return core::error_t(core::error_code_t::schema_error, std::move(message));
             }
             auto updated = row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
             if (updated.has_error()) {
@@ -586,7 +868,9 @@ namespace components::table {
         }
         const auto& row_group_pointers = row_group_pointers_res.value();
 
-        // write table metadata
+        // write table metadata, versioned (see TABLE_META_MAGIC)
+        writer.write<uint32_t>(TABLE_META_MAGIC);
+        writer.write<uint32_t>(TABLE_META_VERSION);
         writer.write_string(name_);
 
         // write column definitions
@@ -595,6 +879,10 @@ namespace components::table {
             writer.write_string(col.name());
             writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
+            // v1: the column's catalog identity. Without it a reopened storage routes
+            // appends by name, which is the whole reason DROP COLUMN cannot move a
+            // column's physical position today.
+            writer.write<uint32_t>(col.attoid());
         }
 
         // write row group count and pointers
@@ -611,7 +899,26 @@ namespace components::table {
     data_table_t::load_from_disk(std::pmr::memory_resource* resource,
                                  storage::block_manager_t& block_manager,
                                  storage::metadata_reader_t& reader) {
-        auto name = reader.read_string();
+        // First uint32 discriminates the layout: TABLE_META_MAGIC opens a versioned
+        // stream, anything else is the byte-length of the table name in a pre-versioning
+        // one (a name that long cannot exist, so the two can never be confused).
+        const auto head = reader.read<uint32_t>();
+        uint32_t stream_version = 0;
+        std::string name;
+        if (head == TABLE_META_MAGIC) {
+            stream_version = reader.read<uint32_t>();
+            if (stream_version > TABLE_META_VERSION) {
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string("data_table_t::load_from_disk: table metadata version is newer than "
+                                     "this build understands",
+                                     resource));
+            }
+            name = reader.read_string();
+        } else if (head != 0 && !reader.has_error()) {
+            name.resize(head);
+            reader.read_data(reinterpret_cast<std::byte*>(name.data()), head);
+        }
 
         auto col_count = reader.read<uint32_t>();
         std::vector<column_definition_t> columns;
@@ -620,9 +927,15 @@ namespace components::table {
             auto col_name = reader.read_string();
             auto logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
             auto not_null = reader.read<uint8_t>() != 0;
-            types::complex_logical_type col_type(logical_type);
-            col_type.set_alias(col_name);
-            columns.emplace_back(col_name, std::move(col_type), not_null);
+            columns.emplace_back(col_name, types::complex_logical_type{logical_type}, not_null);
+            if (stream_version >= 1) {
+                const auto attoid = reader.read<uint32_t>();
+                // 0 is INVALID_OID: a column that never had an identity stays without
+                // one rather than being handed a fabricated zero.
+                if (attoid != 0) {
+                    columns.back().set_attoid(attoid);
+                }
+            }
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));

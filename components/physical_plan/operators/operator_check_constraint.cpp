@@ -1,7 +1,10 @@
 #include "operator_check_constraint.hpp"
 
 #include "constraint_util.hpp"
-#include "predicates/simple_predicate.hpp"
+#include <components/expressions/bound/bound_expression.hpp>
+#include <components/expressions/bound/expression_executor.hpp>
+
+#include <optional>
 #include <components/cursor/cursor.hpp>
 #include <components/types/logical_value.hpp>
 
@@ -15,14 +18,6 @@
 namespace components::operators {
 
     namespace {
-
-        const vector::vector_t* find_col(const vector::data_chunk_t& chunk, std::string_view name) {
-            for (uint64_t c = 0; c < chunk.column_count(); ++c) {
-                if (chunk.data[c].type().alias() == name)
-                    return &chunk.data[c];
-            }
-            return nullptr;
-        }
 
         // The decoded DEFAULT value for `col`, or nullptr when the column has none.
         const types::logical_value_t*
@@ -84,42 +79,111 @@ namespace components::operators {
             return s;
         }
 
-        // Forward declaration for recursion. `defaults` = the table's decoded DEFAULT
-        // values: a column ABSENT from the write-set stores its default (filled
-        // agent-side at storage_append), so the compiled predicates evaluate an
-        // absent column AS that default; absent with no (non-NULL) default means the
-        // stored value is NULL.
-        // strict_absent: TRUE when the write-set is name-addressed (absence by alias
-        // means the statement omitted the column, so it stores DEFAULT-or-NULL);
-        // FALSE keeps the legacy absent-column pass-through.
-        predicates::predicate_ptr
-        build_check_predicate(std::pmr::memory_resource* r,
-                              std::string_view expr,
-                              const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                              bool strict_absent);
+        // ------------------------------------------------------------------ CHECK binding
+        //
+        // A CHECK is stored as SQL TEXT and parsed by hand here. What the text walk produces is a
+        // BOUND EXPRESSION TREE, bound ONCE against the write-set the statement actually carries.
+        //
+        // WHY THE WRITE-SET AND NOT THE DECLARED SCHEMA. The check validates the SUBMITTED row, but
+        // a column omitted from an INSERT column list is filled with the table DEFAULT agent-side at
+        // storage_append -- so what gets STORED is not what was submitted, and a column the check
+        // names may not be in front of it at all. Absence has THREE outcomes, and each one is a
+        // different LEAF, chosen here rather than branched on per row:
+        //
+        //   present                          -> a reference at the ordinal it actually occupies
+        //   absent, non-NULL DEFAULT, named  -> a constant holding that default (what gets stored)
+        //   absent otherwise                 -> a NULL constant, so the comparison is UNKNOWN and
+        //                                       permits() lets the row through
+        //
+        // WHY ON THE FIRST CHUNK AND NOT IN THE CONSTRUCTOR. Both the presence answer and the
+        // ORDINAL come from the write-set, which does not exist until the first batch. Binding
+        // earlier would mean assuming the chunk's column order matches the statement's column list;
+        // that assumption is unproven, and reading the wrong column is a mistake a constraint
+        // operator makes silently. One statement carries one write-set shape, so binding on the
+        // first chunk is still binding ONCE.
+        // The DECLARED type of `col`, or nullptr when the plan did not carry one.
+        const types::complex_logical_type*
+        find_column_type(const std::vector<std::pair<std::string, types::complex_logical_type>>* column_types,
+                         std::string_view col) {
+            if (column_types == nullptr) {
+                return nullptr;
+            }
+            for (const auto& [name, type] : *column_types) {
+                if (name == col) {
+                    return &type;
+                }
+            }
+            return nullptr;
+        }
 
-        predicates::predicate_ptr
-        build_check_predicate(std::pmr::memory_resource* r,
-                              std::string_view expr,
-                              const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                              bool strict_absent) {
+        expressions::bound_expression_ptr constant_bool(std::pmr::memory_resource* r, bool v) {
+            return expressions::bound_expression_ptr{
+                expressions::make_bound_constant(r, types::logical_value_t{r, v})};
+        }
+
+        // First name match, exactly as find_col does -- the write-set may legally carry duplicate
+        // column names and the boxed path took the first, so this must too.
+        // has_name() stays in front of the comparison: it is not a guard against a crashing
+        // accessor (name() is total), it is the question "is this column named at all". A
+        // malformed constraint can hand us an empty `name` -- " = 5" trims to no left operand --
+        // and an UNNAMED column must not answer to it.
+        std::optional<uint32_t> find_col_index(const vector::data_chunk_t& chunk, std::string_view name) {
+            for (uint64_t c = 0; c < chunk.column_count(); ++c) {
+                const auto& column = chunk.data[c];
+                if (column.has_name() && column.name() == name) {
+                    return static_cast<uint32_t>(c);
+                }
+            }
+            return std::nullopt;
+        }
+
+        bool compare_type_of(std::string_view op, expressions::compare_type& out) {
+            using CT = expressions::compare_type;
+            if (op == ">") { out = CT::gt; return true; }
+            if (op == "<") { out = CT::lt; return true; }
+            if (op == ">=") { out = CT::gte; return true; }
+            if (op == "<=") { out = CT::lte; return true; }
+            if (op == "=") { out = CT::eq; return true; }
+            if (op == "<>") { out = CT::ne; return true; }
+            return false;
+        }
+
+        struct check_bind_t {
+            std::pmr::memory_resource* r;
+            const vector::data_chunk_t* chunk;
+            const std::vector<std::pair<std::string, types::logical_value_t>>* defaults;
+            const std::vector<std::pair<std::string, types::complex_logical_type>>* column_types;
+            bool strict_absent;
+        };
+
+        expressions::bound_expression_ptr bind_check_expression(const check_bind_t& b, std::string_view expr);
+
+        expressions::bound_expression_ptr
+        bind_union(const check_bind_t& b, expressions::compare_type op,
+                   std::pmr::vector<expressions::bound_expression_ptr> children) {
+            auto bound = expressions::make_bound_conjunction(b.r, op, std::move(children));
+            // A conjunction this layer cannot form is treated the way an unrecognised expression is:
+            // it passes. The operator's standing rule is that what it cannot decide, it permits, so a
+            // binding failure can never newly REJECT a row that is valid today.
+            return bound.has_error() ? constant_bool(b.r, true) : std::move(bound.value());
+        }
+
+        expressions::bound_expression_ptr bind_check_expression(const check_bind_t& b, std::string_view expr) {
             using CT = expressions::compare_type;
             expr = trim(expr);
 
-            if (expr.empty())
-                return {new predicates::simple_predicate(
-                    r,
-                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
-                        -> core::result_wrapper_t<types::tri_bool_t> { return types::tri_bool_t::yes; })};
+            if (expr.empty()) {
+                return constant_bool(b.r, true);
+            }
 
             // NOT (...)
             if (expr.size() > 5 && expr.substr(0, 5) == "NOT (") {
-                std::pmr::vector<predicates::predicate_ptr> nested(r);
-                nested.push_back(build_check_predicate(r, strip_outer(expr.substr(4)), defaults, strict_absent));
-                return {new predicates::simple_predicate(r, std::move(nested), CT::union_not)};
+                std::pmr::vector<expressions::bound_expression_ptr> nested{b.r};
+                nested.push_back(bind_check_expression(b, strip_outer(expr.substr(4))));
+                return bind_union(b, CT::union_not, std::move(nested));
             }
 
-            // Paren-led: find matching ')' then check for AND/OR after.
+            // Paren-led: find the matching ')' then look for AND/OR after it.
             if (expr.front() == '(') {
                 int depth = 0;
                 size_t close = std::string_view::npos;
@@ -137,67 +201,50 @@ namespace components::operators {
                 if (close != std::string_view::npos) {
                     std::string_view after = trim(expr.substr(close + 1));
                     if (after.size() >= 4 && after.substr(0, 4) == "AND ") {
-                        std::pmr::vector<predicates::predicate_ptr> nested(r);
-                        nested.push_back(build_check_predicate(r, expr.substr(1, close - 1), defaults, strict_absent));
-                        nested.push_back(
-                            build_check_predicate(r, strip_outer(after.substr(4)), defaults, strict_absent));
-                        return {new predicates::simple_predicate(r, std::move(nested), CT::union_and)};
+                        std::pmr::vector<expressions::bound_expression_ptr> nested{b.r};
+                        nested.push_back(bind_check_expression(b, expr.substr(1, close - 1)));
+                        nested.push_back(bind_check_expression(b, strip_outer(after.substr(4))));
+                        return bind_union(b, CT::union_and, std::move(nested));
                     }
                     if (after.size() >= 3 && after.substr(0, 3) == "OR ") {
-                        std::pmr::vector<predicates::predicate_ptr> nested(r);
-                        nested.push_back(build_check_predicate(r, expr.substr(1, close - 1), defaults, strict_absent));
-                        nested.push_back(
-                            build_check_predicate(r, strip_outer(after.substr(3)), defaults, strict_absent));
-                        return {new predicates::simple_predicate(r, std::move(nested), CT::union_or)};
+                        std::pmr::vector<expressions::bound_expression_ptr> nested{b.r};
+                        nested.push_back(bind_check_expression(b, expr.substr(1, close - 1)));
+                        nested.push_back(bind_check_expression(b, strip_outer(after.substr(3))));
+                        return bind_union(b, CT::union_or, std::move(nested));
                     }
                     if (close == expr.size() - 1)
-                        return build_check_predicate(r, expr.substr(1, close - 1), defaults, strict_absent);
+                        return bind_check_expression(b, expr.substr(1, close - 1));
                 }
             }
 
-            // IS NOT NULL / IS NULL
+            // IS NOT NULL / IS NULL. Both are TOTAL predicates -- a definite TRUE or FALSE, never
+            // UNKNOWN -- so when the column is absent the answer is a CONSTANT, decided here from
+            // the default policy rather than asked per row.
             constexpr std::string_view kIsNotNull = " IS NOT NULL";
             constexpr std::string_view kIsNull = " IS NULL";
-            if (expr.size() > kIsNotNull.size() && expr.substr(expr.size() - kIsNotNull.size()) == kIsNotNull) {
-                auto col = std::string(trim(expr.substr(0, expr.size() - kIsNotNull.size())));
-                // A column absent from the INSERT write-set stores the table DEFAULT
-                // when one exists (filled agent-side at storage_append) — the STORED
-                // row is then non-NULL and IS NOT NULL must PASS. Absent with no
-                // (non-NULL) default really stores NULL, so it must FAIL — otherwise
-                // `INSERT (a) VALUES (..)` would silently bypass `CHECK (b IS NOT
-                // NULL)` for the omitted column b. Resolved once at compile time.
-                const auto* def = find_default(defaults, col);
-                const bool absent_is_valid = !strict_absent || (def != nullptr && !def->is_null());
-                return {new predicates::simple_predicate(
-                    r,
-                    [col, absent_is_valid](const vector::data_chunk_t& chunk,
-                                           const vector::data_chunk_t&,
-                                           size_t idx,
-                                           size_t) -> core::result_wrapper_t<types::tri_bool_t> {
-                        const auto* v = find_col(chunk, col);
-                        // IS NOT NULL is a total predicate: a definite TRUE / FALSE, never UNKNOWN.
-                        return types::tri_of(v ? v->validity().row_is_valid(idx) : absent_is_valid);
-                    })};
-            }
-            if (expr.size() > kIsNull.size() && expr.substr(expr.size() - kIsNull.size()) == kIsNull) {
-                auto col = std::string(trim(expr.substr(0, expr.size() - kIsNull.size())));
-                // Mirror of IS NOT NULL: an absent column stores its (non-NULL)
-                // DEFAULT when one exists, so IS NULL fails; with no default the
-                // stored value IS NULL.
-                const auto* def = find_default(defaults, col);
-                const bool absent_is_null = !strict_absent || def == nullptr || def->is_null();
-                return {new predicates::simple_predicate(
-                    r,
-                    [col, absent_is_null](const vector::data_chunk_t& chunk,
-                                          const vector::data_chunk_t&,
-                                          size_t idx,
-                                          size_t) -> core::result_wrapper_t<types::tri_bool_t> {
-                        const auto* v = find_col(chunk, col);
-                        return types::tri_of(v ? !v->validity().row_is_valid(idx) : absent_is_null);
-                    })};
+            for (const auto& [suffix, want_null] :
+                 {std::pair<std::string_view, bool>{kIsNotNull, false}, std::pair<std::string_view, bool>{kIsNull, true}}) {
+                if (expr.size() <= suffix.size() || expr.substr(expr.size() - suffix.size()) != suffix) {
+                    continue;
+                }
+                const auto col = std::string(trim(expr.substr(0, expr.size() - suffix.size())));
+                if (auto index = find_col_index(*b.chunk, col)) {
+                    auto reference = expressions::bound_expression_ptr{
+                        expressions::make_bound_reference(b.r, b.chunk->data[*index].type(), *index,
+                                                          expressions::side_t::left)};
+                    auto bound = expressions::make_bound_null_test(b.r, want_null ? CT::is_null : CT::is_not_null,
+                                                                    std::move(reference));
+                    return bound.has_error() ? constant_bool(b.r, true) : std::move(bound.value());
+                }
+                // Absent. A column omitted from a NAME-addressed write-set stores its DEFAULT when it
+                // has a non-NULL one, and NULL otherwise; a positional write-set proves nothing by a
+                // name miss, so it keeps the pass-through.
+                const auto* def = find_default(b.defaults, col);
+                const bool stored_is_null = !b.strict_absent ? want_null : (def == nullptr || def->is_null());
+                return constant_bool(b.r, want_null ? stored_is_null : !stored_is_null);
             }
 
-            // Binary comparison: try operators longest-first to avoid ambiguous matches.
+            // Binary comparison, operators longest-first so ">=" is not read as ">".
             constexpr std::array<std::string_view, 6> kOps{">=", "<=", "<>", ">", "<", "="};
             for (auto op : kOps) {
                 std::string needle;
@@ -211,72 +258,64 @@ namespace components::operators {
 
                 auto lhs = trim(expr.substr(0, pos));
                 auto rhs = trim(expr.substr(pos + needle.size()));
-
-                auto is_const = [](std::string_view s) {
-                    return !s.empty() && (s.front() == '\'' || (s.front() >= '0' && s.front() <= '9') ||
-                                          s.front() == '-' || s.front() == '.');
+                auto is_const = [](std::string_view t) {
+                    return !t.empty() && (t.front() == '\'' || (t.front() >= '0' && t.front() <= '9') ||
+                                          t.front() == '-' || t.front() == '.');
                 };
-                bool col_is_rhs = is_const(lhs);
-
-                auto col_name = std::string(col_is_rhs ? rhs : lhs);
-                auto const_val = parse_const(r, col_is_rhs ? lhs : rhs);
-                auto op_str = std::string(op);
-                // Absent-column policy, resolved once at compile time: with a non-NULL
-                // DEFAULT the stored row carries that value — evaluate the comparison
-                // against it; without one, keep the legacy pass (untyped/unknown shape).
-                const auto* def = find_default(defaults, col_name);
-                const bool has_def = strict_absent && def != nullptr && !def->is_null();
-                auto def_val = has_def ? *def : const_val;
-
-                return {new predicates::simple_predicate(
-                    r,
-                    [col_name, const_val, col_is_rhs, op_str, has_def, def_val](
-                        const vector::data_chunk_t& chunk,
-                        const vector::data_chunk_t&,
-                        size_t idx,
-                        size_t) -> core::result_wrapper_t<types::tri_bool_t> {
-                        // Raw three-valued result of the comparison: a NULL operand is UNKNOWN (not
-                        // pre-folded to "passes"), so that a NOT wrapping it stays UNKNOWN rather
-                        // than flipping to a violation. The consumer applies permits() -- a CHECK is
-                        // violated only by a definitely-FALSE (tri_bool_t::no) result.
-                        auto compare_tri = [&op_str](const types::logical_value_t& lhs,
-                                                     const types::logical_value_t& rhs) -> types::tri_bool_t {
-                            const auto c = lhs.compare_sql(rhs);
-                            if (!c)
-                                return types::tri_bool_t::unknown;
-                            using Cmp = types::compare_t;
-                            if (op_str == ">")
-                                return types::tri_of(*c == Cmp::more);
-                            if (op_str == "<")
-                                return types::tri_of(*c == Cmp::less);
-                            if (op_str == ">=")
-                                return types::tri_of(*c == Cmp::more || *c == Cmp::equals);
-                            if (op_str == "<=")
-                                return types::tri_of(*c == Cmp::less || *c == Cmp::equals);
-                            if (op_str == "=")
-                                return types::tri_of(*c == Cmp::equals);
-                            if (op_str == "<>")
-                                return types::tri_of(*c != Cmp::equals);
-                            return types::tri_bool_t::yes; // unreachable operator: do not reject
-                        };
-                        const auto* vec = find_col(chunk, col_name);
-                        if (!vec) {
-                            // Absent column with no default stores NULL -> UNKNOWN (permits passes).
-                            if (!has_def)
-                                return types::tri_bool_t::unknown;
-                            return col_is_rhs ? compare_tri(const_val, def_val) : compare_tri(def_val, const_val);
+                const bool col_is_rhs = is_const(lhs);
+                const auto col_name = std::string(col_is_rhs ? rhs : lhs);
+                auto const_val = parse_const(b.r, col_is_rhs ? lhs : rhs);
+                // The literal is typed from the column's DECLARED type, once. parse_const can only
+                // answer STRING_LITERAL / DOUBLE / BIGINT, so over any other column type it produces
+                // a constant of the wrong type -- which used to abort with assertions on and, worse,
+                // silently accept violating rows without them.
+                if (const auto* declared = find_column_type(b.column_types, col_name)) {
+                    if (const_val.type() != *declared) {
+                        auto typed = const_val.cast_as(*declared, core::date::timezone_offset_t{});
+                        if (!typed.has_error() && !typed.value().is_null()) {
+                            const_val = std::move(typed.value());
                         }
-                        // vec->value reports NA for a NULL row, so compare_sql yields UNKNOWN.
-                        auto col_val = vec->value(idx);
-                        return col_is_rhs ? compare_tri(const_val, col_val) : compare_tri(col_val, const_val);
-                    })};
+                    }
+                }
+
+                expressions::compare_type cmp{};
+                if (!compare_type_of(op, cmp)) {
+                    return constant_bool(b.r, true); // unreachable operator: do not reject
+                }
+
+                // THE THREE ABSENCE OUTCOMES, as three different leaves.
+                expressions::bound_expression_ptr column_leaf;
+                if (auto index = find_col_index(*b.chunk, col_name)) {
+                    column_leaf = expressions::bound_expression_ptr{
+                        expressions::make_bound_reference(b.r, b.chunk->data[*index].type(), *index,
+                                                          expressions::side_t::left)};
+                } else {
+                    const auto* def = find_default(b.defaults, col_name);
+                    if (b.strict_absent && def != nullptr && !def->is_null()) {
+                        column_leaf = expressions::bound_expression_ptr{expressions::make_bound_constant(b.r, *def)};
+                    } else {
+                        // Stores NULL (or a positional write-set proves nothing): a NULL of the
+                        // literal's own type, so the comparison propagates it to UNKNOWN and
+                        // permits() lets the row through -- what the boxed path answered directly.
+                        //
+                        // It must be a real NULL and not a constant TRUE, even though a lone
+                        // UNKNOWN and a lone TRUE both permit: under `NOT (x > 5)` they diverge.
+                        // tri_not(UNKNOWN) is UNKNOWN and still permits; tri_not(TRUE) is FALSE and
+                        // rejects the row.
+                        column_leaf = expressions::bound_expression_ptr{
+                            expressions::make_bound_null_constant(b.r, const_val.type())};
+                    }
+                }
+
+                auto literal = expressions::bound_expression_ptr{expressions::make_bound_constant(b.r, const_val)};
+                auto bound = col_is_rhs
+                                 ? expressions::make_bound_comparison(b.r, cmp, std::move(literal), std::move(column_leaf))
+                                 : expressions::make_bound_comparison(b.r, cmp, std::move(column_leaf), std::move(literal));
+                return bound.has_error() ? constant_bool(b.r, true) : std::move(bound.value());
             }
 
             // Unrecognised expression — pass.
-            return {new predicates::simple_predicate(
-                r,
-                [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
-                    -> core::result_wrapper_t<types::tri_bool_t> { return types::tri_bool_t::yes; })};
+            return constant_bool(b.r, true);
         }
 
     } // anonymous namespace
@@ -288,19 +327,18 @@ namespace components::operators {
         std::vector<std::pair<std::string, std::string>> check_exprs,
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
-        bool write_set_named)
+        bool write_set_named,
+        std::vector<std::pair<std::string, types::complex_logical_type>> column_types)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
         , not_null_columns_(std::move(not_null_columns))
         , column_defaults_(std::move(column_defaults))
         , write_set_named_(write_set_named)
-        , array_size_reqs_(std::move(array_size_reqs)) {
-        check_predicates_.reserve(check_exprs.size());
-        for (auto& [name, expr_str] : check_exprs) {
-            check_predicates_.emplace_back(
-                std::move(name),
-                build_check_predicate(resource, expr_str, &column_defaults_, write_set_named_));
-        }
-    }
+        // The CHECK TEXT is kept; the tree is bound on the first write-set batch, because both the
+        // presence answer and the column ordinals come from the write-set and it does not exist yet.
+        , check_exprs_(std::move(check_exprs))
+        , check_executors_(resource)
+        , array_size_reqs_(std::move(array_size_reqs))
+        , column_types_(std::move(column_types)) {}
 
     actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
         // SYNCHRONOUS validation routed through the async-finalize drive so it runs
@@ -338,6 +376,15 @@ namespace components::operators {
                 continue;
             }
 
+            // M3-B2/B3: the write-set's column names come from the chunk's schema record.
+            // Both loops below used to read complex_logical_type::alias() straight off the
+            // column type, which asserts on its extension and dereferences null in release
+            // (types.cpp:334-337) — and a write-set column built with no name has no
+            // extension at all. The schema record answers an empty name instead, so the
+            // match is total over every chunk shape. One read covers both loops: nothing
+            // here mutates `chunk` (it is const).
+            const auto& schema = chunk.schema();
+
             // NOT NULL checks. A column ABSENT from the write-set stores the table
             // DEFAULT when one exists (filled agent-side); with no non-NULL default
             // the stored value IS NULL — a violation (e.g. an INSERT omitting a
@@ -345,7 +392,7 @@ namespace components::operators {
             for (const auto& col_name : not_null_columns_) {
                 bool found = false;
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                    if (chunk.data[col].type().alias() != col_name)
+                    if (std::string_view{schema[col].name} != std::string_view{col_name})
                         continue;
                     found = true;
                     for (uint64_t row = 0; row < chunk.size(); ++row) {
@@ -374,9 +421,11 @@ namespace components::operators {
             // slots with), so such a value must be rejected here rather than silently dropped
             // at the append. Validated per column: a single short element fails the operation.
             for (const auto& [col_name, required_size] : array_size_reqs_) {
+                bool found = false;
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                    if (chunk.data[col].type().alias() != col_name)
+                    if (std::string_view{schema[col].name} != std::string_view{col_name})
                         continue;
+                    found = true;
                     for (uint64_t row = 0; row < chunk.size(); ++row) {
                         if (!chunk.data[col].validity().row_is_valid(row))
                             continue; // NULL handled by the NOT NULL check above
@@ -392,20 +441,79 @@ namespace components::operators {
                     }
                     break;
                 }
+                // Not found by alias — two different situations, only one of them benign.
+                // A NAMED write-set addresses columns by the statement's own column list,
+                // so absence PROVES the statement omitted the column: the stored row takes
+                // the table DEFAULT, and every column listed here is NOT NULL with no
+                // DEFAULT (see enrich_insert_sync), so the NOT NULL loop above has already
+                // rejected that row — nothing left to size-check.
+                // An UNNAMED write-set (INSERT without a column list) aliases arbitrarily,
+                // so a miss proves nothing: the column may well be present under another
+                // alias, carrying a value shorter than the declared size. Dropping the
+                // requirement there accepts a row this operator exists to reject, so refuse
+                // the write instead.
+                if (!found && !write_set_named_) {
+                    set_error(core::error_t{
+                        core::error_code_t::other_error,
+                        std::pmr::string{"NOT NULL array column '" + col_name +
+                                             "' is not addressable in the write-set: the INSERT carries no column "
+                                             "list, so its required size of " +
+                                             std::to_string(required_size) + " elements cannot be verified",
+                                         resource_}});
+                    return;
+                }
             }
 
             // CHECK expression evaluation.
-            for (const auto& [name, pred] : check_predicates_) {
-                for (uint64_t row = 0; row < chunk.size(); ++row) {
-                    auto check_result = pred->check(chunk, row);
-                    // A CHECK is violated only by a definitely-FALSE result; UNKNOWN (a NULL operand,
-                    // even under NOT) permits the row -- SQL rejects only definitely-FALSE checks.
-                    if (check_result.has_error() || !types::permits(check_result.value())) {
-                        set_error(
-                            core::error_t{core::error_code_t::other_error,
-                                          std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});
-                        return;
+            //
+            // Bound ONCE, against the first write-set batch: presence and ordinals both come from
+            // the write-set, and one statement carries one write-set shape.
+            if (!check_bound_ && !check_exprs_.empty()) {
+                const check_bind_t binding{resource_, &chunk, &column_defaults_, &column_types_, write_set_named_};
+                check_executors_.reserve(check_exprs_.size());
+                for (const auto& [name, expr_str] : check_exprs_) {
+                    auto root = bind_check_expression(binding, expr_str);
+                    auto executor = expressions::expression_executor_t::create(resource_, std::move(root));
+                    if (executor.has_error()) {
+                        // A tree that cannot be executed permits, exactly as one that cannot be
+                        // bound does: this operator never rejects on its own inability to decide.
+                        check_executors_.emplace_back(std::nullopt);
+                        continue;
                     }
+                    check_executors_.emplace_back(std::move(executor.value()));
+                }
+                check_bound_ = true;
+            }
+
+            expressions::expression_executor_t::context_t execution{};
+            for (size_t i = 0; i < check_executors_.size(); ++i) {
+                if (!check_executors_[i]) {
+                    continue;
+                }
+                auto produced = check_executors_[i]->execute(chunk, chunk.size(), execution);
+                // An evaluation error is a violation, not a propagated error -- the same collapse
+                // the boxed path made (`check_result.has_error() || !permits(...)`).
+                bool violated = produced.has_error();
+                if (!violated) {
+                    const auto* answer = produced.value();
+                    for (uint64_t row = 0; row < chunk.size(); ++row) {
+                        // A CHECK is violated only by a definitely-FALSE result; UNKNOWN (a NULL
+                        // operand, even under NOT) permits the row -- SQL rejects only definite
+                        // FALSE. The validity read gates the value read.
+                        const auto tri = answer->validity().row_is_valid(row)
+                                             ? types::tri_of(answer->data<bool>()[row])
+                                             : types::tri_bool_t::unknown;
+                        if (!types::permits(tri)) {
+                            violated = true;
+                            break;
+                        }
+                    }
+                }
+                if (violated) {
+                    set_error(core::error_t{
+                        core::error_code_t::other_error,
+                        std::pmr::string{"CHECK constraint \"" + check_exprs_[i].first + "\" violated", resource_}});
+                    return;
                 }
             }
         }

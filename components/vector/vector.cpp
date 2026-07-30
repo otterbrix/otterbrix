@@ -44,20 +44,40 @@ namespace components::vector {
 
     vector_t::vector_t(std::pmr::memory_resource* resource, const types::logical_value_t& value, uint64_t capacity)
         : type_(value.type())
+        , name_(resource)
         , validity_(resource, capacity) {
         reference(value);
     }
 
+    // A rebuilt column is the same column, so it is born carrying the identity of the column
+    // it was rebuilt from — see the header for why this is a constructor and not two setters
+    // the caller runs afterwards. Both halves are taken unconditionally: an unnamed source
+    // column produces an unnamed rebuild, because the name belongs to the COLUMN and not to
+    // the type the rebuild happens to be built from.
+    vector_t::vector_t(std::pmr::memory_resource* resource,
+                       types::complex_logical_type type,
+                       const vector_t& rebuild_of,
+                       uint64_t capacity)
+        : vector_t(resource, std::move(type), true, true, capacity) {
+        attoid_ = rebuild_of.attoid_;
+        set_name(rebuild_of.name());
+    }
+
+    // A slice of a column is the same column, so it keeps the column's identity (M3-B4).
     vector_t::vector_t(const vector_t& other, const indexing_vector_t& indexing, uint64_t count)
         : vector_type_(other.vector_type_)
+        , attoid_(other.attoid_)
         , type_(other.type_)
+        , name_(other.name_, other.resource())
         , validity_(other.resource(), count) {
         slice(other, indexing, count);
     }
 
     vector_t::vector_t(const vector_t& other, uint64_t offset, uint64_t count)
         : vector_type_(other.vector_type_)
+        , attoid_(other.attoid_)
         , type_(other.type())
+        , name_(other.name_, other.resource())
         , validity_(other.resource(), count) {
         slice(other, offset, offset + count);
     }
@@ -69,6 +89,7 @@ namespace components::vector {
                        uint64_t capacity)
         : vector_type_(vector_type::FLAT)
         , type_(std::move(type))
+        , name_(resource)
         , data_(nullptr)
         , validity_(resource, capacity) {
         if (create_data) {
@@ -101,29 +122,54 @@ namespace components::vector {
 
     vector_t::vector_t(const vector_t& other)
         : vector_type_(other.vector_type_)
+        , attoid_(other.attoid_)
         , type_(other.type_)
+        // Explicitly against the SOURCE's resource: a bare copy of a std::pmr::string takes
+        // its allocator from select_on_container_copy_construction, which is the default
+        // resource (rule 8). validity_ is copy-constructed on the next line and takes its
+        // own resource from `other` the same way.
+        , name_(other.name_, other.resource())
         , validity_(other.validity_) {
         reference(other);
     }
 
     vector_t& vector_t::operator=(const vector_t& other) {
         vector_type_ = other.vector_type_;
+        attoid_ = other.attoid_;
         type_ = other.type_;
+        // Assignment keeps THIS string's allocator (pmr does not propagate on copy
+        // assignment), so the characters land on this vector's own resource.
+        name_ = other.name_;
         reference(other);
         return *this;
     }
 
+    // A move takes the whole identity WITH the column and leaves the source without any of
+    // it: both halves of the chunk's schema record are derived from the column, so both have
+    // to go blank together — a moved-from column that still answered with its attoid or its
+    // name would let an append matcher claim it twice (M3-B4/B5; the shape is pinned in
+    // test_data_chunk_schema.cpp). attoid_ and name_ are cleared EXPLICITLY: a moved-from
+    // std::string is only required to be valid, not empty, and this contract needs empty.
     vector_t::vector_t(vector_t&& other) noexcept
         : vector_type_(other.vector_type_)
+        , attoid_(other.attoid_)
         , type_(std::move(other.type_))
+        , name_(std::move(other.name_))
         , data_(other.data_)
         , validity_(std::move(other.validity_))
         , buffer_(std::move(other.buffer_))
-        , auxiliary_(std::move(other.auxiliary_)) {}
+        , auxiliary_(std::move(other.auxiliary_)) {
+        other.attoid_ = catalog::INVALID_OID;
+        other.name_.clear();
+    }
 
     vector_t& vector_t::operator=(vector_t&& other) noexcept {
         vector_type_ = other.vector_type_;
+        attoid_ = other.attoid_;
+        other.attoid_ = catalog::INVALID_OID;
         type_ = std::move(other.type_);
+        name_ = std::move(other.name_);
+        other.name_.clear();
         data_ = other.data_;
         validity_ = std::move(other.validity_);
         buffer_ = std::move(other.buffer_);
@@ -319,7 +365,16 @@ namespace components::vector {
                         vector = &vector->child();
                         break;
                     default:
-                        throw std::runtime_error("unsupported vector type in nested element access");
+                        // Invariant violation, not a data error: every vector reaching here has
+                        // already been built with one of the four vector_type values. Throwing is
+                        // not an option -- the executor coroutines have an empty
+                        // unhandled_exception(), so under NDEBUG the exception would be swallowed
+                        // and the query would hang instead of failing. Aborting is loud and
+                        // immediate. (Same handling as components/types/operations_helper.hpp.)
+                        // TODO: carry a real error once vector_t::value() moves to value_ref_t and
+                        // can return core::result_wrapper_t (the boxing-site migration).
+                        assert(false && "unhandled vector_type in nested element access");
+                        std::abort();
                 }
             }
         };
@@ -419,7 +474,7 @@ namespace components::vector {
         }
     }
 
-    uint64_t vector_t::allocation_size(uint64_t cardinality) const {
+    core::result_wrapper_t<uint64_t> vector_t::allocation_size(uint64_t cardinality) const {
         if (!type_.is_nested()) {
             auto physical_size = type_.size();
             return cardinality * physical_size;
@@ -430,25 +485,32 @@ namespace components::vector {
                 auto total_size = physical_size * cardinality;
 
                 auto child_cardinality = static_cast<list_vector_buffer_t&>(*buffer_).capacity();
-                total_size += entry().allocation_size(child_cardinality);
-                return total_size;
+                auto child_size = entry().allocation_size(child_cardinality);
+                if (child_size.has_error()) {
+                    return child_size;
+                }
+                return total_size + child_size.value();
             }
             case types::physical_type::ARRAY: {
                 auto child_cardinality = static_cast<array_vector_buffer_t&>(*buffer_).size();
-
-                auto total_size = entry().allocation_size(child_cardinality);
-                return total_size;
+                return entry().allocation_size(child_cardinality);
             }
             case types::physical_type::STRUCT: {
                 uint64_t total_size = 0;
                 auto& children = entries();
                 for (auto& child : children) {
-                    total_size += child->allocation_size(cardinality);
+                    auto child_size = child->allocation_size(cardinality);
+                    if (child_size.has_error()) {
+                        return child_size;
+                    }
+                    total_size += child_size.value();
                 }
                 return total_size;
             }
             default:
-                throw std::logic_error("vector::vector_t::allocation_size not implemented for this type");
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string{"vector_t::allocation_size is not implemented for this type", resource()});
         }
     }
 
@@ -501,23 +563,26 @@ namespace components::vector {
         });
     }
 
-    void vector_t::push_back(types::logical_value_t value) {
-        static_cast<list_vector_buffer_t*>(auxiliary_.get())->push_back(std::move(value));
+    core::error_t vector_t::push_back(types::logical_value_t value) {
+        return static_cast<list_vector_buffer_t*>(auxiliary_.get())->push_back(std::move(value));
     }
 
-    void vector_t::set_value(uint64_t index, const types::logical_value_t& val) {
+    core::error_t vector_t::set_value(uint64_t index, const types::logical_value_t& val) {
         if (get_vector_type() == vector_type::DICTIONARY) {
             auto& indexing_vector = indexing();
             return child().set_value(indexing_vector.get_index(index), val);
         }
+        // A value carries no column, so it carries no column name: what has to match is the
+        // shape. Requiring the name here would reject every literal written into a named column.
         if (!val.is_null() && val.type() != type_) {
-            assert(false && "value has to be casted to vector's type before set_value");
-            return;
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string{"value has to be cast to the vector's type before set_value",
+                                                  resource()});
         }
 
         validity_.set(index, !val.is_null());
         if (val.is_null() && !struct_or_array_recursive(type_)) {
-            return;
+            return core::error_t::no_error();
         }
 
         switch (type_.to_physical_type()) {
@@ -584,31 +649,55 @@ namespace components::vector {
                 if (val.is_null()) {
                     for (size_t i = 0; i < children.size(); i++) {
                         auto& vec_child = children[i];
-                        vec_child->set_value(
+                        auto error = vec_child->set_value(
                             index,
                             types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
+                        if (error.contains_error()) {
+                            return error;
+                        }
                     }
                 } else {
                     auto& val_children = val.children();
-                    assert(children.size() == val_children.size());
+                    // A value with fewer fields than the struct type would be read past its
+                    // own children below.
+                    if (val_children.size() != children.size()) {
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"struct value has " + std::to_string(val_children.size()) +
+                                                 " fields, the column's struct type has " +
+                                                 std::to_string(children.size()),
+                                             resource()});
+                    }
                     for (size_t i = 0; i < children.size(); i++) {
-                        children[i]->set_value(index, val_children[i]);
+                        auto error = children[i]->set_value(index, val_children[i]);
+                        if (error.contains_error()) {
+                            return error;
+                        }
                     }
                 }
                 break;
             }
             case types::physical_type::LIST: {
+                // Also the MAP arm: a MAP is physically a LIST whose element is struct<key,value>,
+                // so a MAP value's children are its entry structs, one per key/value pair.
                 auto offset = size();
                 if (val.is_null()) {
                     auto& entry = reinterpret_cast<types::list_entry_t*>(data_)[index];
-                    push_back(types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
+                    if (auto error = push_back(
+                            types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
+                        error.contains_error()) {
+                        return error;
+                    }
                     entry.length = 1;
                     entry.offset = offset;
                 } else {
                     auto& val_children = val.children();
-                    if (!val_children.empty()) {
-                        for (uint64_t i = 0; i < val_children.size(); i++) {
-                            push_back(val_children[i]);
+                    for (uint64_t i = 0; i < val_children.size(); i++) {
+                        // An element the child vector refuses would otherwise be dropped while the
+                        // list_entry_t below still counted it, leaving the row pointing at
+                        // never-written storage.
+                        if (auto error = push_back(val_children[i]); error.contains_error()) {
+                            return error;
                         }
                     }
                     auto& entry = reinterpret_cast<types::list_entry_t*>(data_)[index];
@@ -622,22 +711,42 @@ namespace components::vector {
                 auto& child = entry();
                 if (val.is_null()) {
                     for (uint64_t i = 0; i < array_size; i++) {
-                        child.set_value(
+                        auto error = child.set_value(
                             index * array_size + i,
                             types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
+                        if (error.contains_error()) {
+                            return error;
+                        }
                     }
                 } else {
                     auto& val_children = val.children();
+                    // An ARRAY slot is fixed-width: a value with fewer elements than the column's
+                    // array_size cannot fill it, and the loop below would read val_children past
+                    // its end.
+                    if (val_children.size() != array_size) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"array value has " +
+                                                                  std::to_string(val_children.size()) +
+                                                                  " elements, the column's array width is " +
+                                                                  std::to_string(array_size),
+                                                              resource()});
+                    }
                     for (uint64_t i = 0; i < array_size; i++) {
                         // narrow per-element physical width (e.g. BIGINT literal into INT[N] slot)
-                        child.set_value(index * array_size + i, val_children[i]);
+                        auto error = child.set_value(index * array_size + i, val_children[i]);
+                        if (error.contains_error()) {
+                            return error;
+                        }
                     }
                 }
                 break;
             }
             default:
-                throw std::runtime_error("Unimplemented type for vector_t::set_value");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"vector_t::set_value is not implemented for this type",
+                                                      resource()});
         }
+        return core::error_t::no_error();
     }
 
     bool try_get_union_tag(const vector_t& vector, uint64_t index, uint8_t& result) {
@@ -695,7 +804,10 @@ namespace components::vector {
                 case vector_type::SEQUENCE:
                     return vector;
                 default:
-                    throw std::runtime_error("Unimplemented vector type for vector_t::get_value");
+                    // Invariant violation: see resolve_nested_element. An exception here would be
+                    // swallowed by the executor coroutine under NDEBUG.
+                    assert(false && "unhandled vector_type in vector_t::resolve_value_location");
+                    std::abort();
             }
         }
 
@@ -731,7 +843,9 @@ namespace components::vector {
                                                                   start + increment * static_cast<int64_t>(index));
                 }
                 default:
-                    throw std::runtime_error("Unimplemented vector type for vector_t::value");
+                    // Invariant violation: see resolve_nested_element.
+                    assert(false && "unhandled vector_type in vector_t::value_internal");
+                    std::abort();
             }
         }
 
@@ -814,8 +928,10 @@ namespace components::vector {
                             vector->type_,
                             reinterpret_cast<types::int128_t*>(vector->data_)[index]);
                     default:
-                        throw std::runtime_error(
-                            "incorrect decimal storage type encountered in vector_t::value_internal");
+                        // Invariant violation: a DECIMAL column always has one of the four integer
+                        // storage widths above. See resolve_nested_element.
+                        assert(false && "unhandled decimal storage type in vector_t::value_internal");
+                        std::abort();
                 }
             }
             case types::logical_type::POINTER:
@@ -847,8 +963,8 @@ namespace components::vector {
                 children.reserve(child_entries.size());
                 for (uint64_t child_idx = 0; child_idx < child_entries.size(); child_idx++) {
                     children.push_back(child_entries[child_idx]->value(index));
-                    if (vector->type_.child_types()[child_idx].has_alias()) {
-                        children.back().set_alias(vector->type_.child_name(child_idx));
+                    if (!vector->type_.child_types()[child_idx].field_name().empty()) {
+                        children.back().set_field_name(vector->type_.child_name(child_idx));
                     }
                 }
                 return types::logical_value_t::create_struct(vector->resource(),
@@ -910,7 +1026,9 @@ namespace components::vector {
                 return types::logical_value_t::create_variant(vector->resource(), children);
             }
             default:
-                throw std::runtime_error("Unimplemented type for value access");
+                // Invariant violation: see resolve_nested_element.
+                assert(false && "unhandled logical_type in vector_t::value_internal");
+                std::abort();
         }
     }
 
@@ -1028,19 +1146,22 @@ namespace components::vector {
         }
     }
 
+    // A cell is a VALUE. It has no column, so it has no column name — and stamping one on it
+    // used to cost a trip to the GLOBAL operator new per cell: a scalar column's type has no
+    // extension, so set_alias had to heap-allocate one (types.cpp:318-325), outside the pmr
+    // resource this vector was built with. Reading an M-row, N-column result through any
+    // binding paid M*N of those, and every binding then dropped the name on the floor — the
+    // cursor, the C ABI, python and arrow all read column names from the cursor's own
+    // descriptor, and the chunk's schema record (M3-B1) answers the same question for
+    // everyone else.
     types::logical_value_t vector_t::value(uint64_t index) const {
         if (!validity_.row_is_valid(index)) {
-            types::logical_value_t null_val(resource(), types::complex_logical_type{types::logical_type::NA});
-            if (type_.has_alias()) {
-                null_val.set_alias(type_.alias());
-            }
-            return null_val;
+            return types::logical_value_t{resource(), types::complex_logical_type{types::logical_type::NA}};
         }
         auto value = value_internal(index);
-        if (type_.has_alias()) {
-            value.set_alias(type_.alias());
-        }
         if (type_.type() != types::logical_type::FUNCTION && value.type().type() != types::logical_type::FUNCTION) {
+            // Shape equality: a cell has no column, so it has no column name to differ by, and
+            // the type no longer carries one anyway (M3-B5).
             assert(type_ == value.type());
         }
         return value;
@@ -1055,13 +1176,15 @@ namespace components::vector {
         }
     }
 
-    void vector_t::flatten(uint64_t count) {
+    core::error_t vector_t::flatten(uint64_t count) {
         switch (get_vector_type()) {
             case vector_type::FLAT:
                 break;
             case vector_type::DICTIONARY: {
                 vector_t other(resource(), type_, count);
-                vector_ops::copy(*this, other, count, 0, 0);
+                if (auto error = vector_ops::copy(*this, other, count, 0, 0); error.contains_error()) {
+                    return error;
+                }
                 this->reference(other);
                 break;
             }
@@ -1076,7 +1199,7 @@ namespace components::vector {
                 if (is_null() && type_.to_physical_type() != types::physical_type::ARRAY) {
                     validity_.set_all_invalid(count);
                     if (type_.to_physical_type() != types::physical_type::STRUCT) {
-                        return;
+                        return core::error_t::no_error();
                     }
                 }
                 switch (type_.to_physical_type()) {
@@ -1135,11 +1258,15 @@ namespace components::vector {
                         if (is_null()) {
                             validity_.set_all_invalid(count);
                             new_child.validity_.set_all_invalid(count * array_size);
-                            new_child.flatten(count * array_size);
+                            if (auto error = new_child.flatten(count * array_size); error.contains_error()) {
+                                return error;
+                            }
                         }
 
                         auto child_vec = std::make_unique<vector_t>(original_child);
-                        child_vec->flatten(count * array_size);
+                        if (auto error = child_vec->flatten(count * array_size); error.contains_error()) {
+                            return error;
+                        }
 
                         indexing_vector_t indexing(resource(), count * array_size);
                         for (uint64_t array_idx = 0; array_idx < count; array_idx++) {
@@ -1152,7 +1279,10 @@ namespace components::vector {
                             }
                         }
 
-                        vector_ops::copy(*child_vec, new_child, indexing, count * array_size, 0, 0);
+                        if (auto error = vector_ops::copy(*child_vec, new_child, indexing, count * array_size, 0, 0);
+                            error.contains_error()) {
+                            return error;
+                        }
                         auxiliary_ = std::unique_ptr<vector_buffer_t>(flattened_buffer.release());
                         break;
                     }
@@ -1164,14 +1294,17 @@ namespace components::vector {
                         for (auto& child : child_entries) {
                             assert(child->get_vector_type() == vector_type::CONSTANT);
                             auto vector = std::make_unique<vector_t>(*child);
-                            vector->flatten(count);
+                            if (auto error = vector->flatten(count); error.contains_error()) {
+                                return error;
+                            }
                             new_children.push_back(std::move(vector));
                         }
                         auxiliary_ = std::unique_ptr<vector_buffer_t>(normalized_buffer.release());
                         break;
                     }
                     default:
-                        throw std::runtime_error("Unimplemented type for flatten");
+                        return core::error_t(core::error_code_t::unimplemented_yet,
+                                             std::pmr::string{"flatten is not implemented for this type", resource()});
                 }
                 break;
             }
@@ -1184,12 +1317,13 @@ namespace components::vector {
                                                             type_,
                                                             std::max<uint64_t>(DEFAULT_VECTOR_CAPACITY, seq_count));
                 data_ = buffer_->data();
-                vector_ops::generate_sequence(*this, seq_count, start, increment);
-                break;
+                return vector_ops::generate_sequence(*this, seq_count, start, increment);
             }
             default:
-                throw std::runtime_error("Unimplemented type for normalize");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"flatten is not implemented for this vector type", resource()});
         }
+        return core::error_t::no_error();
     }
 
     template<class T>
@@ -1201,7 +1335,7 @@ namespace components::vector {
         }
     }
 
-    void vector_t::flatten(const indexing_vector_t& indexing, uint64_t count) {
+    core::error_t vector_t::flatten(const indexing_vector_t& indexing, uint64_t count) {
         switch (get_vector_type()) {
             case vector_type::FLAT:
                 break;
@@ -1211,8 +1345,7 @@ namespace components::vector {
 
                 buffer_ = std::make_unique<vector_buffer_t>(resource(), type_, count);
                 data_ = buffer_->data();
-                vector_ops::generate_sequence(*this, count, indexing, start, increment);
-                break;
+                return vector_ops::generate_sequence(*this, count, indexing, start, increment);
             }
             case vector_type::CONSTANT: {
                 bool is_null = this->is_null(0);
@@ -1227,7 +1360,7 @@ namespace components::vector {
                 if (is_null && type_.to_physical_type() != types::physical_type::ARRAY) {
                     validity_.set_all_invalid(count);
                     if (type_.to_physical_type() != types::physical_type::STRUCT) {
-                        return;
+                        return core::error_t::no_error();
                     }
                 }
                 switch (type_.to_physical_type()) {
@@ -1316,20 +1449,25 @@ namespace components::vector {
                         auto& child_entries = static_cast<struct_vector_buffer_t*>(auxiliary_.get())->entries();
                         for (auto& child : child_entries) {
                             auto vector = std::make_unique<vector_t>(*child);
-                            vector->flatten(count);
+                            if (auto error = vector->flatten(count); error.contains_error()) {
+                                return error;
+                            }
                             new_children.push_back(std::move(vector));
                         }
                         auxiliary_ = std::shared_ptr<vector_buffer_t>(normalized_buffer.release());
                         break;
                     }
                     default:
-                        throw std::runtime_error("Unimplemented type for normalize with indexing vector");
+                        return core::error_t(core::error_code_t::unimplemented_yet,
+                                             std::pmr::string{"flatten is not implemented for this type", resource()});
                 }
                 break;
             }
             default:
-                throw std::runtime_error("Unimplemented type for normalize with indexing vector");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"flatten is not implemented for this vector type", resource()});
         }
+        return core::error_t::no_error();
     }
 
     void vector_t::to_unified_format(uint64_t count, unified_vector_format& format) {

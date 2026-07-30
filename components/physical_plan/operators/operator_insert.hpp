@@ -25,6 +25,8 @@ namespace components::operators {
         // append, so 'INSERT INTO t (id, a.b) SELECT 5, 55' lands 5,55 in id,a/b
         // rather than in projection-named columns that leave id/a.b null. Left
         // empty for INSERT ... VALUES, whose raw-data columns are already named.
+        // Setting this also makes the write set identity-free — see push(), where
+        // the rename drops the source attoid it renames over.
         void set_rename_targets(std::pmr::vector<std::pmr::string> targets) { rename_targets_ = std::move(targets); }
 
         // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds

@@ -1,5 +1,6 @@
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
+#include <components/tests/temp_dir.hpp>
 #include <memory>
 #include <memory_resource>
 #include <actor-zeta/spawn.hpp>
@@ -76,7 +77,7 @@ constexpr auto kMainDb = catalog::well_known_oid::main_database;
 constexpr catalog::oid_t kTestTableOidA = 16500;
 constexpr catalog::oid_t kTestTableOidB = 16501;
 
-static const std::filesystem::path base_mgr_path = "/tmp/otterbrix_test_wal_manager";
+static const std::filesystem::path base_mgr_path = test_temp_path("otterbrix_test_wal_manager");
 
 // ---------------------------------------------------------------------------
 // Fixture: spawns a manager_wal_replicate_t (which creates workers internally
@@ -93,7 +94,7 @@ struct test_wal_manager {
                      std::uintmax_t auto_checkpoint_threshold_bytes = 0)
         : path_(path)
         , resource_()
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(initialization_logger("python", test_temp_path("docker_logs")))
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);

@@ -43,8 +43,6 @@ namespace components::logical_plan {
 
     const limit_t& node_limit_t::limit() const { return limit_; }
 
-    hash_t node_limit_t::hash_impl() const { return 0; }
-
     std::string node_limit_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$limit: " << limit_.limit();

@@ -266,32 +266,15 @@ namespace components::operators::aggregate {
         }
 
         if (agg == builtin_agg::AVG) {
-            double avg = state.count > 0 ? state.f64 / static_cast<double>(state.count) : 0.0;
-            // Return in the original column type (matches existing kernel behavior)
-            switch (col_type) {
-                case types::logical_type::TINYINT:
-                    return types::logical_value_t(resource, static_cast<int8_t>(avg));
-                case types::logical_type::SMALLINT:
-                    return types::logical_value_t(resource, static_cast<int16_t>(avg));
-                case types::logical_type::INTEGER:
-                    return types::logical_value_t(resource, static_cast<int32_t>(avg));
-                case types::logical_type::BIGINT:
-                    return types::logical_value_t(resource, static_cast<int64_t>(avg));
-                case types::logical_type::UTINYINT:
-                    return types::logical_value_t(resource, static_cast<uint8_t>(avg));
-                case types::logical_type::USMALLINT:
-                    return types::logical_value_t(resource, static_cast<uint16_t>(avg));
-                case types::logical_type::UINTEGER:
-                    return types::logical_value_t(resource, static_cast<uint32_t>(avg));
-                case types::logical_type::UBIGINT:
-                    return types::logical_value_t(resource, static_cast<uint64_t>(avg));
-                case types::logical_type::FLOAT:
-                    return types::logical_value_t(resource, static_cast<float>(avg));
-                case types::logical_type::DOUBLE:
-                    return types::logical_value_t(resource, avg);
-                default:
-                    return types::logical_value_t(resource, avg);
-            }
+            // AVG = sum / count is a RATIO, so the mean of an integral column is a real
+            // number (mean of {1,2} is 1.5) and the result is a DOUBLE for EVERY input
+            // type — same answer the compute avg kernel gives (avg_finalize) and the
+            // same type the plan stamps for the column (make_avg_func's signature).
+            // Casting back to the input type truncated the mean AND mistyped the cell,
+            // so a caller reading it as a double got a reinterpreted integer bit
+            // pattern. col_type is therefore not consulted here.
+            return types::logical_value_t(resource,
+                                          state.count > 0 ? state.f64 / static_cast<double>(state.count) : 0.0);
         }
 
         // SUM, MIN, MAX — return in the original column type

@@ -5,7 +5,7 @@
 #include <components/logical_plan/node_group.hpp> // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
 #include <components/physical_plan/operators/operator_group.hpp> // operator_group_t + group_key_t (aggregate-pushdown reduce)
-#include <components/physical_plan/operators/predicates/expression_filter_bridge.hpp> // attach_expression_evaluators (WHERE f(col) pushdown)
+#include <components/physical_plan/operators/expression_filter_bridge.hpp> // attach_expression_evaluators (WHERE f(col) pushdown)
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp>                   // components::vector::cells_equal (typed FK hash-verify)
@@ -308,13 +308,25 @@ namespace services::disk {
         }
         auto* s = entry->storage.get();
         // For each schema column, add it unless a same-named column already exists
-        // (idempotent replay). The column type carries its alias = the column name.
+        // (idempotent replay). Name and type both come from the chunk's own schema record
+        // (M3-B2); the loop adds columns to the STORAGE, never to the chunk, so one read of
+        // the memo covers the whole pass.
+        //
+        // M3-B4 leaves this by-name and gives the added column no attoid, because there is
+        // none to give: this is PHYSICAL_ADD_COLUMN replay, and the chunk it reads was decoded
+        // by data_chunk_binary, which does not carry attoid (its header has no version field,
+        // so widening it would break existing WAL unversioned). The column the catalog knows
+        // does have an attoid — it is in the replayed pg_attribute row — but nothing joins the
+        // two here, so the storage column stays identity-less and routes by name for the rest
+        // of its life. Closing that is what durable storage-side attoid would buy; see the
+        // DROP COLUMN note in docs/logical-plan-and-value-improvements.md.
+        const auto& incoming_schema = schema_chunk.schema();
         for (uint64_t col = 0; col < schema_chunk.column_count(); ++col) {
-            const auto ctype = schema_chunk.data[col].type();
-            if (!ctype.has_alias()) {
+            if (incoming_schema[col].name.empty()) {
                 continue;
             }
-            const auto name = std::string(ctype.alias());
+            const auto& ctype = incoming_schema[col].type;
+            const auto name = std::string(incoming_schema[col].name);
             bool present = false;
             for (const auto& tc : s->columns()) {
                 if (tc.name() == name) {
@@ -453,6 +465,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::compact_relkind_g_storage_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::compact_dropped_columns_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::compact_dropped_columns_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::mark_storage_dropped_many_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::mark_storage_dropped_many_inner, msg);
                 break;
@@ -524,7 +540,7 @@ namespace services::disk {
 
         // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
-            s->adopt_schema(data->types());
+            s->adopt_schema(data->schema());
         }
 
         // 1b. Dynamic schema growth for IN_MEMORY storages. Trigger: alias
@@ -534,12 +550,24 @@ namespace services::disk {
             (is_computed_table || data->column_count() != s->columns().size()) &&
             entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
             std::vector<components::table::column_definition_t> new_columns;
+            // M3-B2: the incoming column's identity comes from the chunk's schema record.
+            // The pass grows the STORAGE, not the chunk, so one read of the memo covers it.
+            //
+            // M3-B4 leaves this by-name, and the ORDER is why. A column created here gets no
+            // attoid because none exists yet: the attoid for a computing table's column is
+            // minted by operator_computed_field_register_t, which the executor sequences AFTER
+            // this insert (executor.cpp wraps them as sequence_t(insert, register)) and which
+            // reads the column list off the very write-set this stage is growing the storage
+            // from. So the storage column is born identity-less and its name, plus its type
+            // for a same-named multi-type variant, is all the append matcher below can use.
+            // Routing a computing table by attoid needs that sequence inverted first.
+            const auto& incoming_schema = data->schema();
             for (uint64_t col = 0; col < data->column_count(); col++) {
-                if (!data->data[col].type().has_alias()) {
+                if (incoming_schema[col].name.empty()) {
                     continue;
                 }
-                const auto alias = data->data[col].type().alias();
-                const auto ctype = data->data[col].type().type();
+                const auto alias = std::string(incoming_schema[col].name);
+                const auto ctype = incoming_schema[col].type.type();
                 bool present = false;
                 for (const auto& tc : s->columns()) {
                     if (tc.name() == alias && (!is_computed_table || tc.type().type() == ctype)) {
@@ -548,9 +576,7 @@ namespace services::disk {
                     }
                 }
                 if (!present) {
-                    auto ct = data->data[col].type();
-                    ct.set_alias(alias);
-                    new_columns.emplace_back(alias, ct);
+                    new_columns.emplace_back(alias, incoming_schema[col].type);
                 }
             }
             if (!new_columns.empty()) {
@@ -578,22 +604,86 @@ namespace services::disk {
 
             std::vector<components::vector::vector_t> expanded_data;
             expanded_data.reserve(table_columns.size());
-            // Computing tables match by (name, type) so each type-variant lands in
-            // its own physical column; unmatched variants get NULL. Positional
-            // fallback is disabled there (it assumes one column per name).
+            // Positional fallback assumes one column per name, so it stays off for computing
+            // tables (which legitimately expose several same-named columns of different type).
             const bool positional_fallback = !is_computed_table && (data->column_count() == table_columns.size());
-            for (size_t t = 0; t < table_columns.size(); t++) {
-                bool found = false;
-                for (uint64_t col = 0; col < data->column_count(); col++) {
-                    if (data->data[col].type().has_alias() &&
-                        data->data[col].type().alias() == table_columns[t].name() &&
-                        (!is_computed_table || data->data[col].type().type() == table_columns[t].type().type())) {
-                        expanded_data.push_back(std::move(data->data[col]));
-                        found = true;
+
+            // M3-B4. Resolve every table column to its source chunk column BEFORE moving
+            // anything, in three passes of decreasing authority: catalog identity, then name,
+            // then position. Two things changed here and they are linked.
+            //
+            // First, the claim is now EXPLICIT. What used to stop a second table column from
+            // claiming a chunk column already taken was the move itself: moving a vector_t
+            // takes its type with it, and complex_logical_type::extension_ is a unique_ptr, so
+            // a moved-from column answered with an empty name and matched nothing. That is
+            // an accident of how names are stored, and it does not extend to an attoid, which
+            // is a plain integer. `claimed` says out loud what was previously being inferred.
+            //
+            // Second, because nothing moves during resolution, the schema memo is read ONCE
+            // per pass instead of once per table column — the re-read that the old loop needed
+            // existed only to observe those moves.
+            //
+            // Resolving all of one kind before any of the next is what makes "identity
+            // outranks name" true regardless of column order: in a single interleaved pass an
+            // earlier table column with no attoid could take, by name, the very column a later
+            // one would have claimed by identity.
+            std::vector<int64_t> source_column(table_columns.size(), -1);
+            std::vector<bool> claimed(data->column_count(), false);
+            {
+                const auto& incoming_schema = data->schema();
+                // Pass 1 — catalog identity. Only columns that have one take part; an attoid
+                // is unique per relation, so no type or name is needed to disambiguate it.
+                for (size_t t = 0; t < table_columns.size(); t++) {
+                    const components::catalog::oid_t table_attoid = table_columns[t].attoid();
+                    if (table_attoid == components::catalog::INVALID_OID) {
+                        continue;
+                    }
+                    for (uint64_t col = 0; col < data->column_count(); col++) {
+                        if (!claimed[col] && incoming_schema[col].attoid == table_attoid) {
+                            source_column[t] = static_cast<int64_t>(col);
+                            claimed[col] = true;
+                            break;
+                        }
+                    }
+                }
+                // Pass 2 — name, for the columns pass 1 could not place. This is not a
+                // fallback: it is the answer for an input that genuinely has no catalog
+                // identity — a parse-time write-set, a chunk decoded from the WAL, a column
+                // created by dynamic schema growth. The (name, type) composite key survives
+                // HERE and only here: a computing table's columns are created at append time
+                // by the growth stage below, while their attoid is minted afterwards by the
+                // sibling operator_computed_field_register_t, so same-named multi-type
+                // variants reach this pass with no identity and the type is the only thing
+                // that tells them apart.
+                for (size_t t = 0; t < table_columns.size(); t++) {
+                    if (source_column[t] >= 0) {
+                        continue;
+                    }
+                    for (uint64_t col = 0; col < data->column_count(); col++) {
+                        if (claimed[col] || incoming_schema[col].name.empty()) {
+                            continue;
+                        }
+                        if (std::string_view{incoming_schema[col].name} != table_columns[t].name()) {
+                            continue;
+                        }
+                        if (is_computed_table && incoming_schema[col].type.type() != table_columns[t].type().type()) {
+                            continue;
+                        }
+                        source_column[t] = static_cast<int64_t>(col);
+                        claimed[col] = true;
                         break;
                     }
                 }
-                if (!found && positional_fallback && t < data->column_count()) {
+            }
+            for (size_t t = 0; t < table_columns.size(); t++) {
+                bool found = source_column[t] >= 0;
+                if (found) {
+                    expanded_data.push_back(std::move(data->data[static_cast<size_t>(source_column[t])]));
+                }
+                // Pass 3 — position, last and only for equal widths. It can no longer take a
+                // column that identity or name already spoke for.
+                if (!found && positional_fallback && t < data->column_count() && !claimed[t]) {
+                    claimed[t] = true;
                     expanded_data.push_back(std::move(data->data[t]));
                     found = true;
                 }
@@ -631,11 +721,18 @@ namespace services::disk {
 
         // 3. Dedup
         if (s->total_rows() > 0) {
+            // M3-B2: both "_id" lookups read their chunk's schema record. Neither loop
+            // mutates its chunk, so one read of each memo covers the whole search.
             int64_t id_col = -1;
-            for (uint64_t col = 0; col < data->column_count(); col++) {
-                if (data->data[col].type().has_alias() && data->data[col].type().alias() == "_id") {
-                    id_col = static_cast<int64_t>(col);
-                    break;
+            {
+                // Scoped: `data` is re-seated further down this block, which would leave a
+                // reference to its memo dangling.
+                const auto& incoming_schema = data->schema();
+                for (uint64_t col = 0; col < data->column_count(); col++) {
+                    if (std::string_view{incoming_schema[col].name} == "_id") {
+                        id_col = static_cast<int64_t>(col);
+                        break;
+                    }
                 }
             }
             if (id_col >= 0) {
@@ -643,8 +740,9 @@ namespace services::disk {
                 s->scan(*existing, nullptr, -1);
 
                 int64_t existing_id_col = -1;
+                const auto& existing_schema = existing->schema();
                 for (uint64_t col = 0; col < existing->column_count(); col++) {
-                    if (existing->data[col].type().has_alias() && existing->data[col].type().alias() == "_id") {
+                    if (std::string_view{existing_schema[col].name} == "_id") {
                         existing_id_col = static_cast<int64_t>(col);
                         break;
                     }
@@ -696,15 +794,17 @@ namespace services::disk {
                 auto tgt_type = table_columns[i].type();
                 if (src_type != tgt_type && src_type.is_convertable_to(tgt_type)) {
                     auto& src_vec = data->data[i];
-                    auto target_type = table_columns[i].type();
-                    if (src_vec.type().has_alias()) {
-                        target_type.set_alias(src_vec.type().alias());
-                    }
+                    const auto target_type = table_columns[i].type();
                     const bool array_target = target_type.type() == components::types::logical_type::ARRAY;
                     // A whole-column NULL literal arrives as an NA-typed source vector, which
                     // carries no values (and no meaningful validity mask) — every row is null.
                     const bool src_is_null_type = src_vec.type().type() == components::types::logical_type::NA;
-                    components::vector::vector_t casted(resource(), target_type, data->size());
+                    // A promoted column is the SAME column, so it is BORN with both halves of its
+                    // identity. This used to copy the name into the target TYPE, which was the
+                    // only place a name could be put (M3-B5) — and the attoid was dropped
+                    // outright, silently demoting the column from identity routing to name
+                    // routing on every type promotion.
+                    components::vector::vector_t casted(resource(), target_type, src_vec, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
                             // A fixed ARRAY column reconciles a length mismatch against the
@@ -787,14 +887,19 @@ namespace services::disk {
             //       earlier ADD_COLUMN message. Replay applies records in ascending
             //       wal_id order, so the column re-add precedes the row replay.
             if (!wal_added_columns.empty()) {
-                std::pmr::vector<components::types::complex_logical_type> col_types(resource());
-                col_types.reserve(wal_added_columns.size());
+                components::vector::schema_t added_schema(resource());
+                added_schema.reserve(wal_added_columns.size());
                 for (const auto& col : wal_added_columns) {
-                    auto t = col.type();
-                    t.set_alias(col.name());
-                    col_types.push_back(t);
+                    components::vector::column_schema_t record{resource()};
+                    record.name.assign(col.name().data(), col.name().size());
+                    record.type = col.type();
+                    added_schema.push_back(std::move(record));
                 }
-                auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
+                // The WAL's ADD_COLUMN record identifies each added column by NAME, and the
+                // name is on the column now, so the chunk is built FROM the schema instead of
+                // from a type list that used to be carrying names inside its types.
+                auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(
+                    components::vector::make_chunk(resource(), added_schema, 0));
                 schema_chunk->set_cardinality(0);
                 [[maybe_unused]] auto _sc = actor_zeta::send(manager_wal_addr_,
                                                              &wal::manager_wal_replicate_t::write_physical_add_column,
@@ -972,9 +1077,71 @@ namespace services::disk {
         if (!data || entry->storage == nullptr) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
-        // No preprocessing here: the manager body already aligned `data` with the
-        // canonical schema (the twin shares column defs via bootstrap_inner_sync). The
-        // wrapper carries any write_conflict / out_of_memory as a value.
+        // An MVCC update is a delete + an APPEND of the new row version, so `data` has to be as
+        // wide as the table's PHYSICAL column list. It usually already is — the plan builds the
+        // updated chunk out of the scanned one, and the scan reads the whole relation.
+        //
+        // ALTER TABLE ... DROP COLUMN is what makes it narrower: the scan now hands the plan the
+        // LIVE logical schema (scan_identity_projection_t), while the tombstoned column keeps its
+        // physical slot until VACUUM. Widen by the same key the projection narrowed by — catalog
+        // identity — and give the slot the logical schema no longer names a NULL, which is the
+        // only value a column nothing can read can honestly take.
+        const auto& table_columns = entry->storage->columns();
+        if (!table_columns.empty() && data->column_count() > 0 && data->column_count() != table_columns.size()) {
+            std::vector<int64_t> source_column(table_columns.size(), -1);
+            std::vector<bool> claimed(data->column_count(), false);
+            {
+                // Resolve every table column BEFORE moving anything: a moved-from vector_t no
+                // longer answers with its attoid, so an interleaved pass would depend on order
+                // (same reason the append matcher above resolves in full passes).
+                const auto& incoming_schema = data->schema();
+                for (size_t t = 0; t < table_columns.size(); t++) {
+                    const components::catalog::oid_t table_attoid = table_columns[t].attoid();
+                    if (table_attoid == components::catalog::INVALID_OID) {
+                        continue;
+                    }
+                    for (uint64_t col = 0; col < data->column_count(); col++) {
+                        if (!claimed[col] && incoming_schema[col].attoid == table_attoid) {
+                            source_column[t] = static_cast<int64_t>(col);
+                            claimed[col] = true;
+                            break;
+                        }
+                    }
+                }
+                // Pass 2 — name, the same second key the append matcher uses and for the same
+                // reason: the updated chunk is rebuilt from the scanned chunk's types(), and a
+                // type carries the column's NAME but never its identity. Not a fallback — it is
+                // the answer for an input that genuinely arrives without one.
+                for (size_t t = 0; t < table_columns.size(); t++) {
+                    if (source_column[t] >= 0) {
+                        continue;
+                    }
+                    for (uint64_t col = 0; col < data->column_count(); col++) {
+                        if (claimed[col] || incoming_schema[col].name.empty()) {
+                            continue;
+                        }
+                        if (std::string_view{incoming_schema[col].name} != table_columns[t].name()) {
+                            continue;
+                        }
+                        source_column[t] = static_cast<int64_t>(col);
+                        claimed[col] = true;
+                        break;
+                    }
+                }
+            }
+            std::vector<components::vector::vector_t> widened;
+            widened.reserve(table_columns.size());
+            for (size_t t = 0; t < table_columns.size(); t++) {
+                if (source_column[t] >= 0) {
+                    widened.push_back(std::move(data->data[static_cast<size_t>(source_column[t])]));
+                    continue;
+                }
+                widened.emplace_back(resource(), table_columns[t].type(), data->size());
+                widened.back().validity().set_all_invalid(data->size());
+            }
+            data->data = std::move(widened);
+        }
+        // The wrapper carries any write_conflict / out_of_memory as a value.
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -1193,9 +1360,11 @@ namespace services::disk {
                                                                                      std::move(args),
                                                                                      agg.distinct)));
         }
-        // MANDATORY: forward the plan-resolved FINAL output types so an empty-slice scalar
-        // result stays typed (SUM(int)->INTEGER NULL) instead of the 0-byte NA sentinel (gcc -O3).
-        group.set_output_types(spec.output_types);
+        // MANDATORY: forward the plan-resolved FINAL output columns so an empty-slice scalar
+        // result stays typed (SUM(int)->INTEGER NULL) instead of the 0-byte NA sentinel (gcc -O3),
+        // and named as the coordinator named it. The names come from the spec's own per-column
+        // names — the same gk.name / agg.alias the loops above fed into this operator.
+        group.set_output_schema(spec.output_schema(resource));
 
         // (3) Pipeline context for group.push/finalize. Build IN PLACE (its move-ctor DROPS
         //     txn/function_registry — NEVER move it). No parameters/session_tz are needed: the
@@ -1453,6 +1622,11 @@ namespace services::disk {
                 if (src.get_vector_type() != components::vector::vector_type::FLAT) {
                     src.flatten(chunk_rows);
                 }
+                // The owning copy is the SAME column, so it says the same things about itself.
+                // Both halves used to ride along inside `types`; since M3-B5 neither does, and
+                // this chunk feeds the index engine, which resolves its keys BY NAME.
+                one.data[col].set_name(src.name());
+                one.data[col].set_attoid(src.attoid());
                 components::vector::vector_ops::copy(src, one.data[col], chunk_rows, 0, 0);
             }
             components::vector::vector_ops::copy(chunk.row_ids, one.row_ids, chunk_rows, 0, 0);
@@ -1751,7 +1925,7 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
+    agent_disk_t::unique_future<components::vector::schema_t>
     agent_disk_t::storage_types_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
@@ -1759,7 +1933,7 @@ namespace services::disk {
                   "agent_disk[{}]::storage_types_inner: oid {} not owned by this agent — fallback to manager",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return std::pmr::vector<components::types::complex_logical_type>{resource()};
+            co_return components::vector::schema_t{resource()};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
@@ -1767,9 +1941,27 @@ namespace services::disk {
                   "agent_disk[{}]::storage_types_inner: oid {} is a DISK record-only marker — fallback to manager",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return std::pmr::vector<components::types::complex_logical_type>{resource()};
+            co_return components::vector::schema_t{resource()};
         }
-        co_return entry->storage->types();
+        // Built from the storage's OWN column list — the same list types() projects, plus the two
+        // things a projection of it drops: the column's name (which only reaches a caller today
+        // because it is smuggled inside the type) and its catalog identity (which reached nobody).
+        // It is the same source data_table_t::stamp_column_identity stamps onto a scanned chunk,
+        // so a schema and a chunk of the same relation agree by construction.
+        //
+        // The records are built on this agent's resource and MOVED out; the agent retains nothing
+        // that points into them (rule 10).
+        const auto& columns = entry->storage->columns();
+        components::vector::schema_t schema{resource()};
+        schema.reserve(columns.size());
+        for (const auto& column : columns) {
+            components::vector::column_schema_t record{resource()};
+            record.attoid = static_cast<components::catalog::oid_t>(column.attoid());
+            record.name.assign(column.name().data(), column.name().size());
+            record.type = column.type();
+            schema.push_back(std::move(record));
+        }
+        co_return std::move(schema);
     }
 
     agent_disk_t::unique_future<uint64_t> agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
@@ -2267,7 +2459,7 @@ namespace services::disk {
             row.copy(local, 0);
 
             if (!s->has_schema() && local.column_count() > 0) {
-                s->adopt_schema(local.types());
+                s->adopt_schema(local.schema());
             }
 
             const auto& table_columns = s->columns();
@@ -2279,11 +2471,21 @@ namespace services::disk {
 
                 std::vector<components::vector::vector_t> expanded_data;
                 expanded_data.reserve(table_columns.size());
+                // M3-B4: name-routed, and it stays that way. Both sides of this match are
+                // pg_catalog system tables, whose column_definition_t list is built by
+                // system_table_schemas.cpp at bootstrap and never passes through
+                // build_create_table_writes — so no attoid is ever minted for them, on either
+                // side. An identity pass here could not fire; what B4 does change is the claim,
+                // which is now explicit instead of relying on a moved-from column answering
+                // with an empty name.
+                std::vector<bool> claimed(local.column_count(), false);
+                const auto& incoming_schema = local.schema();
                 for (size_t t = 0; t < table_columns.size(); t++) {
                     bool found = false;
                     for (uint64_t col = 0; col < local.column_count(); col++) {
-                        if (local.data[col].type().has_alias() &&
-                            local.data[col].type().alias() == table_columns[t].name()) {
+                        if (!claimed[col] && !incoming_schema[col].name.empty() &&
+                            std::string_view{incoming_schema[col].name} == table_columns[t].name()) {
+                            claimed[col] = true;
                             expanded_data.push_back(std::move(local.data[col]));
                             found = true;
                             break;
@@ -2306,11 +2508,11 @@ namespace services::disk {
                     if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
                         (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
                         auto& src_vec = local.data[i];
-                        auto target_type = table_columns[i].type();
-                        if (src_vec.type().has_alias()) {
-                            target_type.set_alias(src_vec.type().alias());
-                        }
-                        components::vector::vector_t casted(resource(), target_type, local.size());
+                        const auto target_type = table_columns[i].type();
+                        // The promoted column is the same column (M3-B4/B5): the rebuild
+                        // constructor gives it src_vec's name and identity, instead of the name
+                        // being copied into the target type and the identity being lost.
+                        components::vector::vector_t casted(resource(), target_type, src_vec, local.size());
                         for (uint64_t r = 0; r < local.size(); r++) {
                             if (src_vec.validity().row_is_valid(r)) {
                                 // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
@@ -2421,8 +2623,38 @@ namespace services::disk {
         }
         auto& entry = it->second;
 
-        // Scan all columns for the attoid row, capturing row_id + a snapshot of
-        // every column value. attoid is never reused, so at most one row matches.
+        // Which snapshot this scan reads under is the whole question, because the row this
+        // patch is about was written by ctx.txn moments ago and is not published yet — so
+        // the txn-less "see all committed" view cannot see it, while ctx.txn can.
+        //
+        // dropped_at reads under ctx.txn, and has to. operator_alter_column_drop deletes the
+        // live pg_attribute row and appends a tombstone carrying the SAME attoid; to a
+        // see-all view BOTH are present and the doomed original comes first, so the patch
+        // landed on the row that was about to disappear and the tombstone's
+        // dropped_at_commit_id stayed at its placeholder 0 forever. Under ctx.txn the
+        // ambiguity does not arise rather than being broken by a tie-break: a transaction
+        // sees its own writes and does not see its own deletes, so exactly ONE row for this
+        // attoid is in front of the scan and it is the one this transaction just wrote.
+        //
+        // added_at keeps reading the see-all view, and therefore keeps finding nothing and
+        // patching nothing, exactly as before. This is NOT the state it should be left in —
+        // it is a scoped hold. Switching it to ctx.txn makes the patch land (verified), and
+        // a column ADDed by ALTER TABLE then becomes unresolvable to the NEXT statement:
+        // `INSERT INTO t (id, name, a, b) ...` fails with "path: 'a' was not found"
+        // (integration::cpp::streaming_ddl_leaf::multi_clause_alter_streams and
+        // integration::cpp::idx_null::add_column_then_create_index). The added_at value
+        // itself is not obviously the culprit — resolve_table hides a column only when
+        // added_at > snapshot.start_time, and the commit id it writes (6 in that run) is
+        // BELOW the next statement's start time (7) on the one clock both come from. So
+        // something else about writing that row in place breaks it, and finding out what is
+        // its own investigation, not a rider on this one. Handed back.
+        //
+        // Neither field was read by anything until now, which is why both could be wrong in
+        // silence: resolve_table hides a tombstone on attisdropped before it ever looks at
+        // dropped_at_commit_id, and added_at_commit_id at 0 reads as "added before every
+        // snapshot" — which is what a visible column already implied. VACUUM's physical
+        // column compaction is the first reader that needs one of them to be right.
+        const bool read_own_writes = kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at;
         auto& tbl = entry->table_storage.table();
         const std::size_t col_count = tbl.column_count();
         std::vector<std::int64_t> all_col_indices;
@@ -2436,21 +2668,22 @@ namespace services::disk {
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);
 
-        detail::inline_scan(tbl,
-                            all_col_indices,
-                            &scan_resource,
-                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                if (chunk.is_null(0, i))
-                                    return true;
-                                if (static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) !=
-                                    attoid)
-                                    return true;
-                                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-                                for (std::size_t c = 0; c < col_count; ++c) {
-                                    row_values.push_back(chunk.value(static_cast<uint64_t>(c), i));
-                                }
-                                return false; // single-row identity — short-circuit
-                            });
+        detail::inline_scan_in_txn(tbl,
+                                   all_col_indices,
+                                   &scan_resource,
+                                   read_own_writes ? ctx.txn : components::table::transaction_data{0, 0},
+                                   [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                       if (chunk.is_null(0, i))
+                                           return true;
+                                       if (static_cast<components::catalog::oid_t>(
+                                               chunk.get_value<std::uint32_t>(0, i)) != attoid)
+                                           return true;
+                                       row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                                       for (std::size_t c = 0; c < col_count; ++c) {
+                                           row_values.push_back(chunk.value(static_cast<uint64_t>(c), i));
+                                       }
+                                       return false; // single-row identity — short-circuit
+                                   });
         if (row_ids.empty()) {
             trace(log_,
                   "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: attoid={} not found (skipping)",
@@ -2479,14 +2712,16 @@ namespace services::disk {
         // so direct_update_sync's name-match routing lands each vector on the correct
         // storage column.
         const auto& table_columns = entry->table_storage.table().columns();
-        std::pmr::vector<components::types::complex_logical_type> chunk_types(resource());
-        chunk_types.reserve(table_columns.size());
+        components::vector::schema_t patch_schema(resource());
+        patch_schema.reserve(table_columns.size());
         for (const auto& col_def : table_columns) {
-            auto t = col_def.type();
-            t.set_alias(col_def.name());
-            chunk_types.push_back(std::move(t));
+            components::vector::column_schema_t record{resource()};
+            record.name.assign(col_def.name().data(), col_def.name().size());
+            record.type = col_def.type();
+            record.attoid = col_def.attoid();
+            patch_schema.push_back(std::move(record));
         }
-        components::vector::data_chunk_t patch(resource(), chunk_types, 1);
+        components::vector::data_chunk_t patch(components::vector::make_chunk(resource(), patch_schema, 1));
         patch.set_cardinality(1);
         for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
             if (row_values[c].is_null()) {
@@ -2499,7 +2734,7 @@ namespace services::disk {
         // WAL physical_update: the chunk mirrors the patch chunk full-width so replay's
         // direct_update_sync takes the same alias-matching path.
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            components::vector::data_chunk_t wal_chunk(resource(), chunk_types, 1);
+            components::vector::data_chunk_t wal_chunk(components::vector::make_chunk(resource(), patch_schema, 1));
             wal_chunk.set_cardinality(1);
             for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
                 if (row_values[c].is_null()) {
@@ -2578,6 +2813,61 @@ namespace services::disk {
             }
         }
         co_return dropped;
+    }
+
+    // Identity-keyed physical column compaction for an ordinary (relkind='r') relation.
+    // See the header for the serialization argument and for why the cursor gate is the
+    // only thing a single mailbox handler does not already give us.
+    agent_disk_t::unique_future<std::uint64_t>
+    agent_disk_t::compact_dropped_columns_inner(components::catalog::oid_t table_oid,
+                                                std::pmr::vector<components::catalog::oid_t> dead_attoids,
+                                                std::uint64_t compact_watermark) {
+        if (dead_attoids.empty()) {
+            co_return 0;
+        }
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr) {
+            co_return 0; // not owned by this agent
+        }
+        auto& entry = it->second;
+        if (entry->is_computed) {
+            // relkind='g' has no catalog identity on its storage columns to key on — its
+            // columns are created by append-time schema growth and get their attoid
+            // afterwards, from pg_computed_column. compact_relkind_g_storage_inner is its
+            // path, and it matches by name because name is all a 'g' column has.
+            co_return 0;
+        }
+
+        // The one piece of state that outlives a mailbox handler: a streaming fetch-next
+        // cursor holds an ABSOLUTE row position into the un-swapped collection, and the
+        // rebuild below replaces that collection. Skip the oid; the next VACUUM round takes
+        // it once the cursor drains. Same gate as checkpoint_inner / vacuum_inner.
+        if (has_active_scan_for_oid(table_oid)) {
+            trace(log_,
+                  "agent_disk[{}]::compact_dropped_columns_inner: oid={} has an active scan cursor — deferring",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return 0;
+        }
+
+        std::pmr::vector<std::uint32_t> dead{resource()};
+        dead.reserve(dead_attoids.size());
+        for (const auto attoid : dead_attoids) {
+            dead.push_back(static_cast<std::uint32_t>(attoid));
+        }
+
+        const auto outcome = entry->table_storage.compact_dropped_columns(dead, compact_watermark);
+        if (outcome.mvcc_refused) {
+            trace(log_,
+                  "agent_disk[{}]::compact_dropped_columns_inner: oid={} has version stamps above watermark {} — "
+                  "deferring",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid),
+                  compact_watermark);
+        }
+        // No storage-adapter refresh: compact_dropped_columns narrows the data_table_t in
+        // place, so the adapter's reference still names the same object.
+        co_return outcome.removed;
     }
 
     // Runtime DROP path, canonical per-oid mark: read otbx_path + derive .wal_id/.prev

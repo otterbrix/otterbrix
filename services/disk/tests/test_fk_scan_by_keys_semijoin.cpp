@@ -70,7 +70,9 @@ namespace {
         const std::vector<column_definition_t>& columns() const override { return inner_.columns(); }
         size_t column_count() const override { return inner_.column_count(); }
         bool has_schema() const override { return inner_.has_schema(); }
-        void adopt_schema(const std::pmr::vector<complex_logical_type>& t) override { inner_.adopt_schema(t); }
+        void adopt_schema(const std::pmr::vector<components::vector::column_schema_t>& schema) override {
+            inner_.adopt_schema(schema);
+        }
         void overlay_not_null(const std::string& c) override { inner_.overlay_not_null(c); }
         uint64_t total_rows() const override { return inner_.total_rows(); }
         uint64_t calculate_size() override { return inner_.calculate_size(); }

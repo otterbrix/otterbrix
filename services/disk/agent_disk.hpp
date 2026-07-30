@@ -376,9 +376,10 @@ namespace services::disk {
                                   components::vector::data_chunk_t keys,
                                   components::table::transaction_data txn);
 
-        // storage_types_inner — schema metadata accessor.
-        unique_future<std::pmr::vector<components::types::complex_logical_type>>
-        storage_types_inner(components::catalog::oid_t table_oid);
+        // storage_types_inner — the relation's schema, one {attoid, name, type} record per
+        //   physical storage column, built from this agent's OWN column_definition_t list and
+        //   moved to the caller. Empty for a not-owned oid or a record-only marker.
+        unique_future<components::vector::schema_t> storage_types_inner(components::catalog::oid_t table_oid);
 
         // storage_total_rows_inner — row-count metadata accessor. 0 means
         //   either "not owned" or "empty twin" — both equivalent for callers.
@@ -503,6 +504,35 @@ namespace services::disk {
         unique_future<std::uint64_t> compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                                      std::set<std::string> live_attnames);
 
+        // compact_dropped_columns_inner — VACUUM's physical column compaction for an
+        //   ordinary (relkind='r') relation: remove from this agent's own slice every
+        //   storage column whose catalog identity is in `dead_attoids`, i.e. every column
+        //   an ALTER TABLE ... DROP COLUMN has removed from pg_attribute and that no live
+        //   snapshot can still resolve. Returns the number of columns removed; 0 for an
+        //   over-routed oid, a computing table, a table with an open streaming cursor, or a
+        //   relation with nothing dead left in it.
+        //
+        //   SERIALIZATION. The whole compaction runs inside ONE mailbox handler with no
+        //   co_await in it, and the agent is a cooperative_actor that processes exactly one
+        //   handler at a time. So no scan, append, update or delete for this oid can
+        //   interleave with the swap: every one of them is another handler, and they run
+        //   strictly before it or strictly after it. What that does NOT cover is state that
+        //   OUTLIVES a handler, and there is exactly one such thing — the streaming
+        //   fetch-next cursor, whose stored absolute row position indexes the un-swapped
+        //   collection. The has_active_scan_for_oid gate below skips those oids, the same
+        //   gate and for the same reason as in checkpoint_inner and vacuum_inner.
+        //
+        //   A plan built BEFORE the compaction stays correct across it without any gate: a
+        //   displaced relation is scanned at full storage width and projected by identity
+        //   (scan_identity_projection_t), and the identity of every surviving column is
+        //   unchanged by the compaction. A plan built AFTER it reads the narrowed layout,
+        //   because the storage_types read that told it so is itself a handler on this same
+        //   agent and therefore already ordered against this one.
+        unique_future<std::uint64_t>
+        compact_dropped_columns_inner(components::catalog::oid_t table_oid,
+                                      std::pmr::vector<components::catalog::oid_t> dead_attoids,
+                                      std::uint64_t compact_watermark);
+
         // mark_storage_dropped_many_inner — batched DROP-mark: one message per agent
         //   carries that agent's whole oid slice (manager partitioned by pool_idx_for_oid)
         //   plus the shared dropped_at_commit_id. Loops the canonical per-oid mark body
@@ -557,6 +587,7 @@ namespace services::disk {
                                                             &agent_disk_t::delete_pg_catalog_rows_inner,
                                                             &agent_disk_t::update_pg_attribute_commit_id_field_inner,
                                                             &agent_disk_t::compact_relkind_g_storage_inner,
+                                                            &agent_disk_t::compact_dropped_columns_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
                                                             &agent_disk_t::create_storage_inner,
                                                             &agent_disk_t::create_storage_with_columns_inner,

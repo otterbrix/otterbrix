@@ -1,7 +1,6 @@
 #include "node.hpp"
 
 #include <algorithm>
-#include <boost/container_hash/hash.hpp>
 
 namespace components::logical_plan {
 
@@ -9,7 +8,7 @@ namespace components::logical_plan {
         : type_(type)
         , children_(resource)
         , expressions_(resource)
-        , output_types_(resource) {}
+        , output_schema_(resource) {}
 
     node_type node_t::type() const { return type_; }
 
@@ -22,8 +21,6 @@ namespace components::logical_plan {
     std::pmr::vector<expression_ptr>& node_t::expressions() { return expressions_; }
 
     void node_t::set_result_alias(const std::string& alias) { result_alias_ = alias; }
-
-    void node_t::reserve_child(std::size_t count) { children_.reserve(count); }
 
     void node_t::append_child(const node_ptr& child) { children_.push_back(child); }
 
@@ -53,42 +50,64 @@ namespace components::logical_plan {
         }
     }
 
-    hash_t node_t::hash() const {
-        hash_t hash_{0};
-        boost::hash_combine(hash_, type_);
-        boost::hash_combine(hash_, hash_impl());
-        std::for_each(expressions_.cbegin(), expressions_.cend(), [&hash_](const expression_ptr& expression) {
-            boost::hash_combine(hash_, expression->hash());
-        });
-        std::for_each(children_.cbegin(), children_.cend(), [&hash_](const node_ptr& child) {
-            boost::hash_combine(hash_, child->hash());
-        });
-        return hash_;
+    // The row-producing set is exactly the query-tree node kinds — the ones
+    // validate_schema_impl resolves a column list for. Everything else (DDL, transaction
+    // control, catalog-resolve plumbing, OID allocation, sequencing wrappers) executes
+    // for effect and hands back an affected-count or nothing at all, so it has no
+    // TupleDesc to stamp. node_extension_t is listed here for its SOURCE form (a
+    // host-registered catalog table, typed like any table); its SINK form is a federated
+    // write whose output_schema() no consumer reads.
+    bool node_t::produces_rows_impl() const noexcept {
+        switch (type_) {
+            case node_type::aggregate_t:
+            case node_type::alias_t:
+            case node_type::cte_scan_t:
+            case node_type::data_t:
+            case node_type::extension_t:
+            case node_type::function_t:
+            case node_type::group_t:
+            case node_type::having_t:
+            case node_type::intersect_t:
+            case node_type::join_t:
+            case node_type::limit_t:
+            case node_type::match_t:
+            case node_type::recursive_cte_t:
+            case node_type::select_t:
+            case node_type::sort_t:
+            case node_type::union_t:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    void node_t::recompute_output_schema() {
+        std::size_t total = 0;
+        for (const auto& child : children_) {
+            if (child) {
+                total += child->output_schema().size();
+            }
+        }
+        components::vector::schema_t merged{resource()};
+        merged.reserve(total);
+        for (const auto& child : children_) {
+            if (!child) {
+                continue;
+            }
+            for (const auto& column : child->output_schema()) {
+                merged.push_back(column.clone(resource()));
+            }
+        }
+        output_schema_ = std::move(merged);
+    }
+
+    const node_ptr& node_t::child_or_null(std::size_t i) const noexcept {
+        static const node_ptr none{};
+        return i < children_.size() ? children_[i] : none;
     }
 
     std::string node_t::to_string() const { return to_string_impl(); }
 
     std::pmr::memory_resource* node_t::resource() const noexcept { return children_.get_allocator().resource(); }
-
-    bool node_t::operator==(const node_t& rhs) const {
-        bool result = type_ == rhs.type_ && children_.size() == rhs.children_.size() &&
-                      expressions_.size() == rhs.expressions_.size();
-        if (result) {
-            for (auto it = children_.cbegin(), it2 = rhs.children_.cbegin(), it_end = children_.cend(); it != it_end;
-                 ++it, ++it2) {
-                result &= (*it == *it2);
-            }
-            if (result) {
-                for (auto it = expressions_.cbegin(), it2 = rhs.expressions_.cbegin(), it_end = expressions_.cend();
-                     it != it_end;
-                     ++it, ++it2) {
-                    result &= (*it == *it2);
-                }
-            }
-        }
-        return result;
-    }
-
-    bool node_t::operator!=(const node_t& rhs) const { return !operator==(rhs); }
 
 } // namespace components::logical_plan

@@ -505,6 +505,28 @@ namespace services::disk {
         }
     }
 
+    std::pmr::vector<components::catalog::oid_t>
+    manager_disk_t::storage_column_attoids_sync(components::catalog::oid_t table_oid) const {
+        std::pmr::vector<components::catalog::oid_t> out{resource_};
+        if (agents_.empty()) {
+            return out;
+        }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (idx >= agents_.size() || agents_[idx] == nullptr) {
+            return out;
+        }
+        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr) {
+            return out;
+        }
+        const auto& cols = const_cast<collection_storage_entry_t*>(entry)->table_storage.table().columns();
+        out.reserve(cols.size());
+        for (const auto& col : cols) {
+            out.push_back(static_cast<catalog::oid_t>(col.attoid()));
+        }
+        return out;
+    }
+
     void manager_disk_t::rehydrate_in_memory_user_storages_sync() {
         // pg_class persists unconditionally (system tables are always written to
         // disk), but IN_MEMORY user-table row data is not. After
@@ -583,13 +605,32 @@ namespace services::disk {
             return;
         }
 
-        // Pass 2: read pg_attribute once, grouping live (non-dropped) columns by
-        // attrelid. pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
-        // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault, 7=attisdropped,
-        // 8=atttypspec, ...]. Each column's (attnum, name, type) reconstructs the
-        // storage schema in ordinal order — the same order CREATE TABLE registered.
+        // Pass 2: read pg_attribute once, grouping columns by attrelid. pg_attribute layout:
+        // [0=attoid, 1=attrelid, 2=attname, 3=atttypid, 4=attnum, 5=attnotnull,
+        // 6=atthasdefault, 7=attisdropped, 8=atttypspec, ...]. Each column's (attnum, name,
+        // type) reconstructs the storage schema in ordinal order — the same order CREATE TABLE
+        // registered.
+        //
+        // TOMBSTONES (attisdropped) ARE INCLUDED, and that is not a leak. What is being rebuilt
+        // here is the PHYSICAL column list, and ALTER TABLE ... DROP COLUMN does not shorten it:
+        // the tombstone removes the column from the logical schema and leaves its slot in place
+        // until VACUUM rewrites the row groups (PostgreSQL keeps the same split). Skipping them
+        // rebuilt a NARROWER storage than the one the process was running with, so the very next
+        // WAL record — an INSERT written when the table was still wide — no longer fit it, and
+        // every surviving column past the hole silently shifted a slot left against the data
+        // already on disk. A checkpointed .otbx keeps its columns for exactly this reason; this
+        // path has to agree with it.
+        //
+        // The dropped column is unreachable either way: the logical schema is pg_attribute minus
+        // tombstones, resolved separately (operator_resolve_table_t), and the scan projects onto
+        // it by identity.
         struct rehydrate_col_t {
             std::int32_t attnum{0};
+            // pg_attribute.attoid — the column's catalog identity. The scan below already
+            // has to read this column, and carrying it into the rebuilt storage is what
+            // makes the identity outlive the process: a rehydrated column that came back
+            // without one silently routes appends by name instead.
+            catalog::oid_t attoid{catalog::INVALID_OID};
             std::string name;
             components::types::complex_logical_type type;
         };
@@ -630,9 +671,10 @@ namespace services::disk {
                     const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     if (wanted.find(relid) == wanted.end())
                         continue;
-                    if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
-                        continue; // tombstoned column
                     rehydrate_col_t rc;
+                    if (!chunk.is_null(0, i)) {
+                        rc.attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    }
                     if (!chunk.is_null(2, i)) {
                         auto attname_v = chunk.get_value<std::string_view>(2, i);
                         rc.name.assign(attname_v.data(), attname_v.size());
@@ -651,10 +693,26 @@ namespace services::disk {
                                                   : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                         rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
                     }
-                    if (!rc.name.empty() && !rc.type.has_alias()) {
-                        rc.type.set_alias(rc.name);
+                    // The column's name rides in rc.name, and column_definition_t's
+                    // constructor performs the identical guarded assignment into the type
+                    // (with_name_alias: set only when the type does not already name
+                    // itself), so naming the type a second time here would only duplicate
+                    // it — and only for as long as a name still lives in a type at all.
+                    //
+                    // ONE entry per attnum. A column that was altered has more than one row in
+                    // this scan — DROP deletes the live row and appends a tombstone carrying the
+                    // same attoid, name, type and attnum — and a rebuilt storage must have the
+                    // slot once, not once per row that ever described it. The later row wins,
+                    // which is the row that describes the column as it is now.
+                    auto& relid_cols = cols_by_relid[relid];
+                    auto existing = std::find_if(relid_cols.begin(), relid_cols.end(), [&](const rehydrate_col_t& c) {
+                        return c.attnum == rc.attnum;
+                    });
+                    if (existing != relid_cols.end()) {
+                        *existing = std::move(rc);
+                    } else {
+                        relid_cols.push_back(std::move(rc));
                     }
-                    cols_by_relid[relid].push_back(std::move(rc));
                 }
             }
         }
@@ -674,6 +732,9 @@ namespace services::disk {
             defs.reserve(cols.size());
             for (auto& c : cols) {
                 defs.emplace_back(c.name, c.type);
+                if (c.attoid != catalog::INVALID_OID) {
+                    defs.back().set_attoid(static_cast<std::uint32_t>(c.attoid));
+                }
             }
             trace(log_,
                   "manager_disk_t::rehydrate_in_memory_user_storages_sync : oid={} cols={}",
@@ -681,6 +742,80 @@ namespace services::disk {
                   defs.size());
             create_storage_with_columns_sync(oid, main_db_oid, std::move(defs));
         }
+    }
+
+    void manager_disk_t::restamp_user_storage_attoids_sync() {
+        // See the header for why this exists and why it matches by name.
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return;
+        }
+        // Live user tables with row storage. This is also the filter that keeps
+        // computing tables (relkind 'g', several same-named columns) out of a by-name
+        // match, and system tables out of a stamp they were never given.
+        const auto eligible_oids = scan_live_table_oids_sync();
+        if (eligible_oids.empty()) {
+            return;
+        }
+        std::unordered_set<catalog::oid_t> eligible(eligible_oids.begin(), eligible_oids.end());
+
+        const collection_storage_entry_t* attr_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
+        if (attr_entry == nullptr) {
+            return;
+        }
+        auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
+        // Reads columns 0..7; see rehydrate_in_memory_user_storages_sync for the layout.
+        if (attr_table.column_count() < 8 || attr_table.calculate_size() == 0) {
+            return;
+        }
+
+        core::pmr::otterbrix_resource scan_resource;
+        const auto& all_cols = attr_table.columns();
+        std::vector<components::table::storage_index_t> col_indices;
+        col_indices.reserve(all_cols.size());
+        for (std::size_t c = 0; c < all_cols.size(); ++c) {
+            col_indices.emplace_back(static_cast<int64_t>(c));
+        }
+        components::table::table_scan_state scan_state(&scan_resource);
+        attr_table.initialize_scan(scan_state, col_indices);
+        std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+        all_types.reserve(all_cols.size());
+        for (const auto& c : all_cols) {
+            all_types.push_back(c.type());
+        }
+
+        std::size_t stamped = 0;
+        while (true) {
+            components::vector::data_chunk_t chunk(&scan_resource,
+                                                   all_types,
+                                                   components::vector::DEFAULT_VECTOR_CAPACITY);
+            attr_table.scan(chunk, scan_state);
+            if (chunk.size() == 0)
+                break;
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.is_null(0, i) || chunk.is_null(1, i) || chunk.is_null(2, i))
+                    continue;
+                if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
+                    continue; // tombstoned column
+                const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                if (eligible.find(relid) == eligible.end())
+                    continue;
+                const std::size_t idx = pool_idx_for_oid(relid, agents_.size());
+                if (idx >= agents_.size() || agents_[idx] == nullptr)
+                    continue;
+                const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(relid);
+                if (entry == nullptr)
+                    continue;
+                const auto attoid = chunk.get_value<std::uint32_t>(0, i);
+                // Bound to a named local: the string_view points into this chunk's string
+                // buffer and must not outlive the expression that produced it.
+                const auto attname = chunk.get_value<std::string_view>(2, i);
+                auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
+                if (table.stamp_missing_attoid(attname, attoid)) {
+                    ++stamped;
+                }
+            }
+        }
+        trace(log_, "manager_disk_t::restamp_user_storage_attoids_sync : stamped={}", stamped);
     }
 
     std::pmr::vector<components::vector::data_chunk_t>

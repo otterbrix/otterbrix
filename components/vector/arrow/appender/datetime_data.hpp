@@ -50,16 +50,19 @@ namespace components::vector::arrow::appender {
         };
         static_assert(sizeof(arrow_interval_buf_t) == 16);
 
-        static void initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
-            result.main_buffer().reserve(capacity * sizeof(arrow_interval_buf_t));
+        [[nodiscard]] static core::error_t
+        initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
+            return result.main_buffer().reserve(capacity * sizeof(arrow_interval_buf_t));
         }
 
-        static void
+        [[nodiscard]] static core::error_t
         append(arrow_append_data_t& append_data, vector_t& input, uint64_t from, uint64_t to, uint64_t input_size) {
             uint64_t size = to - from;
             unified_vector_format format(input.resource(), input_size);
             input.to_unified_format(input_size, format);
-            append_data.add_validity(format, from, to);
+            if (auto error = append_data.add_validity(format, from, to); error.contains_error()) {
+                return error;
+            }
 
             auto& child_entries = input.entries();
             assert(child_entries.size() == 3);
@@ -72,7 +75,10 @@ namespace components::vector::arrow::appender {
             child_entries[2]->to_unified_format(input_size, month_fmt);
 
             auto& main_buf = append_data.main_buffer();
-            main_buf.resize(main_buf.size() + sizeof(arrow_interval_buf_t) * size);
+            if (auto error = main_buf.resize(main_buf.size() + sizeof(arrow_interval_buf_t) * size);
+                error.contains_error()) {
+                return error;
+            }
             auto result_data = main_buf.data<arrow_interval_buf_t>();
 
             const auto* us_data = us_fmt.get_data<int64_t>();
@@ -90,11 +96,14 @@ namespace components::vector::arrow::appender {
                 result_data[result_idx].nanoseconds = us_data[us_idx] * 1000LL;
             }
             append_data.row_count += size;
+            return core::error_t::no_error();
         }
 
-        static void finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
+        [[nodiscard]] static core::error_t
+        finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
             result->n_buffers = 2;
             result->buffers[1] = append_data.main_buffer().data();
+            return core::error_t::no_error();
         }
     };
 

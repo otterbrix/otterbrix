@@ -3,9 +3,15 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
+#include <memory>
 #include <optional>
 
 namespace components::operators {
+
+    // Defined in projection_executor.hpp, which includes THIS header for select_column_t -- so it is
+    // named here only through a forward declaration and held behind a unique_ptr, whose destructor
+    // is defined in the .cpp where the type is complete. std::optional would need it complete here.
+    class projection_executor_t;
 
     // One column in the SELECT output list.
     struct select_column_t {
@@ -67,13 +73,16 @@ namespace components::operators {
     class operator_select_t final : public read_write_operator_t {
     public:
         operator_select_t(std::pmr::memory_resource* resource, log_t log);
+        ~operator_select_t() override;
 
         void add_column(select_column_t&& col);
 
         // Forward the plan-resolved output column types (one per output column, in
         // projection order) onto the columns, so each column is correctly typed even when
-        // the projection produces zero rows.
-        void set_output_types(const std::pmr::vector<types::complex_logical_type>& types) override;
+        // the projection produces zero rows. Only the TYPE is taken: a projection column
+        // already owns its own output name (select_column_t::key.name), which is where the
+        // name a user sees comes from, so the schema's name is not a second writer here.
+        void set_output_schema(const vector::schema_t& schema) override;
 
         // --- Push-based streaming pipeline (STEP 3 / phase C) ---
         // A SELECT is a pure 1-batch-in -> 1-batch-out projection: each input
@@ -86,6 +95,9 @@ namespace components::operators {
 
     private:
         std::pmr::vector<select_column_t> columns_;
+        // Built on the first batch and reused: the projection depends only on the (stable) chunk
+        // schema. The boxed path rebuilt a std::pmr::deque<vector_t> per chunk per arithmetic column.
+        std::unique_ptr<projection_executor_t> stream_executor_;
     };
 
 } // namespace components::operators

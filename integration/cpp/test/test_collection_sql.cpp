@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <components/tests/temp_dir.hpp>
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 
@@ -15,7 +16,7 @@ using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
 TEST_CASE("integration::cpp::test_collection::sql::base") {
-    auto config = test_create_config("/tmp/test_collection_sql/base");
+    auto config = test_create_config(test_temp_path("test_collection_sql/base"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -75,10 +76,10 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->column_count() == 4);
-            REQUIRE(cur->chunks().front().data[0].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
-            REQUIRE(cur->chunks().front().data[2].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[3].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[0].name() == "name");
+            REQUIRE(cur->chunks().front().data[1].name() == "count");
+            REQUIRE(cur->chunks().front().data[2].name() == "name");
+            REQUIRE(cur->chunks().front().data[3].name() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -88,12 +89,12 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->column_count() == 6);
-            REQUIRE(cur->chunks().front().data[0].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
-            REQUIRE(cur->chunks().front().data[2].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[3].type().alias() == "count");
-            REQUIRE(cur->chunks().front().data[4].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[5].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[0].name() == "name");
+            REQUIRE(cur->chunks().front().data[1].name() == "count");
+            REQUIRE(cur->chunks().front().data[2].name() == "name");
+            REQUIRE(cur->chunks().front().data[3].name() == "count");
+            REQUIRE(cur->chunks().front().data[4].name() == "name");
+            REQUIRE(cur->chunks().front().data[5].name() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -103,12 +104,12 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->column_count() == 6);
-            REQUIRE(cur->chunks().front().data[0].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
-            REQUIRE(cur->chunks().front().data[2].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[3].type().alias() == "count");
-            REQUIRE(cur->chunks().front().data[4].type().alias() == "name");
-            REQUIRE(cur->chunks().front().data[5].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[0].name() == "name");
+            REQUIRE(cur->chunks().front().data[1].name() == "count");
+            REQUIRE(cur->chunks().front().data[2].name() == "name");
+            REQUIRE(cur->chunks().front().data[3].name() == "count");
+            REQUIRE(cur->chunks().front().data[4].name() == "name");
+            REQUIRE(cur->chunks().front().data[5].name() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -230,7 +231,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 49);
+            // count is 0..99, so the mean is 49.5 — a real number. AVG is a ratio and
+            // returns a DOUBLE; it used to truncate to the column's integer type (49).
+            REQUIRE(core::is_equals(cur->value(0, 0).value<double>(), 49.5));
         }
     }
 
@@ -279,7 +282,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+            // mean of 0..9 is 4.5 (was truncated to 4 by the integer-typed AVG).
+            REQUIRE(core::is_equals(cur->value(0, 0).value<double>(), 4.5));
         }
     }
 
@@ -416,7 +420,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::group_by") {
-    auto config = test_create_config("/tmp/test_collection_sql/group_by");
+    auto config = test_create_config(test_temp_path("test_collection_sql/group_by"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -460,8 +464,9 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->value(1, number).value<uint64_t>() == 10);
             REQUIRE(cur->value(2, number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(cur->value(3, number).value<int64_t>() ==
-                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
+            // AVG is a DOUBLE column (a ratio); this group's mean is a whole number.
+            REQUIRE(core::is_equals(cur->value(3, number).value<double>(),
+                                    static_cast<double>(number % 20 + (number + 10) % 20) / 2.0));
             REQUIRE(cur->value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
             REQUIRE(cur->value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
@@ -484,8 +489,9 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
             REQUIRE(cur->value(1, row).value<uint64_t>() == 10);
             REQUIRE(cur->value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(cur->value(3, row).value<int64_t>() ==
-                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
+            // AVG is a DOUBLE column (a ratio); this group's mean is a whole number.
+            REQUIRE(core::is_equals(cur->value(3, row).value<double>(),
+                                    static_cast<double>(number % 20 + (number + 10) % 20) / 2.0));
             REQUIRE(cur->value(4, row).value<int64_t>() == number % 20);
             REQUIRE(cur->value(5, row).value<int64_t>() == (number + 10) % 20);
         }
@@ -516,7 +522,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
-    auto config = test_create_config("/tmp/test_collection_sql/invalid_queries");
+    auto config = test_create_config(test_temp_path("test_collection_sql/invalid_queries"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -547,7 +553,7 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::index") {
-    auto config = test_create_config("/tmp/test_collection_sql/base");
+    auto config = test_create_config(test_temp_path("test_collection_sql/base"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -683,7 +689,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::udt") {
-    auto config = test_create_config("/tmp/test_collection_sql/udt");
+    auto config = test_create_config(test_temp_path("test_collection_sql/udt"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -847,9 +853,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
             REQUIRE(cur->column_count() == 3);
-            REQUIRE(cur->chunks().front().data[0].type().alias() == "f1");
-            REQUIRE(cur->chunks().front().data[1].type().alias() == "f2");
-            REQUIRE(cur->chunks().front().data[2].type().alias() == "f3");
+            REQUIRE(cur->chunks().front().data[0].name() == "f1");
+            REQUIRE(cur->chunks().front().data[1].name() == "f2");
+            REQUIRE(cur->chunks().front().data[2].name() == "f3");
             REQUIRE(cur->value(0, 0) == types::logical_value_t{dispatcher->resource(), 91});
         }
         {
@@ -860,9 +866,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 54);
             REQUIRE(cur->column_count() == 3);
-            REQUIRE(cur->chunks().front().data[0].type().alias() == "f1");
-            REQUIRE(cur->chunks().front().data[1].type().alias() == "f2");
-            REQUIRE(cur->chunks().front().data[2].type().alias() == "f3");
+            REQUIRE(cur->chunks().front().data[0].name() == "f1");
+            REQUIRE(cur->chunks().front().data[1].name() == "f2");
+            REQUIRE(cur->chunks().front().data[2].name() == "f3");
             REQUIRE(cur->value(2, 0).children()[1] == types::logical_value_t{dispatcher->resource(), 92});
         }
     }
@@ -934,7 +940,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
 // and operator_union must trust that stamp — a genuinely-typed all-NULL INTEGER column
 // must not flip to the NULL-literal branch's text type based on what the table holds.
 TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_stamped_type") {
-    auto config = test_create_config("/tmp/test_collection_sql/union_stamped_type");
+    auto config = test_create_config(test_temp_path("test_collection_sql/union_stamped_type"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -973,7 +979,7 @@ TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_s
 // its alias: PostgreSQL keeps the FIRST SELECT's output names, and renaming the output
 // column breaks outer references to the left branch's alias through a derived table.
 TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_column_name") {
-    auto config = test_create_config("/tmp/test_collection_sql/union_null_alias");
+    auto config = test_create_config(test_temp_path("test_collection_sql/union_null_alias"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -997,7 +1003,7 @@ TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_
         REQUIRE(cur->size() == 4);
         REQUIRE_FALSE(cur->chunks().empty());
         // Position 0 keeps the LEFT branch's name 'x' (with the right branch's TYPE).
-        REQUIRE(cur->chunks().front().data[0].type().alias() == "x");
+        REQUIRE(cur->chunks().front().data[0].name() == "x");
         REQUIRE(cur->chunks().front().data[0].type().type() == types::logical_type::INTEGER);
     }
     INFO("filtering on the preserved name returns exactly the NULL-branch rows");

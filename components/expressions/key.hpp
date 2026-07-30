@@ -25,7 +25,24 @@ namespace components::expressions {
             , variant_select_{key.variant_select_}
             , absent_ok_{key.absent_ok_} {}
 
-        key_t(const key_t& key) = default;
+        // NOT `= default`. std::pmr's select_on_container_copy_construction returns a
+        // DEFAULT-CONSTRUCTED allocator, so a defaulted copy re-homes both vector members
+        // onto the process-default resource — every copy of an arena-built key silently
+        // escapes its pool into global new, and callers that take a key by value have no
+        // resource parameter to correct it with (make_sort_expression is the clearest
+        // case). Copy explicitly onto the SOURCE's resource so a copy stays where the
+        // original lives.
+        key_t(const key_t& key)
+            : side_{key.side_}
+            , storage_{key.storage_, key.storage_.get_allocator()}
+            , path_{key.path_, key.path_.get_allocator()}
+            , cast_type_{key.cast_type_}
+            , variant_select_{key.variant_select_}
+            , absent_ok_{key.absent_ok_} {}
+
+        // Defaulted deliberately: pmr copy-ASSIGNMENT keeps the DESTINATION's allocator,
+        // which is already the wanted behaviour — an assigned-into key stays on the
+        // resource it was constructed with.
         key_t& operator=(const key_t& key) = default;
 
         explicit key_t(std::pmr::vector<std::pmr::string> str_vector, side_t side = side_t::undefined)
@@ -135,7 +152,18 @@ namespace components::expressions {
 
         bool operator>=(const key_t& other) const { return storage_ >= other.storage_; }
 
-        bool operator==(const key_t& other) const { return storage_ == other.storage_; }
+        // Identity is the name path PLUS the two things that change WHICH value the key
+        // addresses: the '::' cast type and the '::?' variant selection. `val`,
+        // `val::string` and `val::?string` are three different keys; comparing only
+        // storage_ collapsed them into one, so an expression could compare equal to a
+        // differently-typed one. side_ (a locus annotation) and absent_ok_ (an
+        // error-handling leniency flag) are NOT part of identity — neither changes the
+        // value addressed. The ordering operators stay name-only: they exist to sort
+        // keys by name, not to decide identity.
+        bool operator==(const key_t& other) const {
+            return storage_ == other.storage_ && variant_select_ == other.variant_select_ &&
+                   cast_type_ == other.cast_type_;
+        }
 
         bool operator!=(const key_t& rhs) const { return !(*this == rhs); }
 
@@ -143,6 +171,14 @@ namespace components::expressions {
             hash_t hash_{0};
             for (const auto& str : storage_) {
                 boost::hash_combine(hash_, std::hash<std::pmr::string>()(str));
+            }
+            // Folded in only when a cast is present, so a plain column key hashes exactly
+            // as it always did. Hashing the logical type alone (not the full extension) is
+            // enough: equal keys still hash equal, which is the only contract a hash owes
+            // operator==.
+            if (cast_type_.has_value()) {
+                boost::hash_combine(hash_, static_cast<size_t>(cast_type_->type()));
+                boost::hash_combine(hash_, variant_select_);
             }
             return hash_;
         }

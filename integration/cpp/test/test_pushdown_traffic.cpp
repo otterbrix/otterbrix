@@ -21,6 +21,7 @@
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <services/disk/agent_disk.hpp>
 #include <sstream>
 
@@ -54,7 +55,7 @@ namespace {
 // (1) SCALAR aggregate over thousands of filtered rows ships exactly ONE row.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pushdown_traffic::scalar_ships_one_row") {
-    auto config = make_test_config("/tmp/test_pushdown_traffic/scalar");
+    auto config = make_test_config(test_temp_path("test_pushdown_traffic/scalar"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -91,7 +92,7 @@ TEST_CASE("integration::cpp::pushdown_traffic::scalar_ships_one_row") {
 // (2) GROUP BY on a low-cardinality key ships exactly ONE row PER GROUP.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pushdown_traffic::grouped_ships_one_row_per_group") {
-    auto config = make_test_config("/tmp/test_pushdown_traffic/grouped");
+    auto config = make_test_config(test_temp_path("test_pushdown_traffic/grouped"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

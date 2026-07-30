@@ -7,6 +7,7 @@ set(${PROJECT_NAME}_SOURCES
         test_promote_star.cpp
         test_pushed_spec_build.cpp
         test_create_plan_pushdown.cpp
+        test_param_in_field_position.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

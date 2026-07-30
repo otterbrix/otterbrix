@@ -80,8 +80,8 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    void operator_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& /*types*/) {
-        // Default: no-op. Operators that emit a typed result (group / select) override.
+    void operator_t::set_output_schema(const vector::schema_t& /*schema*/) {
+        // Default: no-op. Operators that emit a typed result (group / select / union) override.
     }
 
     read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)

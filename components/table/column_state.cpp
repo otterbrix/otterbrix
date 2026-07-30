@@ -44,6 +44,12 @@ namespace components::table {
     }
 
     bool constant_filter_t::equals(const table_filter_t& other) const {
+        // The class check comes first: `filter_type` alone would let a set_membership_filter_t /
+        // column_column_filter_t / expression_filter_t carrying the same operator through to a cast
+        // that reads a different layout.
+        if (other.filter_class != table_filter_type::CONSTANT_COMPARISON) {
+            return false;
+        }
         return constant == other.cast<constant_filter_t>().constant && table_filter_t::equals(other);
     }
 
@@ -52,6 +58,9 @@ namespace components::table {
     }
 
     bool conjunction_filter_t::equals(const table_filter_t& other) const {
+        if (!conjunction_filter_t::is_filter_class(other.filter_class)) {
+            return false;
+        }
         return table_filter_t::equals(other) && child_filters == other.cast<conjunction_filter_t>().child_filters;
     }
 
@@ -99,11 +108,14 @@ namespace components::table {
         if (!table_filter_t::equals(other)) {
             return false;
         }
-        const auto* o = dynamic_cast<const expression_filter_t*>(&other);
-        if (!o || !expression || !o->expression) {
+        if (other.filter_class != table_filter_type::EXPRESSION) {
             return false;
         }
-        return *expression == *o->expression;
+        const auto& o = other.cast<expression_filter_t>();
+        if (!expression || !o.expression) {
+            return false;
+        }
+        return *expression == *o.expression;
     }
 
     void column_scan_state::initialize(const types::complex_logical_type& type,

@@ -15,6 +15,7 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/collection/context_storage.hpp>
@@ -133,7 +134,9 @@ namespace {
     // (a real sink flushes the remainder + reports the affected count).
     class mock_sink_op_t final : public operators::read_only_operator_t {
     public:
-        mock_sink_op_t(std::pmr::memory_resource* resource, log_t log, std::vector<std::pair<int64_t, int64_t>>* written)
+        mock_sink_op_t(std::pmr::memory_resource* resource,
+                       log_t log,
+                       std::vector<std::pair<int64_t, int64_t>>* written)
             : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
             , written_(written) {}
 
@@ -261,7 +264,7 @@ namespace {
             std::vector<components::table::column_definition_t> columns;
             columns.reserve(source.schema.size());
             for (const auto& t : source.schema) {
-                columns.emplace_back(t.alias(), t);
+                columns.emplace_back(t.field_name(), t);
             }
             auto create_node =
                 logical_plan::make_node_create_collection(res, core::relname_t{uid}, std::move(columns), {});
@@ -383,7 +386,7 @@ static externals_by_uid_t one_source(std::pmr::memory_resource* res,
     auto* res = dispatcher->resource();
 
 TEST_CASE("integration::cpp::extension_source::sync_single_leaf") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_sync/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_sync/base"))
     auto externals = one_source(res, "uid_x", "key", "val", {{7, 70}}, /*async=*/false);
     auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
     REQUIRE(r.cursor->is_success());
@@ -391,7 +394,7 @@ TEST_CASE("integration::cpp::extension_source::sync_single_leaf") {
 }
 
 TEST_CASE("integration::cpp::extension_source::async_single_leaf") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_async/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_async/base"))
     auto externals = one_source(res, "uid_x", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/true);
     auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
     REQUIRE(r.cursor->is_success());
@@ -399,7 +402,7 @@ TEST_CASE("integration::cpp::extension_source::async_single_leaf") {
 }
 
 TEST_CASE("integration::cpp::extension_source::empty_result") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_empty/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_empty/base"))
     auto externals = one_source(res, "uid_x", "key", "val", {}, /*async=*/true);
     auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
     REQUIRE(r.cursor->is_success());
@@ -407,7 +410,7 @@ TEST_CASE("integration::cpp::extension_source::empty_result") {
 }
 
 TEST_CASE("integration::cpp::extension_source::join_two_extensions") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_join2/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_join2/base"))
     externals_by_uid_t externals;
     externals.emplace("uid_l",
                       external_source_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
@@ -426,7 +429,7 @@ TEST_CASE("integration::cpp::extension_source::join_two_extensions") {
 }
 
 TEST_CASE("integration::cpp::extension_source::group_by") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_group/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_group/base"))
     auto externals =
         one_source(res, "uid_g", "grp", "val", {{1, 10}, {1, 15}, {2, 20}, {2, 5}, {3, 1}}, /*async=*/true);
     auto r = run_with_extension_sources(dispatcher,
@@ -437,7 +440,7 @@ TEST_CASE("integration::cpp::extension_source::group_by") {
 }
 
 TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_barrier/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_barrier/base"))
     externals_by_uid_t externals;
     externals.emplace("uid_l",
                       external_source_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
@@ -465,7 +468,7 @@ TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
 }
 
 TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_local/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_local/base"))
     {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE DATABASE extdb;");
@@ -496,7 +499,7 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
 // guards in create_plan_join / create_plan_aggregate convert the would-be
 // null-child deref into a propagated nullptr → create_physical_plan_error.
 TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
-    auto config = test_create_config("/tmp/test_ext_norule/base");
+    auto config = test_create_config(test_temp_path("test_ext_norule/base"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -535,7 +538,7 @@ TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
 // query hits. The extension scan resolves its oid to the registered catalog name,
 // so the plan shows "Extension Scan on <rel>" for each federated source.
 TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_explain/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_explain/base"))
     externals_by_uid_t externals;
     externals.emplace("uid_l",
                       external_source_t{rows_spec_t{"key", "name", {{1, 11}}},
@@ -561,7 +564,7 @@ TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
 // role()==sink operator; physgen wires the child; execute drives child -> sink,
 // and the sink "writes" the rows (records them).
 TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_sink/base")
+    EXT_TEST_BOILERPLATE(test_temp_path("test_ext_sink/base"))
 
     // Local source rows for the SELECT that feeds the write.
     {

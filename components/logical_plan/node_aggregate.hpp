@@ -21,6 +21,32 @@ namespace components::logical_plan {
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
 
+        // Role-classified view of this aggregate's children: a pure LOOKUP that says
+        // which child holds which role, and nothing at all about what that role MEANS.
+        // The classifying call sites deliberately disagree on the meaning — having_t
+        // alone has three different fates, sort_t is invisible to pushdown_filter,
+        // select_t is ignored by pushdown_limit, and every `default:` arm draws a
+        // different conclusion — so each caller keeps its own policy and reads only the
+        // roles it cares about. Do not fold the policies together here.
+        //
+        // `source` is the `default:` arm: the non-pipeline child (join / union /
+        // recursive CTE / nested aggregate / data node / host extension). For a repeated
+        // role the LAST child wins, matching create_plan_aggregate's lowering, which
+        // builds one operator per role and lets the last such child win.
+        //
+        // Read-only: children() keeps its storage order, which is the order to_string()
+        // renders and which the golden plan strings pin.
+        struct pipeline_t {
+            node_ptr source{};
+            node_ptr match{};
+            node_ptr group{};
+            node_ptr having{};
+            node_ptr sort{};
+            node_ptr select{};
+            node_ptr limit{};
+        };
+        [[nodiscard]] pipeline_t pipeline() const;
+
         // SELECT DISTINCT ON (...) keys. Empty for plain DISTINCT (whole-row dedup) and for
         // non-DISTINCT. Name-based after transform; validate_logical_plan resolves each key's
         // numeric path(). A non-empty list forces the coordinator path (pushdown barrier) and
@@ -54,7 +80,7 @@ namespace components::logical_plan {
         // at, for the plain-scan shape (no WHERE, no sort/group/non-scan source, NOT
         // is_distinct()) whose scan create_plan_aggregate builds directly. The
         // authoritative operator_limit above still windows [offset, offset+limit).
-        // unlimit() = no cap. Advisory only; EXCLUDED from hash_impl()/operator== —
+        // unlimit() = no cap. Advisory only; EXCLUDED from hash_impl() —
         // see node_match_t::read_cap_ for the rationale.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
@@ -67,7 +93,6 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::key_t> distinct_on_keys_;
         std::vector<size_t> projected_cols_;
         limit_t read_cap_{};
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

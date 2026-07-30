@@ -72,7 +72,7 @@ namespace components::logical_plan {
         // See node_catalog_resolve.hpp.
         catalog_resolve_t,
         // Leaf that allocates a batch of OIDs from the disk-side oid_generator;
-        // the DDL planner reads the batch via node_allocate_oids_t::oids().
+        // the DDL planner reads the batch off the lowered operator's output().
         allocate_oids_t,
         set_timezone_t,
         // Host-extension carrier: a leaf owned by embedding-host code (federation
@@ -86,50 +86,5 @@ namespace components::logical_plan {
         extension_t,
         unused
     };
-
-#define node_type_from_string(STR)                                                                                     \
-    do {                                                                                                               \
-        return node_type::STR;                                                                                         \
-    } while (false);
-
-    enum class visitation : uint8_t
-    {
-        visit_inputs,
-        do_not_visit_inputs
-    };
-
-    enum class input_side : uint8_t
-    {
-        left,
-        right
-    };
-
-    enum class expression_iteration : uint8_t
-    {
-        continue_t,
-        break_t
-    };
-
-    namespace aggregate {
-        enum class operator_type : int16_t
-        {
-            invalid = 1,
-            count, ///group + project
-            group,
-            limit,
-            match,
-            merge,
-            out,
-            project,
-            skip,
-            sort,
-            unset,
-            unwind,
-            finish
-        };
-
-        operator_type get_aggregate_type(const std::string& key);
-
-    } // namespace aggregate
 
 } // namespace components::logical_plan

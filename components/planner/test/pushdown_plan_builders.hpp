@@ -14,14 +14,35 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
 
+#include <components/vector/data_chunk.hpp>
+
+#include <initializer_list>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace planner_test {
 
     inline core::dbname_t dbn() { return core::dbname_t{std::string{"database"}}; }
     inline core::relname_t reln() { return core::relname_t{std::string{"collection"}}; }
+
+    // A plan-node output schema of BIGINT columns with the given names, in order — the
+    // shape validate_schema stamps. Names live in the record, not inside the type
+    // (M3-B5 step 8), so a test that hand-stamps a node states the name where the
+    // validator states it.
+    inline components::vector::schema_t bigint_schema(std::pmr::memory_resource* r,
+                                                      std::initializer_list<std::string_view> names) {
+        components::vector::schema_t schema{r};
+        schema.reserve(names.size());
+        for (std::string_view name : names) {
+            components::vector::column_schema_t column{r};
+            column.name.assign(name.data(), name.size());
+            column.type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
+            schema.push_back(std::move(column));
+        }
+        return schema;
+    }
 
     // Wrap `group` in an aggregate_t at `table_oid` (no output types, not distinct).
     // When `having != nullptr`, attach a node_having_t as an aggregate CHILD (HAVING is
@@ -42,18 +63,18 @@ namespace planner_test {
     }
 
     // Extended form: additionally stamp the aggregate DISTINCT flag and (when non-empty)
-    // the plan-resolved output types — the extra state test_pushed_spec_build asserts on.
+    // the plan-resolved output schema — the extra state test_pushed_spec_build asserts on.
     inline components::logical_plan::node_aggregate_ptr
     make_agg(std::pmr::memory_resource* r,
              const components::logical_plan::node_group_ptr& group,
              components::catalog::oid_t table_oid,
-             std::pmr::vector<components::types::complex_logical_type> out_types,
+             components::vector::schema_t out_schema,
              bool agg_distinct) {
         auto agg = components::logical_plan::make_node_aggregate(r, dbn(), reln());
         agg->set_table_oid(table_oid);
         agg->set_distinct(agg_distinct);
-        if (!out_types.empty()) {
-            agg->set_output_types(std::move(out_types));
+        if (!out_schema.empty()) {
+            agg->set_output_schema(std::move(out_schema));
         }
         agg->append_child(group);
         return agg;

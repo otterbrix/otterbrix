@@ -10,10 +10,14 @@ namespace components::logical_plan {
 
         bool all() const noexcept { return all_; }
 
+        // A union is binary: the ctor appends [left, right] and nothing else touches
+        // children(). Total on a partially built node (a null node_ptr).
+        const node_ptr& left() const noexcept { return child_or_null(0); }
+        const node_ptr& right() const noexcept { return child_or_null(1); }
+
     private:
         bool all_;
 
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

@@ -1,7 +1,6 @@
 project(logical_plan CXX)
 
 set(SOURCE_${PROJECT_NAME}
-        forward.cpp
         execution_plan.cpp
         node.cpp
         node_aggregate.cpp
@@ -73,3 +72,7 @@ target_include_directories(
         otterbrix_${PROJECT_NAME}
         PUBLIC
 )
+
+if (DEV_MODE)
+    add_subdirectory(test)
+endif ()

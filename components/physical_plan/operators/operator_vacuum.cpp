@@ -101,6 +101,13 @@ namespace components::operators {
         // Collect computing-table OIDs in the same pass so the later
         // pg_computed_column GC doesn't have to re-scan pg_class.
         std::vector<catalog::oid_t> computing_table_oids;
+        // ...and ordinary-table OIDs, for the physical column compaction below. The two
+        // kinds are compacted by DIFFERENT KEYS and cannot share a pass: a 'g' relation's
+        // storage columns carry no catalog identity (they are created by append-time schema
+        // growth and get their attoid afterwards, from pg_computed_column), so it is matched
+        // by name; an 'r' relation's do, so it is matched by identity and a RENAME cannot
+        // fool it.
+        std::set<catalog::oid_t> regular_table_oids;
 
         for (const auto& pg_class_rows : pg_class_batches) {
             for (std::uint64_t i = 0; i < pg_class_rows.size(); ++i) {
@@ -120,8 +127,141 @@ namespace components::operators {
 
                 if (relkind == catalog::relkind::computed) {
                     computing_table_oids.push_back(this_oid);
+                } else {
+                    regular_table_oids.insert(this_oid);
                 }
                 user_tables.push_back({this_oid});
+            }
+        }
+
+        // ===== Physical column compaction for ordinary (relkind='r') relations =====
+        //
+        // ALTER TABLE ... DROP COLUMN is a CATALOG operation: pg_attribute gets a tombstone
+        // and the storage keeps the column, because removing it rewrites every row group.
+        // Until that rewrite happens the relation is DISPLACED — it holds a storage slot the
+        // logical schema no longer names — and plan generation refuses column pruning,
+        // filter pushdown, aggregate pushdown and index probes on it, because all four
+        // address a storage column by the logical ordinal the validator resolved. Nothing
+        // ever performed the rewrite, so one dropped column cost the relation those four
+        // optimisations permanently. This is the rewrite.
+        //
+        // THE GATE: a column is eligible only when NO SNAPSHOT CAN STILL RESOLVE IT, i.e.
+        // `dropped_at != 0 && dropped_at <= lowest_active_start_time`. dropped_at_commit_id
+        // and start_time are values of the ONE monotonic clock transaction_manager_t hands
+        // both out from, so that comparison says exactly "every snapshot that exists or can
+        // still be created was taken after the drop committed". The value rides actor
+        // messages and can only go stale DOWNWARD, which is the safe direction.
+        //
+        // It is written against the SEMANTICS dropped_at_commit_id exists for, not against
+        // what resolve_table happens to do today. Today resolve_table drops a tombstoned
+        // column on attisdropped BEFORE it looks at any timestamp, so no snapshot resolves a
+        // dropped column and the window this gate protects is empty. The moment resolve
+        // honours dropped_at — which is what the column is for — an older snapshot lists the
+        // column again, and a compaction that had already removed its storage would make
+        // that snapshot's scan fail outright (R6: the identity projection errors rather than
+        // answer by position). The gate is what keeps this correct across that change
+        // instead of turning it into a bug.
+        //
+        // A column whose tombstone has dropped_at == 0 is NOT eligible: the backfill that
+        // stamps the commit_id runs post-commit, so 0 means "the drop is not known to have
+        // committed", and compacting on it would race the very transaction that dropped it.
+        //
+        // Placed BEFORE the index repopulate loop below on purpose: repopulate re-reads the
+        // storage, and it should read the compacted layout, not the one that is about to
+        // stop existing.
+        if (!regular_table_oids.empty()) {
+            constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
+
+            std::pmr::vector<components::vector::data_chunk_t> pg_attr_batches(resource_);
+            {
+                auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_scan,
+                                                   ctx->session,
+                                                   kPgAttribute,
+                                                   std::unique_ptr<components::table::table_filter_t>{},
+                                                   /*limit=*/int64_t{-1},
+                                                   std::vector<size_t>{},
+                                                   ctx->txn);
+                auto attr_r = co_await std::move(paf);
+                if (attr_r.has_error()) {
+                    set_error(attr_r.error());
+                    mark_failed();
+                    co_return;
+                }
+                pg_attr_batches = std::move(attr_r.value());
+            }
+
+            // One probe per attoid. A dropped column has TWO rows over its lifetime — the
+            // live one is deleted and a tombstone carrying the SAME attoid is appended — and
+            // a re-ADD of the same name mints a NEW attoid, so `live` can never be a stale
+            // observation of the column this attoid names. Keyed by attoid rather than by
+            // (relid, attname) for exactly that reason: the attoid IS the column.
+            struct att_probe_t {
+                catalog::oid_t relid{catalog::INVALID_OID};
+                bool live{false};
+                std::uint64_t dropped_at{0};
+            };
+            std::map<catalog::oid_t, att_probe_t> probes;
+
+            // pg_attribute layout: 0=attoid 1=attrelid 2=attname 3=atttypid 4=attnum
+            // 5=attnotnull 6=atthasdefault 7=attisdropped 8=atttypspec 9=attdefspec
+            // 10=added_at_commit_id 11=dropped_at_commit_id.
+            for (const auto& chunk : pg_attr_batches) {
+                if (chunk.column_count() < 12)
+                    continue;
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (chunk.is_null(0, i) || chunk.is_null(1, i))
+                        continue;
+                    const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    if (regular_table_oids.find(relid) == regular_table_oids.end())
+                        continue;
+                    const auto attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    if (attoid == catalog::INVALID_OID)
+                        continue;
+                    auto& probe = probes[attoid];
+                    probe.relid = relid;
+                    const bool is_dropped = !chunk.is_null(7, i) && chunk.get_value<bool>(7, i);
+                    if (!is_dropped) {
+                        probe.live = true;
+                        continue;
+                    }
+                    if (!chunk.is_null(11, i)) {
+                        const auto dropped_at = static_cast<std::uint64_t>(chunk.get_value<std::int64_t>(11, i));
+                        probe.dropped_at = std::max(probe.dropped_at, dropped_at);
+                    }
+                }
+            }
+
+            std::map<catalog::oid_t, std::pmr::vector<catalog::oid_t>> dead_by_relid;
+            for (const auto& [attoid, probe] : probes) {
+                if (probe.live || probe.dropped_at == 0 || probe.dropped_at > lowest) {
+                    continue;
+                }
+                auto found = dead_by_relid.find(probe.relid);
+                if (found == dead_by_relid.end()) {
+                    found = dead_by_relid.emplace(probe.relid, std::pmr::vector<catalog::oid_t>{resource_}).first;
+                }
+                found->second.push_back(attoid);
+            }
+
+            for (auto& [relid, dead_attoids] : dead_by_relid) {
+                components::execution_context_t attr_ctx{ctx->session, ctx->txn, {}};
+                auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::compact_dropped_columns,
+                                                   attr_ctx,
+                                                   relid,
+                                                   std::move(dead_attoids),
+                                                   compact_watermark);
+                // The reply is a COUNT, not a status. 0 is a normal answer — the oid lives on
+                // another agent, the relation has an open streaming cursor, the MVCC watermark
+                // deferred it, or a previous VACUUM already reclaimed the columns — and none of
+                // those is a failure to route into set_error. What it is good for is saying what
+                // was reclaimed, which is the one thing a caller cannot observe otherwise.
+                const std::uint64_t dropped_columns = co_await std::move(dcf);
+                trace(log(),
+                      "operator_vacuum::compact_dropped_columns: table oid {} removed {} dead storage columns",
+                      static_cast<unsigned>(relid),
+                      dropped_columns);
             }
         }
 
@@ -336,7 +476,16 @@ namespace components::operators {
                                                        cc_ctx,
                                                        table_oid,
                                                        std::move(live_attnames));
-                    (void) co_await std::move(dcf);
+                    // The reply is the number of storage columns dropped, NOT a status: 0 is a
+                    // normal answer (DISK-backed table, nothing stale, oid on another agent), and
+                    // the whole path is assert-terminal on real failure. So there is nothing here
+                    // to route into set_error — what the count is good for is saying what VACUUM
+                    // actually reclaimed, which until now went nowhere.
+                    const std::uint64_t dropped_columns = co_await std::move(dcf);
+                    trace(log(),
+                          "operator_vacuum::compact_relkind_g_storage: table oid {} dropped {} stale storage columns",
+                          static_cast<unsigned>(table_oid),
+                          dropped_columns);
                 }
             }
         }

@@ -68,7 +68,7 @@ namespace components::sql::transform {
         int counter = 0;
         for (const auto& cell : node.vals->lst) {
             values.emplace_back(resource_, counter++);
-            values.back().set_alias(strVal(cell.data));
+            values.back().set_label(strVal(cell.data));
         }
         auto type = types::complex_logical_type::create_enum(strVal(node.typeName->lst.back().data), std::move(values));
         auto type_copy = type;

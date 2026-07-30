@@ -10,7 +10,6 @@
 #include <cassert>
 #include <list>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -19,13 +18,23 @@ namespace components::vector::arrow {
     using types::complex_logical_type;
     using types::logical_type;
 
-    void to_arrow_array(data_chunk_t& input, ArrowArray* out_array) {
-        arrow_appender_t appender(input.types(), input.size());
-        appender.append(input, 0, input.size(), input.size());
-        *out_array = appender.finalize();
+    core::error_t to_arrow_array(data_chunk_t& input, ArrowArray* out_array) {
+        auto appender = arrow_appender_t::create(input.types(), input.size());
+        if (appender.has_error()) {
+            return appender.error();
+        }
+        if (auto error = appender.value().append(input, 0, input.size(), input.size()); error.contains_error()) {
+            return error;
+        }
+        auto array = appender.value().finalize();
+        if (array.has_error()) {
+            return array.error();
+        }
+        *out_array = array.value();
+        return core::error_t::no_error();
     }
 
-    std::unique_ptr<char[]> add_name(const std::string& name) {
+    std::unique_ptr<char[]> add_name(std::string_view name) {
         auto name_ptr = std::make_unique<char[]>(name.size() + 1);
         for (size_t i = 0; i < name.size(); i++) {
             name_ptr[i] = name[i];
@@ -53,8 +62,15 @@ namespace components::vector::arrow {
         delete holder;
     }
 
+    // A STRUCT field's name — the one name a type still carries after M3-B5, and the one
+    // Arrow needs to address the child by. Arrow's own contract is total here: every child
+    // gets a name, "" when there is none, which is what an unnamed field answers with.
+    std::string_view field_name_of(const types::complex_logical_type& type) {
+        return std::string_view{type.field_name()};
+    }
+
     void
-    initialize_child(ArrowSchema& child, otterbrix_arrow_schema_holder& root_holder, const std::string& name = "") {
+    initialize_child(ArrowSchema& child, otterbrix_arrow_schema_holder& root_holder, std::string_view name = "") {
         child.private_data = nullptr;
         child.release = release_otterbrix_arrow_schema;
 
@@ -68,13 +84,13 @@ namespace components::vector::arrow {
         child.dictionary = nullptr;
     }
 
-    void set_arrow_format(otterbrix_arrow_schema_holder& root_holder,
-                          ArrowSchema& child,
-                          const types::complex_logical_type& type);
+    core::error_t set_arrow_format(otterbrix_arrow_schema_holder& root_holder,
+                                   ArrowSchema& child,
+                                   const types::complex_logical_type& type);
 
-    void set_arrow_map_format(otterbrix_arrow_schema_holder& root_holder,
-                              ArrowSchema& child,
-                              const types::complex_logical_type& type) {
+    core::error_t set_arrow_map_format(otterbrix_arrow_schema_holder& root_holder,
+                                       ArrowSchema& child,
+                                       const types::complex_logical_type& type) {
         child.format = "+m";
         child.n_children = 1;
         root_holder.nested_children.emplace_back();
@@ -84,12 +100,12 @@ namespace components::vector::arrow {
         initialize_child(root_holder.nested_children.back()[0], root_holder);
         child.children = &root_holder.nested_children_ptr.back()[0];
         child.children[0]->name = "entries";
-        set_arrow_format(root_holder, **child.children, type.child_type());
+        return set_arrow_format(root_holder, **child.children, type.child_type());
     }
 
-    void set_arrow_format(otterbrix_arrow_schema_holder& root_holder,
-                          ArrowSchema& child,
-                          const types::complex_logical_type& type) {
+    core::error_t set_arrow_format(otterbrix_arrow_schema_holder& root_holder,
+                                   ArrowSchema& child,
+                                   const types::complex_logical_type& type) {
         switch (type.type()) {
             case logical_type::BOOLEAN:
                 child.format = "b";
@@ -169,7 +185,10 @@ namespace components::vector::arrow {
                 initialize_child(root_holder.nested_children.back()[0], root_holder);
                 child.children = &root_holder.nested_children_ptr.back()[0];
                 child.children[0]->name = "l";
-                set_arrow_format(root_holder, **child.children, type.child_type());
+                if (auto error = set_arrow_format(root_holder, **child.children, type.child_type());
+                    error.contains_error()) {
+                    return error;
+                }
                 break;
             }
             case logical_type::STRUCT: {
@@ -187,10 +206,13 @@ namespace components::vector::arrow {
                 for (size_t type_idx = 0; type_idx < child_types.size(); type_idx++) {
                     initialize_child(*child.children[type_idx], root_holder);
 
-                    root_holder.owned_type_names.push_back(add_name(child_types[type_idx].alias()));
+                    root_holder.owned_type_names.push_back(add_name(field_name_of(child_types[type_idx])));
 
                     child.children[type_idx]->name = root_holder.owned_type_names.back().get();
-                    set_arrow_format(root_holder, *child.children[type_idx], child_types[type_idx]);
+                    if (auto error = set_arrow_format(root_holder, *child.children[type_idx], child_types[type_idx]);
+                        error.contains_error()) {
+                        return error;
+                    }
                 }
                 break;
             }
@@ -209,21 +231,29 @@ namespace components::vector::arrow {
                 root_holder.nested_children_ptr.back().push_back(&root_holder.nested_children.back()[0]);
                 initialize_child(root_holder.nested_children.back()[0], root_holder);
                 child.children = &root_holder.nested_children_ptr.back()[0];
-                set_arrow_format(root_holder, **child.children, child_type);
+                if (auto error = set_arrow_format(root_holder, **child.children, child_type); error.contains_error()) {
+                    return error;
+                }
                 break;
             }
-            case logical_type::MAP: {
-                set_arrow_map_format(root_holder, child, type);
-                break;
-            }
+            case logical_type::MAP:
+                return set_arrow_map_format(root_holder, child, type);
             default:
-                throw std::runtime_error("Unsupported Arrow type " + std::to_string(int(type.type())));
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"no Arrow format for logical type " +
+                                                          std::to_string(static_cast<int>(type.type())),
+                                                      std::pmr::get_default_resource()});
         }
+        return core::error_t::no_error();
     }
 
-    void to_arrow_schema(ArrowSchema* out_schema, const std::pmr::vector<complex_logical_type>& types) {
+    // M3-B5: the COLUMN names come from the schema, not from the types. They used to arrive
+    // inside the types, which is why the python binding had to fold the cursor's names into
+    // its type list before calling — the only production caller, and the reason this took a
+    // bare type list at all.
+    core::error_t to_arrow_schema(ArrowSchema* out_schema, const schema_t& schema) {
         assert(out_schema);
-        uint64_t column_count = types.size();
+        uint64_t column_count = schema.size();
         auto root_holder = std::make_unique<otterbrix_arrow_schema_holder>();
 
         root_holder->children.resize(column_count);
@@ -241,14 +271,18 @@ namespace components::vector::arrow {
         out_schema->dictionary = nullptr;
 
         for (uint64_t col_idx = 0; col_idx < column_count; col_idx++) {
-            root_holder->owned_column_names.push_back(add_name(types[col_idx].alias()));
+            const std::string_view column_name{schema[col_idx].name};
+            root_holder->owned_column_names.push_back(add_name(column_name));
             auto& child = root_holder->children[col_idx];
-            initialize_child(child, *root_holder, types[col_idx].alias());
-            set_arrow_format(*root_holder, child, types[col_idx]);
+            initialize_child(child, *root_holder, column_name);
+            if (auto error = set_arrow_format(*root_holder, child, schema[col_idx].type); error.contains_error()) {
+                return error;
+            }
         }
 
         out_schema->private_data = root_holder.release();
         out_schema->release = release_otterbrix_arrow_schema;
+        return core::error_t::no_error();
     }
     static void deduplicate(std::vector<std::string>& names) {
         std::unordered_map<std::string, uint64_t> name_map;

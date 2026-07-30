@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <components/tests/temp_dir.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
 #include <random>
@@ -19,7 +20,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     // populated with a string literal; every even-index field with a bigint.
     // The test asserts that the dispatcher accepts all inserts in well-under
     // a minute and that a final SELECT * returns all 1000 rows.
-    auto config = test_create_config("/tmp/test_sql_features/dynamic_schema_stress");
+    auto config = test_create_config(test_temp_path("test_sql_features/dynamic_schema_stress"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

@@ -70,18 +70,4 @@ namespace components::vector::arrow {
         }
     };
 
-    struct type_info {
-        type_info();
-        explicit type_info(const types::complex_logical_type& type);
-        explicit type_info(std::string alias);
-        std::string alias;
-        types::logical_type type;
-        size_t hash() const;
-        bool operator==(const type_info& other) const;
-    };
-
-    struct type_info_hash_t {
-        size_t operator()(type_info const& type_info) const noexcept { return type_info.hash(); }
-    };
-
 } // namespace components::vector::arrow

@@ -101,6 +101,17 @@ namespace {
         return core::error_t::no_error();
     }
 
+    // add_kernel fails only when the kernel slots are exhausted or the kernel's input count
+    // disagrees with the function's arity — both decided by the literals a few lines below, so a
+    // failure is an edit desynchronising them, never data. A generate_series registered with one
+    // of its two overloads missing would resolve for 3 args and miss for 2, so the maker produces
+    // nothing instead.
+    bool attach_kernel(expand_function& fn, std::pmr::memory_resource* resource, expand_kernel kernel) {
+        const auto status = fn.add_kernel(resource, std::move(kernel));
+        assert(!status.contains_error() && "expand kernel does not fit its function's slots/arity");
+        return !status.contains_error();
+    }
+
     std::unique_ptr<expand_function> make_generate_series_func(std::pmr::memory_resource* resource,
                                                                const std::string& name,
                                                                const std::string& short_doc,
@@ -114,15 +125,31 @@ namespace {
                                 {input_type::make_integer(), input_type::make_integer()},
                                 {output_type::fixed(logical_type::BIGINT)});
         expand_kernel k2(std::move(sig2), expand_generate_series);
-        (void) fn->add_kernel(resource, std::move(k2));
+        if (!attach_kernel(*fn, resource, std::move(k2))) {
+            return nullptr;
+        }
 
         kernel_signature_t sig3(function_type_t::expand,
                                 {input_type::make_integer(), input_type::make_integer(), input_type::make_integer()},
                                 {output_type::fixed(logical_type::BIGINT)});
         expand_kernel k3(std::move(sig3), expand_generate_series);
-        (void) fn->add_kernel(resource, std::move(k3));
+        if (!attach_kernel(*fn, resource, std::move(k3))) {
+            return nullptr;
+        }
 
         return fn;
+    }
+
+    // See register_checked in string_functions.cpp for why the uid is checked here and not
+    // returned: register_expand_functions is void, as is every caller in the chain above it.
+    void register_checked(function_registry_t& r, std::unique_ptr<expand_function> fn) {
+        assert(fn && "generate_series maker failed to attach its kernels");
+        if (!fn) {
+            return;
+        }
+        [[maybe_unused]] const auto uid = r.add_function(std::move(fn));
+        assert(!uid.has_error() && r.get_function(uid.value()) != nullptr &&
+               "registered expand function is not reachable by its uid");
     }
 
 } // namespace
@@ -132,7 +159,8 @@ namespace components::compute {
     // WARNING: uid and signatures must mirror the DEFAULT_FUNCTIONS "generate_series"
     // entry (uid 8) in function.hpp.
     void register_expand_functions(function_registry_t& r) {
-        (void) r.add_function(
+        register_checked(
+            r,
             make_generate_series_func(r.resource(),
                                       "generate_series",
                                       "Generate a series of values",

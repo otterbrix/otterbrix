@@ -198,17 +198,17 @@ namespace otterbrix {
             return res;
         }
 
-        // Resolve the projected column positions by alias, falling back to the
-        // SELECT order above if the cursor carries no aliases.
-        const auto& types = cursor->type_data();
+        // Resolve the projected column positions by name, falling back to the
+        // SELECT order above if the cursor carries no names.
+        const auto& columns = cursor->columns();
         components::cursor::index_t oid_col = 0;
         components::cursor::index_t relname_col = 1;
         components::cursor::index_t relkind_col = 2;
-        for (std::size_t i = 0; i < types.size(); ++i) {
-            if (!types[i].has_alias()) {
+        for (std::size_t i = 0; i < columns.size(); ++i) {
+            const std::string_view alias{columns[i].name};
+            if (alias.empty()) {
                 continue;
             }
-            const auto& alias = types[i].alias();
             if (alias == "oid") {
                 oid_col = static_cast<components::cursor::index_t>(i);
             } else if (alias == "relname") {

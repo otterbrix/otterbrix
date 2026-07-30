@@ -8,8 +8,6 @@ namespace components::logical_plan {
         : node_t(resource, node_type::allocate_oids_t)
         , count_(count) {}
 
-    hash_t node_allocate_oids_t::hash_impl() const { return 0; }
-
     std::string node_allocate_oids_t::to_string_impl() const {
         std::stringstream s;
         s << "$allocate_oids(" << count_ << ")";

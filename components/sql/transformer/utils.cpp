@@ -7,6 +7,7 @@
 #include <core/date/date_parse.hpp>
 
 #include <atomic>
+#include <optional>
 #include <cstdlib>
 
 namespace components::sql::transform {
@@ -298,8 +299,20 @@ namespace components::sql::transform {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
-                column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
-                                                                     static_cast<uint8_t>(intVal(&scale->val)));
+
+                // Validated BEFORE the narrowing cast: `decimal(522, 2)` narrows to width 10 and
+                // would otherwise be accepted as an ordinary -- and silently different -- type.
+                const int64_t width_value = intVal(&width->val);
+                const int64_t scale_value = intVal(&scale->val);
+                if (!types::is_valid_decimal_spec(width_value, scale_value)) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"Incorrect width or scale for DECIMAL, width must be 1.." +
+                                                              std::to_string(types::max_decimal_width) +
+                                                              " and scale must not exceed it",
+                                                          resource});
+                }
+                column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(width_value),
+                                                                     static_cast<uint8_t>(scale_value));
             }
         } else {
             types::logical_type t = get_logical_type(linint_name);
@@ -338,7 +351,9 @@ namespace components::sql::transform {
             if (auto type_res = get_type(resource, coldef->typeName); type_res.has_error()) {
                 return type_res.convert_error<std::pmr::vector<types::complex_logical_type>>();
             } else {
-                type_res.value().set_alias(coldef->colname);
+                // A composite type's field name — the role that stays on the type, because it
+                // is what addresses the field (M3-B5).
+                type_res.value().set_field_name(coldef->colname);
                 types.emplace_back(std::move(type_res.value()));
             }
         }
@@ -495,6 +510,22 @@ namespace components::sql::transform {
         return types::logical_value_t::create_array(resource, element_type, std::move(values));
     }
 
+    namespace {
+        std::optional<components::vector::arithmetic_op> to_arithmetic_op(std::string_view op) {
+            if (op == "+")
+                return components::vector::arithmetic_op::add;
+            if (op == "-")
+                return components::vector::arithmetic_op::subtract;
+            if (op == "*")
+                return components::vector::arithmetic_op::multiply;
+            if (op == "/")
+                return components::vector::arithmetic_op::divide;
+            if (op == "%")
+                return components::vector::arithmetic_op::mod;
+            return std::nullopt;
+        }
+    } // namespace
+
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
                                                                          A_Expr* node) {
         if (node->kind != AEXPR_OP) {
@@ -521,16 +552,11 @@ namespace components::sql::transform {
             return right;
         }
 
-        if (op_str == "+")
-            return types::logical_value_t::sum(left.value(), right.value());
-        if (op_str == "-")
-            return types::logical_value_t::subtract(left.value(), right.value());
-        if (op_str == "*")
-            return types::logical_value_t::mult(left.value(), right.value());
-        if (op_str == "/")
-            return types::logical_value_t::divide(left.value(), right.value());
-        if (op_str == "%")
-            return types::logical_value_t::modulus(left.value(), right.value());
+        // An operand pair the arithmetic has no arm for used to leave here as a throw out of the
+        // parser; it is now the error result_wrapper_t already carries, so it just propagates.
+        if (auto op = to_arithmetic_op(op_str)) {
+            return types::logical_value_t::arithmetic(resource, *op, left.value(), right.value());
+        }
         return core::error_t(
             core::error_code_t::sql_parse_error,
             std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str), resource});
@@ -549,7 +575,10 @@ namespace components::sql::transform {
             if (type.has_error()) {
                 return type.convert_error<std::vector<table::column_definition_t>>();
             }
-            type.value().set_alias(coldef->colname);
+            // The column's name goes on the column DEFINITION, below — column_definition_t
+            // holds it in name_ and stamps the type itself if the type does not name itself
+            // (column_definition.cpp::with_name_alias). Naming the type here first was the
+            // same write done twice, by the site that has the weaker claim to it (M3-B5).
             bool not_null = coldef->is_not_null;
             std::optional<types::logical_value_t> default_val;
 

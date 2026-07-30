@@ -131,3 +131,76 @@ TEST_CASE("single_field_index:engine") {
     REQUIRE(find_range.first != find_range.second);
     REQUIRE(find_range.first->row_index == 6); // Row 6 has value 5 (11-5=6)
 }
+
+// The btree holds keys of ONE type, so every key is normalised into stored_type_ (the first
+// inserted key's type) on the way in and on the way out. The hazard is that logical_value_t::cast_as
+// is a SQL CAST, not a domain check: STRING -> BIGINT runs std::atoll, which maps every non-numeric
+// string to 0 and reports success. Taking that at face value made the index INVENT keys — 'hello'
+// and 'world' both landed under the BIGINT key 0, and an equality probe, collapsing the same way,
+// matched them. index_scan carries no operator_match above it, so the invented match was the answer.
+//
+// The contract these cases pin: a value the index can not represent faithfully is left OUT, never
+// folded onto a key that means something else. Incomplete is recoverable; wrong is not.
+TEST_CASE("single_field_index:out_of_domain_keys_are_not_invented") {
+    auto resource = core::pmr::otterbrix_resource();
+    single_field_index_t index(&resource, "single_val", {key(&resource, "val")});
+
+    // stored_type_ locks to BIGINT here.
+    index.insert(components::types::logical_value_t(&resource, int64_t{10}), int64_t{0}, {});
+    index.insert(components::types::logical_value_t(&resource, int64_t{20}), int64_t{1}, {});
+    // A dynamic-schema field whose type later evolved: these are not representable as BIGINT.
+    index.insert(components::types::logical_value_t(&resource, "hello"), int64_t{2}, {});
+    index.insert(components::types::logical_value_t(&resource, "world"), int64_t{3}, {});
+
+    SECTION("the un-representable values were not stored under an invented key") {
+        int count = 0;
+        for (auto it = index.cbegin(); it != index.cend(); ++it) {
+            ++count;
+        }
+        REQUIRE(count == 2); // only the two genuine BIGINTs
+    }
+
+    SECTION("a BIGINT probe does not collect the strings") {
+        // atoll('hello') == atoll('world') == 0, so before the domain check this returned both.
+        auto range = index.find(components::types::logical_value_t(&resource, int64_t{0}), {});
+        REQUIRE(range.first == range.second);
+    }
+
+    SECTION("a STRING probe finds nothing rather than everything") {
+        auto range = index.find(components::types::logical_value_t(&resource, "hello"), {});
+        REQUIRE(range.first == range.second);
+    }
+
+    SECTION("the in-domain keys still answer exactly") {
+        auto range = index.find(components::types::logical_value_t(&resource, int64_t{20}), {});
+        REQUIRE(range.first != range.second);
+        REQUIRE(range.first->row_index == 1);
+        REQUIRE(++range.first == range.second);
+    }
+}
+
+// The domain check must not reject a conversion that IS faithful, or an index over a widened
+// integer would silently lose rows. Round-tripping is what separates the two: INTEGER 7 -> BIGINT 7
+// comes back as 7, whereas 'hello' -> 0 comes back as '0'.
+TEST_CASE("single_field_index:lossless_widening_stays_indexed") {
+    auto resource = core::pmr::otterbrix_resource();
+    single_field_index_t index(&resource, "single_w", {key(&resource, "w")});
+
+    index.insert(components::types::logical_value_t(&resource, int64_t{5}), int64_t{0}, {}); // locks BIGINT
+    index.insert(components::types::logical_value_t(&resource, int32_t{7}), int64_t{1}, {});
+    index.insert(components::types::logical_value_t(&resource, int16_t{9}), int64_t{2}, {});
+
+    int count = 0;
+    for (auto it = index.cbegin(); it != index.cend(); ++it) {
+        ++count;
+    }
+    REQUIRE(count == 3);
+
+    auto seven = index.find(components::types::logical_value_t(&resource, int64_t{7}), {});
+    REQUIRE(seven.first != seven.second);
+    REQUIRE(seven.first->row_index == 1);
+
+    auto nine = index.find(components::types::logical_value_t(&resource, int64_t{9}), {});
+    REQUIRE(nine.first != nine.second);
+    REQUIRE(nine.first->row_index == 2);
+}

@@ -332,33 +332,37 @@ namespace components::operators {
 
             // Resolve storage chunk position for each live column. Storage keeps
             // tombstoned columns until VACUUM, so chunk index in scan_batched
-            // output may differ from attoid ordering. We probe storage for its
-            // current types() list (aliases set at append time) and look up
-            // each row's attname linearly — N is small (column count).
+            // output may differ from attoid ordering. We probe the storage for its
+            // current schema and look up each row's attname linearly — N is small
+            // (column count).
             auto [_st, stf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::storage_types,
                                                ctx->session,
                                                table_oid_);
-            auto storage_types = co_await std::move(stf);
+            auto storage_schema = co_await std::move(stf);
             // Map each resolved variant to its physical storage column by
             // (name, type): with multi-type fields several storage columns share
             // a name, so the type disambiguates. `claimed` prevents two variants
             // from binding to the same physical column. Falls back to the first
             // unclaimed same-name column when types don't compare exactly.
-            std::vector<bool> claimed(storage_types.size(), false);
+            //
+            // The name comes off the schema record. It used to be read out of the storage
+            // TYPE's name slot behind a guard — one of the sites that had to ask
+            // whether a type happened to be carrying a name before it could compare one.
+            std::vector<bool> claimed(storage_schema.size(), false);
             for (auto& r : rows) {
                 const types::complex_logical_type rtype =
                     r.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(r.atttypid))
                                          : catalog::decode_type_spec(resource_, r.atttypspec);
                 std::int32_t name_only = -1;
-                for (std::size_t i = 0; i < storage_types.size(); ++i) {
-                    if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != r.attname) {
+                for (std::size_t i = 0; i < storage_schema.size(); ++i) {
+                    if (claimed[i] || std::string_view{storage_schema[i].name} != std::string_view{r.attname}) {
                         continue;
                     }
                     if (name_only < 0) {
                         name_only = static_cast<std::int32_t>(i);
                     }
-                    if (storage_types[i].type() == rtype.type()) {
+                    if (storage_schema[i].type.type() == rtype.type()) {
                         r.chunk_position = static_cast<std::int32_t>(i);
                         claimed[i] = true;
                         break;
@@ -424,9 +428,6 @@ namespace components::operators {
                                      ? catalog::INVALID_OID
                                      : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                     r.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
-                    // For relkind='r' storage column order matches pg_attribute attnum
-                    // (1-based), so chunk_position is simply attnum-1.
-                    r.chunk_position = r.attnum > 0 ? r.attnum - 1 : -1;
                     r.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
                     r.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
                     if (chunk.column_count() > 8) {
@@ -446,6 +447,44 @@ namespace components::operators {
             std::sort(rows.begin(), rows.end(), [](const out_row_t& a, const out_row_t& b) {
                 return a.attnum < b.attnum;
             });
+
+            // Resolve each live column's STORAGE SLOT by asking the storage which columns it
+            // holds, the way the relkind='g' branch above already asks — and joining on catalog
+            // identity, which is what a 'g' relation has none of and this one does.
+            //
+            // It used to be computed: `attnum - 1`, pg_attribute's 1-based ordinal minus one.
+            // That is an arithmetic statement about the CATALOG standing in for a fact about the
+            // STORAGE, and the two are the same list only while nothing has ever been added to or
+            // dropped from the relation. chunk_position is the only input the displacement
+            // detector has, so every time the arithmetic was wrong the detector was wrong in one
+            // of two silent ways: a displaced relation left unflagged reads a neighbour's values,
+            // and an undisplaced one falsely flagged loses column pruning, filter pushdown,
+            // aggregate pushdown and index probes for nothing.
+            //
+            // -1 is a real answer and not a failure: it means this column occupies no storage
+            // slot. ALTER TABLE ADD COLUMN produces exactly that — it writes pg_attribute and
+            // does not widen the storage — and a column with no slot is evidence about nothing
+            // except itself (see scan_identity_projection_t::displaced).
+            auto [_st, stf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::storage_types,
+                                               ctx->session,
+                                               table_oid_);
+            auto storage_schema = co_await std::move(stf);
+            std::vector<bool> claimed_slots(storage_schema.size(), false);
+            for (auto& r : rows) {
+                r.chunk_position = -1;
+                if (r.attoid == catalog::INVALID_OID) {
+                    continue; // nothing to join on
+                }
+                for (std::size_t i = 0; i < storage_schema.size(); ++i) {
+                    if (claimed_slots[i] || storage_schema[i].attoid != r.attoid) {
+                        continue;
+                    }
+                    r.chunk_position = static_cast<std::int32_t>(i);
+                    claimed_slots[i] = true;
+                    break;
+                }
+            }
         }
 
         // Stamp full resolved_table_metadata_t on the logical resolve node
@@ -476,9 +515,6 @@ namespace components::operators {
                     cm.type = catalog::decode_type_spec(resource_, r.atttypspec);
                 } else if (r.atttypid != catalog::INVALID_OID) {
                     cm.type = types::complex_logical_type(catalog::oid_to_builtin_type(r.atttypid));
-                }
-                if (!cm.attname.empty() && !cm.type.has_alias()) {
-                    cm.type.set_alias(cm.attname);
                 }
                 md.columns.push_back(std::move(cm));
             }

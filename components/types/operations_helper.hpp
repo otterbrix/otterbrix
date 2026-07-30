@@ -2,7 +2,6 @@
 
 #include "types.hpp"
 
-#include <boost/math/special_functions/factorials.hpp>
 #include <cassert>
 #include <core/operations_helper.hpp>
 #include <cstdlib>
@@ -20,88 +19,6 @@ namespace components::types {
     // Default only accepts int as amount
     constexpr int128_t operator<<(int128_t lhs, int128_t amount) { return lhs << static_cast<int>(amount); }
     constexpr int128_t operator>>(int128_t lhs, int128_t amount) { return lhs >> static_cast<int>(amount); }
-
-    // there is no std variants for them
-    template<typename T = void>
-    struct shift_left;
-    template<typename T = void>
-    struct shift_right;
-    template<typename T = void>
-    struct pow;
-    template<typename T = void>
-    struct sqrt;
-    template<typename T = void>
-    struct cbrt;
-    template<typename T = void>
-    struct fact;
-    template<typename T = void>
-    struct abs;
-
-    template<>
-    struct shift_left<void> {
-        template<typename T, typename U>
-        constexpr auto operator()(T&& t, U&& u) const {
-            return std::forward<T>(t) << std::forward<U>(u);
-        }
-    };
-
-    template<>
-    struct shift_right<void> {
-        template<typename T, typename U>
-        constexpr auto operator()(T&& t, U&& u) const {
-            return std::forward<T>(t) >> std::forward<U>(u);
-        }
-    };
-
-    template<>
-    struct pow<void> {
-        template<typename T, typename U>
-        constexpr auto operator()(T&& t, U&& u) const {
-            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
-                return t ^ u;
-            } else {
-                return std::pow(std::forward<T>(t), std::forward<U>(u));
-            }
-        }
-    };
-
-    template<>
-    struct sqrt<void> {
-        template<typename T>
-        constexpr auto operator()(T&& x) const {
-            return std::sqrt(std::forward<T>(x));
-        }
-    };
-
-    template<>
-    struct cbrt<void> {
-        template<typename T>
-        constexpr auto operator()(T&& x) const {
-            return std::cbrt(std::forward<T>(x));
-        }
-    };
-
-    template<>
-    struct fact<void> {
-        template<typename T>
-        constexpr auto operator()(T&& x) const {
-            return boost::math::factorial<double>(static_cast<unsigned>(std::forward<T>(x)));
-        }
-    };
-
-    template<>
-    struct abs<void> {
-        template<typename T>
-        constexpr auto operator()(T&& x) const {
-            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
-                return x < 0 ? -x : x;
-            } else if constexpr (std::is_floating_point_v<std::decay_t<T>>) {
-                return std::fabs(std::forward<T>(x));
-            } else {
-                return std::abs(std::forward<T>(x));
-            }
-        }
-    };
 
     template<template<typename...> class Callback, typename... Args>
     auto simple_physical_type_switch(physical_type type, Args&&... args) {

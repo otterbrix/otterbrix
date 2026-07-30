@@ -110,7 +110,6 @@ namespace services::dispatcher {
         // synchronized_pool_resource).
         loop_thread_ = std::thread([this] {
             std::pmr::list<in_flight_entry_t> in_flight(resource());
-            uint32_t loop_ticks = 0;
             while (loop_running_.load(std::memory_order_acquire)) {
                 // Drain the inbox into local slots, re-wrapping each raw pointer
                 // into a message_ptr. The behavior created below holds a raw
@@ -229,14 +228,16 @@ namespace services::dispatcher {
                             auto [ns, f] = actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
                             if (ns)
                                 scheduler_->enqueue(ex.get());
-                            (void) f; // safe to drop: dealloc happens when the last of future/promise releases
+                            // A poke has no reply worth waiting for — the point is the wake-up.
+                            // detach() is the unique_future API for that: it releases this side of
+                            // the pair, so the state dies with whichever of future/promise goes
+                            // last, with no awaiter left behind on the loop thread.
+                            f.detach();
                         }
                     }
                     for (auto& e : in_flight) e.stale_ticks = 0; // backoff: re-arm threshold
                 }
 
-                ++loop_ticks;
-                (void) loop_ticks;
                 std::unique_lock<std::mutex> lk(mutex_);
                 if (inbox_.empty()) {
                     pump_cv_.wait_for(lk, std::chrono::microseconds(100));
@@ -481,9 +482,21 @@ namespace services::dispatcher {
         // refresh the solely-owned default_tz_cat_ so subsequent session_tz()
         // reads see it. Only this loop thread mutates the catalog.
         if (!exec_result.applied_timezone.empty()) {
-            (void) default_tz_cat_.set_timezone(
-                resource(),
-                std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
+            const std::string_view applied{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()};
+            // Both sides resolve the name through core::date::timezone_to_offset, so a name the
+            // executor persisted must resolve here too. Should the two ever disagree, this catalog
+            // keeps the OLD zone while the persisted one holds the new — and every later
+            // session_tz() read renders timestamps at the wrong offset with nothing to show for it.
+            // The statement has already committed, so there is nothing to fail here; make the
+            // divergence visible instead of dropping the status.
+            const auto tz_status = default_tz_cat_.set_timezone(resource(), applied);
+            if (tz_status.contains_error()) {
+                error(log_,
+                      "manager_dispatcher_t::execute_plan: applied timezone '{}' rejected by the dispatcher session "
+                      "catalog ({}) — session_tz() now disagrees with the persisted catalog",
+                      applied,
+                      std::string_view{tz_status.what.data(), tz_status.what.size()});
+            }
         }
 
         trace(log_,
@@ -783,8 +796,9 @@ namespace services::dispatcher {
             // The backfill markers are still discarded (their targets are in the
             // appends, reverted by storage_revert_appends).
             txn_t->drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
-            auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
-            (void) backfills_discarded;
+            // Called for the drain, not the markers: the abort path has no use for them (see the
+            // comment above), but they must not stay parked on the transaction.
+            txn_t->drain_pg_attribute_commit_id_backfills();
             // Drain the parked base appends only to collect the UNIQUE table
             // oids they touched: the abort operator fans out
             // manager_index_t::revert_insert per oid to drop this txn's PENDING

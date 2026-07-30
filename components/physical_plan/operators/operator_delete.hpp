@@ -3,7 +3,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
-#include <components/physical_plan/operators/predicates/predicate.hpp>
+
 
 namespace components::operators {
 

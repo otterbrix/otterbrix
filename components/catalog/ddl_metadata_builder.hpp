@@ -21,6 +21,15 @@ namespace components::catalog {
     // The caller (planner) wraps each into a catalog-write node_insert_t
     // (table_oid = pg_catalog oid; the row chunk as its node_data_t child).
     //
+    // `columns` is taken by NON-const reference because this is the one place an attoid is
+    // minted for a new table, and M3-B4 makes it write each minted attoid back into its
+    // column_definition_t. The same vector then becomes the physical storage's column list
+    // (planner -> operator_create_collection_t -> create_storage_with_columns ->
+    // data_table_t), so the storage layer learns the catalog identity of its own columns
+    // without a second lookup and without touching either on-disk format. Before this the
+    // builder read the vector const and the attoid existed only inside the pg_attribute row:
+    // column_definition_t::attoid_ had no production writer at all.
+    //
     // Preconditions:
     //   - Each column must have atttypid set. Columns with atttypid == INVALID_OID
     //     still get a pg_attribute row but their pg_depend row is omitted.
@@ -28,7 +37,7 @@ namespace components::catalog {
     std::vector<catalog_write_t> build_create_table_writes(std::pmr::memory_resource* resource,
                                                            const std::string& dbname,
                                                            const std::string& relname,
-                                                           const std::vector<table::column_definition_t>& columns,
+                                                           std::vector<table::column_definition_t>& columns,
                                                            bool is_disk_storage,
                                                            oid_t namespace_oid,
                                                            oid_batch_t& oid_batch,

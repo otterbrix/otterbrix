@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/operations_helper.hpp>
 
@@ -16,18 +17,18 @@ using namespace components::cursor;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_arithmetic") {
-    auto config = test_create_config("/tmp/test_arithmetic");
+    auto config = test_create_config(test_temp_path("test_arithmetic"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -400,10 +401,11 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // avg(1..100) = 50.5, val = 50.5 * 10 = 505
-        // AVG might return int or double depending on implementation
-        auto val = cur->chunks().front().data[0].data<int64_t>()[0];
-        REQUIRE(val == 505);
+        // avg(1..100) = 50.5, val = 50.5 * 10 = 505.0.
+        // AVG is a real-valued ratio, so the result column is a DOUBLE whatever the
+        // argument's type is — no "might return int or double".
+        REQUIRE(cur->chunks().front().data[0].type().type() == components::types::logical_type::DOUBLE);
+        REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[0], 505.0));
     }
 
     INFO("C4. MIN/MAX of expression");
@@ -740,18 +742,18 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::join") {
-    auto config = test_create_config("/tmp/test_arithmetic_join");
+    auto config = test_create_config(test_temp_path("test_arithmetic_join"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -840,18 +842,18 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::having") {
-    auto config = test_create_config("/tmp/test_arithmetic_having");
+    auto config = test_create_config(test_temp_path("test_arithmetic_having"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -929,18 +931,18 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::case_when") {
-    auto config = test_create_config("/tmp/test_arithmetic_case");
+    auto config = test_create_config(test_temp_path("test_arithmetic_case"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -1042,18 +1044,18 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
-    auto config = test_create_config("/tmp/test_arithmetic_edge");
+    auto config = test_create_config(test_temp_path("test_arithmetic_edge"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -1124,7 +1126,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
-    auto config = test_create_config("/tmp/test_arithmetic_interleaved_gb");
+    auto config = test_create_config(test_temp_path("test_arithmetic_interleaved_gb"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -1234,18 +1236,18 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
 }
 
 TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
-    auto config = test_create_config("/tmp/test_optimizer_folding");
+    auto config = test_create_config(test_temp_path("test_optimizer_folding"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -1472,7 +1474,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::datetime") {
-    auto config = test_create_config("/tmp/test_arithmetic_datetime");
+    auto config = test_create_config(test_temp_path("test_arithmetic_datetime"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -2038,10 +2040,10 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N27. CASE WHEN with temporal arithmetic (exercises arithmetic_eval.cpp
+    // N27. CASE WHEN with temporal arithmetic (exercises the bound layer's bound_case_t
     //      resolve_row_value, which evaluates arithmetic branch-by-branch)
     // ================================================================
-    INFO("N27. CASE WHEN with DATE + INTERVAL exercises arithmetic_eval.cpp");
+    INFO("N27. CASE WHEN with DATE + INTERVAL exercises the bound CASE evaluator");
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -2122,7 +2124,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
 // destination vector unwritten. Such updates must fail with an error and leave
 // the data untouched.
 TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_rejected") {
-    auto config = test_create_config("/tmp/test_arithmetic/update_bitshift_non_integer");
+    auto config = test_create_config(test_temp_path("test_arithmetic/update_bitshift_non_integer"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -2169,5 +2171,48 @@ TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_reject
         auto cur = dispatcher->execute_sql(session, "SELECT x FROM t.b;");
         REQUIRE(cur->is_success());
         CHECK(cur->value(0, 0).value<int64_t>() == 6);
+    }
+}
+
+// GROUP BY + arithmetic ORDER BY. The transformer stores an arithmetic ORDER BY key
+// as a scalar_expression_t (transform_select.cpp, "Arithmetic ORDER BY" branch); the
+// grouped validation path used to static_cast EVERY sort child to sort_expression_t
+// and read a key that does not exist there. The no-GROUP-BY path already branched on
+// expr->group(), which is why plain `ORDER BY count * -1` (section F above) worked.
+TEST_CASE("integration::cpp::test_arithmetic::group_by_order_by_arithmetic") {
+    auto config = test_create_config(test_temp_path("test_arithmetic_group_order_expr"));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    for (const auto* sql : {"CREATE DATABASE gob;",
+                            "CREATE TABLE gob.t (a BIGINT, v BIGINT);",
+                            "INSERT INTO gob.t (a, v) VALUES (3, 1), (1, 1), (2, 1), (1, 1);"}) {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
+    }
+
+    INFO("grouped ORDER BY over an arithmetic expression sorts by the expression");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT a, COUNT(*) FROM gob.t GROUP BY a ORDER BY a + 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 2).value<int64_t>() == 3);
+    }
+
+    INFO("descending variant");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT a, COUNT(*) FROM gob.t GROUP BY a ORDER BY a * 2 DESC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 2).value<int64_t>() == 1);
     }
 }

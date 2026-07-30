@@ -361,7 +361,9 @@ namespace components::expressions {
             }
         }
 
-        vector_ops::binary_vector_op to_binary_vec_op(update_expr_type type) {
+        // nullopt for set / get_value / get_value_params -- the node kinds that carry no
+        // computation and so reach none of the three op tables above.
+        std::optional<vector_ops::binary_vector_op> to_binary_vec_op(update_expr_type type) {
             switch (type) {
                 case update_expr_type::exp:
                     return vector_ops::binary_vector_op::exp;
@@ -376,7 +378,7 @@ namespace components::expressions {
                 case update_expr_type::shift_right:
                     return vector_ops::binary_vector_op::shift_right;
                 default:
-                    throw std::logic_error("to_binary_vec_op: unsupported update_expr_type");
+                    return std::nullopt;
             }
         }
     } // anonymous namespace
@@ -408,9 +410,21 @@ namespace components::expressions {
             }
             owned_output_.emplace(vector_ops::apply_unary_vector_op(resource, *unary_op, *left_vec, vec_count));
         } else if (auto arith_op = to_arith_op(type_)) {
-            owned_output_.emplace(
-                compute_binary_arithmetic(resource, *arith_op, *left_vec, *right_->output_vec(), vec_count));
+            auto computed =
+                compute_binary_arithmetic(resource, *arith_op, *left_vec, *right_->output_vec(), vec_count);
+            if (computed.has_error()) {
+                return computed.error();
+            }
+            owned_output_.emplace(std::move(computed.value()));
         } else {
+            auto binary_op = to_binary_vec_op(type_);
+            if (!binary_op) {
+                // A node kind that computes nothing reached the calculate path. Was a throw,
+                // which under the executor's coroutines becomes an empty unhandled_exception().
+                return core::error_t{
+                    core::error_code_t::physical_plan_error,
+                    std::pmr::string{"update expression: node kind carries no computation", resource}};
+            }
             auto* right_vec = right_->output_vec();
             if (is_non_integer(left_vec->type().to_physical_type()) ||
                 is_non_integer(right_vec->type().to_physical_type())) {
@@ -418,11 +432,7 @@ namespace components::expressions {
                     core::error_code_t::physical_plan_error,
                     std::pmr::string{"bitwise/shift operations are unsupported for non-integer types", resource}};
             }
-            owned_output_.emplace(vector_ops::apply_binary_vector_op(resource,
-                                                                     to_binary_vec_op(type_),
-                                                                     *left_vec,
-                                                                     *right_vec,
-                                                                     vec_count));
+            owned_output_.emplace(vector_ops::apply_binary_vector_op(resource, *binary_op, *left_vec, *right_vec, vec_count));
         }
 
         output_vec_ = &owned_output_.value();

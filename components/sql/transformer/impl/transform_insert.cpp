@@ -203,8 +203,9 @@ namespace {
                                                        const components::types::complex_logical_type& elem_type,
                                                        uint64_t capacity) {
         auto list_type = components::types::complex_logical_type::create_list(elem_type);
-        list_type.set_alias(std::string(col.type().alias()));
-        components::vector::vector_t new_col(resource, list_type, capacity);
+        // The promoted column is the same column, and the rebuild constructor is what says so:
+        // it is born with `col`'s name and identity (M3-B4/B5).
+        components::vector::vector_t new_col(resource, list_type, col, capacity);
 
         const auto stride =
             static_cast<const components::types::array_logical_type_extension*>(col.type().extension())->size();
@@ -246,10 +247,14 @@ namespace {
                                                 size_t num_rows,
                                                 components::types::logical_type promoted,
                                                 uint64_t capacity) {
-        components::vector::vector_t new_col(
-            resource,
-            components::types::complex_logical_type{promoted, std::string(col.type().alias())},
-            capacity);
+        // The promoted column is the same column: name and identity travel with it, carried by
+        // the rebuild constructor (M3-B4/B5). They used to be carried by building the new TYPE
+        // with the old one's name inside the new TYPE, behind a guard because reading that slot
+        // asserted on a column nobody named.
+        components::vector::vector_t new_col(resource,
+                                             components::types::complex_logical_type{promoted},
+                                             col,
+                                             capacity);
         for (size_t row = 0; row < num_rows; ++row) {
             if (col.is_null(row)) {
                 new_col.set_null(row, true);
@@ -268,14 +273,19 @@ namespace {
     // stay null here and are filled in transform_result::bind.
     void conform_param_chunks(std::pmr::memory_resource* resource,
                               std::pmr::vector<components::vector::data_chunk_t>& chunks,
-                              const std::pmr::vector<components::types::complex_logical_type>& schema) {
+                              const components::vector::schema_t& schema) {
         for (auto& chunk : chunks) {
             for (size_t i = 0; i < schema.size(); ++i) {
-                const auto& want = schema[i];
+                const auto& want = schema[i].type;
                 if (i >= chunk.data.size()) {
                     components::vector::vector_t col(resource, want, chunk.capacity());
                     col.set_null(true);
                     chunk.data.emplace_back(std::move(col));
+                    // The filler column is a column of the write-set, so it is named like one:
+                    // the storage append routes an INSERT write-set BY NAME, and a nameless
+                    // column is not a cosmetic gap there — it is a column the matcher fills
+                    // with NULLs (M3-B5).
+                    chunk.set_column_name(i, std::string_view{schema[i].name});
                 } else if (chunk.data[i].type() != want) {
                     chunk.data[i] =
                         promote_column(resource, chunk.data[i], chunk.size(), want.type(), chunk.capacity());
@@ -406,12 +416,12 @@ namespace components::sql::transform {
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
-                                return column.type().alias() == it_field->as_string();
+                                return column.name() == it_field->as_string();
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.value().set_alias(it_field->as_string());
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
+                            chunk.set_column_name(column_index, it_field->as_string());
                             chunk.set_value(column_index, chunk_row, std::move(value.value()));
                         } else {
                             auto col_type = it->type().type();
@@ -437,12 +447,12 @@ namespace components::sql::transform {
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
-                                return column.type().alias() == it_field->as_string();
+                                return column.name() == it_field->as_string();
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.value().set_alias(it_field->as_string());
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
+                            chunk.set_column_name(column_index, it_field->as_string());
                             chunk.set_value(column_index, chunk_row, std::move(value.value()));
                         } else {
                             auto col_type = it->type().type();
@@ -495,19 +505,24 @@ namespace components::sql::transform {
             if (has_params) {
                 const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
                 const uint64_t total = vals.size();
-                std::pmr::vector<types::complex_logical_type> schema(resource_);
+                // The running layout is a SCHEMA and not a type list: fill_row names each
+                // column it creates, and the storage append routes a write-set by name, so a
+                // layout that could only carry types would hand every batch after the first a
+                // set of nameless columns (M3-B5).
+                vector::schema_t schema(resource_);
                 auto row_it = vals.begin();
                 uint64_t global_row = 0;
                 while (global_row < total) {
                     const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
-                    vector::data_chunk_t chunk(resource_, schema, batch);
+                    auto chunk = vector::make_chunk(resource_, schema, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
                         if (!fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data))) {
                             return nullptr;
                         }
                     }
-                    schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
+                    // carry the (possibly grown/widened) layout to the next chunk
+                    schema = vector::clone_schema(resource_, chunk.schema());
                     parameter_insert_rows_.emplace_back(std::move(chunk));
                 }
                 conform_param_chunks(resource_, parameter_insert_rows_, schema);

@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <string>
 
 // End-to-end regression tests for UNIQUE / PRIMARY KEY constraint enforcement.
@@ -26,7 +27,7 @@ using namespace test_helpers;
 //     distinct keys are accepted.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/unique_existing_row", /*disk_on=*/true);
+    auto config = make_test_config(test_temp_path("test_unique_constraint_e2e/unique_existing_row"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -57,7 +58,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
 // (B) PRIMARY KEY column: same enforcement via contype 'p'.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_row") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/primary_key_existing_row", /*disk_on=*/true);
+    auto config =
+        make_test_config(test_temp_path("test_unique_constraint_e2e/primary_key_existing_row"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -89,7 +91,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_ro
 //     with EACH OTHER (no pre-existing row) is rejected by the within-batch dedup.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::within_batch_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/within_batch_duplicate", /*disk_on=*/true);
+    auto config =
+        make_test_config(test_temp_path("test_unique_constraint_e2e/within_batch_duplicate"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -120,7 +123,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::within_batch_duplicate"
 //     the UPDATE write-set).
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/update_creates_duplicate", /*disk_on=*/true);
+    auto config =
+        make_test_config(test_temp_path("test_unique_constraint_e2e/update_creates_duplicate"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -153,7 +157,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicat
 //     both against an existing defaulted row and within one batch.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/default_column_duplicate", /*disk_on=*/true);
+    auto config =
+        make_test_config(test_temp_path("test_unique_constraint_e2e/default_column_duplicate"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -198,7 +203,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
 }
 
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_batch_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/default_column_within_batch", /*disk_on=*/true);
+    auto config =
+        make_test_config(test_temp_path("test_unique_constraint_e2e/default_column_within_batch"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -222,7 +228,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_b
 //     must reject NULL keys — explicit NULL and an omitted (no-DEFAULT) column.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_null") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/primary_key_rejects_null", /*disk_on=*/true);
+    auto config =
+        make_test_config(test_temp_path("test_unique_constraint_e2e/primary_key_rejects_null"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -278,7 +285,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_nul
 //     chunks path is covered by bounded_dml_flush::error_after_mid_flush_reverts_all.)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_accepted") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/multi_chunk_straddle", /*disk_on=*/true);
+    auto config = make_test_config(test_temp_path("test_unique_constraint_e2e/multi_chunk_straddle"), /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

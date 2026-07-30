@@ -4,7 +4,9 @@
 #include "vector_buffer.hpp"
 #include "vector_helpers.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::vector {
 
@@ -91,6 +93,22 @@ namespace components::vector {
         explicit vector_t(std::pmr::memory_resource* resource,
                           const types::logical_value_t& value,
                           uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
+        // M3-B4/B5. "The same column, rebuilt as `type`" — the constructor a coercion or a
+        // type promotion wants. A promoted column is not a new column, it is the column it
+        // came from in a different type, so it owes that column both halves of its identity:
+        // the attoid the storage matcher prefers, and the name the matcher falls back to.
+        // A vector_t built the plain way owes them nothing — it is born INVALID_OID and takes
+        // whatever name `type` happens to carry — which is why every rebuild written as a
+        // plain construction is a place the identity gets dropped, silently demoting the
+        // column from identity routing to name routing (nine such sites have been found in
+        // this tree, and on the INSERT write-set path a column that arrives nameless is not a
+        // missing header: it is a column the append matcher fills with NULLs).
+        // Carrying it by CONSTRUCTION is the point: a rebuild cannot forget to do afterwards
+        // what it has already done.
+        explicit vector_t(std::pmr::memory_resource* resource,
+                          types::complex_logical_type type,
+                          const vector_t& rebuild_of,
+                          uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
         explicit vector_t(const vector_t& other, const indexing_vector_t& indexing, uint64_t count);
         explicit vector_t(const vector_t& other, uint64_t offset, uint64_t count);
         explicit vector_t(std::pmr::memory_resource* resource,
@@ -105,8 +123,44 @@ namespace components::vector {
         vector_t& operator=(vector_t&& other) noexcept;
 
         vector_type get_vector_type() const noexcept { return vector_type_; }
+
+        // M3-B4. The column's catalog identity — pg_attribute.attoid, or
+        // pg_computed_column.attoid for a relkind='g' column. INVALID_OID means "this
+        // vector has no catalog identity", which is the honest answer for an expression
+        // result, a row-id vector, a parse-time write-set column and every column decoded
+        // out of the WAL (attoid is deliberately absent from data_chunk_binary — that codec
+        // has no version field).
+        //
+        // It lives on the COLUMN, not on the column's type and not in a side table on the
+        // chunk, and that is the whole point of the stage. data_chunk_t::schema() is a memo
+        // DERIVED from `data`, which is a public field structurally mutated at thirty sites
+        // — including operator_group.cpp, which erases a positional RANGE out of the middle.
+        // A record preserved by position would hand column i's identity to whatever column
+        // slid into slot i; a record derived from the column object cannot, because the
+        // identity moved with the column. Nothing else in the chunk survives an arbitrary
+        // structural mutation, so nothing else can key it.
+        //
+        // Cost is zero: the field sits in the padding that already followed vector_type_.
+        catalog::oid_t attoid() const noexcept { return attoid_; }
+        void set_attoid(catalog::oid_t attoid) noexcept { attoid_ = attoid; }
+
+        // M3-B5. The column's NAME, on the column — the same carrier and the same argument as
+        // attoid above. It used to live inside the column's TYPE, in
+        // logical_type_extension::alias_, which is why a scalar column needed a heap-allocated
+        // extension for one string and why copying a type was an allocation.
+        //
+        // A name cannot be keyed by position on the chunk for the reason attoid cannot: `data`
+        // is a public field that thirty production sites mutate structurally, including an
+        // erase of a positional range out of the middle (operator_group.cpp). It moves with the
+        // column because it belongs to the column.
+        //
+        // An empty name is an answer, not a missing value: an expression result, a temporary
+        // compute vector and a nested child vector all genuinely have none.
+        std::string_view name() const noexcept { return {name_.data(), name_.size()}; }
+        bool has_name() const noexcept { return !name_.empty(); }
+        void set_name(std::string_view name) { name_.assign(name.data(), name.size()); }
+
         const types::complex_logical_type& type() const noexcept { return type_; }
-        void set_type_alias(const std::string& alias) { type_.set_alias(alias); }
         types::complex_logical_type& type() noexcept { return type_; }
         std::byte* data() noexcept { return data_; }
         const std::byte* data() const noexcept { return data_; }
@@ -134,15 +188,23 @@ namespace components::vector {
         void slice(const indexing_vector_t& indexing, uint64_t count);
         void slice(const indexing_vector_t& indexing, uint64_t count, indexing_cache_t& cache);
 
-        void flatten(uint64_t count);
-        void flatten(const indexing_vector_t& indexing, uint64_t count);
+        core::error_t flatten(uint64_t count);
+        core::error_t flatten(const indexing_vector_t& indexing, uint64_t count);
         void to_unified_format(uint64_t count, unified_vector_format& data);
         static void recursive_to_unified_format(vector_t& input, uint64_t count, recursive_unified_vector_format& data);
 
         void sequence(int64_t start, int64_t increment, uint64_t count);
 
-        void push_back(types::logical_value_t logical_value);
-        void set_value(uint64_t index, const types::logical_value_t& val);
+        // Appends logical_value to this LIST/MAP vector's element storage. Forwards whatever the
+        // element vector says about the value; the error is the caller's to handle, because the
+        // list_entry_t the caller then writes claims the element was stored.
+        [[nodiscard]] core::error_t push_back(types::logical_value_t logical_value);
+        // Stores val at index. A value the vector cannot hold -- a mistyped one, or a nested
+        // value with fewer children than the column's shape -- is answered as an error instead
+        // of being dropped: this used to assert(false) and then silently `return`, so in a
+        // release build the row kept whatever the buffer already held while validity claimed
+        // it had been written.
+        core::error_t set_value(uint64_t index, const types::logical_value_t& val);
 
         void set_auxiliary(std::shared_ptr<vector_buffer_t> new_buffer) { auxiliary_ = std::move(new_buffer); }
 
@@ -156,7 +218,7 @@ namespace components::vector {
 
         void find_resize_infos(std::vector<resize_info_t>& resize_infos, uint64_t multiplier);
 
-        uint64_t allocation_size(uint64_t cardinality) const;
+        core::result_wrapper_t<uint64_t> allocation_size(uint64_t cardinality) const;
 
         void set_vector_type(vector_type vector_type);
 
@@ -220,7 +282,22 @@ namespace components::vector {
         types::logical_value_t value_internal(uint64_t index) const;
 
         vector_type vector_type_;
+        // Declared here on purpose: it occupies padding that already existed after
+        // vector_type_, so carrying the column's identity costs no bytes.
+        catalog::oid_t attoid_{catalog::INVALID_OID};
         types::complex_logical_type type_;
+        // The column's name, on the column. Unlike attoid_ this one costs bytes — a
+        // std::pmr::string is 32 of them, taking sizeof(vector_t) from 104 to 136 — and it
+        // buys them back at the type: a scalar column no longer needs a heap-allocated
+        // logical_type_extension (64 bytes, reached through a global operator new) to hold
+        // one string, and copying its type stops being an allocation. A chunk has one
+        // vector_t per column and a type is copied per column per chunk hop, per cell read,
+        // and into every schema record.
+        //
+        // Constructed on THIS vector's resource at every constructor, never by copying
+        // another string: std::pmr's select_on_container_copy_construction would silently
+        // bind the copy to the default resource (rule 8).
+        std::pmr::string name_;
         std::byte* data_;
         validity_mask_t validity_;
         std::shared_ptr<vector_buffer_t> buffer_;

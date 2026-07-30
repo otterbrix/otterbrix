@@ -6,6 +6,7 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/file/local_file_system.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
@@ -16,7 +17,7 @@
 
 namespace {
     std::string test_db_path() {
-        static std::string path = "/tmp/test_otterbrix_metadata_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = test_temp_path("test_otterbrix_metadata.otbx");
         return path;
     }
 

@@ -11,8 +11,6 @@ namespace components::logical_plan {
         , seed_objid_(seed_objid)
         , behavior_(behavior) {}
 
-    hash_t node_dynamic_cascade_delete_t::hash_impl() const { return 0; }
-
     std::string node_dynamic_cascade_delete_t::to_string_impl() const {
         const char* mode = (behavior_ == components::catalog::drop_behavior_t::cascade_) ? "CASCADE" : "RESTRICT";
         return "$dynamic_cascade_delete[classid=" + std::to_string(seed_classid_) +

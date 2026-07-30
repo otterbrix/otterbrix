@@ -48,7 +48,6 @@ namespace components::logical_plan {
         std::string relname_;
         limit_t limit_;
 
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

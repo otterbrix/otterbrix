@@ -19,7 +19,8 @@ namespace services::planner::impl {
                                                                                                 n->check_exprs(),
                                                                                                 n->array_size_reqs(),
                                                                                                 n->column_defaults(),
-                                                                                                n->write_set_named()));
+                                                                                                n->write_set_named(),
+                                                                                                n->column_types()));
         // Child sub-plan (the DML sink, possibly under an fk_check chain).
         components::operators::operator_ptr child;
         if (!node->children().empty()) {

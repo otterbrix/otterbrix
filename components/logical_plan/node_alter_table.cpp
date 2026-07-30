@@ -58,8 +58,6 @@ namespace components::logical_plan {
         }
     }
 
-    hash_t node_alter_table_t::hash_impl() const { return 0; }
-
     std::string node_alter_table_t::to_string_impl() const {
         std::stringstream s;
         s << "$alter_table[oid=" << table_oid() << "]";

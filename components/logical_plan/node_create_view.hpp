@@ -19,7 +19,6 @@ namespace components::logical_plan {
         const std::string& viewname() const noexcept { return viewname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string viewname_;

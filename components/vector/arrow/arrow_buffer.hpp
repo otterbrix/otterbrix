@@ -1,8 +1,10 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <algorithm>
 #include <cstdint>
-#include <stdexcept>
+#include <memory_resource>
 #include <string>
 
 struct ArrowSchema;
@@ -39,7 +41,12 @@ namespace components::vector::arrow {
             return *this;
         }
 
-        void reserve(uint64_t bytes) {
+        // Rounding a byte count up to a power of two overflows for anything above 2^63, which is
+        // an unsatisfiable request rather than a programming error -- so it answers an error_t
+        // instead of throwing. Nothing in components/vector may throw: an exception escaping an
+        // actor coroutine hits an empty unhandled_exception() under NDEBUG, which abandons the
+        // batch while the caller is told the append succeeded.
+        [[nodiscard]] core::error_t reserve(uint64_t bytes) {
             auto new_capacity = bytes;
             if (new_capacity < 1) {
                 new_capacity = 2;
@@ -53,33 +60,46 @@ namespace components::vector::arrow {
                 new_capacity |= new_capacity >> 32;
                 new_capacity++;
                 if (new_capacity == 0) {
-                    throw std::out_of_range("Can't find next power of 2 for " + std::to_string(bytes));
+                    return core::error_t(
+                        core::error_code_t::out_of_memory,
+                        std::pmr::string("arrow_buffer: no power of two fits " + std::to_string(bytes) + " bytes",
+                                         std::pmr::get_default_resource()));
                 }
             }
             if (new_capacity <= capacity_) {
-                return;
+                return core::error_t::no_error();
             }
             reserve_internal_(new_capacity);
+            return core::error_t::no_error();
         }
 
-        void resize(uint64_t bytes) {
-            reserve(bytes);
+        [[nodiscard]] core::error_t resize(uint64_t bytes) {
+            if (auto error = reserve(bytes); error.contains_error()) {
+                return error;
+            }
             count_ = bytes;
+            return core::error_t::no_error();
         }
 
-        void resize(uint64_t bytes, uint8_t value) {
-            reserve(bytes);
+        [[nodiscard]] core::error_t resize(uint64_t bytes, uint8_t value) {
+            if (auto error = reserve(bytes); error.contains_error()) {
+                return error;
+            }
             for (uint64_t i = count_; i < bytes; i++) {
                 dataptr_[i] = value;
             }
             count_ = bytes;
+            return core::error_t::no_error();
         }
 
         template<class T>
-        void push_back(T value) {
-            reserve(sizeof(T) * (count_ + 1));
+        [[nodiscard]] core::error_t push_back(T value) {
+            if (auto error = reserve(sizeof(T) * (count_ + 1)); error.contains_error()) {
+                return error;
+            }
             reinterpret_cast<T*>(dataptr_)[count_] = value;
             count_++;
+            return core::error_t::no_error();
         }
 
         uint64_t size() { return count_; }
@@ -91,9 +111,9 @@ namespace components::vector::arrow {
             return reinterpret_cast<T*>(data());
         }
 
-        void resize_validity(uint64_t row_count) {
+        [[nodiscard]] core::error_t resize_validity(uint64_t row_count) {
             auto byte_count = (row_count + 7) / 8;
-            resize(byte_count, 0xFF);
+            return resize(byte_count, 0xFF);
         }
 
     private:

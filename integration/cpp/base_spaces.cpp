@@ -242,11 +242,11 @@ namespace otterbrix {
                                     // storage from the WAL chunk's column types.
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        auto types = r->physical_data.front().types();
+                                        const auto& col_schema = r->physical_data.front().schema();
                                         std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                        cols.reserve(col_schema.size());
+                                        for (const auto& col : col_schema) {
+                                            cols.emplace_back(std::string(col.name.data(), col.name.size()), col.type);
                                         }
                                         disk_ptr->create_storage_with_columns_sync(table_oid,
                                                                                    main_db_oid,
@@ -268,11 +268,11 @@ namespace otterbrix {
                                 if (!disk_ptr->has_storage(table_oid)) {
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        auto types = r->physical_data.front().types();
+                                        const auto& col_schema = r->physical_data.front().schema();
                                         std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                        cols.reserve(col_schema.size());
+                                        for (const auto& col : col_schema) {
+                                            cols.emplace_back(std::string(col.name.data(), col.name.size()), col.type);
                                         }
                                         disk_ptr->create_storage_with_columns_sync(table_oid,
                                                                                    main_db_oid,
@@ -363,6 +363,23 @@ namespace otterbrix {
         // are included. Idempotent: seed() never lowers the counter.
         if (disk_ptr) {
             disk_ptr->restore_oid_generator_sync();
+        }
+
+        // Every storage now exists and pg_attribute is complete, which is the first
+        // moment this can run: give the columns that came back WITHOUT a catalog
+        // identity the one the catalog holds for them. Two restart paths produce such
+        // a column and neither can fix it where it happens —
+        //   * an .otbx written before the table-metadata record carried an attoid:
+        //     those files must keep loading, so their columns load identity-less, and
+        //     the next checkpoint can only write back the nothing it was given;
+        //   * a table created after the last catalog checkpoint: rehydrate ran BEFORE
+        //     replay, when pg_class did not know the table yet, so its storage was
+        //     synthesised from the WAL chunk's schema — and data_chunk_binary carries
+        //     no attoid, because that codec has no version field to widen.
+        // Without this, such a column routes appends by NAME for the rest of the
+        // process' life, while the same table routed by identity before the restart.
+        if (disk_ptr) {
+            disk_ptr->restamp_user_storage_attoids_sync();
         }
 
         // Re-seed the MVCC commit clock on reopen from a SINGLE combined durable

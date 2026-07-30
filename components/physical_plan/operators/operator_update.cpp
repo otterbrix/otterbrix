@@ -1,6 +1,6 @@
 #include "operator_update.hpp"
 #include "dml_util.hpp"
-#include "predicates/predicate.hpp"
+#include "predicate_executor.hpp"
 #include <atomic>
 #include <cassert>
 #include <components/vector/vector_operations.hpp>
@@ -93,31 +93,38 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         auto* resource = resource_;
-        auto types = chunk.types();
 
         // expr_ is null for the simple predicate-scan UPDATE (the scan pushed the
         // WHERE), so create_all_true_predicate matches every scan row; a non-null
         // expr_ is honored for completeness.
-        auto predicate = expr_ ? predicates::create_predicate(resource,
-                                                              pipeline_context->function_registry,
-                                                              expr_,
-                                                              types,
-                                                              types,
-                                                              &pipeline_context->parameters,
-                                                              pipeline_context->session_tz)
-                               : predicates::create_all_true_predicate(resource);
+        // expr_ is null for the simple predicate-scan UPDATE (the scan pushed the WHERE); the
+        // facade turns that into a constant TRUE, so every scan row matches through the SAME path.
+        auto compiled = predicate_executor_t::create(resource,
+                                                     expr_,
+                                                     chunk.schema(),
+                                                     chunk.schema(),
+                                                     pipeline_context->function_registry,
+                                                     &pipeline_context->parameters,
+                                                     pipeline_context->session_tz);
+        if (compiled.has_error()) {
+            return compiled.error();
+        }
 
-        data_chunk_t out_chunk(resource, types, chunk.size());
+        auto out_chunk = vector::make_chunk(resource, chunk.schema(), chunk.size());
+        // ONE evaluation for the batch. select() applies the rule itself: only a definitely-TRUE
+        // predicate updates the row, so UNKNOWN (a NULL operand) skips it.
+        vector::indexing_vector_t matched(resource, chunk.size() > 0 ? chunk.size() : 1);
+        auto selected = compiled.value().select(chunk,
+                                                chunk.size(),
+                                                pipeline_context->parameters,
+                                                pipeline_context->session_tz,
+                                                matched);
+        if (selected.has_error()) {
+            return selected.error();
+        }
         size_t index = 0;
-        for (size_t i = 0; i < chunk.size(); ++i) {
-            auto res = predicate->check(chunk, i);
-            if (res.has_error()) {
-                return res.error();
-            }
-            // Only a definitely-TRUE predicate updates the row; UNKNOWN (NULL operand) skips it.
-            if (!types::selects(res.value())) {
-                continue;
-            }
+        for (uint64_t k = 0; k < selected.value(); ++k) {
+            const size_t i = matched.get_index(k);
             if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                 out_chunk.row_ids.data<int64_t>()[index] =
                     static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
@@ -139,7 +146,7 @@ namespace components::operators {
         // row-for-row (and by row_id) with the NEW rows appended to output_.
         // out_chunk.copy() copies both the columns and row_ids for out_chunk.size()
         // (== index) rows and sets old_chunk's cardinality.
-        data_chunk_t old_chunk(resource, types, index);
+        auto old_chunk = vector::make_chunk(resource, chunk.schema(), index);
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
 
@@ -179,26 +186,33 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         auto* resource = resource_;
-        auto types_left = chunk_left.types();
-        std::pmr::vector<types::complex_logical_type> types_right(resource);
+        // The right schema is the first non-empty right chunk's, held as a pointer rather than
+        // copied: a schema record is move-only by design.
+        const vector::data_chunk_t* right_front = nullptr;
         for (const auto& rc : right_chunks) {
             if (rc.size() > 0) {
-                types_right = rc.types();
+                right_front = &rc;
                 break;
             }
         }
+        const vector::schema_t empty_schema{resource};
 
-        auto predicate = expr_ ? predicates::create_predicate(resource,
-                                                              pipeline_context->function_registry,
-                                                              expr_,
-                                                              types_left,
-                                                              types_right,
-                                                              &pipeline_context->parameters,
-                                                              pipeline_context->session_tz)
-                               : predicates::create_all_true_predicate(resource);
+        auto compiled = predicate_executor_t::create(resource,
+                                                     expr_,
+                                                     chunk_left.schema(),
+                                                     right_front ? right_front->schema() : empty_schema,
+                                                     pipeline_context->function_registry,
+                                                     &pipeline_context->parameters,
+                                                     pipeline_context->session_tz);
+        if (compiled.has_error()) {
+            return compiled.error();
+        }
+        vector::indexing_vector_t right_matches(resource, vector::DEFAULT_VECTOR_CAPACITY);
 
-        data_chunk_t out_chunk(resource, types_left, chunk_left.size());
-        data_chunk_t right_chunk(resource, types_right, chunk_left.size());
+        auto out_chunk = vector::make_chunk(resource, chunk_left.schema(), chunk_left.size());
+        auto right_chunk = vector::make_chunk(resource,
+                                              right_front ? right_front->schema() : empty_schema,
+                                              chunk_left.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); ++i) {
             // Matched-row bound (UPDATE ... FROM ... LIMIT n): stop once the running matched
@@ -212,14 +226,21 @@ namespace components::operators {
                 if (chunk_right.size() == 0) {
                     continue;
                 }
-                auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
-                if (results.has_error()) {
-                    return results.error();
+                // ONE left row against the whole right chunk; select_matches applies the
+                // definitely-TRUE rule, so a NULL join key matches nothing.
+                right_matches.reset(chunk_right.size());
+                auto matches = compiled.value().select_matches(chunk_left,
+                                                               i,
+                                                               chunk_right,
+                                                               chunk_right.size(),
+                                                               pipeline_context->parameters,
+                                                               pipeline_context->session_tz,
+                                                               right_matches);
+                if (matches.has_error()) {
+                    return matches.error();
                 }
-                for (size_t j = 0; j < chunk_right.size(); ++j) {
-                    if (!types::selects(results.value()[j])) {
-                        continue;
-                    }
+                for (uint64_t m = 0; m < matches.value(); ++m) {
+                    const size_t j = right_matches.get_index(m);
                     // Storage / index update keys on the ABSOLUTE table row id of the
                     // matched left row; mirror the simple path's DICTIONARY fallback.
                     if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
@@ -259,7 +280,7 @@ namespace components::operators {
         // Capture the matched OLD rows BEFORE apply_updates mutates out_chunk in
         // place — pre-update rows for the index mirror, aligned row-for-row (and by
         // row_id) with the NEW rows accumulated in output_.
-        data_chunk_t old_chunk(resource, types_left, index);
+        auto old_chunk = vector::make_chunk(resource, chunk_left.schema(), index);
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
 
@@ -517,7 +538,7 @@ namespace components::operators {
                 // Column-less chunks whose cardinalities sum to the affected-row count
                 // (the cursor totals chunk sizes).
                 set_output(make_operator_data(resource_,
-                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, vector::schema_t{resource_})));
             } else {
                 set_output(nullptr);
             }

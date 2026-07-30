@@ -41,7 +41,7 @@ namespace components::operators {
             return lhs_ext->type() < rhs_ext->type();
         }
 
-        return lhs_ext->alias() < rhs_ext->alias();
+        return lhs_ext->field_name() < rhs_ext->field_name();
     }
 
 } // namespace components::operators

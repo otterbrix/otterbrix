@@ -31,9 +31,14 @@ namespace components::operators {
         std::pmr::vector<types::logical_value_t> arg_values(resource_);
         arg_values.reserve(args_.size());
         for (const auto& arg : args_) {
-            if (std::holds_alternative<core::parameter_id_t>(arg)) {
-                arg_values.emplace_back(
-                    logical_plan::get_parameter(&ctx->parameters, std::get<core::parameter_id_t>(arg)));
+            if (expressions::is_parameter(arg)) {
+                const auto* value = logical_plan::get_parameter(&ctx->parameters, expressions::as_parameter(arg));
+                if (!value) {
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"table function: argument references an unbound parameter", resource_});
+                }
+                arg_values.emplace_back(*value);
             } else {
                 // A column-ref argument is a correlated (LATERAL) reference; resolving
                 // it needs an outer row, which only the LATERAL-join path provides.
@@ -71,7 +76,6 @@ namespace components::operators {
             return out_type_res.error();
         }
         types::complex_logical_type out_type = out_type_res.value();
-        out_type.set_alias(result_alias_);
 
         compute::exec_context_t exec_ctx(resource_, const_cast<compute::function_registry_t*>(ctx->function_registry));
         compute::kernel_context kernel_ctx(exec_ctx, kernel);
@@ -88,10 +92,14 @@ namespace components::operators {
             types.emplace_back(out_type);
             vector::data_chunk_t empty(resource_, types, 1);
             empty.set_cardinality(0);
+            // Named the same way as the non-empty branch below — on the COLUMN. The name used
+            // to be put inside out_type so that constructing this chunk from it would carry it,
+            // which named the column on one path and not the other (M3-B5).
+            empty.set_column_name(0, result_alias_);
             chunks.emplace_back(std::move(empty));
         } else {
             for (auto& chunk : produced) {
-                chunk.data[0].set_type_alias(result_alias_);
+                chunk.set_column_name(0, result_alias_);
                 chunks.emplace_back(std::move(chunk));
             }
         }

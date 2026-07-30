@@ -1,6 +1,6 @@
 #include "operator_having.hpp"
 
-#include "predicates/predicate.hpp"
+#include "predicate_executor.hpp"
 
 namespace components::operators {
 
@@ -30,11 +30,7 @@ namespace components::operators {
         // every finalize chunk (operator_group fixes out_types once), and resource_ (context.resource)
         // outlives them all, so the predicate's value-getter closures stay valid across all chunks.
         if (!stream_ready_) {
-            stream_types_.clear();
-            stream_types_.reserve(input.column_count());
-            for (size_t j = 0; j < input.column_count(); j++) {
-                stream_types_.push_back(input.data[j].type());
-            }
+            stream_schema_ = vector::clone_schema(resource_, input.schema());
             // Only slots with real data flow downstream; a projected scan leaves un-projected slots
             // as placeholders (no buffer) so column indices stay stable.
             stream_populated_cols_.clear();
@@ -45,40 +41,38 @@ namespace components::operators {
                 }
             }
             stream_sparse_ = stream_populated_cols_.size() != input.column_count();
-            // expression_ is ALWAYS non-null (create_plan_having returns nullptr on empty expressions),
-            // so there is no create_all_true_predicate branch.
-            stream_predicate_ = predicates::create_predicate(resource_,
-                                                             ctx->function_registry,
-                                                             expression_,
-                                                             stream_types_,
-                                                             stream_types_,
-                                                             &ctx->parameters,
-                                                             ctx->session_tz);
+            // expression_ is ALWAYS non-null (create_plan_having returns nullptr on empty
+            // expressions), so the null-expression ("every row matches") shape is unused here.
+            // A HAVING is a single-input filter: the chunk is compared against itself, so the same
+            // schema is both sides.
+            auto executor = predicate_executor_t::create(resource_,
+                                                         expression_,
+                                                         stream_schema_,
+                                                         stream_schema_,
+                                                         ctx->function_registry,
+                                                         &ctx->parameters,
+                                                         ctx->session_tz);
+            if (executor.has_error()) {
+                return executor.error();
+            }
+            stream_predicate_.emplace(std::move(executor.value()));
+            // Sized ONCE to the widest batch: set_index is unchecked, so the selection must be as
+            // long as the input can be, not as long as the first input happened to be.
+            stream_selection_ = vector::indexing_vector_t{resource_, vector::DEFAULT_VECTOR_CAPACITY};
             stream_ready_ = true;
         }
 
-        // Evaluate the predicate over the whole batch (single-input filter: chunk compared to itself).
-        vector::indexing_vector_t all_indices(nullptr, nullptr);
-        auto results = stream_predicate_->batch_check(input, input, all_indices, all_indices, input.size());
-        if (results.has_error()) {
-            return results.error();
+        // ONE evaluation for the whole batch. select() applies the rule itself: a group survives only
+        // when the predicate is definitely TRUE, so a NULL operand (an aggregate over an all-NULL
+        // group) yields UNKNOWN and drops the group, exactly as a WHERE drops an UNKNOWN row.
+        stream_selection_.reset(input.size());
+        auto selected =
+            stream_predicate_->select(input, input.size(), ctx->parameters, ctx->session_tz, stream_selection_);
+        if (selected.has_error()) {
+            return selected.error();
         }
-        const std::vector<types::tri_bool_t>& mask = results.value();
-
-        // Build the selection of surviving (predicate-true) rows. The selection MUST be sized to the
-        // full input length (set_index is unchecked); only the first out_count slots are filled/read.
-        // HAVING keeps a group only when the predicate is definitely TRUE -- a NULL operand (e.g. an
-        // aggregate over an all-NULL group) yields UNKNOWN, which drops the group, exactly as WHERE
-        // drops an UNKNOWN row.
-        vector::indexing_vector_t sel(resource_);
-        sel.reset(input.size());
-        uint64_t out_count = 0;
-        for (uint64_t i = 0; i < input.size(); i++) {
-            if (types::selects(mask[i])) {
-                sel.set_index(out_count, i);
-                out_count++;
-            }
-        }
+        const uint64_t out_count = selected.value();
+        auto& sel = stream_selection_;
         if (out_count == 0) {
             return core::error_t::no_error(); // nothing survived — emit no chunk (matches operator_match)
         }
@@ -87,8 +81,8 @@ namespace components::operators {
         // (no per-cell logical_value_t), skips placeholder columns, gathers row_ids (all-zero over a
         // group sink — identical to match's zero sentinel), and sets the target cardinality itself.
         vector::data_chunk_t out_chunk =
-            stream_sparse_ ? vector::data_chunk_t(resource_, stream_types_, stream_populated_cols_, out_count)
-                           : vector::data_chunk_t(resource_, stream_types_, out_count);
+            stream_sparse_ ? vector::make_chunk(resource_, stream_schema_, stream_populated_cols_, out_count)
+                           : vector::make_chunk(resource_, stream_schema_, out_count);
         input.copy(out_chunk, sel, out_count);
         out.emplace_back(std::move(out_chunk));
         return core::error_t::no_error();

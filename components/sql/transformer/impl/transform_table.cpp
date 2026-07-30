@@ -33,12 +33,6 @@ namespace components::sql::transform {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
-        logical_plan::node_ptr created;
-        if (col_defs.value().empty()) {
-            created =
-                logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
-        }
-
         auto constraints = extract_table_constraints(resource_, *coldefs);
         if (constraints.has_error()) {
             error_ = constraints.error();
@@ -62,21 +56,23 @@ namespace components::sql::transform {
             }
         }
 
-        created = logical_plan::make_node_create_collection(resource_,
-                                                            core::relname_t{qn.relname},
-                                                            std::move(col_defs.value()),
-                                                            std::move(constraints.value()),
-                                                            disk_storage,
-                                                            node.if_not_exists);
+        // Held as the concrete node type the factory returns, not as a node_ptr: the column defs
+        // are read back below, and going through the base pointer meant asking a downcast to
+        // re-establish what construction on this very line already fixed.
+        logical_plan::node_create_collection_ptr created =
+            logical_plan::make_node_create_collection(resource_,
+                                                      core::relname_t{qn.relname},
+                                                      std::move(col_defs.value()),
+                                                      std::move(constraints.value()),
+                                                      disk_storage,
+                                                      node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.
         std::set<std::string> udt_names;
         // Re-read col_defs from the constructed node (we moved it above).
-        if (auto* cn = dynamic_cast<logical_plan::node_create_collection_t*>(created.get())) {
-            for (const auto& col : cn->column_definitions()) {
-                components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
-            }
+        for (const auto& col : created->column_definitions()) {
+            components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
         }
         if (udt_names.empty()) {
             // No UDTs — wrap target namespace only.
@@ -126,20 +122,17 @@ namespace components::sql::transform {
                     case database_schema_table: {
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _ = strVal(it++->data);
+                        ++it; // schema qualifier — accepted by the grammar, not part of the target
                         std::string collection = strVal(it->data);
-                        (void) _;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        std::string /*uuid*/ _u = strVal(it++->data);
+                        ++it; // uuid qualifier — accepted by the grammar, not part of the target
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _s = strVal(it++->data);
+                        ++it; // schema qualifier — likewise
                         std::string collection = strVal(it->data);
-                        (void) _u;
-                        (void) _s;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
@@ -178,22 +171,19 @@ namespace components::sql::transform {
                     case database_schema_table: {
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _ = strVal(it++->data);
+                        ++it; // schema qualifier — accepted by the grammar, not part of the target
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        (void) _;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        std::string /*uuid*/ _u = strVal(it++->data);
+                        ++it; // uuid qualifier — accepted by the grammar, not part of the target
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _s = strVal(it++->data);
+                        ++it; // schema qualifier — likewise
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        (void) _u;
-                        (void) _s;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }

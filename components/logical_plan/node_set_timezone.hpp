@@ -13,7 +13,6 @@ namespace components::logical_plan {
         const std::string& timezone_name() const noexcept;
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string timezone_name_;

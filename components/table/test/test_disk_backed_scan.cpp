@@ -28,6 +28,7 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <limits>
@@ -35,7 +36,7 @@
 
 namespace {
     std::string test_db_path() {
-        static std::string path = "/tmp/test_otterbrix_disk_backed_scan_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = test_temp_path("test_otterbrix_disk_backed_scan.otbx");
         return path;
     }
 

@@ -11,8 +11,6 @@ namespace components::logical_plan {
         , viewname_(std::move(static_cast<std::string&>(viewname)))
         , query_sql_(std::move(static_cast<std::string&>(query_sql))) {}
 
-    hash_t node_create_view_t::hash_impl() const { return 0; }
-
     std::string node_create_view_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_view: " << viewname_;

@@ -15,12 +15,12 @@ namespace services::planner::impl {
 
         auto left_op = create_plan(context,
                                    function_registry,
-                                   node->children()[0],
+                                   union_node->left(),
                                    components::logical_plan::limit_t::unlimit(),
                                    params);
         auto right_op = create_plan(context,
                                     function_registry,
-                                    node->children()[1],
+                                    union_node->right(),
                                     components::logical_plan::limit_t::unlimit(),
                                     params);
 
@@ -29,7 +29,7 @@ namespace services::planner::impl {
         // Forward the validator-stamped, reconciled union schema (validate_schema's
         // union_t case) — the operator types its output from this stamp, not from the
         // row data the branches happen to produce.
-        op->set_output_types(node->output_types());
+        op->set_output_schema(node->output_schema());
         op->set_children(std::move(left_op), std::move(right_op));
         return op;
     }

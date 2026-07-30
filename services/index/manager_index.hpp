@@ -14,6 +14,7 @@
 #include "index_agent_disk.hpp"
 #include <atomic>
 #include <boost/lockfree/queue.hpp>
+#include <cassert>
 #include <chrono>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/index/index_engine.hpp>
@@ -66,9 +67,21 @@ namespace services::index {
             actor_zeta::behavior_t behavior{};
         };
 
+        // Stop the event loop and cancel everything still queued. Idempotent; ~manager_index_t
+        // calls it. loop_thread_ is the ONLY consumer of inbox_, so once it has exited a delivered
+        // message would never be processed — after this returns, enqueue_impl refuses delivery
+        // rather than parking a message nobody will read.
+        void stop_loop() noexcept;
+
         // Senders only deliver: the message is released into inbox_ and pump_cv_
         // is notified. ALL processing runs on loop_thread_, lock-free on the
         // DML/DDL path. (See the event-loop fields below.)
+        //
+        // Returns {needs_schedule, delivery result}. needs_schedule is always false: this manager
+        // drives its own loop thread and is never scheduler-driven. The delivery result is NOT
+        // decorative — on queue_closed the caller's future has been cancelled (~message runs
+        // cleanup_fn_, which sets operation_canceled on the slot), and reporting success in that
+        // case leaves the sender awaiting a reply that can never come.
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
@@ -356,7 +369,19 @@ namespace services::index {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        (void) enqueue_impl(std::move(msg));
+        const auto delivery = enqueue_impl(std::move(msg));
+        // .first (needs_schedule) is always false: the manager runs its own loop thread and is
+        // never handed to a scheduler.
+        assert(!delivery.first && "manager_index_t is never scheduler-driven");
+        if (delivery.second != actor_zeta::detail::enqueue_result::success) {
+            // enqueue_impl already cancelled `future` by destroying the message, so the caller
+            // will observe operation_canceled rather than hang. Say so anyway: a dropped index
+            // message means index maintenance was skipped, and nothing else records that.
+            error(log_,
+                  "manager_index_t::enqueue_impl: command {} NOT delivered (event loop closed) — "
+                  "index maintenance for this message was skipped",
+                  cmd);
+        }
         return std::move(future);
     }
 

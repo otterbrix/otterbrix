@@ -133,32 +133,52 @@ namespace otterbrix {
             }
         }
 
+        // Field name -> position in the dict's parallel keys()/values() lists. Only a
+        // TARGET struct needs it: its fields are matched to the dict BY NAME, in the
+        // target's own field order. Without a target the dict IS the struct, and
+        // keys()[i] / values()[i] already pair up.
         case_insensitive_map_t<idx_t> key_mapping;
-        for (idx_t i = 0; i < struct_keys.size(); i++) {
-            key_mapping[struct_keys[i]] = i;
+        if (struct_target) {
+            for (idx_t i = 0; i < struct_keys.size(); i++) {
+                key_mapping[struct_keys[i]] = i;
+            }
         }
 
         std::vector<logical_value_t> struct_values;
         for (idx_t i = 0; i < dict.len; i++) {
             if (struct_target) {
-                auto& key = struct_extension->child_types().at(i).alias();
-                auto value_index = key_mapping[key];
+                auto& key = struct_extension->child_types().at(i).field_name();
+                // The dict is matched to the target struct BY FIELD NAME, and the arity
+                // check above does not make the names line up: a field the dict does not
+                // carry has no entry here. operator[] would default-insert 0 and read
+                // values[0] — the FIRST field's value, handed back as this one — so resolve
+                // the name and report the miss through the error channel instead.
+                auto value_it = key_mapping.find(key);
+                if (value_it == key_mapping.end()) {
+                    return make_error(r,
+                                      "We could not convert the object " + dict.to_string() +
+                                          " to the target struct type: it carries no field named \'" + key + "\'");
+                }
+                auto value_index = value_it->second;
                 auto& child_type = target_type.child_types().at(i);
                 auto val = transform_python_value(r, dict.values.attr("__getitem__")(value_index), child_type);
                 if (val.has_error()) {
                     return val.error();
                 }
-                val.value().set_alias(key);
+                val.value().set_field_name(key);
                 struct_values.emplace_back(std::move(val.value()));
             } else {
                 auto& key = struct_keys[i];
-                auto value_index = key_mapping[key];
+                // Untyped dict: keys() and values() are the SAME dict's parallel lists, so
+                // values[i] is this key's value. Routing the index through the name map
+                // instead answered with the LAST of any case-insensitively equal keys, which
+                // gave {'a': 1, 'A': 2} the fields (a=2, A=2).
                 auto child_type = logical_type::UNKNOWN;
-                auto val = transform_python_value(r, dict.values.attr("__getitem__")(value_index), child_type);
+                auto val = transform_python_value(r, dict.values.attr("__getitem__")(i), child_type);
                 if (val.has_error()) {
                     return val.error();
                 }
-                val.value().set_alias(key);
+                val.value().set_field_name(key);
                 struct_values.emplace_back(std::move(val.value()));
             }
         }
@@ -169,7 +189,7 @@ namespace otterbrix {
         child_types.reserve(struct_values.size());
         for (idx_t i = 0; i < struct_values.size(); i++) {
             auto ct = struct_values[i].type();
-            ct.set_alias(struct_keys[i]);
+            ct.set_field_name(struct_keys[i]);
             child_types.push_back(std::move(ct));
         }
         auto struct_type = complex_logical_type::create_struct("", child_types);
@@ -222,8 +242,8 @@ namespace otterbrix {
                 return err;
             }
 
-            new_key.value().set_alias("key");
-            new_value.value().set_alias("value");
+            new_key.value().set_field_name("key");
+            new_value.value().set_field_name("value");
             key_values.emplace_back(new_key.value());
             value_values.emplace_back(new_value.value());
         }
@@ -300,8 +320,8 @@ namespace otterbrix {
                 return err;
             }
 
-            new_key.set_alias("key");
-            new_value.set_alias("value");
+            new_key.set_field_name("key");
+            new_value.set_field_name("value");
             key_values.emplace_back(new_key);
             value_values.emplace_back(new_value);
         }
@@ -328,13 +348,13 @@ namespace otterbrix {
         std::vector<logical_value_t> children;
         for (idx_t i = 0; i < child_count; i++) {
             auto& type = child_types[i];
-            const auto& name = target_type.child_types()[i].alias();
+            const auto& name = target_type.child_types()[i].field_name();
             auto element = py::handle(tuple[i]);
             auto converted_value = transform_python_value(r, element, type);
             if (converted_value.has_error()) {
                 return converted_value.error();
             }
-            converted_value.value().set_alias(name);
+            converted_value.value().set_field_name(name);
             children.emplace_back(std::move(converted_value.value()));
         }
         return logical_value_t::create_struct(r, target_type, children);

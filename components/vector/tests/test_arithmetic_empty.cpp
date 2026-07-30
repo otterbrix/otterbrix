@@ -57,6 +57,7 @@ TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not de
 
     // A flat numeric result vector of the promoted arithmetic type, carrying no
     // rows (count==0 was requested).
-    REQUIRE(out.get_vector_type() == components::vector::vector_type::FLAT);
-    REQUIRE(out.type().type() == components::types::logical_type::DOUBLE);
+    REQUIRE_FALSE(out.has_error());
+    REQUIRE(out.value().get_vector_type() == components::vector::vector_type::FLAT);
+    REQUIRE(out.value().type().type() == components::types::logical_type::DOUBLE);
 }

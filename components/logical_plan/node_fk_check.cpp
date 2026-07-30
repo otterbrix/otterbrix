@@ -13,8 +13,6 @@ namespace components::logical_plan {
         , relname_(std::move(static_cast<std::string&>(relname)))
         , fk_(std::move(fk)) {}
 
-    hash_t node_fk_check_t::hash_impl() const { return 0; }
-
     std::string node_fk_check_t::to_string_impl() const {
         std::ostringstream s;
         s << "$fk_check: " << relname_ << " -> parent_oid=" << fk_.parent_table_oid;

@@ -17,15 +17,6 @@ namespace components::planner::optimizer {
         namespace ce = components::expressions;
         namespace lp = components::logical_plan;
 
-        lp::node_ptr find_child(const lp::node_ptr& n, lp::node_type t) {
-            for (const auto& c : n->children()) {
-                if (c && c->type() == t) {
-                    return c;
-                }
-            }
-            return nullptr;
-        }
-
         // A bare single-table scan aggregate the partial group can wrap: bound to one
         // resolved table, not distinct, and carrying only an optional WHERE (match)
         // child. Any group / sort / select / limit / having / nested source makes it
@@ -97,19 +88,25 @@ namespace components::planner::optimizer {
             if (join->children().size() != 2) {
                 return;
             }
-            const lp::node_ptr& lc = join->children()[0];
-            const lp::node_ptr& rc = join->children()[1];
-            if (!lc || !rc || !lc->has_output_types() || !rc->has_output_types()) {
+            // This rule's degradation policy for an unstamped side: bail outright — the
+            // partial splice rewrites merged column paths and cannot guess the boundary.
+            // A missing child is already nullopt, so this covers both sides being present.
+            const auto left_width_opt = join->left_width();
+            if (!left_width_opt.has_value() || !join->right_width().has_value()) {
                 return;
             }
-            const size_t left_width = lc->output_types().size();
+            const size_t left_width = *left_width_opt;
 
-            lp::node_ptr group = find_child(agg, lp::node_type::group_t);
+            // This rule's own reading of the roles: only $group / $having / $match matter;
+            // the source is taken from children()[0] above (the FROM slot), not from
+            // roles.source.
+            const auto roles = static_cast<const lp::node_aggregate_t*>(agg.get())->pipeline();
+            const lp::node_ptr& group = roles.group;
             if (!group) {
                 return;
             }
             // HAVING would need to run above the FINAL merge; skip (conservative).
-            if (find_child(agg, lp::node_type::having_t)) {
+            if (roles.having) {
                 return;
             }
             // A residual WHERE above the join (a cross-side predicate like
@@ -118,7 +115,7 @@ namespace components::planner::optimizer {
             // the pushed side to [group keys, join key, partial aggregates], silently
             // re-pointing those merged paths at the wrong columns. Skip (conservative),
             // same reasoning as the HAVING bail above.
-            if (find_child(agg, lp::node_type::match_t)) {
+            if (roles.match) {
                 return;
             }
             auto* group_node = static_cast<lp::node_group_t*>(group.get());
@@ -203,18 +200,18 @@ namespace components::planner::optimizer {
 
             // The join key on the pushed side, as a LOCAL column index.
             const size_t join_key_local = pushed_left ? join->left_col() : join->right_col();
-            if (join_key_local >= pushed->output_types().size()) {
+            if (join_key_local >= pushed->output_schema().size()) {
                 return; // defensive: unexpected stamp
             }
             // Every referenced column must resolve inside the pushed side's stamped
             // width (the output re-stamp below reads its type by that local index).
             for (size_t m : key_merged) {
-                if (m - base >= pushed->output_types().size()) {
+                if (m - base >= pushed->output_schema().size()) {
                     return; // defensive: unexpected stamp
                 }
             }
             for (size_t m : agg_merged) {
-                if (m - base >= pushed->output_types().size()) {
+                if (m - base >= pushed->output_schema().size()) {
                     return; // defensive: unexpected stamp
                 }
             }
@@ -242,7 +239,7 @@ namespace components::planner::optimizer {
             if (!join_key_covered) {
                 // Add the join key as an extra partial grouping column so a partial
                 // group maps 1:1 to the join key (inner-join drop commutes with reduce).
-                ce::key_t jk{resource, std::string{pushed->output_types()[join_key_local].alias()}};
+                ce::key_t jk{resource, std::string{pushed->output_schema()[join_key_local].name}};
                 set_key_path(resource, jk, join_key_local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, jk));
@@ -281,28 +278,31 @@ namespace components::planner::optimizer {
             // [group keys..., join key (if added), partial aggregates...]. The node
             // still carried the base table's full column list, and BOTH lowerings
             // treat that stamp as the authoritative output layout —
-            // create_plan_aggregate forwards it into operator_group's output_types_
+            // create_plan_aggregate forwards it into operator_group's output_schema_
             // and into the pushed reduce spec, either of which then types the
             // partial extremum column with whatever base column happens to sit at
             // the same ordinal (wrong type whenever the ordinals do not coincide).
             {
-                const auto& base_types = pushed->output_types();
-                std::pmr::vector<components::types::complex_logical_type> partial_types{resource};
-                partial_types.reserve(num_keys + aggs.size());
+                const auto& base_schema = pushed->output_schema();
+                components::vector::schema_t partial_schema{resource};
+                partial_schema.reserve(num_keys + aggs.size());
                 for (size_t i = 0; i < keys.size(); ++i) {
-                    partial_types.push_back(base_types[key_merged[i] - base]);
+                    partial_schema.push_back(base_schema[key_merged[i] - base].clone(resource));
                 }
                 if (!join_key_covered) {
-                    partial_types.push_back(base_types[join_key_local]);
+                    partial_schema.push_back(base_schema[join_key_local].clone(resource));
                 }
                 for (size_t i = 0; i < aggs.size(); ++i) {
-                    // MIN/MAX preserve their argument's type; the column is named
-                    // after the partial aggregate's output alias.
-                    auto t = base_types[agg_merged[i] - base];
-                    t.set_alias(aggs[i]->key().as_string());
-                    partial_types.push_back(std::move(t));
+                    // MIN/MAX preserve their argument's type; the column is RENAMED
+                    // after the partial aggregate's output alias. With the name beside
+                    // the type instead of inside it, the rename touches the record's
+                    // name and leaves the type alone.
+                    auto column = base_schema[agg_merged[i] - base].clone(resource);
+                    const auto alias = aggs[i]->key().as_string();
+                    column.name.assign(alias.data(), alias.size());
+                    partial_schema.push_back(std::move(column));
                 }
-                pushed->set_output_types(std::move(partial_types));
+                pushed->set_output_schema(std::move(partial_schema));
             }
 
             if (pushed_left) {

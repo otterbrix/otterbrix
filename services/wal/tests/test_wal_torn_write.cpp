@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <services/wal/base.hpp>
 
@@ -27,7 +28,7 @@ using namespace services;
 
 namespace {
     std::string torn_wal_dir() {
-        static std::string path = "/tmp/test_otterbrix_wal_torn_" + std::to_string(::getpid());
+        static std::string path = test_temp_path("test_otterbrix_wal_torn");
         return path;
     }
     void cleanup() { std::filesystem::remove_all(torn_wal_dir()); }

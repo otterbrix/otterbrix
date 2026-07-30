@@ -22,6 +22,11 @@ namespace components::operators::aggregate {
         bool distinct() const { return distinct_; }
 
     private:
+        // The one aggregator that IS a registered-function call (NVI: private override).
+        [[nodiscard]] const operator_func_t* as_function_call_impl() const noexcept override {
+            return this;
+        }
+
         core::result_wrapper_t<compute::datum_t> aggregate_batch_impl(pipeline::context_t* pipeline_context) override;
 
         std::pmr::vector<expressions::param_storage> args_;

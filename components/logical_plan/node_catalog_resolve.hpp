@@ -181,7 +181,6 @@ namespace components::logical_plan {
         void set_pk_columns(std::vector<std::string> v) { pk_columns_ = std::move(v); }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         const resolve_kind kind_;

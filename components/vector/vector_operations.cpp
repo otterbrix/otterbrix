@@ -7,9 +7,11 @@ namespace components::vector::vector_ops {
 
     namespace impl {
         template<typename T>
-        void templated_generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
+        core::error_t templated_generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
             if (start > std::numeric_limits<T>::max() || increment > std::numeric_limits<T>::max()) {
-                throw std::runtime_error("sequence start or increment out of type range");
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"sequence start or increment out of the sequence type's range",
+                                                      result.resource()});
             }
             result.set_vector_type(vector_type::FLAT);
             auto result_data = result.data<T>();
@@ -20,16 +22,19 @@ namespace components::vector::vector_ops {
                 }
                 result_data[i] = value;
             }
+            return core::error_t::no_error();
         }
 
         template<typename T>
-        void templated_generate_sequence(vector_t& result,
-                                         uint64_t count,
-                                         const indexing_vector_t& indexing,
-                                         int64_t start,
-                                         int64_t increment) {
+        core::error_t templated_generate_sequence(vector_t& result,
+                                                  uint64_t count,
+                                                  const indexing_vector_t& indexing,
+                                                  int64_t start,
+                                                  int64_t increment) {
             if (start > std::numeric_limits<T>::max() || increment > std::numeric_limits<T>::max()) {
-                throw std::runtime_error("sequence start or increment out of type range");
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"sequence start or increment out of the sequence type's range",
+                                                      result.resource()});
             }
             result.set_vector_type(vector_type::FLAT);
             auto result_data = result.data<T>();
@@ -38,6 +43,7 @@ namespace components::vector::vector_ops {
                 auto idx = indexing.get_index(i);
                 result_data[idx] = static_cast<T>(value + static_cast<uint64_t>(increment) * idx);
             }
+            return core::error_t::no_error();
         }
 
         template<typename T>
@@ -195,35 +201,37 @@ namespace components::vector::vector_ops {
         }
 
         template<bool HAS_RINDEXING, bool FIRST_HASH>
-        static void
+        static core::error_t
         struct_loop_hash(vector_t& input, vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
             auto& children = input.entries();
 
             assert(!children.empty());
             uint64_t col_no = 0;
+            core::error_t error = core::error_t::no_error();
             if (HAS_RINDEXING) {
                 if (FIRST_HASH) {
-                    hash(*children[col_no++], hashes, *rindexing, count);
+                    error = hash(*children[col_no++], hashes, *rindexing, count);
                 } else {
-                    combine_hash(hashes, *children[col_no++], *rindexing, count);
+                    error = combine_hash(hashes, *children[col_no++], *rindexing, count);
                 }
-                while (col_no < children.size()) {
-                    combine_hash(hashes, *children[col_no++], *rindexing, count);
+                while (!error.contains_error() && col_no < children.size()) {
+                    error = combine_hash(hashes, *children[col_no++], *rindexing, count);
                 }
             } else {
                 if (FIRST_HASH) {
-                    hash(*children[col_no++], hashes, count);
+                    error = hash(*children[col_no++], hashes, count);
                 } else {
-                    combine_hash(hashes, *children[col_no++], count);
+                    error = combine_hash(hashes, *children[col_no++], count);
                 }
-                while (col_no < children.size()) {
-                    combine_hash(hashes, *children[col_no++], count);
+                while (!error.contains_error() && col_no < children.size()) {
+                    error = combine_hash(hashes, *children[col_no++], count);
                 }
             }
+            return error;
         }
 
         template<bool HAS_RINDEXING, bool FIRST_HASH>
-        static void
+        static core::error_t
         list_loop_hash(vector_t& input, vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
             hashes.flatten(count);
             auto hdata = hashes.data<uint64_t>();
@@ -237,7 +245,9 @@ namespace components::vector::vector_ops {
 
             vector_t child_hashes(input.resource(), types::logical_type::UBIGINT, child_count);
             if (child_count > 0) {
-                hash(child, child_hashes, child_count);
+                if (auto error = hash(child, child_hashes, child_count); error.contains_error()) {
+                    return error;
+                }
                 child_hashes.flatten(child_count);
             }
             auto chdata = child_hashes.data<uint64_t>();
@@ -259,7 +269,7 @@ namespace components::vector::vector_ops {
 
             count = remaining;
             if (count == 0) {
-                return;
+                return core::error_t::no_error();
             }
 
             uint64_t position = 1;
@@ -279,7 +289,7 @@ namespace components::vector::vector_ops {
                 }
                 count = remaining;
                 if (count == 0) {
-                    return;
+                    return core::error_t::no_error();
                 }
                 ++position;
             }
@@ -304,10 +314,11 @@ namespace components::vector::vector_ops {
                     break;
                 }
             }
+            return core::error_t::no_error();
         }
 
         template<bool HAS_RINDEXING, bool FIRST_HASH>
-        static void
+        static core::error_t
         array_loop_hash(vector_t& input, vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
             hashes.flatten(count);
             auto hdata = hashes.data<uint64_t>();
@@ -325,7 +336,9 @@ namespace components::vector::vector_ops {
                 auto child_count = array_size * (is_constant ? 1 : count);
 
                 vector_t child_hashes(input.resource(), types::logical_type::UBIGINT, child_count);
-                hash(child, child_hashes, child_count);
+                if (auto error = hash(child, child_hashes, child_count); error.contains_error()) {
+                    return error;
+                }
                 child_hashes.flatten(child_count);
                 auto chdata = child_hashes.data<uint64_t>();
 
@@ -356,7 +369,9 @@ namespace components::vector::vector_ops {
                         }
 
                         vector_t dict_vec(child, array_indexing, array_size);
-                        hash(dict_vec, array_hashes, array_size);
+                        if (auto error = hash(dict_vec, array_hashes, array_size); error.contains_error()) {
+                            return error;
+                        }
                         auto ahdata = array_hashes.data<uint64_t>();
 
                         if (FIRST_HASH) {
@@ -371,10 +386,11 @@ namespace components::vector::vector_ops {
                     }
                 }
             }
+            return core::error_t::no_error();
         }
 
         template<bool HAS_RINDEXING>
-        static void
+        static core::error_t
         hash_type_switch(vector_t& input, vector_t& result, const indexing_vector_t* rindexing, uint64_t count) {
             assert(result.type().type() == types::logical_type::UBIGINT);
             switch (input.type().to_physical_type()) {
@@ -422,17 +438,17 @@ namespace components::vector::vector_ops {
                     templated_loop_hash<HAS_RINDEXING, std::string_view>(input, result, rindexing, count);
                     break;
                 case types::physical_type::STRUCT:
-                    struct_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                    break;
+                    return struct_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
                 case types::physical_type::LIST:
-                    list_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                    break;
+                    return list_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
                 case types::physical_type::ARRAY:
-                    array_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                    break;
+                    return array_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
                 default:
-                    throw std::logic_error("Invalid type for hash");
+                    return core::error_t(core::error_code_t::other_error,
+                                         std::pmr::string{"hash is not implemented for this physical type",
+                                                          input.resource()});
             }
+            return core::error_t::no_error();
         }
 
         template<bool HAS_RINDEXING, class T>
@@ -521,10 +537,10 @@ namespace components::vector::vector_ops {
         }
 
         template<bool HAS_RINDEXING>
-        static void combine_hash_type_switch(vector_t& hashes,
-                                             vector_t& input,
-                                             const indexing_vector_t* rindexing,
-                                             uint64_t count) {
+        static core::error_t combine_hash_type_switch(vector_t& hashes,
+                                                      vector_t& input,
+                                                      const indexing_vector_t* rindexing,
+                                                      uint64_t count) {
             assert(hashes.type().type() == types::logical_type::UBIGINT);
             switch (input.type().to_physical_type()) {
                 case types::physical_type::BOOL:
@@ -571,70 +587,66 @@ namespace components::vector::vector_ops {
                     templated_loop_combine_hash<HAS_RINDEXING, std::string_view>(input, hashes, rindexing, count);
                     break;
                 case types::physical_type::STRUCT:
-                    struct_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                    break;
+                    return struct_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
                 case types::physical_type::LIST:
-                    list_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                    break;
+                    return list_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
                 case types::physical_type::ARRAY:
-                    array_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                    break;
+                    return array_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
                 default:
-                    throw std::logic_error("Invalid type for hash");
+                    return core::error_t(core::error_code_t::other_error,
+                                         std::pmr::string{"hash is not implemented for this physical type",
+                                                          input.resource()});
             }
+            return core::error_t::no_error();
         }
 
     } // namespace impl
 
-    void generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
+    core::error_t generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
         switch (result.type().type()) {
             case types::logical_type::TINYINT:
-                impl::templated_generate_sequence<int8_t>(result, count, start, increment);
-                break;
+                return impl::templated_generate_sequence<int8_t>(result, count, start, increment);
             case types::logical_type::SMALLINT:
-                impl::templated_generate_sequence<int16_t>(result, count, start, increment);
-                break;
+                return impl::templated_generate_sequence<int16_t>(result, count, start, increment);
             case types::logical_type::INTEGER:
-                impl::templated_generate_sequence<int32_t>(result, count, start, increment);
-                break;
+                return impl::templated_generate_sequence<int32_t>(result, count, start, increment);
             case types::logical_type::BIGINT:
-                impl::templated_generate_sequence<int64_t>(result, count, start, increment);
-                break;
+                return impl::templated_generate_sequence<int64_t>(result, count, start, increment);
             default:
-                throw std::runtime_error("Unimplemented type for generate sequence");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"generate_sequence is not implemented for this type",
+                                                      result.resource()});
         }
     }
 
-    void generate_sequence(vector_t& result,
-                           uint64_t count,
-                           const indexing_vector_t& indexing,
-                           int64_t start,
-                           int64_t increment) {
+    core::error_t generate_sequence(vector_t& result,
+                                    uint64_t count,
+                                    const indexing_vector_t& indexing,
+                                    int64_t start,
+                                    int64_t increment) {
         switch (result.type().type()) {
             case types::logical_type::TINYINT:
-                impl::templated_generate_sequence<int8_t>(result, count, indexing, start, increment);
-                break;
+                return impl::templated_generate_sequence<int8_t>(result, count, indexing, start, increment);
             case types::logical_type::SMALLINT:
-                impl::templated_generate_sequence<int16_t>(result, count, indexing, start, increment);
-                break;
+                return impl::templated_generate_sequence<int16_t>(result, count, indexing, start, increment);
             case types::logical_type::INTEGER:
-                impl::templated_generate_sequence<int32_t>(result, count, indexing, start, increment);
-                break;
+                return impl::templated_generate_sequence<int32_t>(result, count, indexing, start, increment);
             case types::logical_type::BIGINT:
-                impl::templated_generate_sequence<int64_t>(result, count, indexing, start, increment);
-                break;
+                return impl::templated_generate_sequence<int64_t>(result, count, indexing, start, increment);
             default:
-                throw std::runtime_error("Unimplemented type for generate sequence");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"generate_sequence is not implemented for this type",
+                                                      result.resource()});
         }
     }
 
-    void copy(const vector_t& source,
-              vector_t& target,
-              const indexing_vector_t& indexing,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset,
-              uint64_t copy_count) {
+    core::error_t copy(const vector_t& source,
+                       vector_t& target,
+                       const indexing_vector_t& indexing,
+                       uint64_t source_count,
+                       uint64_t source_offset,
+                       uint64_t target_offset,
+                       uint64_t copy_count) {
         // A projected-out (placeholder) source column carries type info but NO data buffer:
         // data_chunk_t's projected constructor allocates real buffers only for the
         // column_pruning-selected storage columns and leaves the rest as placeholders
@@ -645,7 +657,7 @@ namespace components::vector::vector_ops {
         // column downstream never reads. A real (materialized) column always has either a
         // data buffer or an auxiliary buffer, so this never suppresses a live copy.
         if (source.get_vector_type() == vector_type::FLAT && source.data() == nullptr && !source.auxiliary()) {
-            return;
+            return core::error_t::no_error();
         }
 
         indexing_vector_t owned_indexing(source.resource(), 0, copy_count);
@@ -670,9 +682,11 @@ namespace components::vector::vector_ops {
                     int64_t start, increment;
                     vector_t seq(source_ptr->resource(), source_ptr->type());
                     source_ptr->get_sequence(start, increment);
-                    generate_sequence(seq, source_count, *indexing_ptr, start, increment);
-                    copy(seq, target, *indexing_ptr, source_count, source_offset, target_offset);
-                    return;
+                    if (auto error = generate_sequence(seq, source_count, *indexing_ptr, start, increment);
+                        error.contains_error()) {
+                        return error;
+                    }
+                    return copy(seq, target, *indexing_ptr, source_count, source_offset, target_offset);
                 }
                 case vector_type::CONSTANT:
                     indexing_ptr = zero_indexing_vector(copy_count, owned_indexing);
@@ -682,12 +696,14 @@ namespace components::vector::vector_ops {
                     finished = true;
                     break;
                 default:
-                    throw std::runtime_error("FIXME unimplemented vector type for copy");
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"copy is not implemented for this vector type",
+                                                          source.resource()});
             }
         }
 
         if (copy_count == 0) {
-            return;
+            return core::error_t::no_error();
         }
 
         const auto target_vector_type = target.get_vector_type();
@@ -944,37 +960,39 @@ namespace components::vector::vector_ops {
                 break;
             }
             default:
-                throw std::runtime_error("Unimplemented type for copy!");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"copy is not implemented for this type", source.resource()});
         }
 
         if (target_vector_type != vector_type::FLAT) {
             target.set_vector_type(target_vector_type);
         }
+        return core::error_t::no_error();
     }
 
-    void copy(const vector_t& source,
-              vector_t& target,
-              const indexing_vector_t& indexing,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset) {
+    core::error_t copy(const vector_t& source,
+                       vector_t& target,
+                       const indexing_vector_t& indexing,
+                       uint64_t source_count,
+                       uint64_t source_offset,
+                       uint64_t target_offset) {
         assert(source_offset <= source_count);
         assert(source.type() == target.type());
         uint64_t copy_count = source_count - source_offset;
-        copy(source, target, indexing, source_count, source_offset, target_offset, copy_count);
+        return copy(source, target, indexing, source_count, source_offset, target_offset, copy_count);
     }
 
-    void copy(const vector_t& source,
-              vector_t& target,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset) {
-        copy(source,
-             target,
-             indexing_vector_t(source.resource(), 0, source_count),
-             source_count,
-             source_offset,
-             target_offset);
+    core::error_t copy(const vector_t& source,
+                       vector_t& target,
+                       uint64_t source_count,
+                       uint64_t source_offset,
+                       uint64_t target_offset) {
+        return copy(source,
+                    target,
+                    indexing_vector_t(source.resource(), 0, source_count),
+                    source_count,
+                    source_offset,
+                    target_offset);
     }
 
     template<typename T = void>
@@ -1271,20 +1289,20 @@ namespace components::vector::vector_ops {
         return result;
     }
 
-    void hash(vector_t& input, vector_t& result, uint64_t count) {
-        impl::hash_type_switch<false>(input, result, nullptr, count);
+    core::error_t hash(vector_t& input, vector_t& result, uint64_t count) {
+        return impl::hash_type_switch<false>(input, result, nullptr, count);
     }
 
-    void hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count) {
-        impl::hash_type_switch<true>(input, result, &indexing, count);
+    core::error_t hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count) {
+        return impl::hash_type_switch<true>(input, result, &indexing, count);
     }
 
-    void combine_hash(vector_t& hashes, vector_t& input, uint64_t count) {
-        impl::combine_hash_type_switch<false>(hashes, input, nullptr, count);
+    core::error_t combine_hash(vector_t& hashes, vector_t& input, uint64_t count) {
+        return impl::combine_hash_type_switch<false>(hashes, input, nullptr, count);
     }
 
-    void combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count) {
-        impl::combine_hash_type_switch<true>(hashes, input, &rindexing, count);
+    core::error_t combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count) {
+        return impl::combine_hash_type_switch<true>(hashes, input, &rindexing, count);
     }
 
 } // namespace components::vector::vector_ops

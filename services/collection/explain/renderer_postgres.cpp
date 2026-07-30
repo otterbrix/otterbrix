@@ -206,8 +206,15 @@ namespace services::collection {
         int initplan_no = 0;
         render_node(mr, root, 0, analyze, lines, initplan_no);
 
-        std::pmr::vector<components::types::complex_logical_type> types(mr);
-        types.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");
+        // The one output column and its name: the name is the COLUMN's and lives on the
+        // column, so the chunks below are built FROM the schema (M3-B5).
+        components::vector::schema_t plan_schema(mr);
+        {
+            components::vector::column_schema_t record{mr};
+            record.name = "QUERY PLAN";
+            record.type = components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL};
+            plan_schema.push_back(std::move(record));
+        }
 
         // Emit <=DEFAULT_VECTOR_CAPACITY (1024)-row chunks: a single data_chunk_t caps at 1024.
         std::pmr::vector<components::vector::data_chunk_t> chunks(mr);
@@ -215,7 +222,7 @@ namespace services::collection {
         size_t i = 0;
         while (i < lines.size()) {
             const size_t n = std::min(cap, lines.size() - i);
-            components::vector::data_chunk_t chunk(mr, types, n);
+            auto chunk = components::vector::make_chunk(mr, plan_schema, n);
             chunk.set_cardinality(n);
             for (size_t r = 0; r < n; ++r) {
                 chunk.set_value(0, r, std::string_view(lines[i + r]));
@@ -225,7 +232,7 @@ namespace services::collection {
         }
         if (chunks.empty()) {
             // Keep at least one (empty) chunk so the cursor has column metadata.
-            components::vector::data_chunk_t chunk(mr, types, 1);
+            auto chunk = components::vector::make_chunk(mr, plan_schema, 1);
             chunk.set_cardinality(0);
             chunks.push_back(std::move(chunk));
         }

@@ -45,6 +45,17 @@ namespace components::logical_plan {
             column_defaults_ = std::move(v);
         }
 
+        // DECLARED column types (name -> type), copied from the DML node by the planner. The check
+        // operator types each CHECK literal from these ONCE, at construction, so the per-row
+        // comparison never faces two different types -- which is what used to abort with assertions
+        // on, and silently accept violating rows without them.
+        const std::vector<std::pair<std::string, types::complex_logical_type>>& column_types() const {
+            return column_types_;
+        }
+        void set_column_types(std::vector<std::pair<std::string, types::complex_logical_type>> v) {
+            column_types_ = std::move(v);
+        }
+
         // TRUE when the DML write-set is NAME-ADDRESSED: its column aliases are the
         // statement's explicit column names (SQL INSERT with a column list; every
         // UPDATE write-set). Only then does a column ABSENT-BY-NAME mean "omitted
@@ -53,14 +64,11 @@ namespace components::logical_plan {
         // and the operators keep the pass-through for absent columns.
         bool write_set_named() const noexcept { return write_set_named_; }
         void set_write_set_named(bool v) noexcept { write_set_named_ = v; }
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
-        void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string dbname_;
@@ -69,9 +77,9 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
+        std::vector<std::pair<std::string, types::complex_logical_type>> column_types_; // declared column types
         bool write_set_named_{false}; // write-set aliases are statement column names
-        components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
     };
 
     using node_check_constraint_ptr = boost::intrusive_ptr<node_check_constraint_t>;

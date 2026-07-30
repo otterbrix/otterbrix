@@ -194,7 +194,12 @@ namespace components::operators {
         // Preserve the legacy empty-result schema guard: an empty CTE still emits one
         // schema'd 0-row chunk (so a downstream projection/aggregate sees the columns).
         if (result.empty() && anchor_->output() && !anchor_->output()->chunks().empty()) {
-            result.emplace_back(res, anchor_->output()->chunks().front().types(), 0);
+            // A zero-row answer still NAMES its columns: built from the anchor's schema, not
+            // from its bare types (M3-B5).
+            result.emplace_back(
+                vector::make_chunk(res,
+                                   vector::clone_schema(res, anchor_->output()->chunks().front().schema()),
+                                   0));
         }
 
         output_ = make_operator_data(res, std::move(result));

@@ -32,18 +32,25 @@ namespace components::index {
     private:
         class impl_t final : public index_t::iterator::iterator_impl_t {
         public:
+            static constexpr kind_t iterator_kind = kind_t::disk_hash_single_field;
+
             explicit impl_t(const_iterator iterator)
-                : iterator_(iterator) {}
+                : iterator_impl_t(iterator_kind)
+                , iterator_(iterator) {}
             index_t::iterator::reference value_ref() const final { return *iterator_; }
             iterator_impl_t* next() final {
                 ++iterator_;
                 return this;
             }
+            // Tag-checked downcast: a null or foreign body is rejected before the cast rather than
+            // dereferenced as a nullptr (what dynamic_cast produced here).
             bool equals(const iterator_impl_t* other) const final {
-                return iterator_ == dynamic_cast<const impl_t*>(other)->iterator_;
+                const auto* rhs = same_kind_as<impl_t>(other);
+                return rhs != nullptr && iterator_ == rhs->iterator_;
             }
             bool not_equals(const iterator_impl_t* other) const final {
-                return iterator_ != dynamic_cast<const impl_t*>(other)->iterator_;
+                const auto* rhs = same_kind_as<impl_t>(other);
+                return rhs == nullptr || iterator_ != rhs->iterator_;
             }
             iterator_impl_t* copy() const final { return new impl_t(*this); }
 

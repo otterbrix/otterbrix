@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 #include <fstream>
@@ -44,7 +45,7 @@ namespace {
 TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_stress", "[stress][long]") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_concurrent_stress"};
+    std::filesystem::path path{test_temp_path("index_disk/bitcask_concurrent_stress")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 

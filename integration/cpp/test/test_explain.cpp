@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <components/cursor/cursor.hpp>
 #include <components/types/types.hpp>
@@ -63,7 +64,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_explain::sql") {
-    auto config = test_create_config("/tmp/test_explain/sql");
+    auto config = test_create_config(test_temp_path("test_explain/sql"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -100,7 +101,12 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->column_count() == 1);
-        REQUIRE(cur->chunks().front().data[0].type().alias() == "QUERY PLAN");
+        REQUIRE(cur->chunks().front().data[0].name() == "QUERY PLAN");
+        // M3-B2: the same name off the chunk's own schema record. EXPLAIN never READS a
+        // column name — renderer_postgres.cpp writes "QUERY PLAN" once when it builds the
+        // result types, and this is the only place it is read back. Both carriers are pinned
+        // so B3/B5 cannot silently drop one of them.
+        REQUIRE(std::string{cur->chunks().front().schema()[0].name} == "QUERY PLAN");
         REQUIRE(cur->size() > 0);
         REQUIRE(contains(plan_text(cur), "orders"));
     }
@@ -223,7 +229,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 }
 
 TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
-    auto config = test_create_config("/tmp/test_explain/inline_subquery_initplan");
+    auto config = test_create_config(test_temp_path("test_explain/inline_subquery_initplan"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -363,7 +369,7 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
 }
 
 TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
-    auto config = test_create_config("/tmp/test_explain/per_query_renderer");
+    auto config = test_create_config(test_temp_path("test_explain/per_query_renderer"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -465,7 +471,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 }
 
 TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
-    auto config = test_create_config("/tmp/test_explain/renderer_registration_edges");
+    auto config = test_create_config(test_temp_path("test_explain/renderer_registration_edges"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -524,7 +530,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 }
 
 TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
-    auto config = test_create_config("/tmp/test_explain/analyze_recursive_cte_rows");
+    auto config = test_create_config(test_temp_path("test_explain/analyze_recursive_cte_rows"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -609,7 +615,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
 // window (LIMIT ALL -> unlimit()+offset 0, or no limit clause) inserts NO operator_limit,
 // so no "Limit" node appears.
 TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
-    auto config = test_create_config("/tmp/test_explain/limit_node_when_effective");
+    auto config = test_create_config(test_temp_path("test_explain/limit_node_when_effective"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -682,7 +688,7 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 }
 
 TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
-    auto config = test_create_config("/tmp/test_explain/having_node_labeled");
+    auto config = test_create_config(test_temp_path("test_explain/having_node_labeled"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -724,7 +730,7 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
 // operator_type→label change (or a mis-tagged operator, as SELECT DISTINCT once rendered "Filter")
 // is caught here rather than silently shipping a wrong EXPLAIN label.
 TEST_CASE("integration::cpp::test_explain::operator_labels") {
-    auto config = test_create_config("/tmp/test_explain/operator_labels");
+    auto config = test_create_config(test_temp_path("test_explain/operator_labels"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -793,8 +799,9 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 // stamped merged path and folds into each side's full_scan (a pushable
 // `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
-    auto config =
-        test_helpers::make_test_config("/tmp/test_explain/join_shared_col", /*disk_on=*/true, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(test_temp_path("test_explain/join_shared_col"),
+                                                 /*disk_on=*/true,
+                                                 /*wal_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -871,8 +878,9 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
-    auto config =
-        test_helpers::make_test_config("/tmp/test_explain/transitive_equi", /*disk_on=*/true, /*wal_on=*/false);
+    auto config = test_helpers::make_test_config(test_temp_path("test_explain/transitive_equi"),
+                                                 /*disk_on=*/true,
+                                                 /*wal_on=*/false);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -961,7 +969,7 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
 // the "Unique" label stays. The rendered "Unique" label is the observable proxy for the
 // operator_distinct that the drop_redundant_distinct rule removes.
 TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
-    auto config = test_create_config("/tmp/test_explain/distinct_under_group_by");
+    auto config = test_create_config(test_temp_path("test_explain/distinct_under_group_by"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

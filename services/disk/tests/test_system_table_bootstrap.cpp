@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -19,7 +20,7 @@ using namespace components::catalog;
 
 namespace {
     std::string boot_test_dir() {
-        static std::string path = "/tmp/test_otterbrix_sysboot_" + std::to_string(::getpid());
+        static std::string path = test_temp_path("test_otterbrix_sysboot");
         return path;
     }
     void cleanup_boot_dir() { std::filesystem::remove_all(boot_test_dir()); }
@@ -76,7 +77,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit disk_only_fixture(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -189,7 +190,7 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 // 4. Empty config_disk.path — bootstrap is a safe no-op (in-memory deployment).
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
-    log_t log = initialization_logger("python", "/tmp/docker_logs/");
+    log_t log = initialization_logger("python", test_temp_path("docker_logs"));
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk c;
     c.path.clear(); // truly empty — config_disk default is current_path()/wal

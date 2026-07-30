@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <iostream>
 
 static const database_name_t database_name = "testdatabase";
@@ -12,7 +13,7 @@ static const collection_name_t collection_name = "testcollection";
 using namespace components;
 
 int main() {
-    auto config = configuration::config::create_config("/tmp/profile_arithmetic");
+    auto config = configuration::config::create_config(test_temp_path("profile_arithmetic"));
     std::filesystem::remove_all(config.main_path);
     std::filesystem::create_directories(config.main_path);
     config.disk.on = false;
@@ -21,11 +22,11 @@ int main() {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     // Setup

@@ -23,7 +23,6 @@ namespace components::logical_plan {
         const std::string& macroname() const noexcept { return macroname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string macroname_;

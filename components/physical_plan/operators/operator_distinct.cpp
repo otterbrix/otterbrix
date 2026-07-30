@@ -47,10 +47,10 @@ namespace components::operators {
     void operator_distinct_t::retain_(const vector::data_chunk_t& chunk,
                                       uint64_t row,
                                       uint64_t hash,
-                                      const std::pmr::vector<types::complex_logical_type>& types,
+                                      const vector::schema_t& schema,
                                       std::pmr::memory_resource* res) {
         if (retained_.empty() || retained_fill_ == vector::DEFAULT_VECTOR_CAPACITY) {
-            retained_.emplace_back(res, types, vector::DEFAULT_VECTOR_CAPACITY);
+            retained_.emplace_back(vector::make_chunk(res, schema, vector::DEFAULT_VECTOR_CAPACITY));
             retained_fill_ = 0;
         }
         auto& dst = retained_.back();
@@ -76,9 +76,11 @@ namespace components::operators {
         if (schema == nullptr) {
             return;
         }
-        auto types = schema->types();
+        // The DISTINCT output is what a user reads, so it is built from the input's SCHEMA:
+        // a type list carries no column name (M3-B5).
+        auto out_schema = vector::clone_schema(res, schema->schema());
 
-        vector::data_chunk_t cur(res, types, vector::DEFAULT_VECTOR_CAPACITY);
+        auto cur = vector::make_chunk(res, out_schema, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t filled = 0;
         auto flush = [&]() {
             if (filled == 0) {
@@ -86,7 +88,7 @@ namespace components::operators {
             }
             cur.set_cardinality(filled);
             out.emplace_back(std::move(cur));
-            cur = vector::data_chunk_t(res, types, vector::DEFAULT_VECTOR_CAPACITY);
+            cur = vector::make_chunk(res, out_schema, vector::DEFAULT_VECTOR_CAPACITY);
             filled = 0;
         };
 
@@ -116,7 +118,7 @@ namespace components::operators {
                 // First occurrence: retain it (so later batches dedup against it) and
                 // emit it. retain_ registers the row in seen_ BEFORE the next row is
                 // examined, so an intra-batch duplicate is caught too.
-                retain_(chunk, i, h, types, res);
+                retain_(chunk, i, h, out_schema, res);
                 if (filled == vector::DEFAULT_VECTOR_CAPACITY) {
                     flush();
                 }

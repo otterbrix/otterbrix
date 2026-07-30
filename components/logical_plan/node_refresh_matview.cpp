@@ -13,8 +13,6 @@ namespace components::logical_plan {
         , concurrent_(concurrent)
         , with_data_(with_data) {}
 
-    hash_t node_refresh_matview_t::hash_impl() const { return 0; }
-
     std::string node_refresh_matview_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$refresh_matview: " << matviewname_;

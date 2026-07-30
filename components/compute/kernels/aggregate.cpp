@@ -192,8 +192,11 @@ namespace {
         }
     };
 
+    // A column type with no arm is a real failure, not an empty aggregate: it used to throw,
+    // which under the executor's coroutines lands in an empty unhandled_exception() -> SIGABRT
+    // on the aggregate hot path. Both consume and merge already return core::error_t.
     template<template<typename...> class OP>
-    logical_value_t operator_switch(const vector_t& v, size_t count) {
+    core::result_wrapper_t<logical_value_t> operator_switch(const vector_t& v, size_t count) {
         OP op{};
         switch (v.type().type()) {
             case logical_type::BOOLEAN:
@@ -247,7 +250,9 @@ namespace {
                                                                int_sum.template value<int128_t>());
                     }
                     default:
-                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                        return core::error_t{core::error_code_t::kernel_error,
+                                             std::pmr::string{"aggregate: unsupported DECIMAL storage type",
+                                                              v.resource()}};
                 }
             }
             case logical_type::FLOAT:
@@ -255,13 +260,15 @@ namespace {
             case logical_type::DOUBLE:
                 return op.template operator()<double>(v, count);
             default:
-                throw std::runtime_error("operators::aggregate::sum unable to process given types");
+                return core::error_t{
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"aggregate: unsupported column type", v.resource()}};
         }
         return logical_value_t(v.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
-    logical_value_t operator_switch(const logical_value_t& v1, const logical_value_t& v2) {
+    core::result_wrapper_t<logical_value_t> operator_switch(const logical_value_t& v1, const logical_value_t& v2) {
         OP op{};
         switch (v1.type().type()) {
             case logical_type::BOOLEAN:
@@ -315,7 +322,9 @@ namespace {
                                                                int_sum.template value<int128_t>());
                     }
                     default:
-                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                        return core::error_t{core::error_code_t::kernel_error,
+                                             std::pmr::string{"aggregate: unsupported DECIMAL storage type",
+                                                              v1.resource()}};
                 }
             }
             case logical_type::FLOAT:
@@ -323,84 +332,24 @@ namespace {
             case logical_type::DOUBLE:
                 return op.template operator()<double>(v1, v2);
             default:
-                throw std::runtime_error("operators::aggregate::sum unable to process given types");
+                return core::error_t{
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"aggregate: unsupported column type", v1.resource()}};
         }
         return logical_value_t(v1.resource(), logical_type::NA);
     }
 
-    template<template<typename...> class OP>
-    logical_value_t operator_switch(const logical_value_t& v, size_t count) {
-        OP op{};
-        switch (v.type().type()) {
-            case logical_type::BOOLEAN:
-                return op.template operator()<bool>(v, count);
-            case logical_type::TINYINT:
-                return op.template operator()<int8_t>(v, count);
-            case logical_type::SMALLINT:
-                return op.template operator()<int16_t>(v, count);
-            case logical_type::INTEGER:
-                return op.template operator()<int32_t>(v, count);
-            case logical_type::BIGINT:
-                return op.template operator()<int64_t>(v, count);
-            case logical_type::HUGEINT:
-                return op.template operator()<int128_t>(v, count);
-            case logical_type::UTINYINT:
-                return op.template operator()<uint8_t>(v, count);
-            case logical_type::USMALLINT:
-                return op.template operator()<uint16_t>(v, count);
-            case logical_type::UINTEGER:
-                return op.template operator()<uint32_t>(v, count);
-            case logical_type::UBIGINT:
-                return op.template operator()<uint64_t>(v, count);
-            case logical_type::UHUGEINT:
-                return op.template operator()<uint128_t>(v, count);
-            case logical_type::DECIMAL: {
-                // stored as int???_t, but this won't result in a proper type
-                // intermediate logical_value_t could be avoided, but convenient for templates
-                switch (v.type().to_physical_type()) {
-                    case physical_type::INT16: {
-                        auto int_sum = op.template operator()<int16_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int16_t>());
-                    }
-                    case physical_type::INT32: {
-                        auto int_sum = op.template operator()<int32_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int32_t>());
-                    }
-                    case physical_type::INT64: {
-                        auto int_sum = op.template operator()<int64_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int64_t>());
-                    }
-                    case physical_type::INT128: {
-                        auto int_sum = op.template operator()<int128_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int128_t>());
-                    }
-                    default:
-                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
-                }
-            }
-            case logical_type::FLOAT:
-                return op.template operator()<float>(v, count);
-            case logical_type::DOUBLE:
-                return op.template operator()<double>(v, count);
-            default:
-                throw std::runtime_error("operators::aggregate::sum unable to process given types");
-        }
-        return logical_value_t(v.resource(), logical_type::NA);
+    core::result_wrapper_t<logical_value_t> sum(const vector_t& v, size_t count) {
+        return operator_switch<sum_operator_t>(v, count);
     }
 
-    logical_value_t sum(const vector_t& v, size_t count) { return operator_switch<sum_operator_t>(v, count); }
+    core::result_wrapper_t<logical_value_t> min(const vector_t& v, size_t count) {
+        return operator_switch<min_operator_t>(v, count);
+    }
 
-    logical_value_t min(const vector_t& v, size_t count) { return operator_switch<min_operator_t>(v, count); }
-
-    logical_value_t max(const vector_t& v, size_t count) { return operator_switch<max_operator_t>(v, count); }
+    core::result_wrapper_t<logical_value_t> max(const vector_t& v, size_t count) {
+        return operator_switch<max_operator_t>(v, count);
+    }
 
     struct sum_kernel_state : kernel_state {
         explicit sum_kernel_state(std::pmr::memory_resource* resource)
@@ -415,7 +364,11 @@ namespace {
 
     static core::error_t sum_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<sum_kernel_state*>(ctx.state());
-        acc->value = sum(in.data[0], in.size());
+        auto computed = sum(in.data[0], in.size());
+        if (computed.has_error()) {
+            return computed.error();
+        }
+        acc->value = std::move(computed.value());
         return core::error_t::no_error();
     }
 
@@ -430,7 +383,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<sum_operator_t>(acc.value, src.value);
+            auto combined = operator_switch<sum_operator_t>(acc.value, src.value);
+            if (combined.has_error()) {
+                return combined.error();
+            }
+            acc.value = std::move(combined.value());
         }
         return core::error_t::no_error();
     }
@@ -453,7 +410,11 @@ namespace {
 
     static core::error_t min_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<min_kernel_state*>(ctx.state());
-        acc->value = min(in.data[0], in.size());
+        auto computed = min(in.data[0], in.size());
+        if (computed.has_error()) {
+            return computed.error();
+        }
+        acc->value = std::move(computed.value());
         return core::error_t::no_error();
     }
 
@@ -466,7 +427,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<min_operator_t>(acc.value, src.value);
+            auto combined = operator_switch<min_operator_t>(acc.value, src.value);
+            if (combined.has_error()) {
+                return combined.error();
+            }
+            acc.value = std::move(combined.value());
         }
         return core::error_t::no_error();
     }
@@ -489,7 +454,11 @@ namespace {
 
     static core::error_t max_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<max_kernel_state*>(ctx.state());
-        acc->value = max(in.data[0], in.size());
+        auto computed = max(in.data[0], in.size());
+        if (computed.has_error()) {
+            return computed.error();
+        }
+        acc->value = std::move(computed.value());
         return core::error_t::no_error();
     }
 
@@ -502,7 +471,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<max_operator_t>(acc.value, src.value);
+            auto combined = operator_switch<max_operator_t>(acc.value, src.value);
+            if (combined.has_error()) {
+                return combined.error();
+            }
+            acc.value = std::move(combined.value());
         }
         return core::error_t::no_error();
     }
@@ -568,7 +541,11 @@ namespace {
             valid += !in.data[0].is_null(i);
         }
         acc->count = valid;
-        acc->value = sum(in.data[0], in.size());
+        auto computed = sum(in.data[0], in.size());
+        if (computed.has_error()) {
+            return computed.error();
+        }
+        acc->value = std::move(computed.value());
         return core::error_t::no_error();
     }
 
@@ -584,7 +561,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<sum_operator_t>(acc.value, src.value);
+            auto combined = operator_switch<sum_operator_t>(acc.value, src.value);
+            if (combined.has_error()) {
+                return combined.error();
+            }
+            acc.value = std::move(combined.value());
         }
         return core::error_t::no_error();
     }
@@ -595,8 +576,75 @@ namespace {
             ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
             return core::error_t::no_error();
         }
-        ctx.batch_results.push_back(operator_switch<divide_operator_t>(acc.value, acc.count));
+        // AVG = sum / count is a RATIO: the mean of an integral column is a real
+        // number (mean of {1,2} is 1.5), so the result is always a DOUBLE. Two traps
+        // this avoids, both of which produced a wrong answer before:
+        //  (1) operator_switch<divide_operator_t> dispatches on acc.value's type
+        //      (int64 for a BIGINT sum) and performs INTEGER division, truncating
+        //      the mean towards zero;
+        //  (2) logical_value_t::value<double>() on an integer-typed value is a raw
+        //      bit read, so the caller sees a denormal, not the number.
+        // Convert the running sum to a double by its ACTUAL type, then divide.
+        double sum_d = 0.0;
+        switch (acc.value.type().type()) {
+            case logical_type::BOOLEAN:
+                sum_d = static_cast<double>(acc.value.value<bool>());
+                break;
+            case logical_type::TINYINT:
+                sum_d = static_cast<double>(acc.value.value<int8_t>());
+                break;
+            case logical_type::SMALLINT:
+                sum_d = static_cast<double>(acc.value.value<int16_t>());
+                break;
+            case logical_type::INTEGER:
+                sum_d = static_cast<double>(acc.value.value<int32_t>());
+                break;
+            case logical_type::BIGINT:
+                sum_d = static_cast<double>(acc.value.value<int64_t>());
+                break;
+            case logical_type::HUGEINT:
+                sum_d = static_cast<double>(acc.value.value<int128_t>());
+                break;
+            case logical_type::UTINYINT:
+                sum_d = static_cast<double>(acc.value.value<uint8_t>());
+                break;
+            case logical_type::USMALLINT:
+                sum_d = static_cast<double>(acc.value.value<uint16_t>());
+                break;
+            case logical_type::UINTEGER:
+                sum_d = static_cast<double>(acc.value.value<uint32_t>());
+                break;
+            case logical_type::UBIGINT:
+                sum_d = static_cast<double>(acc.value.value<uint64_t>());
+                break;
+            case logical_type::UHUGEINT:
+                sum_d = static_cast<double>(acc.value.value<uint128_t>());
+                break;
+            case logical_type::FLOAT:
+                sum_d = static_cast<double>(acc.value.value<float>());
+                break;
+            case logical_type::DOUBLE:
+                sum_d = acc.value.value<double>();
+                break;
+            default:
+                // Every averageable type is an explicit case above (the kernel's input
+                // matcher admits exactly those). Anything else is a dispatch bug, not a
+                // value to guess at: surface it instead of reinterpreting its bits.
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("avg: cannot convert sum of this type to a double mean",
+                                                      ctx.batch_results.get_allocator().resource()));
+        }
+        ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                       sum_d / static_cast<double>(acc.count));
         return core::error_t::no_error();
+    }
+
+    // A kernel that does not fit its function's slots or arity leaves the function registered with
+    // that overload MISSING — the call then fails to resolve at a point that no longer knows why.
+    bool attach_kernel(aggregate_function& fn, std::pmr::memory_resource* resource, aggregate_kernel kernel) {
+        const auto status = fn.add_kernel(resource, std::move(kernel));
+        assert(!status.contains_error() && "aggregate kernel does not fit its function's slots/arity");
+        return !status.contains_error();
     }
 
     std::unique_ptr<aggregate_function> make_sum_func(std::pmr::memory_resource* resource,
@@ -614,7 +662,9 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), sum_init, sum_consume, sum_merge, sum_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
         return fn;
     }
 
@@ -633,7 +683,9 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_init, min_consume, min_merge, min_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
         return fn;
     }
 
@@ -652,7 +704,9 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), max_init, max_consume, max_merge, max_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
         return fn;
     }
 
@@ -673,12 +727,16 @@ namespace {
                                {always_true_type_matcher()},
                                {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
-        fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
 
         // COUNT(*) — zero-argument kernel
         kernel_signature_t sig_star(function_type_t::aggregate, {}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k_star{std::move(sig_star), count_init, count_consume_empty, count_merge, count_finalize};
-        fn->add_kernel(resource, std::move(k_star));
+        if (!attach_kernel(*fn, resource, std::move(k_star))) {
+            return nullptr;
+        }
 
         return fn;
     }
@@ -693,13 +751,37 @@ namespace {
         auto fn =
             std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
+        // The DECLARED output type must be the type avg_finalize actually produces —
+        // validate_logical_plan stamps the aggregate's output column from this
+        // signature, and that stamp types a zero-row result and the pushed-aggregate
+        // spec. A "same type as the input" resolver would type an empty AVG(bigint)
+        // column BIGINT while a populated one carries the DOUBLE mean.
         kernel_signature_t sig(function_type_t::aggregate,
                                {numeric_types_matcher()},
-                               {output_type::computed(same_type_resolver(0))});
+                               {output_type::fixed(logical_type::DOUBLE)});
         aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        if (!attach_kernel(*fn, resource, std::move(k))) {
+            return nullptr;
+        }
         return fn;
+    }
+
+    // A registration that fails leaves the aggregate simply ABSENT, and every later lookup of it
+    // misses with nothing anywhere saying why. register_default_functions is void — as is every one
+    // of its call sites — so there is no error channel to return into from here; the result is
+    // consumed at the one place that still knows which function it belonged to. Mirrors
+    // register_checked in string_functions.cpp.
+    void register_checked(function_registry_t& r, std::unique_ptr<aggregate_function> fn) {
+        assert(fn && "aggregate function maker failed to attach its kernels");
+        if (!fn) {
+            return;
+        }
+        [[maybe_unused]] const auto uid = r.add_function(std::move(fn));
+        // Registration is confirmed by the uid resolving back to a live entry — the property every
+        // later lookup depends on, and the only observable consequence of a silent failure.
+        assert(!uid.has_error() && r.get_function(uid.value()) != nullptr &&
+               "registered aggregate function is not reachable by its uid");
     }
 
 } // namespace
@@ -708,24 +790,29 @@ namespace components::compute {
 
     // WARNING: array size, names order and uid has to be the same as in DEFAULT_FUNCTIONS
     void register_default_functions(function_registry_t& r) {
-        (void) r.add_function(make_sum_func(r.resource(),
-                                            "sum",
-                                            "Add all numeric values",
-                                            "Results in a single number of the same type as input"));
-        (void) r.add_function(make_min_func(r.resource(),
-                                            "min",
-                                            "Selects minimal value",
-                                            "Results in a single number of the same type as input"));
-        (void) r.add_function(make_max_func(r.resource(),
-                                            "max",
-                                            "Selects maximum value",
-                                            "Results in a single number of the same type as input"));
-        (void) r.add_function(
-            make_count_func(r.resource(), "count", "Return data size", "Results in a single number of uint64"));
-        (void) r.add_function(make_avg_func(r.resource(),
-                                            "avg",
-                                            "Return data size",
-                                            "Results in a single number of the same type as input"));
+        register_checked(r,
+                         make_sum_func(r.resource(),
+                                       "sum",
+                                       "Add all numeric values",
+                                       "Results in a single number of the same type as input"));
+        register_checked(r,
+                         make_min_func(r.resource(),
+                                       "min",
+                                       "Selects minimal value",
+                                       "Results in a single number of the same type as input"));
+        register_checked(r,
+                         make_max_func(r.resource(),
+                                       "max",
+                                       "Selects maximum value",
+                                       "Results in a single number of the same type as input"));
+        register_checked(
+            r,
+            make_count_func(r.resource(), "count", "Return row count", "Results in a single number of uint64"));
+        register_checked(r,
+                         make_avg_func(r.resource(),
+                                       "avg",
+                                       "Arithmetic mean of the values",
+                                       "AVG is a ratio, so the result is a DOUBLE whatever the input type"));
         register_string_functions(r);
         register_expand_functions(r);
     }

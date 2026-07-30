@@ -16,10 +16,50 @@
 
 namespace components::vector {
     class data_chunk_t;
-}
+    class vector_t;
+} // namespace components::vector
 namespace components::index {
 
     constexpr uint32_t INDEX_ID_UNDEFINED = std::numeric_limits<uint32_t>::max();
+
+    struct index_engine_t;
+
+    // Which column of ONE data chunk feeds each of the engine's indexes.
+    //
+    // The resolution rule is unchanged and ALIAS-based: an index key names a column by the alias
+    // its complex_logical_type carries, and an index applies to a chunk only when EVERY one of its
+    // keys is present. What this type changes is WHEN that is worked out. It used to be redone for
+    // every row — and twice per row, because the applies-at-all check and the value lookup each
+    // scanned keys x columns independently, comparing freshly built std::strings. A chunk's schema
+    // does not vary by row, so index_engine_t::bind() works it out once and the per-row calls then
+    // do no string work at all.
+    //
+    // Borrows from the chunk it was built for: it must not outlive that chunk, and the chunk must
+    // not be re-shaped while it is alive.
+    class chunk_bindings_t final {
+    public:
+        chunk_bindings_t(std::pmr::memory_resource* resource, std::pmr::memory_resource* chunk_resource)
+            : bound_(resource)
+            , chunk_resource_(chunk_resource) {}
+
+        bool empty() const noexcept { return bound_.empty(); }
+
+    private:
+        friend struct index_engine_t;
+
+        struct binding_t {
+            index_t* index;
+            // The chunk column the index's FIRST key resolved to. nullptr only for a key-less
+            // index, whose key value is NA and is dropped by index_t's NULL guard — the same
+            // outcome the per-row lookup produced for it.
+            const vector::vector_t* column;
+        };
+
+        value_t key_at(const binding_t& binding, size_t row) const;
+
+        std::pmr::vector<binding_t> bound_;
+        std::pmr::memory_resource* chunk_resource_;
+    };
 
     struct index_engine_t final {
     public:
@@ -37,12 +77,16 @@ namespace components::index {
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
-        void insert_row(const vector::data_chunk_t& chunk,
+        // Resolve every index's key(s) against this chunk's columns. Hoist this out of the row
+        // loop and hand the result to insert_row / mark_delete_row for each row of the chunk.
+        auto bind(const vector::data_chunk_t& chunk) const -> chunk_bindings_t;
+
+        void insert_row(const chunk_bindings_t& bindings,
                         size_t chunk_row,
                         int64_t storage_row,
                         uint64_t txn_id,
                         core::date::timezone_offset_t local_timezone);
-        void mark_delete_row(const vector::data_chunk_t& chunk,
+        void mark_delete_row(const chunk_bindings_t& bindings,
                              size_t chunk_row,
                              int64_t storage_row,
                              uint64_t txn_id,

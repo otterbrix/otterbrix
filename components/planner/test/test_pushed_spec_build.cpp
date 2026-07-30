@@ -5,7 +5,7 @@
 //   (a) DISJOINTNESS — the POD carries NO node_ptr / expression_ptr; each string/path is an
 //       independent std::pmr copy (mailbox-safe by construction), NOT an alias of the source.
 //   (b) FIELD FIDELITY — group keys (name + path), aggregates (function / uid / arg-path /
-//       alias / distinct) and output_types round-trip exactly.
+//       alias / distinct) and the output column list round-trip exactly.
 //   (c) COMPLETENESS — a non-representable shape (HAVING / coalesce key / distinct or multi-arg
 //       aggregate) is REJECTED (build returns false => the coordinator aggregate stands), never
 //       silently mis-encoded.
@@ -49,21 +49,21 @@ namespace {
         return k;
     }
 
-    // aggregate_t(output_types, distinct) -> group_t(pushdown, exprs). The pushdown group is
-    // built here; the aggregate-node wrapping (oid / distinct / output_types) is the shared
+    // aggregate_t(output_schema, distinct) -> group_t(pushdown, exprs). The pushdown group is
+    // built here; the aggregate-node wrapping (oid / distinct / output_schema) is the shared
     // planner_test::make_agg. HAVING is not carried inside node_group: when non-null it is
     // attached as a node_having_t CHILD OF THE AGGREGATE, which the create_plan_aggregate
     // gate scans for and rejects.
     node_ptr make_agg(std::pmr::memory_resource* r,
                       const std::vector<expression_ptr>& group_exprs,
                       expression_ptr having,
-                      std::pmr::vector<types::complex_logical_type> out_types,
+                      components::vector::schema_t out_schema,
                       bool agg_distinct = false) {
         auto group = make_node_group(r, dbn(), reln(), group_exprs);
         group->set_pushdown(true);
         group->set_table_oid(components::catalog::oid_t{123});
         auto agg =
-            planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
+            planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_schema), agg_distinct);
         if (having != nullptr) {
             agg->append_child(make_node_having(r, dbn(), reln(), having));
         }
@@ -83,15 +83,13 @@ TEST_CASE("pushed_spec::field_fidelity") {
     std::pmr::monotonic_buffer_resource node_res;
     std::pmr::monotonic_buffer_resource spec_res;
 
-    // GROUP BY g(col 1), SUM(v col 2) AS s_out (non-distinct); output types BIGINT, BIGINT.
+    // GROUP BY g(col 1), SUM(v col 2) AS s_out (non-distinct); output schema g/s_out, both BIGINT.
     auto grp = make_scalar_expression(&node_res, scalar_type::group_field, col(&node_res, "g", 1));
     auto sum = make_aggregate_expression(&node_res, "sum", key(&node_res, "s_out", side_t::left));
     sum->add_function_uid(sum_uid(&node_res));
     sum->append_param(param_storage{col(&node_res, "v", 2)});
 
-    std::pmr::vector<types::complex_logical_type> ot{&node_res};
-    ot.emplace_back(types::logical_type::BIGINT);
-    ot.emplace_back(types::logical_type::BIGINT);
+    auto ot = planner_test::bigint_schema(&node_res, {"g", "s_out"});
 
     std::vector<expression_ptr> exprs{expression_ptr(grp), expression_ptr(sum)};
     auto agg = make_agg(&node_res, exprs, nullptr, std::move(ot));
@@ -119,6 +117,18 @@ TEST_CASE("pushed_spec::field_fidelity") {
     REQUIRE(spec.output_types.size() == 2);
     REQUIRE(spec.output_types[0].type() == types::logical_type::BIGINT);
     REQUIRE(spec.output_types[1].type() == types::logical_type::BIGINT);
+
+    // The schema the OWNING AGENT rebuilds the group operator from: same types, positionally,
+    // with the names the spec already carries — group_keys[i].name then aggregates[j].alias.
+    // Nothing here recovers a name from a type (M3-B5 step 8).
+    const auto out_schema = spec.output_schema(&spec_res);
+    REQUIRE(out_schema.size() == 2);
+    REQUIRE(out_schema[0].name == "g");
+    REQUIRE(out_schema[1].name == "s_out");
+    REQUIRE(out_schema[0].type.type() == types::logical_type::BIGINT);
+    REQUIRE(out_schema[1].type.type() == types::logical_type::BIGINT);
+    REQUIRE(out_schema[0].attoid == components::catalog::INVALID_OID);
+    REQUIRE(out_schema[1].attoid == components::catalog::INVALID_OID);
 }
 
 // ================================================================
@@ -130,7 +140,7 @@ TEST_CASE("pushed_spec::disjointness") {
 
     auto grp = make_scalar_expression(&node_res, scalar_type::group_field, col(&node_res, "g", 1));
     std::vector<expression_ptr> exprs{expression_ptr(grp)};
-    auto agg = make_agg(&node_res, exprs, nullptr, std::pmr::vector<types::complex_logical_type>{&node_res});
+    auto agg = make_agg(&node_res, exprs, nullptr, components::vector::schema_t{&node_res});
 
     ops::pushed_aggregate_spec_t spec{&spec_res};
     REQUIRE(services::planner::impl::build_pushed_spec(group_of(agg), agg, &spec_res, spec));
@@ -153,7 +163,7 @@ TEST_CASE("pushed_spec::rejects_having") {
     auto having =
         make_compare_expression(&r, compare_type::gt, key(&r, "cnt", side_t::left), key(&r, "lim", side_t::left));
     std::vector<expression_ptr> exprs{expression_ptr(grp)};
-    auto agg = make_agg(&r, exprs, expression_ptr(having), std::pmr::vector<types::complex_logical_type>{&r});
+    auto agg = make_agg(&r, exprs, expression_ptr(having), components::vector::schema_t{&r});
 
     ops::pushed_aggregate_spec_t spec{&r};
     REQUIRE_FALSE(services::planner::impl::build_pushed_spec(group_of(agg), agg, &r, spec));
@@ -163,7 +173,7 @@ TEST_CASE("pushed_spec::rejects_coalesce_key") {
     std::pmr::monotonic_buffer_resource r;
     auto grp = make_scalar_expression(&r, scalar_type::coalesce, key(&r, "g", side_t::left));
     std::vector<expression_ptr> exprs{expression_ptr(grp)};
-    auto agg = make_agg(&r, exprs, nullptr, std::pmr::vector<types::complex_logical_type>{&r});
+    auto agg = make_agg(&r, exprs, nullptr, components::vector::schema_t{&r});
 
     ops::pushed_aggregate_spec_t spec{&r};
     REQUIRE_FALSE(services::planner::impl::build_pushed_spec(group_of(agg), agg, &r, spec));
@@ -176,7 +186,7 @@ TEST_CASE("pushed_spec::rejects_distinct_aggregate") {
     sum->set_distinct(true);
     sum->append_param(param_storage{col(&r, "v", 2)});
     std::vector<expression_ptr> exprs{expression_ptr(sum)};
-    auto agg = make_agg(&r, exprs, nullptr, std::pmr::vector<types::complex_logical_type>{&r});
+    auto agg = make_agg(&r, exprs, nullptr, components::vector::schema_t{&r});
 
     ops::pushed_aggregate_spec_t spec{&r};
     REQUIRE_FALSE(services::planner::impl::build_pushed_spec(group_of(agg), agg, &r, spec));
@@ -189,7 +199,7 @@ TEST_CASE("pushed_spec::rejects_multiarg_aggregate") {
     sum->append_param(param_storage{col(&r, "a", 1)});
     sum->append_param(param_storage{col(&r, "b", 2)}); // second arg => not POD-representable
     std::vector<expression_ptr> exprs{expression_ptr(sum)};
-    auto agg = make_agg(&r, exprs, nullptr, std::pmr::vector<types::complex_logical_type>{&r});
+    auto agg = make_agg(&r, exprs, nullptr, components::vector::schema_t{&r});
 
     ops::pushed_aggregate_spec_t spec{&r};
     REQUIRE_FALSE(services::planner::impl::build_pushed_spec(group_of(agg), agg, &r, spec));

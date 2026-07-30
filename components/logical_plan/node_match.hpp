@@ -17,7 +17,7 @@ namespace components::logical_plan {
         // (offset always 0) capping this WHERE scan's POST-filter output at
         // limit+offset rows, so the authoritative operator_limit above can still
         // window [offset, offset+limit). unlimit() = no cap. Advisory only, no
-        // semantics change. Deliberately EXCLUDED from hash_impl() and operator==
+        // semantics change. Deliberately EXCLUDED from hash_impl()
         // (like node_group_t::pushdown_): safe only while no logical-plan-hash-keyed
         // plan cache exists — fold it into hash_impl() if one is introduced.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
@@ -27,7 +27,6 @@ namespace components::logical_plan {
         std::string dbname_;
         std::string relname_;
         limit_t read_cap_{};
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

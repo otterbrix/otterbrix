@@ -37,6 +37,33 @@ namespace components::logical_plan {
 
     join_type node_join_t::type() const { return type_; }
 
+    std::optional<std::size_t> node_join_t::left_width() const {
+        const node_ptr& child = left();
+        if (!child || !child->has_output_schema()) {
+            return std::nullopt;
+        }
+        return child->output_schema().size();
+    }
+
+    std::optional<std::size_t> node_join_t::right_width() const {
+        const node_ptr& child = right();
+        if (!child || !child->has_output_schema()) {
+            return std::nullopt;
+        }
+        return child->output_schema().size();
+    }
+
+    node_join_t::merged_side
+    node_join_t::side_of(std::size_t merged_ordinal, std::size_t left_width, std::size_t right_width) noexcept {
+        if (merged_ordinal < left_width) {
+            return merged_side::left_input;
+        }
+        if (merged_ordinal < left_width + right_width) {
+            return merged_side::right_input;
+        }
+        return merged_side::out_of_range;
+    }
+
     node_join_t::join_algo node_join_t::algo() const noexcept { return algo_; }
 
     void node_join_t::set_algo(join_algo algo) noexcept { algo_ = algo; }
@@ -49,17 +76,6 @@ namespace components::logical_plan {
         left_col_ = left;
         right_col_ = right;
         algo_ = join_algo::hash;
-    }
-
-    hash_t node_join_t::hash_impl() const {
-        // node_t::hash() combines type_ + hash_impl(); a hash-annotated join carries
-        // the same node_type::join_t as a nested-loop one, so fold the annotation in
-        // here to keep them in distinct buckets.
-        hash_t hash_value{0};
-        boost::hash_combine(hash_value, static_cast<uint8_t>(algo_));
-        boost::hash_combine(hash_value, left_col_);
-        boost::hash_combine(hash_value, right_col_);
-        return hash_value;
     }
 
     std::string node_join_t::to_string_impl() const {

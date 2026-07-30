@@ -31,7 +31,7 @@ namespace services::disk {
         auto local = rebuild_chunk(resource(), data);
 
         if (!s->has_schema() && local.column_count() > 0) {
-            s->adopt_schema(local.types());
+            s->adopt_schema(local.schema());
         }
 
         const auto& table_columns = s->columns();
@@ -43,11 +43,24 @@ namespace services::disk {
 
             std::vector<components::vector::vector_t> expanded_data;
             expanded_data.reserve(table_columns.size());
+            // M3-B4: name-routed, and unavoidably so. This is the WAL-replay / bootstrap-seed
+            // append: the incoming chunk was decoded by data_chunk_binary, which deliberately
+            // does not carry attoid (no version field in its header, so widening it would
+            // break existing WAL unversioned). The table side may well know its attoids — a
+            // storage created by CREATE TABLE does — but the chunk side never can, so there is
+            // nothing to match on and the name is the identity of record here.
+            //
+            // The claim is now explicit. It used to rest on the move: a moved-from vector_t
+            // takes its name away with it and so matched nothing. That happened
+            // to work for names and does not generalise, so it is stated rather than relied on.
+            std::vector<bool> claimed(local.column_count(), false);
+            const auto& incoming_schema = local.schema();
             for (size_t t = 0; t < table_columns.size(); t++) {
                 bool found = false;
                 for (uint64_t col = 0; col < local.column_count(); col++) {
-                    if (local.data[col].type().has_alias() &&
-                        local.data[col].type().alias() == table_columns[t].name()) {
+                    if (!claimed[col] && !incoming_schema[col].name.empty() &&
+                        std::string_view{incoming_schema[col].name} == table_columns[t].name()) {
+                        claimed[col] = true;
                         expanded_data.push_back(std::move(local.data[col]));
                         found = true;
                         break;
@@ -70,11 +83,11 @@ namespace services::disk {
                 if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
                     (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
                     auto& src_vec = local.data[i];
-                    auto target_type = table_columns[i].type();
-                    if (src_vec.type().has_alias()) {
-                        target_type.set_alias(src_vec.type().alias());
-                    }
-                    components::vector::vector_t casted(resource(), target_type, local.size());
+                    const auto target_type = table_columns[i].type();
+                    // The promoted column is the same column (M3-B4/B5): the rebuild constructor
+                    // gives it src_vec's name and identity, instead of the name being copied into
+                    // the target type and the identity being lost.
+                    components::vector::vector_t casted(resource(), target_type, src_vec, local.size());
                     for (uint64_t row = 0; row < local.size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
                             // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
@@ -292,7 +305,7 @@ namespace services::disk {
 
     // --- Storage queries ---
 
-    manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
+    manager_disk_t::unique_future<components::vector::schema_t>
     manager_disk_t::storage_types(session_id_t /*session*/, catalog::oid_t table_oid) {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -304,7 +317,7 @@ namespace services::disk {
             }
             co_return co_await std::move(fut);
         }
-        co_return std::pmr::vector<components::types::complex_logical_type>(resource());
+        co_return components::vector::schema_t(resource());
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t /*session*/,

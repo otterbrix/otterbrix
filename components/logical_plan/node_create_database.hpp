@@ -15,7 +15,6 @@ namespace components::logical_plan {
         bool if_not_exists() const noexcept { return if_not_exists_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string dbname_;

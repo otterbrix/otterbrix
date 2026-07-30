@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/operations_helper.hpp>
 #include <services/disk/agent_disk.hpp>
 
@@ -56,7 +57,7 @@ namespace {
     }
 
     void run_scalar(char relkind) {
-        auto config = make_test_config(std::string("/tmp/test_aggregate_pushdown_e2e/scalar_") + relkind);
+        auto config = make_test_config(test_temp_path(std::string("test_aggregate_pushdown_e2e/scalar_") + relkind));
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         const std::string table = seed(dispatcher, relkind);
@@ -77,8 +78,9 @@ namespace {
             REQUIRE(cur->value(2, 0).value<uint64_t>() == 5);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(4, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 0).value<int64_t>() == 30);   // 150 / 5
-            REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
+            // AVG is a real-valued ratio -> always DOUBLE, whatever the input type.
+            REQUIRE(core::is_equals(cur->value(5, 0).value<double>(), 30.0)); // 150 / 5
+            REQUIRE(services::disk::pushdown_reply_rows() > 0);               // was-actually-pushed proof
         }
 
         INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");
@@ -95,7 +97,7 @@ namespace {
             REQUIRE(cur->value(1, 0).value<uint64_t>() == 3);
             REQUIRE(cur->value(2, 0).value<int64_t>() == 30);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(4, 0).value<int64_t>() == 40); // 120 / 3
+            REQUIRE(core::is_equals(cur->value(4, 0).value<double>(), 40.0)); // 120 / 3
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
@@ -117,7 +119,7 @@ namespace {
     }
 
     void run_grouped(char relkind) {
-        auto config = make_test_config(std::string("/tmp/test_aggregate_pushdown_e2e/grouped_") + relkind);
+        auto config = make_test_config(test_temp_path(std::string("test_aggregate_pushdown_e2e/grouped_") + relkind));
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         const std::string table = seed(dispatcher, relkind);
@@ -140,7 +142,7 @@ namespace {
             REQUIRE(cur->value(2, 0).value<uint64_t>() == 2);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(4, 0).value<int64_t>() == 20);
-            REQUIRE(cur->value(5, 0).value<int64_t>() == 15); // 30 / 2
+            REQUIRE(core::is_equals(cur->value(5, 0).value<double>(), 15.0)); // 30 / 2
 
             // group g=2: v {30,50,40}
             REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
@@ -148,7 +150,7 @@ namespace {
             REQUIRE(cur->value(2, 1).value<uint64_t>() == 3);
             REQUIRE(cur->value(3, 1).value<int64_t>() == 30);
             REQUIRE(cur->value(4, 1).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 1).value<int64_t>() == 40); // 120 / 3
+            REQUIRE(core::is_equals(cur->value(5, 1).value<double>(), 40.0)); // 120 / 3
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
@@ -195,7 +197,7 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::grouped_computed_schema") {
 // Correct result: TWO groups, g=1 -> MIN 10 and g=2 -> MIN 30.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_under_residual_cross_side_where") {
-    auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_residual_where");
+    auto config = make_test_config(test_temp_path("test_aggregate_pushdown_e2e/eager_residual_where"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -224,9 +226,9 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
 }
 
 // ----------------------------------------------------------------------------
-// eager_aggregation must re-stamp the pushed node's output_types with the true
+// eager_aggregation must re-stamp the pushed node's output_schema with the true
 // partial layout [keys..., MIN(x)]: create_plan_aggregate forwards that stamp
-// as the authoritative output layout (operator_group's output_types_ / the
+// as the authoritative output layout (operator_group's output_schema_ / the
 // pushed reduce spec), which types the aggregate output column at ordinal
 // key_count + a. A stale base-table stamp mistypes that slot — here
 // a = (x double, g bigint, k bigint) puts BIGINT k at the ordinal where the
@@ -235,7 +237,7 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
 // skipped in Release), so MIN(x) never comes back as 1.5 / 10.25.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_double_type") {
-    auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_partial_types");
+    auto config = make_test_config(test_temp_path("test_aggregate_pushdown_e2e/eager_partial_types"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -260,4 +262,84 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_dou
     REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
     REQUIRE(cur->value(1, 1).type().type() == components::types::logical_type::DOUBLE);
     REQUIRE(core::is_equals(cur->value(1, 1).value<double>(), 10.25)); // exactly representable
+}
+
+// ----------------------------------------------------------------------------
+// AVG over an INTEGRAL column is a DOUBLE mean, not a truncated integer.
+//
+// AVG = sum / count is a ratio: the mean of {1,2} is 1.5, and there is no
+// integral type that can carry it. Returning the input column's type made the
+// operator answer 1 (integer division / a truncating cast) AND mistyped the
+// cell, so a caller reading it as a double got a reinterpreted integer bit
+// pattern (0 for a small BIGINT) rather than the mean.
+//
+// All three shapes are pinned here because they are computed by DIFFERENT code:
+//   * scalar / GROUP BY over a plain column -> operator_group's vectorized
+//     accumulator (aggregate::finalize_state), also the shape the OWNING AGENT
+//     re-runs when the aggregate is pushed down (pushdown_reply_rows() proves it);
+//   * AVG over an EXPRESSION argument -> not vectorizable, so operator_group
+//     gathers rows and the compute avg kernel (avg_finalize) produces the value;
+//   * zero matching rows -> the value is NULL, but the COLUMN type comes from the
+//     plan-time stamp (validate_logical_plan resolves the avg kernel signature).
+//     It must be the same DOUBLE the non-empty result carries, otherwise an empty
+//     result set is typed differently from a populated one.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::aggregate_pushdown_e2e::avg_over_integer_column_is_a_double_mean") {
+    auto config = make_test_config(test_temp_path("test_aggregate_pushdown_e2e/avg_double_mean"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    exec(dispatcher, "CREATE DATABASE TestDatabase;");
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.avgt (g bigint, v bigint);")->is_success());
+    // g=1: {1,2}      -> mean 1.5      (not representable as an integer)
+    // g=2: {10,11,13} -> mean 34/3     (not representable as an integer)
+    // whole table     -> mean 37/5 = 7.4
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO TestDatabase.avgt (g, v) VALUES (1, 1), (1, 2), (2, 10), (2, 11), (2, 13);")
+                ->is_success());
+
+    INFO("scalar AVG over the whole table");
+    {
+        services::disk::reset_pushdown_reply_rows();
+        auto cur = exec(dispatcher, "SELECT AVG(v) AS av FROM TestDatabase.avgt;");
+        INFO("scalar-avg error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).type().type() == components::types::logical_type::DOUBLE);
+        REQUIRE(core::is_equals(cur->value(0, 0).value<double>(), 37.0 / 5.0));
+        REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
+    }
+
+    INFO("GROUP BY AVG");
+    {
+        auto cur = exec(dispatcher, "SELECT g, AVG(v) AS av FROM TestDatabase.avgt GROUP BY g ORDER BY g ASC;");
+        INFO("grouped-avg error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DOUBLE);
+        REQUIRE(core::is_equals(cur->value(1, 0).value<double>(), 1.5));
+        REQUIRE(cur->value(1, 1).type().type() == components::types::logical_type::DOUBLE);
+        REQUIRE(core::is_equals(cur->value(1, 1).value<double>(), 34.0 / 3.0));
+    }
+
+    INFO("AVG over an expression argument (compute kernel path, not the vectorized accumulator)");
+    {
+        auto cur = exec(dispatcher, "SELECT AVG(v * 2) AS av FROM TestDatabase.avgt;");
+        INFO("expr-avg error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).type().type() == components::types::logical_type::DOUBLE);
+        REQUIRE(core::is_equals(cur->value(0, 0).value<double>(), 74.0 / 5.0));
+    }
+
+    INFO("zero matching rows: NULL value, but the column keeps the plan-stamped DOUBLE type");
+    {
+        auto cur = exec(dispatcher, "SELECT AVG(v) AS av FROM TestDatabase.avgt WHERE v > 1000;");
+        INFO("empty-avg error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+        REQUIRE_FALSE(cur->chunks().empty());
+        REQUIRE(cur->chunks().front().data[0].type().type() == components::types::logical_type::DOUBLE);
+    }
 }

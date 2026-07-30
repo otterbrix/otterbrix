@@ -113,12 +113,14 @@ namespace components::operators {
         if (!opened_) {
             opened_ = true;
             co_await open_index_window(ctx);
-            // Cache the table schema for the no-row empty-guard below.
+            // Cache the relation's schema for the no-row empty-guard below: the guard is the
+            // user's result when the probe matches nothing, and it names and identifies its
+            // columns out of these records.
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
                                              table_oid_);
-            guard_types_ = co_await std::move(tf);
+            guard_schema_ = co_await std::move(tf);
         }
 
         // FIRST fetch: pull the whole matched window in ONE storage_fetch; the disk batches it into
@@ -141,7 +143,8 @@ namespace components::operators {
             // ONE schema'd 0-row guard so a scalar aggregate emits COUNT=0 and an OUTER join
             // NULL-pads, then the 0-column sentinel next call.
             emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(vector::data_chunk_t{resource_, guard_types_, 0});
+            co_return core::result_wrapper_t<vector::data_chunk_t>(
+                vector::make_chunk(resource_, guard_schema_, 0));
         }
         co_return core::result_wrapper_t<vector::data_chunk_t>(
             vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});

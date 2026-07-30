@@ -37,7 +37,9 @@ namespace components::logical_plan {
         const std::vector<catalog::fk_info_t>& referencing_fks() const { return referencing_fks_; }
 
     private:
-        hash_t hash_impl() const override;
+        // A plain DELETE reports an affected-count; only RETURNING makes it a query.
+        bool produces_rows_impl() const noexcept override { return !returning_.empty(); }
+
         std::string to_string_impl() const override;
 
         std::vector<catalog::fk_info_t> referencing_fks_;

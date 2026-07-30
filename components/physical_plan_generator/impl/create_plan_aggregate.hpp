@@ -19,7 +19,7 @@ namespace services::planner::impl {
                           const components::logical_plan::storage_parameters* params = nullptr);
 
     // Aggregate-pushdown POD spec-build (exposed for unit tests). Populates `out`
-    // from the group node's keys/aggregates + the aggregate node's output_types, or returns
+    // from the group node's keys/aggregates + the aggregate node's output_schema, or returns
     // false when the shape is NOT faithfully POD-representable (HAVING, a coalesce/case_when/
     // arithmetic group key, a distinct/multi-arg/expression/unresolved/UDF aggregate argument)
     // — in which case the coordinator aggregate stands (R6 capability select). The spec carries

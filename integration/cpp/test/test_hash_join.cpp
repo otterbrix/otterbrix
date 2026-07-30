@@ -1,7 +1,9 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <components/compute/function.hpp>
+#include <components/cursor/cursor.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/log/log.hpp>
@@ -20,6 +22,7 @@
 
 #include <memory_resource>
 #include <sstream>
+#include <string>
 #include <vector>
 
 using namespace components;
@@ -167,7 +170,7 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
 static const std::string db = "hashjoindb";
 
 TEST_CASE("integration::cpp::hash_join::correctness") {
-    auto config = test_create_config("/tmp/test_hash_join/base");
+    auto config = test_create_config(test_temp_path("test_hash_join/base"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -262,7 +265,7 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
 // matched rows inside a single builder.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
-    auto config = test_create_config("/tmp/test_hash_join/mbchunk");
+    auto config = test_create_config(test_temp_path("test_hash_join/mbchunk"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -393,7 +396,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
         REQUIRE(plan->right()); // physical build side
         REQUIRE(plan->right()->output());
         REQUIRE(!plan->right()->output()->chunks().empty());
-        return plan->right()->output()->chunks().front().types()[0].alias();
+        return plan->right()->output()->chunks().front().types()[0].field_name();
     };
 
     INFO("INNER, larger table on the RIGHT → smaller (logical-left) side becomes build");
@@ -420,7 +423,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
 // inversion the swap could introduce.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
-    auto config = test_create_config("/tmp/test_hash_join/buildside");
+    auto config = test_create_config(test_temp_path("test_hash_join/buildside"));
     test_clear_directory(config);
     config.disk.on = true; // row-count fetch is gated on an owning disk agent
     config.wal.on = false;
@@ -522,7 +525,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
 // cross-product + residual filter — same rows, so this pins the join semantics).
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
-    auto config = test_create_config("/tmp/test_hash_join/multiway");
+    auto config = test_create_config(test_temp_path("test_hash_join/multiway"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -657,7 +660,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         REQUIRE(plan->right()->type() == operator_type::raw_data);
         REQUIRE(plan->right()->output());
         REQUIRE(!plan->right()->output()->chunks().empty());
-        CHECK(plan->right()->output()->chunks().front().types()[0].alias() == "rk");
+        CHECK(plan->right()->output()->chunks().front().types()[0].field_name() == "rk");
     }
 
     INFO("EXACT pre-filter count tie -> the filtered left (certainly <= tie) becomes the build");
@@ -688,7 +691,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
 // breaks an exact count tie.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
-    auto config = test_create_config("/tmp/test_hash_join/syntactic");
+    auto config = test_create_config(test_temp_path("test_hash_join/syntactic"));
     test_clear_directory(config);
     config.disk.on = false; // in-memory: counts are still served by the pool-as-store disk agents
     config.wal.on = false;
@@ -765,7 +768,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
 // `tiny` (build).
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrapper") {
-    auto config = test_create_config("/tmp/test_hash_join/wrapped_count");
+    auto config = test_create_config(test_temp_path("test_hash_join/wrapped_count"));
     test_clear_directory(config);
     config.disk.on = false; // counts are still served by the pool-as-store disk agents
     config.wal.on = false;
@@ -825,5 +828,116 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
         CHECK(cur->value(1, 1).value<int64_t>() == 2);  // big.x
         CHECK(cur->value(2, 1).value<int64_t>() == 2);  // tiny.k
         CHECK(cur->value(3, 1).value<int64_t>() == 20); // tiny.y
+    }
+}
+
+namespace {
+    // The result's column names, in output order.
+    std::vector<std::string> result_column_names(const cursor::cursor_t& cur) {
+        std::vector<std::string> names;
+        names.reserve(cur.columns().size());
+        for (const auto& column : cur.columns()) {
+            names.emplace_back(column.name.data(), column.name.size());
+        }
+        return names;
+    }
+} // namespace
+
+// ----------------------------------------------------------------------------
+// The hash join merges probe and build into ONE chunk, and the merged chunk records
+// the split nowhere: the column NAME is the only user-visible trace of which side a
+// column came from. The output-schema currency carries those names from the two input
+// chunks to the output chunk, so this pins them across every path that builds one:
+// the probe emit, the right/full drain in finalize() (a second builder instance), and
+// the SWAPPED orientation, where the physical build side is the logical LEFT one and
+// a name that followed the physical order instead of the logical one would show up
+// transposed.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::hash_join::output_column_names") {
+    auto config = test_create_config(test_temp_path("test_hash_join/names"));
+    test_clear_directory(config);
+    config.disk.on = true; // the build-side size evidence is served by an owning disk agent
+    config.wal.on = false;
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    const std::string ndb = "hjnamesdb";
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(run("CREATE DATABASE " + ndb + ";")->is_success());
+    REQUIRE(run("CREATE TABLE " + ndb + ".hl();")->is_success());
+    REQUIRE(run("CREATE TABLE " + ndb + ".hr();")->is_success());
+    REQUIRE(run("INSERT INTO " + ndb + ".hl (lk, lv) VALUES (1, 10), (2, 20);")->is_success());
+    REQUIRE(run("INSERT INTO " + ndb + ".hr (rk, rv) VALUES (1, 100), (3, 300);")->is_success());
+
+    const std::vector<std::string> expected{"lk", "lv", "rk", "rv"};
+    const std::string on = " ON hl.lk = hr.rk";
+
+    INFO("inner — matched rows only");
+    {
+        auto cur = run("SELECT * FROM " + ndb + ".hl INNER JOIN " + ndb + ".hr" + on + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(result_column_names(*cur) == expected);
+    }
+
+    INFO("left — a left-only row NULL-padded on the right");
+    {
+        auto cur = run("SELECT * FROM " + ndb + ".hl LEFT JOIN " + ndb + ".hr" + on + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(result_column_names(*cur) == expected);
+    }
+
+    INFO("right — the unmatched build row is drained by finalize(), a second builder");
+    {
+        auto cur = run("SELECT * FROM " + ndb + ".hl RIGHT JOIN " + ndb + ".hr" + on + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(result_column_names(*cur) == expected);
+    }
+
+    INFO("full — both padding directions in one result");
+    {
+        auto cur = run("SELECT * FROM " + ndb + ".hl FULL JOIN " + ndb + ".hr" + on + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(result_column_names(*cur) == expected);
+    }
+
+    // Build-side selection puts the SMALLER table in the physical build slot. With the
+    // small table written on the LEFT of the query, that makes the physical build side
+    // the LOGICAL-left one (swapped), and the output must still read [small.., large..].
+    INFO("swapped — small table on the query's left is moved into the physical build slot");
+    {
+        REQUIRE(run("CREATE TABLE " + ndb + ".small();")->is_success());
+        REQUIRE(run("CREATE TABLE " + ndb + ".large();")->is_success());
+        REQUIRE(run("INSERT INTO " + ndb + ".small (sk, sv) VALUES (1, 100), (2, 200), (3, 300);")->is_success());
+        {
+            std::stringstream l;
+            l << "INSERT INTO " << ndb << ".large (lk2, lv2) VALUES ";
+            for (int i = 1; i <= 30; ++i) {
+                l << "(" << i << ", " << i << ")" << (i == 30 ? ";" : ", ");
+            }
+            REQUIRE(run(l.str())->is_success());
+        }
+        auto cur = run("SELECT * FROM " + ndb + ".small INNER JOIN " + ndb + ".large ON small.sk = large.lk2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        const std::vector<std::string> swapped_expected{"sk", "sv", "lk2", "lv2"};
+        REQUIRE(result_column_names(*cur) == swapped_expected);
+    }
+
+    // The shape the scans answer with make_drain_chunk: a user-visible result with no
+    // rows. A join has no such chunk — join_builder::flush() returns without emitting
+    // when nothing was buffered — so a join that matches nothing answers with NO
+    // columns at all, not with unnamed ones. Pinned so the difference between "names
+    // lost" and "schema never produced" stays visible.
+    INFO("zero matches — the result carries no column descriptors at all");
+    {
+        auto cur = run("SELECT * FROM " + ndb + ".hl INNER JOIN " + ndb + ".hr ON hl.lk = hr.rv;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+        REQUIRE(result_column_names(*cur).empty());
     }
 }

@@ -23,13 +23,17 @@ namespace components::operators {
 
     namespace {
 
-        // Column index of `name` in `chunk` by alias (the DML rows carry their
-        // column names as the vector type alias, like operator_check_constraint's
-        // find_col). Returns absent when the column is not present.
+        // Column index of `name` in `chunk`, read from the chunk's schema record (M3-B2/B3).
+        // It used to read complex_logical_type::alias() off the column type, which asserts on
+        // its extension and dereferences null in release (types.cpp:334-337) — and a DML
+        // write-set column built with no name has no extension at all. The schema record
+        // answers an empty name for that column instead, so the search is total.
+        // Returns absent when the column is not present.
         constexpr uint64_t kAbsentCol = std::numeric_limits<uint64_t>::max();
         uint64_t find_col_index(const vector::data_chunk_t& chunk, const std::string& name) {
+            const auto& schema = chunk.schema();
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
-                if (chunk.data[c].type().alias() == name)
+                if (std::string_view{schema[c].name} == std::string_view{name})
                     return c;
             }
             return kAbsentCol;

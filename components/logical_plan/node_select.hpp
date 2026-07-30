@@ -21,12 +21,19 @@ namespace components::logical_plan {
         // Number of hidden aggregate expressions appended at the tail of expressions_
         // (used for HAVING internal aggregates when there is no GROUP BY).
         // Visible SELECT column count = expressions_.size() - internal_aggregate_count.
+        //
+        // ALWAYS 0 TODAY. Nothing anywhere writes it — the transformer's HAVING lowering
+        // stamps the equivalent counter on node_group_t instead (node_group.hpp), and its
+        // only readers are the three `visible = exprs.size() - hidden` computations in
+        // pushdown_filter's identity-select tests, which therefore always see the full
+        // expression list. Kept as the declared home for the concept should a
+        // group-less HAVING ever need hidden tail columns on the projection itself;
+        // treat any code reading it as if the value were the literal 0.
         size_t internal_aggregate_count{0};
 
     private:
         core::dbname_t dbname_;
         core::relname_t relname_;
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

@@ -48,7 +48,6 @@ namespace components::logical_plan {
         void set_relkind(char rk) noexcept { relkind_ = rk; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::vector<alter_table_subcommand_t> subcommands_;

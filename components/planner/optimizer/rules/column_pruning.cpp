@@ -435,31 +435,17 @@ namespace components::planner::optimizer {
             // and DISTINCT ON. Exactly one of $group / $select is the output enumerator.
             std::vector<size_t> raw_cols;
             bool can_project = true;
-            logical_plan::node_ptr group_child, select_child, match_child, sort_child, data_child;
-
-            for (const auto& child : agg_node->children()) {
-                switch (child->type()) {
-                    case logical_plan::node_type::group_t:
-                        group_child = child;
-                        break;
-                    case logical_plan::node_type::select_t:
-                        select_child = child;
-                        break;
-                    case logical_plan::node_type::match_t:
-                        match_child = child;
-                        break;
-                    case logical_plan::node_type::sort_t:
-                        sort_child = child;
-                        break;
-                    case logical_plan::node_type::limit_t:
-                    case logical_plan::node_type::having_t:
-                        break;
-                    default:
-                        // join_t, aggregate_t (subquery), data_t, union_t, etc.
-                        data_child = child;
-                        break;
-                }
-            }
+            const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(agg_node.get());
+            // This rule's own reading of the roles: LIMIT and HAVING never contribute
+            // scan columns, so they are simply not consulted; `source` is the nested
+            // subtree (join_t / aggregate_t subquery / data_t / union_t, ...) that gets
+            // its own recursive pass below.
+            const auto roles = agg->pipeline();
+            const logical_plan::node_ptr& group_child = roles.group;
+            const logical_plan::node_ptr& select_child = roles.select;
+            const logical_plan::node_ptr& match_child = roles.match;
+            const logical_plan::node_ptr& sort_child = roles.sort;
+            const logical_plan::node_ptr& data_child = roles.source;
 
             // Projection needs an enumerator of the output columns:
             //   * GROUP BY  ($group) enumerates every scan column the aggregation touches
@@ -469,7 +455,6 @@ namespace components::planner::optimizer {
             //     columns; ORDER BY and DISTINCT ON then ALSO read scan columns, so they are
             //     collected too.
             // A bare scan (neither $group nor $select — e.g. SELECT *) must return ALL columns.
-            const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(agg_node.get());
             if (group_child) {
                 if (!collect_cols_from_node(group_child, raw_cols))
                     can_project = false;

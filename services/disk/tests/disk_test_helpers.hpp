@@ -69,7 +69,11 @@ namespace disk_test_helpers {
     catalog::oid_t test_create_table(Fx& fx,
                                      catalog::oid_t ns_oid,
                                      const std::string& name,
-                                     const std::vector<components::table::column_definition_t>& cols,
+                                     // Non-const: build_create_table_writes stamps each minted
+                                     // attoid back onto its column definition (M3-B4), so a
+                                     // caller that goes on to create storage from the same
+                                     // vector gets columns that know their catalog identity.
+                                     std::vector<components::table::column_definition_t>& cols,
                                      char relkind_char = catalog::relkind::regular) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + cols.size()});
         const catalog::oid_t table_oid = oids[0];
@@ -92,16 +96,34 @@ namespace disk_test_helpers {
         return table_oid;
     }
 
+    // Rvalue form, for the many call sites that build the column list inline and never look
+    // at it again. It owns the vector for the duration of the call so the lvalue overload
+    // above can still stamp it — the stamps are then dropped with the temporary, which is the
+    // right outcome for a caller that had no storage to carry them to.
+    template<typename Fx>
+    catalog::oid_t test_create_table(Fx& fx,
+                                     catalog::oid_t ns_oid,
+                                     const std::string& name,
+                                     std::vector<components::table::column_definition_t>&& cols,
+                                     char relkind_char = catalog::relkind::regular) {
+        std::vector<components::table::column_definition_t> owned(std::move(cols));
+        return test_create_table(fx, ns_oid, name, owned, relkind_char);
+    }
+
     template<typename Fx>
     catalog::oid_t test_create_computing_table(Fx& fx, catalog::oid_t ns_oid, const std::string& name) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
+        // A computing table declares no columns at all; the named empty vector exists only
+        // because build_create_table_writes now takes its column list by non-const reference
+        // (M3-B4 stamps the minted attoid back onto each definition).
+        std::vector<components::table::column_definition_t> no_columns;
         auto writes = catalog::build_create_table_writes(&fx.resource,
                                                          std::string("public"),
                                                          name,
-                                                         {},
+                                                         no_columns,
                                                          false,
                                                          ns_oid,
                                                          batch,

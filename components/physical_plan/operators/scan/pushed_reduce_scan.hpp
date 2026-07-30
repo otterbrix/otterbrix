@@ -73,10 +73,10 @@ namespace components::operators {
 
         // storage_types cache: the table schema is invariant across re-drives, so the
         // one storage_types round-trip is paid on the first real-predicate open and the
-        // types reused thereafter. survives reset_pipeline_state() (a re-driven open
+        // schema reused thereafter. survives reset_pipeline_state() (a re-driven open
         // rebuilds only the filter, whose correlated parameter changes per outer row).
-        std::pmr::vector<components::types::complex_logical_type> cached_types_{resource_};
-        bool types_cached_{false};
+        vector::schema_t cached_schema_{resource_};
+        bool schema_cached_{false};
     };
 
 } // namespace components::operators

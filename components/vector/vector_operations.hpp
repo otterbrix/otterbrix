@@ -338,31 +338,34 @@ namespace components::vector::vector_ops {
         }
     } // namespace
 
-    void generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment);
-    void generate_sequence(vector_t& result,
-                           uint64_t count,
-                           const indexing_vector_t& indexing,
-                           int64_t start,
-                           int64_t increment);
+    // components/vector raises errors, it does not throw: a type these kernels have no
+    // implementation for is reported through core::error_t instead of an exception that the
+    // executor coroutines (whose unhandled_exception() is empty) would swallow.
+    core::error_t generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment);
+    core::error_t generate_sequence(vector_t& result,
+                                    uint64_t count,
+                                    const indexing_vector_t& indexing,
+                                    int64_t start,
+                                    int64_t increment);
 
-    void copy(const vector_t& source,
-              vector_t& target,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset);
-    void copy(const vector_t& source,
-              vector_t& target,
-              const indexing_vector_t& indexing,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset);
-    void copy(const vector_t& source,
-              vector_t& target,
-              const indexing_vector_t& indexing,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset,
-              uint64_t copy_count);
+    core::error_t copy(const vector_t& source,
+                       vector_t& target,
+                       uint64_t source_count,
+                       uint64_t source_offset,
+                       uint64_t target_offset);
+    core::error_t copy(const vector_t& source,
+                       vector_t& target,
+                       const indexing_vector_t& indexing,
+                       uint64_t source_count,
+                       uint64_t source_offset,
+                       uint64_t target_offset);
+    core::error_t copy(const vector_t& source,
+                       vector_t& target,
+                       const indexing_vector_t& indexing,
+                       uint64_t source_count,
+                       uint64_t source_offset,
+                       uint64_t target_offset,
+                       uint64_t copy_count);
 
     // Writes source[i] → target[i*stride + offset] for i in 0..count-1.
     // Used for updating a fixed-index element across all rows in an ARRAY column.
@@ -405,18 +408,20 @@ namespace components::vector::vector_ops {
                                     const vector_t& rhs,
                                     uint64_t count);
 
-    void hash(vector_t& input, vector_t& result, uint64_t count);
-    void hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count);
+    core::error_t hash(vector_t& input, vector_t& result, uint64_t count);
+    core::error_t hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count);
 
-    void combine_hash(vector_t& hashes, vector_t& input, uint64_t count);
-    void combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count);
+    core::error_t combine_hash(vector_t& hashes, vector_t& input, uint64_t count);
+    core::error_t combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count);
 
+    // Number of rows for which COMP holds. A physical type the comparison kernels do not
+    // implement is an error, not an exception.
     template<typename COMP>
-    uint64_t compare(vector_t& left,
-                     vector_t& right,
-                     uint64_t count,
-                     indexing_vector_t* true_indexing,
-                     indexing_vector_t* false_indexing) {
+    core::result_wrapper_t<uint64_t> compare(vector_t& left,
+                                             vector_t& right,
+                                             uint64_t count,
+                                             indexing_vector_t* true_indexing,
+                                             indexing_vector_t* false_indexing) {
         assert(left.type().to_physical_type() == right.type().to_physical_type());
 
         switch (left.type().to_physical_type()) {
@@ -448,7 +453,9 @@ namespace components::vector::vector_ops {
             case types::physical_type::STRING:
                 return index<std::string_view, COMP>(left, right, count, true_indexing, false_indexing);
             default:
-                throw std::runtime_error("Invalid type for comparison");
+                return core::error_t(
+                    core::error_code_t::comparison_failure,
+                    std::pmr::string{"comparison is not implemented for this physical type", left.resource()});
         }
     }
 } // namespace components::vector::vector_ops

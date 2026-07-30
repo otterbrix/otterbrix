@@ -94,9 +94,45 @@ namespace services {
             return it != table_metadata.end() ? it->second : nullptr;
         }
 
+        // Does an index built on `indexed` answer a predicate on `probe`?
+        //
+        // Name equality is NOT enough. A '::?' type-variant selection picks, among the several
+        // same-name columns of a multi-type dynamic-schema field, the one whose type matches —
+        // so `val` and `val::?string` denote DIFFERENT columns while both stringify to "val".
+        // Matching on as_string() alone handed `val::?string = 'hello'` to an index built on
+        // `val` back when it was still a single BIGINT column; index_scan carries no
+        // operator_match above it, so whatever that index answered was returned unfiltered.
+        //
+        // The selection annotation is therefore part of the key's identity here. A CREATE INDEX
+        // key never carries one, so today this only ever refuses; the comparison is written
+        // symmetrically so that an index on a variant-selected key would match its own predicate
+        // if such an index ever becomes creatable.
+        //
+        // NOT replaceable by key_t::operator==, even though that now folds cast_type_ and
+        // variant_select_ into key identity. operator== is an EQUALITY: `val` and `val::string`
+        // are different keys because they denote differently-typed values. This predicate asks a
+        // weaker, directional question — "does the index on `indexed` ANSWER a predicate on
+        // `probe`" — and a plain '::' cast reads the SAME stored column, so an index on `val`
+        // must keep serving `val::string`. Only the '::?' variant selection, which repoints the
+        // key at a different column, breaks the match. Swapping in operator== here would
+        // silently stop every cast predicate from using its index.
+        static bool same_indexed_key(const components::expressions::key_t& indexed,
+                                     const components::expressions::key_t& probe) {
+            if (indexed.is_variant_select() != probe.is_variant_select()) {
+                return false;
+            }
+            if (probe.is_variant_select()) {
+                if (!indexed.has_cast_type() || !probe.has_cast_type() ||
+                    indexed.cast_type().type() != probe.cast_type().type()) {
+                    return false;
+                }
+            }
+            return indexed.as_string() == probe.as_string();
+        }
+
         bool has_index_on(const components::expressions::key_t& key) const {
             for (const auto& keys : indexed_keys) {
-                if (keys.size() == 1 && keys[0].as_string() == key.as_string()) {
+                if (keys.size() == 1 && same_indexed_key(keys[0], key)) {
                     return true;
                 }
             }
@@ -108,7 +144,7 @@ namespace services {
                 if (desc.type != type) {
                     continue;
                 }
-                if (desc.keys.size() == 1 && desc.keys[0].as_string() == key.as_string()) {
+                if (desc.keys.size() == 1 && same_indexed_key(desc.keys[0], key)) {
                     return true;
                 }
             }
@@ -121,7 +157,7 @@ namespace services {
                 if (desc.type == type) {
                     continue;
                 }
-                if (desc.keys.size() == 1 && desc.keys[0].as_string() == key.as_string()) {
+                if (desc.keys.size() == 1 && same_indexed_key(desc.keys[0], key)) {
                     return true;
                 }
             }

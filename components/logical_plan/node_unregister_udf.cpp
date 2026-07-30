@@ -9,8 +9,6 @@ namespace components::logical_plan {
         , function_name_(std::move(static_cast<std::string&>(function_name)))
         , inputs_(std::move(inputs)) {}
 
-    hash_t node_unregister_udf_t::hash_impl() const { return 0; }
-
     std::string node_unregister_udf_t::to_string_impl() const {
         std::string out = "$unregister_udf[";
         out.append(function_name_);

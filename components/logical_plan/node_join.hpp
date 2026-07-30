@@ -5,6 +5,8 @@
 
 #include <components/expressions/key.hpp>
 
+#include <optional>
+
 namespace components::logical_plan {
 
     enum class join_type : uint8_t
@@ -53,6 +55,39 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
+        // A join is binary: children() is [left, right] by construction. These stay
+        // total on a partially built node (a null node_ptr), because optimizer rules
+        // do walk half-assembled shapes mid-rewrite.
+        const node_ptr& left() const noexcept { return child_or_null(0); }
+        const node_ptr& right() const noexcept { return child_or_null(1); }
+
+        // Column count each input contributes to this join's MERGED output.
+        // left_width() is the merged ordinal at which the right input's columns begin:
+        // a right-side column's merged path()[0] is left_width() + its right-local index.
+        //
+        // Read from that child's validator-stamped output_schema(). nullopt means the
+        // child carries NO stamp — which is not the same as a width of zero, and is
+        // exactly the case the callers degrade DIFFERENTLY on (promote_cross_join: "not
+        // a promotable boundary, leave it CROSS"; eager_aggregation: bail outright;
+        // pushdown_filter: keep the conjunct in the residual rather than push an
+        // out-of-range path). This supplies the number and takes no position on it.
+        [[nodiscard]] std::optional<std::size_t> left_width() const;
+        [[nodiscard]] std::optional<std::size_t> right_width() const;
+
+        enum class merged_side : uint8_t
+        {
+            left_input,
+            right_input,
+            out_of_range
+        };
+
+        // Which input a MERGED column ordinal addresses, against an EXPLICITLY supplied
+        // boundary. Deliberately not a live read of the children: a rewrite captures the
+        // boundary from the intact stamped children first and then classifies against
+        // that captured value while it splices the children underneath.
+        [[nodiscard]] static merged_side
+        side_of(std::size_t merged_ordinal, std::size_t left_width, std::size_t right_width) noexcept;
+
         using correlation_t = std::pair<core::parameter_id_t, expressions::key_t>;
 
         bool is_lateral() const noexcept { return lateral_; }
@@ -72,7 +107,6 @@ namespace components::logical_plan {
         bool lateral_{false};
         std::pmr::vector<correlation_t> correlations_{resource()};
 
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

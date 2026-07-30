@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <chrono>
 #include <thread>
@@ -33,7 +34,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
         , resource_(resource)
         , disk_path_(disk_path)
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(initialization_logger("python", test_temp_path("docker_logs")))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_(disk_path)
@@ -178,7 +179,7 @@ private:
 
 TEST_CASE("services::dispatcher::schemeful_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
+    test_dispatcher test(mr.get(), test_temp_path("test_dispatcher_disk_schemeful"));
 
     test.execute_sql("CREATE DATABASE test;");
     (void) test.take_result();
@@ -248,7 +249,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
 
 TEST_CASE("services::dispatcher::computed_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
+    test_dispatcher test(mr.get(), test_temp_path("test_dispatcher_disk_computed"));
 
     test.execute_sql("CREATE DATABASE test;");
     (void) test.take_result();
@@ -293,4 +294,76 @@ TEST_CASE("services::dispatcher::computed_operations") {
         REQUIRE(seen_name);
         REQUIRE(seen_count);
     }
+}
+
+// ---------------------------------------------------------------------------
+// CHARACTERIZATION: DDL OID allocation.
+//
+// A DDL statement that needs catalog identities asks the disk-side oid_generator
+// for a batch of compute_oid_demand() OIDs, and the planner then consumes that
+// batch POSITIONALLY while rewriting the logical plan: pg_class.oid first, then
+// one pg_attribute.attoid per column in attnum order.
+//
+// This test pins the observable end state of that channel — the exact OIDs a
+// freshly bootstrapped instance hands to two consecutive CREATE TABLEs, plus the
+// batch-boundary relations between them. It is deliberately value-exact so that
+// it stays green only if batch SIZE, allocation ORDER and consumption ORDER are
+// all preserved; it does not depend on HOW the allocated batch travels from the
+// allocating operator back to the planner.
+// ---------------------------------------------------------------------------
+TEST_CASE("services::dispatcher::ddl_oid_allocation_characterization") {
+    const std::string disk_path = test_temp_path("test_dispatcher_disk_oid_alloc");
+    // Value-exact OIDs only reproduce on a virgin instance: wipe any residue a
+    // previously aborted run left behind (the fixture only cleans on destruction).
+    std::filesystem::remove_all(disk_path);
+
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    test_dispatcher test(mr.get(), disk_path);
+
+    test.execute_sql("CREATE DATABASE oiddb;");
+    REQUIRE(test.take_result()->is_success());
+    auto rns = test.resolve_namespace("oiddb");
+    REQUIRE(rns.found);
+
+    test.execute_sql("CREATE TABLE oiddb.t1(a int, b string, c bigint);");
+    REQUIRE(test.take_result()->is_success());
+
+    test.execute_sql("CREATE TABLE oiddb.t2(d int, e string);");
+    REQUIRE(test.take_result()->is_success());
+
+    auto t1 = test.resolve_table(rns.oid, "t1");
+    REQUIRE(t1.found);
+    auto t2 = test.resolve_table(rns.oid, "t2");
+    REQUIRE(t2.found);
+
+    // probe_table returns columns already sorted by attnum, so `columns[i].attoid`
+    // is the i-th attribute OID the planner popped off the batch.
+    auto attoids = [](const test_probe::probe_table_result_t& t) {
+        std::vector<components::catalog::oid_t> v;
+        v.reserve(t.columns.size());
+        for (const auto& c : t.columns) {
+            v.push_back(c.attoid);
+        }
+        return v;
+    };
+
+    // The generator hands out user OIDs from FIRST_USER_OID upwards with no gaps,
+    // so on a virgin instance every identity below is an absolute constant
+    // (16384..16391). Expressed relative to FIRST_USER_OID for readability.
+    using components::catalog::oid_t;
+    constexpr oid_t base = components::catalog::FIRST_USER_OID;
+
+    INFO("ns=" << rns.oid << " t1=" << t1.oid << " t2=" << t2.oid);
+
+    // CREATE DATABASE takes the first user OID for the namespace.
+    REQUIRE(rns.oid == base + 0);
+
+    // CREATE TABLE t1 takes a 4-wide batch: pg_class.oid, then a/b/c attoids.
+    REQUIRE(t1.oid == base + 1);
+    REQUIRE(attoids(t1) == std::vector<oid_t>{base + 2, base + 3, base + 4});
+
+    // CREATE TABLE t2 resumes immediately after t1's batch with a 3-wide batch —
+    // no gap, no reuse, same pg_class-then-attoids order.
+    REQUIRE(t2.oid == base + 5);
+    REQUIRE(attoids(t2) == std::vector<oid_t>{base + 6, base + 7});
 }

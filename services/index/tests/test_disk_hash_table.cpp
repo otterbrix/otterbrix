@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/pmr.hpp>
 #include <services/index/disk_hash_table.hpp>
 
@@ -10,7 +11,7 @@ using services::index::disk_hash_table_t;
 
 namespace {
     std::filesystem::path mk_path(const std::string& name) {
-        const auto dir = std::filesystem::path("/tmp/index_disk");
+        const auto dir = std::filesystem::path(test_temp_path("index_disk"));
         std::filesystem::create_directories(dir);
         return dir / name;
     }

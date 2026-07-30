@@ -1,6 +1,5 @@
 #include "operator_match.hpp"
 
-#include "predicates/predicate.hpp"
 #include <components/expressions/function_expression.hpp>
 
 namespace components::operators {
@@ -21,36 +20,32 @@ namespace components::operators {
         , expression_(std::move(expression))
         , limit_(limit) {}
 
-    // Build the predicate + the populated-column projection metadata for one input
-    // chunk schema. Shared one-time setup for both the materialized and the streaming
-    // entry point: the predicate depends only on the (stable) chunk SCHEMA, not its
-    // arena, so each entry point builds it once.
+    // Bind the filter expression and build its executor, plus the populated-column projection
+    // metadata, for one input chunk schema. Shared one-time setup: the bound tree depends only on
+    // the (stable) chunk SCHEMA, not its arena, so this runs on the first batch and never again.
     //
-    // DEFECT FIX (b): the predicate and the `types` working copy are allocated on the
-    // caller-chosen STABLE `resource`, NOT on the per-batch sample.resource(). The
-    // caller passes effective_resource_(sample) — the operator's own resource_ when it
-    // has one, else the input chunk's resource captured once for the whole streaming
-    // run (see push()). Over a SCAN source this is the operator's resource exactly as
-    // before; over a SINK (a group/join output) it is the sink operator's stable
-    // resource, which outlives every batch — so a predicate whose value-getter closures
-    // were allocated here does NOT dangle on the second finalize chunk (the prior code
-    // rebuilt against each batch's arena). The types are COPIED element-wise from the
-    // sample's column types (never move-assigned from sample.types(), whose vector is
-    // allocated on the foreign/null sink arena — that move-assign compares allocators
-    // and dereferences the dangling sink resource).
-    core::error_t operator_match_t::build_predicate_(pipeline::context_t* ctx,
-                                                     const vector::data_chunk_t& sample,
-                                                     std::pmr::memory_resource* resource,
-                                                     std::pmr::vector<types::complex_logical_type>& types,
-                                                     std::vector<size_t>& populated_cols,
-                                                     bool& sparse,
-                                                     predicates::predicate_ptr& predicate) {
-        // `types` is already constructed on `resource` by the caller (so its allocator
+    // DEFECT FIX (b): the bound tree and the executor's intermediates are allocated on the
+    // caller-chosen STABLE `resource`, NOT on the per-batch sample.resource(). The caller passes the
+    // operator's own resource_ when it has one, else the input chunk's resource captured once for
+    // the whole streaming run (see push()). Over a SCAN source this is the operator's resource
+    // exactly as before; over a SINK (a group/join output) it is the sink operator's stable
+    // resource, which outlives every batch — so an executor whose result slots were allocated here
+    // does NOT dangle on the second finalize chunk. The types are COPIED element-wise from the
+    // sample's column types (never move-assigned from sample.types(), whose vector is allocated on
+    // the foreign/null sink arena — that move-assign compares allocators and dereferences the
+    // dangling sink resource).
+    core::error_t operator_match_t::build_executor_(pipeline::context_t* ctx,
+                                                    const vector::data_chunk_t& sample,
+                                                    std::pmr::memory_resource* resource,
+                                                    vector::schema_t& schema,
+                                                    std::vector<size_t>& populated_cols,
+                                                    bool& sparse) {
+        // `schema` is already constructed on `resource` by the caller (so its allocator
         // is the stable resource, never null), so an in-place fill is safe.
-        types.clear();
-        types.reserve(sample.column_count());
-        for (size_t j = 0; j < sample.column_count(); j++) {
-            types.push_back(sample.data[j].type());
+        schema.clear();
+        schema.reserve(sample.column_count());
+        for (const auto& record : sample.schema()) {
+            schema.push_back(record.clone(resource));
         }
 
         // populated_cols: only slots with real data flow downstream. A projected scan
@@ -65,30 +60,61 @@ namespace components::operators {
         }
         sparse = populated_cols.size() != sample.column_count();
 
-        predicate = expression_ ? predicates::create_predicate(resource,
-                                                               ctx->function_registry,
-                                                               expression_,
-                                                               types,
-                                                               types,
-                                                               &ctx->parameters,
-                                                               ctx->session_tz)
-                                : predicates::create_all_true_predicate(resource);
+        // The input schema the tree binds against, restated in the binder's own carrier. Names are
+        // a FALLBACK for binding, because every key that reaches an operator already carries the
+        // ordinals validate_logical_plan resolved for it and binder_t::bind_key uses those first.
+        expressions::bind_schema_t bind_schema{resource};
+        for (const auto& record : schema) {
+            bind_schema.add(std::string_view{record.name}, record.type);
+        }
+
+        expressions::binder_context_t bind_context{};
+        bind_context.left = &bind_schema;
+        bind_context.right = &bind_schema; // a single-input filter compares the chunk against itself
+        bind_context.functions = ctx->function_registry;
+        bind_context.parameters = &ctx->parameters;
+        bind_context.session_tz = ctx->session_tz;
+
+        expressions::binder_t binder{resource};
+        expressions::bound_expression_ptr root;
+        if (expression_) {
+            auto bound = binder.bind(expression_, bind_context);
+            if (bound.has_error()) {
+                return bound.error();
+            }
+            root = std::move(bound.value());
+        } else {
+            // No filter expression: every row survives. Bound as a CONSTANT rather than branched
+            // around, so there is exactly ONE evaluation path below (rule 6) — and, being foldable,
+            // the executor evaluates it once in create() and never per chunk.
+            root = expressions::bound_expression_ptr{
+                expressions::make_bound_constant(resource, types::logical_value_t{resource, true})};
+        }
+
+        auto executor = expressions::expression_executor_t::create(resource, std::move(root));
+        if (executor.has_error()) {
+            return executor.error();
+        }
+        // emplace, not assignment: the executor hands out pointers into its own slots, so it is
+        // move-CONSTRUCTIBLE but deliberately not assignable.
+        stream_executor_.emplace(std::move(executor.value()));
+
+        // Allocated ONCE, for the widest chunk this operator can be handed. reset() below is on the
+        // full input length per batch because indexing_vector_t::set_index is unchecked.
+        stream_selection_ = vector::indexing_vector_t{resource, vector::DEFAULT_VECTOR_CAPACITY};
         return core::error_t::no_error();
     }
 
-    // Shared filter core (R6): filter ONE chunk through the predicate + projection,
-    // advancing the caller-owned LIMIT running counter `limit_total` across batches,
-    // and append the surviving-rows chunk to `out`. Called by push() (per
-    // streamed batch, MEMBER counter). The predicate compares chunk against itself
-    // (single-input filter), surviving rows carry their absolute row_id, and only
-    // populated (non-placeholder) columns are copied — exactly as the prior single-loop
-    // implementation did.
+    // Shared filter core (R6): filter ONE chunk through the bound expression + projection,
+    // advancing the caller-owned LIMIT running counter `limit_total` across batches, and append the
+    // surviving-rows chunk to `out`. Called by push() (per streamed batch, MEMBER counter). The
+    // expression is evaluated over the WHOLE batch at once and answers a selection vector; the
+    // surviving rows are then gathered TYPED, with no per-cell logical_value_t.
     core::error_t operator_match_t::filter_batch_(std::pmr::memory_resource* resource,
-                                                  predicates::predicate_ptr& predicate,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
                                                   bool row_ids_meaningful,
-                                                  const std::pmr::vector<types::complex_logical_type>& types,
+                                                  const vector::schema_t& schema,
                                                   const vector::data_chunk_t& chunk,
                                                   int64_t& limit_total,
                                                   chunks_vector_t& out) {
@@ -97,89 +123,110 @@ namespace components::operators {
             return core::error_t::no_error();
         }
 
-        vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, chunk.size())
-                                                : vector::data_chunk_t(resource, types, chunk.size());
-        vector::indexing_vector_t all_indices(nullptr, nullptr);
-        auto results = predicate->batch_check(chunk, chunk, all_indices, all_indices, chunk.size());
-        if (results.has_error()) {
-            return results.error();
+        expressions::expression_executor_t::context_t execution{};
+        execution.parameters = current_parameters_;
+        execution.session_tz = current_session_tz_;
+
+        // ONE evaluation for the whole batch. select() applies the WHERE rule itself: a row is
+        // selected only when the predicate is definitely TRUE, so a NULL operand (UNKNOWN) drops the
+        // row and a NOT above it cannot turn that into TRUE.
+        stream_selection_.reset(chunk.size());
+        auto selected = stream_executor_->select(chunk, chunk.size(), execution, stream_selection_);
+        if (selected.has_error()) {
+            return selected.error();
         }
-        int64_t out_count = 0;
-        for (size_t i = 0; i < chunk.size(); i++) {
-            // WHERE filter: a row is emitted only when the predicate is definitely TRUE. A NULL
-            // operand yields UNKNOWN, which does not select (and NOT does not turn it into TRUE).
-            if (types::selects(results.value()[i])) {
-                for (size_t j : populated_cols) {
-                    out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
-                }
-                // Only propagate the input row_id when it is a REAL absolute id
-                // (input is a scan source's batch). Over a SINK
-                // (group/join) the input's row_ids are zero-filled placeholders; the
-                // out_chunk's row_ids are likewise zero-initialized, so leaving them
-                // (no copy) reproduces exactly what the materialized path produced
-                // over a sink — and crucially never hands a downstream DML/index
-                // consumer the bogus absolute id 0.
-                if (row_ids_meaningful) {
-                    out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
-                }
-                ++out_count;
-                // Count-cap: the AUTHORITATIVE affected-row bound for DML …WHERE f(x) LIMIT n
-                // (no operator_limit over a DML root), and an advisory read-cap under
-                // operator_limit for SELECT. OFFSET is applied by operator_limit (SELECT) and
-                // does not exist for DML, so this stream is never skipped, only capped.
-                ++limit_total;
-                if (!limit_.check(limit_total)) {
-                    break;
-                }
+
+        // Truncate the selection to the LIMIT in place. The `break` IS the cap: out_count ends up as
+        // min(survivors, remaining budget) without anyone computing a remainder — recomputing it as
+        // "limit - total" would duplicate limit_t's unlimit_ sentinel outside limit_t, where -1
+        // means "no limit" and would silently read as a budget of minus one.
+        uint64_t out_count = 0;
+        for (uint64_t k = 0; k < selected.value(); ++k) {
+            ++out_count;
+            // Count-cap: the AUTHORITATIVE affected-row bound for DML …WHERE f(x) LIMIT n
+            // (no operator_limit over a DML root), and an advisory read-cap under
+            // operator_limit for SELECT. OFFSET is applied by operator_limit (SELECT) and
+            // does not exist for DML, so this stream is never skipped, only capped.
+            ++limit_total;
+            if (!limit_.check(limit_total)) {
+                break;
             }
         }
-        out_chunk.set_cardinality(static_cast<uint64_t>(out_count));
-        if (out_count > 0) {
-            out.emplace_back(std::move(out_chunk));
+        if (out_count == 0) {
+            return core::error_t::no_error(); // nothing survived — emit no chunk
         }
+
+        vector::data_chunk_t out_chunk = sparse ? vector::make_chunk(resource, schema, populated_cols, out_count)
+                                                : vector::make_chunk(resource, schema, out_count);
+        // TYPED, no-box gather: data_chunk_t::copy routes each column through vector_ops::copy
+        // (no per-cell logical_value_t), skips placeholder columns, and sets the cardinality itself.
+        // It is the same primitive operator_having uses over a group sink.
+        chunk.copy(out_chunk, stream_selection_, out_count);
+
+        // Only propagate the input row_id when it is a REAL absolute id (the input is a scan
+        // source's batch). Over a SINK (group/join) — or the sourceless no-table shape — the input's
+        // row_ids are placeholders, so the gathered ones are OVERWRITTEN with the zero sentinel the
+        // out chunk was born with. Measured, this loop is dead: instrumenting every batch that
+        // reaches here with row_ids_meaningful false, over the whole integration suite, found 1528
+        // such batches and all-zero row_ids in every one. It is kept because that is a property of
+        // today's PLAN BUILDER, not of sinks — operator_sort::finalize copies its input's row_ids
+        // forward (operator_sort.cpp:155), so a plan shape that put a sort under a filter would
+        // break the premise silently, and a downstream DML/index consumer would be handed a foreign
+        // absolute id. One pass over the surviving rows buys that away.
+        if (!row_ids_meaningful) {
+            auto* ids = out_chunk.row_ids.data<int64_t>();
+            for (uint64_t k = 0; k < out_count; ++k) {
+                ids[k] = 0;
+            }
+        }
+        out.emplace_back(std::move(out_chunk));
         return core::error_t::no_error();
     }
 
     core::error_t operator_match_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Streaming filter: run the per-chunk filter+projection on the single batch
-        // handed in via `input`. The predicate + projection metadata depend only on the
+        // handed in via `input`. The bound tree + projection metadata depend only on the
         // (stable) chunk schema, so they are built once on the first batch and reused.
         // The LIMIT counter (limit_total_) persists across calls so a LIMIT caps the
         // total emitted across ALL batches. (OFFSET is applied by operator_limit for
         // SELECT and does not exist for DML, so the stream is capped, never skipped.)
+        //
+        // The parameter map is re-read from the context on EVERY batch, never captured: a
+        // correlated (LATERAL) sub-query rebinds its correlation slots between two runs of this
+        // same operator, and the bound tree reads those slots live.
+        current_parameters_ = &ctx->parameters;
+        current_session_tz_ = ctx->session_tz;
         if (!stream_ready_) {
             // Stable resource for the whole streaming run: the operator's own resource_
             // when it has one (scan-source matches), else the input chunk's resource —
             // captured ONCE here. Over a sink (group/join) the match is built with a
             // null resource_ (the create_plan "no table_oid" fallback), so it must fall
             // back to the sink output's resource, which is the sink operator's stable
-            // resource and outlives every batch. The cached predicate is allocated on
-            // it, so it stays valid across all batches (defect fix (b)).
+            // resource and outlives every batch. The bound tree and the executor's slots
+            // are allocated on it, so they stay valid across all batches (defect fix (b)).
             stream_resource_ = resource_ ? resource_ : input.resource();
-            // Rebind stream_types_ to the stable resource (it was member-initialized
+            // Rebind stream_schema_ to the stable resource (it was member-initialized
             // with the possibly-null resource_). Destroy + placement-construct so its
             // allocator is the chosen resource — a plain assignment would compare the
             // old (null) allocator and crash.
-            stream_types_.~vector();
-            new (&stream_types_) std::pmr::vector<types::complex_logical_type>(stream_resource_);
-            auto err = build_predicate_(ctx,
-                                        input,
-                                        stream_resource_,
-                                        stream_types_,
-                                        stream_populated_cols_,
-                                        stream_sparse_,
-                                        stream_predicate_);
+            stream_schema_.~vector();
+            new (&stream_schema_) vector::schema_t(stream_resource_);
+            auto err = build_executor_(ctx,
+                                       input,
+                                       stream_resource_,
+                                       stream_schema_,
+                                       stream_populated_cols_,
+                                       stream_sparse_);
             if (err.contains_error()) {
                 return err;
             }
             stream_ready_ = true;
         }
         return filter_batch_(stream_resource_,
-                             stream_predicate_,
                              stream_populated_cols_,
                              stream_sparse_,
                              row_ids_meaningful_(),
-                             stream_types_,
+                             stream_schema_,
                              input,
                              stream_limit_total_,
                              out);

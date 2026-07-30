@@ -47,7 +47,6 @@ namespace components::logical_plan {
         const std::string& indexname() const noexcept { return indexname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string indexname_;

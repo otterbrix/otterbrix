@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -52,6 +53,24 @@ namespace {
         for (uint64_t r = 0; r < c->size(); ++r) {
             auto v = c->value(0, r);
             out.push_back(v.is_null() ? opt{} : opt{v.template value<int64_t>()});
+        }
+        return out;
+    }
+
+    // Column 0 of every row as optional<double> (nullopt == SQL NULL), in result order.
+    // Used for AVG, which is a real-valued ratio and therefore a DOUBLE column even
+    // over an integral input — reading such a cell as int64 is a raw bit read.
+    using optd = std::optional<double>;
+    template<typename D>
+    std::vector<optd> cold(D* d, const std::string& sql) {
+        auto c = exec(d, sql);
+        REQUIRE(c);
+        INFO(sql);
+        REQUIRE(c->is_success());
+        std::vector<optd> out;
+        for (uint64_t r = 0; r < c->size(); ++r) {
+            auto v = c->value(0, r);
+            out.push_back(v.is_null() ? optd{} : optd{v.template value<double>()});
         }
         return out;
     }
@@ -127,8 +146,9 @@ namespace {
         CHECK(scal(d, "SELECT SUM(x) FROM " + t + ";") == opt{15});
         CHECK(scal(d, "SELECT MIN(x) FROM " + t + ";") == opt{0});
         CHECK(scal(d, "SELECT MAX(x) FROM " + t + ";") == opt{10});
-        // AVG skips NULLs: mean of {5,0,10} = 5 (integer-typed AVG on an integer column, read as int64).
-        CHECK(scal(d, "SELECT AVG(x) FROM " + t + ";") == opt{5});
+        // AVG skips NULLs: mean of {5,0,10} = 5. AVG is a ratio, so the result is a
+        // DOUBLE for every input type — read it as a double, not as the column's int64.
+        CHECK(scald(d, "SELECT AVG(x) FROM " + t + ";") == Catch::Approx(5.0));
     }
 
     // Seed the {5,NULL,0,10,NULL} numeric shape into an existing declared table (id, x).
@@ -148,7 +168,7 @@ namespace {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_bigint") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_bigint");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/cmp_bigint"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -158,7 +178,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_bigint") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_integer") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_int");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/cmp_int"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -168,7 +188,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_integer") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_double") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_double");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/cmp_double"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -192,7 +212,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_double") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_text") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_text");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/cmp_text"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -219,7 +239,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_text") {
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_computing_table") {
     // Schemaless table: id=2 and id=5 simply omit `x`, so its cell is absent == NULL.
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_comp");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/cmp_comp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -233,7 +253,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_computing_table") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_disk_and_restart") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_disk", /*disk*/ true, /*wal*/ true);
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/cmp_disk"), /*disk*/ true, /*wal*/ true);
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -254,7 +274,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_disk_and_restart") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::arithmetic_projection") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arith_proj");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/arith_proj"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -282,7 +302,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_projection") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::arithmetic_where_and_update") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arith_wu", true, true);
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/arith_wu"), true, true);
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -315,7 +335,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_where_and_update") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::arithmetic_aggregate") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arith_agg");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/arith_agg"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -339,7 +359,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_aggregate") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/agg_grp");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/agg_grp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -359,7 +379,8 @@ TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
     CHECK(coli(d, "SELECT MIN(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 3});
     CHECK(coli(d, "SELECT MAX(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 5});
     // AVG per group: all-NULL group -> NULL, {7} -> 7, {3,5} -> 4 (NULLs skipped).
-    CHECK(coli(d, "SELECT AVG(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 4});
+    // AVG is a DOUBLE column (a ratio); both means here are exactly representable.
+    CHECK(cold(d, "SELECT AVG(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<optd>{{}, 7.0, 4.0});
 
     // Ungrouped over an all-NULL table.
     REQUIRE(okq(d, "CREATE TABLE m.allnull (id INT, x BIGINT);"));
@@ -379,7 +400,7 @@ TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::case_when") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/case");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/case"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -400,7 +421,7 @@ TEST_CASE("integration::cpp::null_matrix::case_when") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::having") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/having");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/having"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -424,7 +445,7 @@ TEST_CASE("integration::cpp::null_matrix::having") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::check_constraints") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/check");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/check"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -457,7 +478,7 @@ TEST_CASE("integration::cpp::null_matrix::check_constraints") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::distinct") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/distinct");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/distinct"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -481,7 +502,7 @@ TEST_CASE("integration::cpp::null_matrix::distinct") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::array_element") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arr");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/arr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -512,7 +533,7 @@ TEST_CASE("integration::cpp::null_matrix::array_element") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::index_parity") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/idx", true, true);
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/idx"), true, true);
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -535,7 +556,7 @@ TEST_CASE("integration::cpp::null_matrix::index_parity") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::jsonb_absent_key") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/jsonb");
+    auto config = test_helpers::make_test_config(test_temp_path("nmx/jsonb"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));

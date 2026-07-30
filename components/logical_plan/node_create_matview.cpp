@@ -18,8 +18,6 @@ namespace components::logical_plan {
         }
     }
 
-    hash_t node_create_matview_t::hash_impl() const { return 0; }
-
     std::string node_create_matview_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_matview: " << matviewname_;

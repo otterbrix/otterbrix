@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -46,7 +47,7 @@ namespace {
     }
 
     std::string ddl_dir() {
-        static std::string p = "/tmp/test_otterbrix_ddl_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_ddl");
         return p;
     }
     void cleanup() { std::filesystem::remove_all(ddl_dir()); }
@@ -59,7 +60,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -598,13 +599,16 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     // Append a row with {a,b,c} so storage_append's #96 auto-extend adopts
     // all three columns physically.
     {
-        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        // A write-set's columns are routed BY NAME by the storage append, and a name lives on
+        // the COLUMN (M3-B5) — so the chunk is built from a schema.
+        components::vector::schema_t schema(&fx.resource);
         for (auto n : {"a", "b", "c"}) {
-            complex_logical_type t{logical_type::BIGINT};
-            t.set_alias(n);
-            types.push_back(std::move(t));
+            components::vector::column_schema_t record{&fx.resource};
+            record.name = n;
+            record.type = complex_logical_type{logical_type::BIGINT};
+            schema.push_back(std::move(record));
         }
-        auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, 1);
+        auto chunk = std::make_unique<data_chunk_t>(components::vector::make_chunk(&fx.resource, schema, 1));
         chunk->set_cardinality(1);
         chunk->set_value(0, 0, std::int64_t{1});
         chunk->set_value(1, 0, std::int64_t{2});
@@ -745,12 +749,14 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     auto build_chunk = [&](std::vector<std::pair<std::string, complex_logical_type>> cols,
                            std::function<void(data_chunk_t&)> filler,
                            uint64_t rows) {
-        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        components::vector::schema_t schema(&fx.resource);
         for (auto& [name, ty] : cols) {
-            ty.set_alias(name);
-            types.push_back(std::move(ty));
+            components::vector::column_schema_t record{&fx.resource};
+            record.name = name;
+            record.type = std::move(ty);
+            schema.push_back(std::move(record));
         }
-        auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, rows);
+        auto chunk = std::make_unique<data_chunk_t>(components::vector::make_chunk(&fx.resource, schema, rows));
         chunk->set_cardinality(rows);
         filler(*chunk);
         return chunk;
@@ -886,13 +892,16 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     const catalog::oid_t survivor = oids[N];
 
     auto append_one = [&](catalog::oid_t oid, std::int64_t kval) {
-        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        // A write-set's columns are routed BY NAME by the storage append, and a name lives on
+        // the COLUMN (M3-B5) — so the chunk is built from a schema.
+        components::vector::schema_t schema(&fx.resource);
         for (auto n : {"k", "payload"}) {
-            complex_logical_type t{logical_type::BIGINT};
-            t.set_alias(n);
-            types.push_back(std::move(t));
+            components::vector::column_schema_t record{&fx.resource};
+            record.name = n;
+            record.type = complex_logical_type{logical_type::BIGINT};
+            schema.push_back(std::move(record));
         }
-        auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, 1);
+        auto chunk = std::make_unique<data_chunk_t>(components::vector::make_chunk(&fx.resource, schema, 1));
         chunk->set_cardinality(1);
         chunk->set_value(0, 0, kval);
         chunk->set_value(1, 0, std::int64_t{kval * 10});

@@ -8,11 +8,13 @@ namespace services::wal {
     wal_page_writer_t::wal_page_writer_t(const std::filesystem::path& path,
                                          const std::string& db_name,
                                          uint32_t seg_index,
-                                         size_t max_seg_sz)
+                                         size_t /*max_seg_sz*/)
         : path_(path)
         , database_name_(db_name)
         , segment_index_(seg_index) {
-        (void) max_seg_sz;
+        // max_seg_sz is not consulted here: rotation is decided by wal_worker_t::ensure_writer(),
+        // which compares the segment file size against config_.max_segment_size and constructs a
+        // fresh writer. This class only ever appends to the one segment it was opened on.
         // Ensure parent directory exists.
         auto parent = path_.parent_path();
         if (!parent.empty()) {

@@ -9,13 +9,52 @@ namespace components::vector {
 
     namespace {
 
-        // Detect problematic int128 <-> float/double combinations
-        template<typename L, typename R>
-        constexpr bool is_int128_float_mix_v =
-            ((std::is_same_v<std::decay_t<L>, types::int128_t> ||
-              std::is_same_v<std::decay_t<L>, types::uint128_t>) &&std::is_floating_point_v<R>) ||
-            (std::is_floating_point_v<L> &&
-             (std::is_same_v<std::decay_t<R>, types::int128_t> || std::is_same_v<std::decay_t<R>, types::uint128_t>) );
+        core::error_t non_numeric_operands(std::pmr::memory_resource* resource) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"arithmetic is not supported for non-numeric types", resource});
+        }
+
+        // The result of an arithmetic op is stored through the OUTPUT vector's physical type,
+        // which types::arithmetic_result_type already fixed -- never through the C++ promotion
+        // type of op(L, R). Those two differ, and storing through the wrong one overruns the
+        // output buffer: int8 + int8 promotes to `int` (4 bytes into a 1-byte TINYINT slot), and
+        // any float mix computes in double (8 bytes into a 4-byte FLOAT slot). This second
+        // dispatch picks the store type from the output and hands it to the loop.
+        template<typename Fn>
+        core::error_t with_numeric_store(const vector_t& output, Fn&& loop) {
+            switch (output.type().to_physical_type()) {
+                case types::physical_type::BOOL:
+                    return loop.template operator()<bool>();
+                case types::physical_type::INT8:
+                    return loop.template operator()<int8_t>();
+                case types::physical_type::INT16:
+                    return loop.template operator()<int16_t>();
+                case types::physical_type::INT32:
+                    return loop.template operator()<int32_t>();
+                case types::physical_type::INT64:
+                    return loop.template operator()<int64_t>();
+                case types::physical_type::INT128:
+                    return loop.template operator()<types::int128_t>();
+                case types::physical_type::UINT8:
+                    return loop.template operator()<uint8_t>();
+                case types::physical_type::UINT16:
+                    return loop.template operator()<uint16_t>();
+                case types::physical_type::UINT32:
+                    return loop.template operator()<uint32_t>();
+                case types::physical_type::UINT64:
+                    return loop.template operator()<uint64_t>();
+                case types::physical_type::UINT128:
+                    return loop.template operator()<types::uint128_t>();
+                case types::physical_type::FLOAT:
+                    return loop.template operator()<float>();
+                case types::physical_type::DOUBLE:
+                    return loop.template operator()<double>();
+                default:
+                    return core::error_t(
+                        core::error_code_t::arithmetics_failure,
+                        std::pmr::string{"arithmetic result type is not a numeric type", output.resource()});
+            }
+        }
 
         // Binary vector-vector
         template<template<typename...> class Op>
@@ -23,31 +62,25 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename L, typename R>
-                void operator()(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) const
+                core::error_t
+                operator()(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) const
                     requires(types::is_numeric_type_v<L>&& types::is_numeric_type_v<R>) {
-                    auto* lhs = left.data<L>();
-                    auto* rhs = right.data<R>();
-                    if constexpr (is_int128_float_mix_v<L, R> || std::is_floating_point_v<L> ||
-                                  std::is_floating_point_v<R>) {
-                        // All floating-point arithmetic uses double for precision
-                        auto* out = output.data<double>();
+                    const auto* lhs = left.data<L>();
+                    const auto* rhs = right.data<R>();
+                    return with_numeric_store(output, [&]<typename OutT>() -> core::error_t {
+                        auto* out = output.data<OutT>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(static_cast<double>(lhs[i]), static_cast<double>(rhs[i]));
+                            out[i] = detail::to_result<OutT>(
+                                op(detail::to_result<OutT>(lhs[i]), detail::to_result<OutT>(rhs[i])));
                         }
-                    } else {
-                        Op<void> op{};
-                        using result_t = std::decay_t<decltype(op(std::declval<L>(), std::declval<R>()))>;
-                        auto* out = output.data<result_t>();
-                        for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(lhs[i], rhs[i]);
-                        }
-                    }
+                        return core::error_t::no_error();
+                    });
                 }
                 template<typename L, typename R>
-                void operator()(const vector_t&, const vector_t&, vector_t&, uint64_t) const
+                core::error_t operator()(const vector_t&, const vector_t&, vector_t& output, uint64_t) const
                     requires(!(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>) ) {
-                    throw std::logic_error("Arithmetic not supported for non-numeric types");
+                    return non_numeric_operands(output.resource());
                 }
             };
         };
@@ -58,39 +91,34 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename L, typename R>
-                void operator()(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) const
+                core::error_t
+                operator()(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) const
                     requires(types::is_numeric_type_v<L>&& types::is_numeric_type_v<R>) {
-                    auto* lhs = left.data<L>();
-                    auto* rhs = right.data<R>();
-                    if constexpr (is_int128_float_mix_v<L, R> || std::is_floating_point_v<L> ||
-                                  std::is_floating_point_v<R>) {
-                        auto* out = output.data<double>();
+                    const auto* lhs = left.data<L>();
+                    const auto* rhs = right.data<R>();
+                    return with_numeric_store(output, [&]<typename OutT>() -> core::error_t {
+                        auto* out = output.data<OutT>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
+                            // The zero test reads the untouched divisor, as it did before the
+                            // store type was decoupled from the operand types.
                             if (detail::is_zero(rhs[i])) {
                                 output.validity().set_invalid(i);
-                                out[i] = std::numeric_limits<double>::quiet_NaN();
+                                if constexpr (std::is_floating_point_v<OutT>) {
+                                    out[i] = std::numeric_limits<OutT>::quiet_NaN();
+                                }
                             } else {
-                                out[i] = op(static_cast<double>(lhs[i]), static_cast<double>(rhs[i]));
+                                out[i] = detail::to_result<OutT>(
+                                    op(detail::to_result<OutT>(lhs[i]), detail::to_result<OutT>(rhs[i])));
                             }
                         }
-                    } else {
-                        Op<void> op{};
-                        using result_t = std::decay_t<decltype(op(std::declval<L>(), std::declval<R>()))>;
-                        auto* out = output.data<result_t>();
-                        for (uint64_t i = 0; i < count; i++) {
-                            if (detail::is_zero(rhs[i])) {
-                                output.validity().set_invalid(i);
-                            } else {
-                                out[i] = op(lhs[i], rhs[i]);
-                            }
-                        }
-                    }
+                        return core::error_t::no_error();
+                    });
                 }
                 template<typename L, typename R>
-                void operator()(const vector_t&, const vector_t&, vector_t&, uint64_t) const
+                core::error_t operator()(const vector_t&, const vector_t&, vector_t& output, uint64_t) const
                     requires(!(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>) ) {
-                    throw std::logic_error("Arithmetic not supported for non-numeric types");
+                    return non_numeric_operands(output.resource());
                 }
             };
         };
@@ -101,34 +129,28 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename VecT, typename ScalarT>
-                void operator()(const vector_t& vec,
-                                const types::logical_value_t& scalar_val,
-                                vector_t& output,
-                                uint64_t count) const
+                core::error_t operator()(const vector_t& vec,
+                                         const types::logical_value_t& scalar_val,
+                                         vector_t& output,
+                                         uint64_t count) const
                     requires(types::is_numeric_type_v<VecT>&& types::is_numeric_type_v<ScalarT>) {
-                    ScalarT cval = scalar_val.value<ScalarT>();
-                    auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<VecT, ScalarT> || std::is_floating_point_v<VecT> ||
-                                  std::is_floating_point_v<ScalarT>) {
-                        auto dcval = static_cast<double>(cval);
-                        auto* out = output.data<double>();
+                    const ScalarT cval = scalar_val.value<ScalarT>();
+                    const auto* src = vec.data<VecT>();
+                    return with_numeric_store(output, [&]<typename OutT>() -> core::error_t {
+                        const auto scalar_out = detail::to_result<OutT>(cval);
+                        auto* out = output.data<OutT>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(static_cast<double>(src[i]), dcval);
+                            out[i] = detail::to_result<OutT>(op(detail::to_result<OutT>(src[i]), scalar_out));
                         }
-                    } else {
-                        Op<void> op{};
-                        using result_t = std::decay_t<decltype(op(std::declval<VecT>(), std::declval<ScalarT>()))>;
-                        auto* out = output.data<result_t>();
-                        for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(src[i], cval);
-                        }
-                    }
+                        return core::error_t::no_error();
+                    });
                 }
                 template<typename VecT, typename ScalarT>
-                void operator()(const vector_t&, const types::logical_value_t&, vector_t&, uint64_t) const
+                core::error_t
+                operator()(const vector_t&, const types::logical_value_t&, vector_t& output, uint64_t) const
                     requires(!(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>) ) {
-                    throw std::logic_error("Arithmetic not supported for non-numeric types");
+                    return non_numeric_operands(output.resource());
                 }
             };
         };
@@ -139,49 +161,37 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename VecT, typename ScalarT>
-                void operator()(const vector_t& vec,
-                                const types::logical_value_t& scalar_val,
-                                vector_t& output,
-                                uint64_t count) const
+                core::error_t operator()(const vector_t& vec,
+                                         const types::logical_value_t& scalar_val,
+                                         vector_t& output,
+                                         uint64_t count) const
                     requires(types::is_numeric_type_v<VecT>&& types::is_numeric_type_v<ScalarT>) {
-                    ScalarT cval = scalar_val.value<ScalarT>();
-                    if (detail::is_zero(cval)) {
-                        if constexpr (is_int128_float_mix_v<VecT, ScalarT> || std::is_floating_point_v<VecT> ||
-                                      std::is_floating_point_v<ScalarT>) {
-                            auto* out = output.data<double>();
+                    const ScalarT cval = scalar_val.value<ScalarT>();
+                    const auto* src = vec.data<VecT>();
+                    return with_numeric_store(output, [&]<typename OutT>() -> core::error_t {
+                        auto* out = output.data<OutT>();
+                        if (detail::is_zero(cval)) {
                             for (uint64_t i = 0; i < count; i++) {
                                 output.validity().set_invalid(i);
-                                out[i] = std::numeric_limits<double>::quiet_NaN();
+                                if constexpr (std::is_floating_point_v<OutT>) {
+                                    out[i] = std::numeric_limits<OutT>::quiet_NaN();
+                                }
                             }
-                        } else {
-                            for (uint64_t i = 0; i < count; i++) {
-                                output.validity().set_invalid(i);
-                            }
+                            return core::error_t::no_error();
                         }
-                        return;
-                    }
-                    auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<VecT, ScalarT> || std::is_floating_point_v<VecT> ||
-                                  std::is_floating_point_v<ScalarT>) {
-                        auto dcval = static_cast<double>(cval);
-                        auto* out = output.data<double>();
+                        const auto scalar_out = detail::to_result<OutT>(cval);
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(static_cast<double>(src[i]), dcval);
+                            out[i] = detail::to_result<OutT>(op(detail::to_result<OutT>(src[i]), scalar_out));
                         }
-                    } else {
-                        Op<void> op{};
-                        using result_t = std::decay_t<decltype(op(std::declval<VecT>(), std::declval<ScalarT>()))>;
-                        auto* out = output.data<result_t>();
-                        for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(src[i], cval);
-                        }
-                    }
+                        return core::error_t::no_error();
+                    });
                 }
                 template<typename VecT, typename ScalarT>
-                void operator()(const vector_t&, const types::logical_value_t&, vector_t&, uint64_t) const
+                core::error_t
+                operator()(const vector_t&, const types::logical_value_t&, vector_t& output, uint64_t) const
                     requires(!(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>) ) {
-                    throw std::logic_error("Arithmetic not supported for non-numeric types");
+                    return non_numeric_operands(output.resource());
                 }
             };
         };
@@ -192,34 +202,28 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename ScalarT, typename VecT>
-                void operator()(const types::logical_value_t& scalar_val,
-                                const vector_t& vec,
-                                vector_t& output,
-                                uint64_t count) const
+                core::error_t operator()(const types::logical_value_t& scalar_val,
+                                         const vector_t& vec,
+                                         vector_t& output,
+                                         uint64_t count) const
                     requires(types::is_numeric_type_v<ScalarT>&& types::is_numeric_type_v<VecT>) {
-                    ScalarT cval = scalar_val.value<ScalarT>();
-                    auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<ScalarT, VecT> || std::is_floating_point_v<ScalarT> ||
-                                  std::is_floating_point_v<VecT>) {
-                        auto dcval = static_cast<double>(cval);
-                        auto* out = output.data<double>();
+                    const ScalarT cval = scalar_val.value<ScalarT>();
+                    const auto* src = vec.data<VecT>();
+                    return with_numeric_store(output, [&]<typename OutT>() -> core::error_t {
+                        const auto scalar_out = detail::to_result<OutT>(cval);
+                        auto* out = output.data<OutT>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(dcval, static_cast<double>(src[i]));
+                            out[i] = detail::to_result<OutT>(op(scalar_out, detail::to_result<OutT>(src[i])));
                         }
-                    } else {
-                        Op<void> op{};
-                        using result_t = std::decay_t<decltype(op(std::declval<ScalarT>(), std::declval<VecT>()))>;
-                        auto* out = output.data<result_t>();
-                        for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(cval, src[i]);
-                        }
-                    }
+                        return core::error_t::no_error();
+                    });
                 }
                 template<typename ScalarT, typename VecT>
-                void operator()(const types::logical_value_t&, const vector_t&, vector_t&, uint64_t) const
+                core::error_t
+                operator()(const types::logical_value_t&, const vector_t&, vector_t& output, uint64_t) const
                     requires(!(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>) ) {
-                    throw std::logic_error("Arithmetic not supported for non-numeric types");
+                    return non_numeric_operands(output.resource());
                 }
             };
         };
@@ -230,43 +234,35 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename ScalarT, typename VecT>
-                void operator()(const types::logical_value_t& scalar_val,
-                                const vector_t& vec,
-                                vector_t& output,
-                                uint64_t count) const
+                core::error_t operator()(const types::logical_value_t& scalar_val,
+                                         const vector_t& vec,
+                                         vector_t& output,
+                                         uint64_t count) const
                     requires(types::is_numeric_type_v<ScalarT>&& types::is_numeric_type_v<VecT>) {
-                    ScalarT cval = scalar_val.value<ScalarT>();
-                    auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<ScalarT, VecT> || std::is_floating_point_v<ScalarT> ||
-                                  std::is_floating_point_v<VecT>) {
-                        auto dcval = static_cast<double>(cval);
-                        auto* out = output.data<double>();
+                    const ScalarT cval = scalar_val.value<ScalarT>();
+                    const auto* src = vec.data<VecT>();
+                    return with_numeric_store(output, [&]<typename OutT>() -> core::error_t {
+                        const auto scalar_out = detail::to_result<OutT>(cval);
+                        auto* out = output.data<OutT>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
                             if (detail::is_zero(src[i])) {
                                 output.validity().set_invalid(i);
-                                out[i] = std::numeric_limits<double>::quiet_NaN();
+                                if constexpr (std::is_floating_point_v<OutT>) {
+                                    out[i] = std::numeric_limits<OutT>::quiet_NaN();
+                                }
                             } else {
-                                out[i] = op(dcval, static_cast<double>(src[i]));
+                                out[i] = detail::to_result<OutT>(op(scalar_out, detail::to_result<OutT>(src[i])));
                             }
                         }
-                    } else {
-                        Op<void> op{};
-                        using result_t = std::decay_t<decltype(op(std::declval<ScalarT>(), std::declval<VecT>()))>;
-                        auto* out = output.data<result_t>();
-                        for (uint64_t i = 0; i < count; i++) {
-                            if (detail::is_zero(src[i])) {
-                                output.validity().set_invalid(i);
-                            } else {
-                                out[i] = op(cval, src[i]);
-                            }
-                        }
-                    }
+                        return core::error_t::no_error();
+                    });
                 }
                 template<typename ScalarT, typename VecT>
-                void operator()(const types::logical_value_t&, const vector_t&, vector_t&, uint64_t) const
+                core::error_t
+                operator()(const types::logical_value_t&, const vector_t&, vector_t& output, uint64_t) const
                     requires(!(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>) ) {
-                    throw std::logic_error("Arithmetic not supported for non-numeric types");
+                    return non_numeric_operands(output.resource());
                 }
             };
         };
@@ -276,24 +272,28 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename T>
-                void operator()(const vector_t& vec, vector_t& output, uint64_t count) const
+                core::error_t operator()(const vector_t& vec, vector_t& output, uint64_t count) const
                     requires(types::is_numeric_type_v<T>) {
-                    auto* src = vec.data<T>();
+                    const auto* src = vec.data<T>();
                     auto* out = output.data<T>();
                     for (uint64_t i = 0; i < count; i++) {
-                        out[i] = -src[i];
+                        out[i] = detail::to_result<T>(-detail::widen_type(src[i]));
                     }
+                    return core::error_t::no_error();
                 }
                 template<typename T>
-                void operator()(const vector_t&, vector_t&, uint64_t) const requires(!types::is_numeric_type_v<T>) {
-                    throw std::logic_error("Negation not supported for non-numeric types");
+                core::error_t operator()(const vector_t&, vector_t& output, uint64_t) const
+                    requires(!types::is_numeric_type_v<T>) {
+                    return core::error_t(
+                        core::error_code_t::arithmetics_failure,
+                        std::pmr::string{"negation is not supported for non-numeric types", output.resource()});
                 }
             };
         };
 
         template<template<typename...> class Op>
-        void dispatch_binary(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) {
-            types::double_simple_physical_type_switch<binary_op_wrapper<Op>::template callback>(
+        core::error_t dispatch_binary(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) {
+            return types::double_simple_physical_type_switch<binary_op_wrapper<Op>::template callback>(
                 left.type().to_physical_type(),
                 right.type().to_physical_type(),
                 left,
@@ -303,8 +303,9 @@ namespace components::vector {
         }
 
         template<template<typename...> class Op>
-        void dispatch_binary_div(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) {
-            types::double_simple_physical_type_switch<binary_div_wrapper<Op>::template callback>(
+        core::error_t
+        dispatch_binary_div(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) {
+            return types::double_simple_physical_type_switch<binary_div_wrapper<Op>::template callback>(
                 left.type().to_physical_type(),
                 right.type().to_physical_type(),
                 left,
@@ -314,11 +315,11 @@ namespace components::vector {
         }
 
         template<template<typename...> class Op>
-        void dispatch_vec_scalar(const vector_t& vec,
-                                 const types::logical_value_t& scalar,
-                                 vector_t& output,
-                                 uint64_t count) {
-            types::double_simple_physical_type_switch<vec_scalar_op_wrapper<Op>::template callback>(
+        core::error_t dispatch_vec_scalar(const vector_t& vec,
+                                          const types::logical_value_t& scalar,
+                                          vector_t& output,
+                                          uint64_t count) {
+            return types::double_simple_physical_type_switch<vec_scalar_op_wrapper<Op>::template callback>(
                 vec.type().to_physical_type(),
                 scalar.type().to_physical_type(),
                 vec,
@@ -328,11 +329,11 @@ namespace components::vector {
         }
 
         template<template<typename...> class Op>
-        void dispatch_vec_scalar_div(const vector_t& vec,
-                                     const types::logical_value_t& scalar,
-                                     vector_t& output,
-                                     uint64_t count) {
-            types::double_simple_physical_type_switch<vec_scalar_div_wrapper<Op>::template callback>(
+        core::error_t dispatch_vec_scalar_div(const vector_t& vec,
+                                              const types::logical_value_t& scalar,
+                                              vector_t& output,
+                                              uint64_t count) {
+            return types::double_simple_physical_type_switch<vec_scalar_div_wrapper<Op>::template callback>(
                 vec.type().to_physical_type(),
                 scalar.type().to_physical_type(),
                 vec,
@@ -342,11 +343,11 @@ namespace components::vector {
         }
 
         template<template<typename...> class Op>
-        void dispatch_scalar_vec(const types::logical_value_t& scalar,
-                                 const vector_t& vec,
-                                 vector_t& output,
-                                 uint64_t count) {
-            types::double_simple_physical_type_switch<scalar_vec_op_wrapper<Op>::template callback>(
+        core::error_t dispatch_scalar_vec(const types::logical_value_t& scalar,
+                                          const vector_t& vec,
+                                          vector_t& output,
+                                          uint64_t count) {
+            return types::double_simple_physical_type_switch<scalar_vec_op_wrapper<Op>::template callback>(
                 scalar.type().to_physical_type(),
                 vec.type().to_physical_type(),
                 scalar,
@@ -356,11 +357,11 @@ namespace components::vector {
         }
 
         template<template<typename...> class Op>
-        void dispatch_scalar_vec_div(const types::logical_value_t& scalar,
-                                     const vector_t& vec,
-                                     vector_t& output,
-                                     uint64_t count) {
-            types::double_simple_physical_type_switch<scalar_vec_div_wrapper<Op>::template callback>(
+        core::error_t dispatch_scalar_vec_div(const types::logical_value_t& scalar,
+                                              const vector_t& vec,
+                                              vector_t& output,
+                                              uint64_t count) {
+            return types::double_simple_physical_type_switch<scalar_vec_div_wrapper<Op>::template callback>(
                 scalar.type().to_physical_type(),
                 vec.type().to_physical_type(),
                 scalar,
@@ -1116,54 +1117,55 @@ namespace components::vector {
 
     } // anonymous namespace
 
-    vector_t compute_binary_arithmetic(std::pmr::memory_resource* resource,
-                                       arithmetic_op op,
-                                       const vector_t& left,
-                                       const vector_t& right,
-                                       uint64_t count) {
-        // Empty input: produce an empty result without dereferencing operand
-        // vectors. On a 0-row chunk the operands may not be resolvable at all
-        // (e.g. a degenerate 0-column batch chunk yields out-of-bounds operand
-        // pointers), so reading left.type()/right.type() here would deref a
-        // dangling vector. A 0-row arithmetic result carries no values.
+    core::result_wrapper_t<vector_t> compute_binary_arithmetic(std::pmr::memory_resource* resource,
+                                                               arithmetic_op op,
+                                                               const vector_t& left,
+                                                               const vector_t& right,
+                                                               uint64_t count) {
+        // The result type of an empty input is the operand-derived one, exactly as for a
+        // non-empty input: a 0-row chunk is real input, not a drain sentinel, and the column
+        // it produces is still typed. (Reading the operand types here is safe because
+        // data_chunk_t::at answers nullptr for a column past the chunk's width, so an
+        // unresolvable operand is rejected before the kernel is ever called.) The dispatch is
+        // still skipped, so no operand ROW is touched.
+        const auto result_logical = types::arithmetic_result_type(left.type().type(), right.type().type(), op);
         if (count == 0) {
-            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+            return vector_t(resource, types::complex_logical_type(result_logical), 0);
         }
         // Compute the result values first (numeric or temporal), then apply NULL propagation as a
         // single tail below. Capturing the temporal branch in this local instead of returning it
         // directly keeps it on the same validity path as the numeric branch.
-        vector_t output = [&]() -> vector_t {
-            if (types::is_duration(left.type().type()) || types::is_duration(right.type().type())) {
-                return compute_temporal_binary(resource, op, left, right, count);
-            }
-            auto result_logical = types::arithmetic_result_type(left.type().type(), right.type().type(), op);
-            if (result_logical == types::logical_type::FLOAT) {
-                result_logical = types::logical_type::DOUBLE;
-            }
-            auto result_type = types::complex_logical_type(result_logical);
-            vector_t out(resource, result_type, count);
-            if (result_type.type() == types::logical_type::NA) {
-                return out;
-            }
+        if (types::is_duration(left.type().type()) || types::is_duration(right.type().type())) {
+            vector_t temporal = compute_temporal_binary(resource, op, left, right, count);
+            temporal.validity().combine(left.validity(), count);
+            temporal.validity().combine(right.validity(), count);
+            return temporal;
+        }
+        auto result_type = types::complex_logical_type(result_logical);
+        vector_t output(resource, result_type, count);
+        if (result_type.type() != types::logical_type::NA) {
+            core::error_t error = core::error_t::no_error();
             switch (op) {
                 case arithmetic_op::add:
-                    dispatch_binary<std::plus>(left, right, out, count);
+                    error = dispatch_binary<std::plus>(left, right, output, count);
                     break;
                 case arithmetic_op::subtract:
-                    dispatch_binary<std::minus>(left, right, out, count);
+                    error = dispatch_binary<std::minus>(left, right, output, count);
                     break;
                 case arithmetic_op::multiply:
-                    dispatch_binary<std::multiplies>(left, right, out, count);
+                    error = dispatch_binary<std::multiplies>(left, right, output, count);
                     break;
                 case arithmetic_op::divide:
-                    dispatch_binary_div<checked_divides>(left, right, out, count);
+                    error = dispatch_binary_div<checked_divides>(left, right, output, count);
                     break;
                 case arithmetic_op::mod:
-                    dispatch_binary_div<checked_modulus>(left, right, out, count);
+                    error = dispatch_binary_div<checked_modulus>(left, right, output, count);
                     break;
             }
-            return out;
-        }();
+            if (error.contains_error()) {
+                return error;
+            }
+        }
         // SQL three-valued logic: a NULL operand makes the result NULL. combine is a word-wise
         // AND that is a no-op when the operand mask is all-valid, so NULL-free columns pay nothing.
         // Applied after the dispatch so it composes with the divide/mod zero-invalidation.
@@ -1172,122 +1174,124 @@ namespace components::vector {
         return output;
     }
 
-    vector_t compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const vector_t& vec,
-                                              const types::logical_value_t& scalar,
-                                              uint64_t count) {
-        // Empty input: see compute_binary_arithmetic. The vec operand may be a
-        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
-        // type here.
+    core::result_wrapper_t<vector_t> compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const vector_t& vec,
+                                                                      const types::logical_value_t& scalar,
+                                                                      uint64_t count) {
+        // Empty input keeps the operand-derived type: see compute_binary_arithmetic.
+        const auto result_logical = types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op);
         if (count == 0) {
-            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+            return vector_t(resource, types::complex_logical_type(result_logical), 0);
         }
-        vector_t output = [&]() -> vector_t {
-            if (types::is_duration(vec.type().type()) || types::is_duration(scalar.type().type())) {
-                return compute_temporal_vec_scalar(resource, op, vec, scalar, count);
+        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
+        auto propagate_nulls = [&](vector_t& out) {
+            if (scalar.is_null()) {
+                out.validity().set_all_invalid(count);
+            } else {
+                out.validity().combine(vec.validity(), count);
             }
-            auto result_logical = types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op);
-            if (result_logical == types::logical_type::FLOAT) {
-                result_logical = types::logical_type::DOUBLE;
-            }
-            auto result_type = types::complex_logical_type(result_logical);
-            vector_t out(resource, result_type, count);
-            if (result_type.type() == types::logical_type::NA) {
-                return out;
-            }
+        };
+        if (types::is_duration(vec.type().type()) || types::is_duration(scalar.type().type())) {
+            vector_t temporal = compute_temporal_vec_scalar(resource, op, vec, scalar, count);
+            propagate_nulls(temporal);
+            return temporal;
+        }
+        auto result_type = types::complex_logical_type(result_logical);
+        vector_t output(resource, result_type, count);
+        if (result_type.type() != types::logical_type::NA) {
+            core::error_t error = core::error_t::no_error();
             switch (op) {
                 case arithmetic_op::add:
-                    dispatch_vec_scalar<std::plus>(vec, scalar, out, count);
+                    error = dispatch_vec_scalar<std::plus>(vec, scalar, output, count);
                     break;
                 case arithmetic_op::subtract:
-                    dispatch_vec_scalar<std::minus>(vec, scalar, out, count);
+                    error = dispatch_vec_scalar<std::minus>(vec, scalar, output, count);
                     break;
                 case arithmetic_op::multiply:
-                    dispatch_vec_scalar<std::multiplies>(vec, scalar, out, count);
+                    error = dispatch_vec_scalar<std::multiplies>(vec, scalar, output, count);
                     break;
                 case arithmetic_op::divide:
-                    dispatch_vec_scalar_div<checked_divides>(vec, scalar, out, count);
+                    error = dispatch_vec_scalar_div<checked_divides>(vec, scalar, output, count);
                     break;
                 case arithmetic_op::mod:
-                    dispatch_vec_scalar_div<checked_modulus>(vec, scalar, out, count);
+                    error = dispatch_vec_scalar_div<checked_modulus>(vec, scalar, output, count);
                     break;
             }
-            return out;
-        }();
-        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
-        if (scalar.is_null()) {
-            output.validity().set_all_invalid(count);
-        } else {
-            output.validity().combine(vec.validity(), count);
+            if (error.contains_error()) {
+                return error;
+            }
         }
+        propagate_nulls(output);
         return output;
     }
 
-    vector_t compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const types::logical_value_t& scalar,
-                                              const vector_t& vec,
-                                              uint64_t count) {
-        // Empty input: see compute_binary_arithmetic. The vec operand may be a
-        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
-        // type here.
+    core::result_wrapper_t<vector_t> compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const types::logical_value_t& scalar,
+                                                                      const vector_t& vec,
+                                                                      uint64_t count) {
+        // Empty input keeps the operand-derived type: see compute_binary_arithmetic.
+        const auto result_logical = types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op);
         if (count == 0) {
-            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+            return vector_t(resource, types::complex_logical_type(result_logical), 0);
         }
-        vector_t output = [&]() -> vector_t {
-            if (types::is_duration(scalar.type().type()) || types::is_duration(vec.type().type())) {
-                return compute_temporal_scalar_vec(resource, op, scalar, vec, count);
+        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
+        auto propagate_nulls = [&](vector_t& out) {
+            if (scalar.is_null()) {
+                out.validity().set_all_invalid(count);
+            } else {
+                out.validity().combine(vec.validity(), count);
             }
-            auto result_logical = types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op);
-            if (result_logical == types::logical_type::FLOAT) {
-                result_logical = types::logical_type::DOUBLE;
-            }
-            auto result_type = types::complex_logical_type(result_logical);
-            vector_t out(resource, result_type, count);
-            if (result_type.type() == types::logical_type::NA) {
-                return out;
-            }
+        };
+        if (types::is_duration(scalar.type().type()) || types::is_duration(vec.type().type())) {
+            vector_t temporal = compute_temporal_scalar_vec(resource, op, scalar, vec, count);
+            propagate_nulls(temporal);
+            return temporal;
+        }
+        auto result_type = types::complex_logical_type(result_logical);
+        vector_t output(resource, result_type, count);
+        if (result_type.type() != types::logical_type::NA) {
+            core::error_t error = core::error_t::no_error();
             switch (op) {
                 case arithmetic_op::add:
-                    dispatch_scalar_vec<std::plus>(scalar, vec, out, count);
+                    error = dispatch_scalar_vec<std::plus>(scalar, vec, output, count);
                     break;
                 case arithmetic_op::subtract:
-                    dispatch_scalar_vec<std::minus>(scalar, vec, out, count);
+                    error = dispatch_scalar_vec<std::minus>(scalar, vec, output, count);
                     break;
                 case arithmetic_op::multiply:
-                    dispatch_scalar_vec<std::multiplies>(scalar, vec, out, count);
+                    error = dispatch_scalar_vec<std::multiplies>(scalar, vec, output, count);
                     break;
                 case arithmetic_op::divide:
-                    dispatch_scalar_vec_div<checked_divides>(scalar, vec, out, count);
+                    error = dispatch_scalar_vec_div<checked_divides>(scalar, vec, output, count);
                     break;
                 case arithmetic_op::mod:
-                    dispatch_scalar_vec_div<checked_modulus>(scalar, vec, out, count);
+                    error = dispatch_scalar_vec_div<checked_modulus>(scalar, vec, output, count);
                     break;
             }
-            return out;
-        }();
-        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
-        if (scalar.is_null()) {
-            output.validity().set_all_invalid(count);
-        } else {
-            output.validity().combine(vec.validity(), count);
+            if (error.contains_error()) {
+                return error;
+            }
         }
+        propagate_nulls(output);
         return output;
     }
 
-    vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
-        // Empty input: see compute_binary_arithmetic. The vec operand may be a
-        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
-        // type here.
-        if (count == 0) {
-            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
-        }
+    core::result_wrapper_t<vector_t>
+    compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
+        // Empty input keeps the operand's type: negation never changes it.
         vector_t output(resource, vec.type(), count);
-        types::simple_physical_type_switch<unary_neg_wrapper::callback>(vec.type().to_physical_type(),
-                                                                        vec,
-                                                                        output,
-                                                                        count);
+        if (count == 0) {
+            return output;
+        }
+        auto error = types::simple_physical_type_switch<unary_neg_wrapper::callback>(vec.type().to_physical_type(),
+                                                                                      vec,
+                                                                                      output,
+                                                                                      count);
+        if (error.contains_error()) {
+            return error;
+        }
         // -NULL is NULL: carry the operand's nulls into the negated result.
         output.validity().combine(vec.validity(), count);
         return output;

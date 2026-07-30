@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <integration/cpp/connection.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -9,7 +10,7 @@ constexpr size_t num_threads = 4;
 constexpr size_t work_per_thread = doc_num / num_threads;
 
 TEST_CASE("integration::cpp::test_otterbrix_multithread") {
-    auto config = test_create_config("/tmp/test_otterbrix_multithread");
+    auto config = test_create_config(test_temp_path("test_otterbrix_multithread"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -82,7 +83,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
 }
 
 TEST_CASE("integration::cpp::test_connectors") {
-    auto config = test_create_config("/tmp/test_connectors");
+    auto config = test_create_config(test_temp_path("test_connectors"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

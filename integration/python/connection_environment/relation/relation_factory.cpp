@@ -41,20 +41,13 @@ namespace otterbrix {
             return components::types::logical_type::UNKNOWN;
         }
 
-        std::pair<std::string, bool>
-        find_param_name(const std::variant<core::parameter_id_t, expressions::key_t, expression_ptr>& param) {
-            return std::visit(
-                [](const auto& expr) {
-                    using type = std::decay_t<decltype(expr)>;
-                    if constexpr (std::is_same_v<type, expressions::key_t>) {
-                        return std::make_pair(expr.as_string(), true);
-                    } else if constexpr (std::is_same_v<type, core::parameter_id_t> ||
-                                         std::is_same_v<type, expression_ptr>) {
-                        return std::make_pair(error_str, false);
-                    }
-                    throw std::runtime_error("Unknown parameter type for nodes");
-                },
-                param);
+        // Only a column key names a column; a bound parameter and a nested expression both
+        // fall back to the placeholder, so they share one arm.
+        std::pair<std::string, bool> find_param_name(const expressions::param_storage& param) {
+            if (expressions::is_key(param)) {
+                return std::make_pair(expressions::as_key(param).as_string(), true);
+            }
+            return std::make_pair(error_str, false);
         }
 
         column_definition_t process_aggregate(const aggregate_expression_ptr& aggregate_expr,

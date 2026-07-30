@@ -5,9 +5,31 @@
 #include <memory>
 #include <string>
 
+// Under ASAN the pooling resource has to step aside: with
+// synchronized_pool_resource every container buffer is a suballocation carved out
+// of one large pool block, so neighbouring buffers sit back to back with no
+// redzone between them and an overrun from one into the next is invisible to
+// ASAN. resource_tracer_t forwards each allocation straight to new/delete, which
+// gives every buffer its own redzone and makes the overrun reportable.
+//
+// The three spellings below are not redundant: gcc defines __SANITIZE_ADDRESS__,
+// MSVC defines _ADDRESS_SANITIZER, and clang defines NEITHER -- it only answers
+// __has_feature(address_sanitizer). Without the clang arm this guard silently
+// evaluated false on every clang ASAN build, leaving the pool (and therefore the
+// blindness described above) in place while the build still looked sanitized.
+// __has_feature must be probed in a nested #if: gcc 11 does not define it at all,
+// and an unguarded call would not preprocess there.
+#if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)
+#    define OTTERBRIX_ASAN_ACTIVE 1
+#elif defined(__has_feature)
+#    if __has_feature(address_sanitizer)
+#        define OTTERBRIX_ASAN_ACTIVE 1
+#    endif
+#endif
+
 namespace core::pmr {
 
-#if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)
+#if defined(OTTERBRIX_ASAN_ACTIVE)
     using otterbrix_resource = resource_tracer_t;
 #else
     using otterbrix_resource = std::pmr::synchronized_pool_resource;

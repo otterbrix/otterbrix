@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <filesystem>
 #include <memory>
 
@@ -32,7 +33,7 @@ namespace {
                                                                name,
                                                                keys_base_storage_t{key(resource, "val")});
         }
-        const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
+        const auto base = std::filesystem::path(test_temp_path("index_disk/components_hash_mvcc_tests"));
         std::filesystem::create_directories(base);
         const auto file = base / file_name;
         std::filesystem::remove(file);

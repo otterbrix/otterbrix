@@ -15,6 +15,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/operations_helper.hpp>
 #include <variant>
 
@@ -39,7 +40,7 @@ using id_par = core::parameter_id_t;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_collection::logical_plan") {
-    auto config = test_create_config("/tmp/test_collection_logical_plan");
+    auto config = test_create_config(test_temp_path("test_collection_logical_plan"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -47,31 +48,36 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
-    std::pmr::vector<types::complex_logical_type> types_left(dispatcher->resource());
-    std::pmr::vector<types::complex_logical_type> types_right(dispatcher->resource());
+    auto schema = gen_schema(dispatcher->resource());
+    components::vector::schema_t schema_left(dispatcher->resource());
+    components::vector::schema_t schema_right(dispatcher->resource());
 
-    types_left.emplace_back(types::logical_type::STRING_LITERAL, "name");
-    types_left.emplace_back(types::logical_type::BIGINT, "key_1");
-    types_left.emplace_back(types::logical_type::BIGINT, "key_2");
+    schema_left.push_back(
+        gen_column(dispatcher->resource(), "name", types::complex_logical_type{types::logical_type::STRING_LITERAL}));
+    schema_left.push_back(
+        gen_column(dispatcher->resource(), "key_1", types::complex_logical_type{types::logical_type::BIGINT}));
+    schema_left.push_back(
+        gen_column(dispatcher->resource(), "key_2", types::complex_logical_type{types::logical_type::BIGINT}));
 
-    types_right.emplace_back(types::logical_type::BIGINT, "value");
-    types_right.emplace_back(types::logical_type::BIGINT, "key");
+    schema_right.push_back(
+        gen_column(dispatcher->resource(), "value", types::complex_logical_type{types::logical_type::BIGINT}));
+    schema_right.push_back(
+        gen_column(dispatcher->resource(), "key", types::complex_logical_type{types::logical_type::BIGINT}));
 
     std::vector<components::table::column_definition_t> columns;
     std::vector<components::table::column_definition_t> columns_left;
     std::vector<components::table::column_definition_t> columns_right;
-    columns.reserve(types.size());
-    columns_left.reserve(types_left.size());
-    columns_right.reserve(types_right.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    columns_left.reserve(schema_left.size());
+    columns_right.reserve(schema_right.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
-    for (const auto& type : types_left) {
-        columns_left.emplace_back(type.alias(), type);
+    for (const auto& column : schema_left) {
+        columns_left.emplace_back(std::string{column.name}, column.type);
     }
-    for (const auto& type : types_right) {
-        columns_right.emplace_back(type.alias(), type);
+    for (const auto& column : schema_right) {
+        columns_right.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");
@@ -230,8 +236,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         REQUIRE(cur->value(1, 1).value<uint64_t>() == 50);
         REQUIRE(cur->value(2, 0).value<int64_t>() == 2550);
         REQUIRE(cur->value(2, 1).value<int64_t>() == 2500);
-        REQUIRE(cur->value(3, 0).value<int64_t>() == 51);
-        REQUIRE(cur->value(3, 1).value<int64_t>() == 50);
+        // AVG is a ratio -> a DOUBLE column whatever the input type; both means here
+        // are whole numbers (2550/50 and 2500/50).
+        REQUIRE(core::is_equals(cur->value(3, 0).value<double>(), 51.0));
+        REQUIRE(core::is_equals(cur->value(3, 1).value<double>(), 50.0));
     }
 
     INFO("insert from select");
@@ -709,8 +717,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
     INFO("join with outside data");
     {
-        vector::data_chunk_t chunk_left(dispatcher->resource(), types_left, 101);
-        vector::data_chunk_t chunk_right(dispatcher->resource(), types_right, 100);
+        auto chunk_left = vector::make_chunk(dispatcher->resource(), schema_left, 101);
+        auto chunk_right = vector::make_chunk(dispatcher->resource(), schema_right, 100);
         chunk_left.set_cardinality(101);
         chunk_right.set_cardinality(100);
 
@@ -965,21 +973,24 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->size() == 13);
 
             REQUIRE(cur->chunks().front().data[1].type().type() == types::logical_type::UBIGINT);
-            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[1].name() == "count");
             REQUIRE(cur->chunks().front().data[2].type().type() == types::logical_type::BIGINT);
-            REQUIRE(cur->chunks().front().data[2].type().alias() == "sum");
-            REQUIRE(cur->chunks().front().data[3].type().type() == types::logical_type::BIGINT);
-            REQUIRE(cur->chunks().front().data[3].type().alias() == "avg");
+            REQUIRE(cur->chunks().front().data[2].name() == "sum");
+            // AVG's column type is the plan-time stamp resolved from the avg kernel
+            // signature: a mean is a real number, so the column is DOUBLE even though
+            // the aggregated column is a BIGINT.
+            REQUIRE(cur->chunks().front().data[3].type().type() == types::logical_type::DOUBLE);
+            REQUIRE(cur->chunks().front().data[3].name() == "avg");
             REQUIRE(cur->chunks().front().data[4].type().type() == types::logical_type::BIGINT);
-            REQUIRE(cur->chunks().front().data[4].type().alias() == "min");
+            REQUIRE(cur->chunks().front().data[4].name() == "min");
             REQUIRE(cur->chunks().front().data[5].type().type() == types::logical_type::BIGINT);
-            REQUIRE(cur->chunks().front().data[5].type().alias() == "max");
+            REQUIRE(cur->chunks().front().data[5].name() == "max");
 
             for (int num = 0, reversed = 12; num < 13; ++num, --reversed) {
                 REQUIRE(cur->value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
                 REQUIRE(cur->value(2, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
-                REQUIRE(cur->value(3, static_cast<size_t>(num)).value<int64_t>() ==
-                        static_cast<int64_t>((reversed + 25) * 2));
+                REQUIRE(core::is_equals(cur->value(3, static_cast<size_t>(num)).value<double>(),
+                                        static_cast<double>((reversed + 25) * 2)));
                 REQUIRE(cur->value(4, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
                 REQUIRE(cur->value(5, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
             }

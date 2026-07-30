@@ -24,7 +24,6 @@ namespace components::logical_plan {
                                  bool disk_storage = false,
                                  bool if_not_exists = false);
 
-        std::pmr::vector<types::complex_logical_type> schema() const;
 
         std::vector<table::column_definition_t>& column_definitions();
         const std::vector<table::column_definition_t>& column_definitions() const;
@@ -39,7 +38,6 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string relname_;

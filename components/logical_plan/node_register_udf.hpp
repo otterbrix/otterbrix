@@ -28,7 +28,6 @@ namespace components::logical_plan {
         const components::compute::function* function() const noexcept { return function_.get(); }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         components::compute::function_ptr function_;

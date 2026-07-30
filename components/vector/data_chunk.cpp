@@ -2,7 +2,6 @@
 #include "vector_operations.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <stdexcept>
 
 namespace components::vector {
@@ -12,7 +11,8 @@ namespace components::vector {
                                uint64_t capacity)
         : resource_(resource)
         , capacity_(capacity)
-        , row_ids(resource, types::logical_type::BIGINT, capacity) {
+        , row_ids(resource, types::logical_type::BIGINT, capacity)
+        , schema_(resource) {
         assert(capacity <= DEFAULT_VECTOR_CAPACITY);
         for (uint64_t i = 0; i < types.size(); i++) {
             data.emplace_back(resource_, types[i], capacity_);
@@ -25,7 +25,8 @@ namespace components::vector {
                                uint64_t capacity)
         : resource_(resource)
         , capacity_(capacity)
-        , row_ids(resource, types::logical_type::BIGINT, capacity) {
+        , row_ids(resource, types::logical_type::BIGINT, capacity)
+        , schema_(resource) {
         assert(capacity <= DEFAULT_VECTOR_CAPACITY);
         // Build a fast lookup: which column indices need real buffers
         std::vector<bool> needed(all_types.size(), false);
@@ -45,20 +46,149 @@ namespace components::vector {
         }
     }
 
+    // The schema memo is derived from `data`, so a move deliberately does not carry it: the
+    // moved-to chunk rebuilds it from the columns it just took over, on its next read.
     data_chunk_t::data_chunk_t(data_chunk_t&& other) noexcept
         : resource_(other.resource_)
         , count_(other.count_)
         , capacity_(other.capacity_)
         , row_ids(std::move(other.row_ids))
-        , data(std::move(other.data)) {}
+        , data(std::move(other.data))
+        , schema_(other.resource_) {}
 
     data_chunk_t& data_chunk_t::operator=(data_chunk_t&& other) noexcept {
+        // Drop the memo BEFORE resource_ is reseated. Its storage came from this chunk's
+        // current resource and has to be returned there — not to the one being adopted —
+        // so the release is a destructor call, which is the only way to get that guarantee
+        // out of a container whose allocator does not propagate on move assignment.
+        schema_.~schema_storage_t();
+        ::new (static_cast<void*>(&schema_)) schema_storage_t{other.resource_};
         resource_ = other.resource_;
         count_ = other.count_;
         capacity_ = other.capacity_;
         row_ids = std::move(other.row_ids);
         data = std::move(other.data);
         return *this;
+    }
+
+    column_schema_t column_schema_t::clone(std::pmr::memory_resource* resource) const {
+        column_schema_t copy{resource};
+        copy.attoid = attoid;
+        copy.name.assign(name.data(), name.size());
+        copy.type = type;
+        return copy;
+    }
+
+    void data_chunk_t::sync_schema() const {
+        while (schema_.size() > data.size()) {
+            schema_.pop_back();
+        }
+        if (schema_.size() < data.size()) {
+            schema_.reserve(data.size());
+            while (schema_.size() < data.size()) {
+                schema_.emplace_back(resource_);
+            }
+        }
+        for (uint64_t i = 0; i < data.size(); i++) {
+            const auto& column_type = data[i].type();
+            // vector_t::name() is the column's own answer and needs no guard in front of it —
+            // an unnamed column returns an empty view (M3-B5).
+            const std::string_view column_name = data[i].name();
+            auto& record = schema_[i];
+            // M3-B4: the identity is DERIVED, like the name and the type, and assigned
+            // OUTSIDE the guard below. It cannot ride inside it: two chunk columns may be
+            // fully type-equal and still be different columns (duplicate names are legal —
+            // test_computed_schema.cpp:145), so after operator_group.cpp erases a positional
+            // range out of the middle, the column that slides into slot i can compare equal
+            // to the record already there while carrying a different attoid. A guarded
+            // assignment would leave the old column's identity describing the new one, which
+            // is exactly the misalignment this stage exists to remove. A 4-byte store is
+            // cheaper than the comparison that would protect it.
+            record.attoid = data[i].attoid();
+            // Two checks again, and this time they really are two questions. B3 folded them
+            // into one because equality had just been made to notice the alias, so a rename
+            // could not pass a type comparison. B5 takes the name off the type, so a type
+            // comparison stops being able to see a rename at all: the name has to be
+            // reconciled against the column's own name. Each guard is here to skip a copy,
+            // not to decide anything — assigning both unconditionally would be correct and
+            // slower, since schema() is read per chunk on hot paths.
+            if (record.name != column_name) {
+                record.name.assign(column_name.data(), column_name.size());
+            }
+            if (record.type != column_type) {
+                record.type = column_type;
+            }
+        }
+    }
+
+    const std::pmr::vector<column_schema_t>& data_chunk_t::schema() const {
+        sync_schema();
+        return schema_;
+    }
+
+    void data_chunk_t::set_column_name(uint64_t col_idx, std::string_view name) {
+        assert(col_idx < data.size());
+        data[col_idx].set_name(name);
+    }
+
+    void data_chunk_t::set_column_attoid(uint64_t col_idx, catalog::oid_t attoid) {
+        assert(col_idx < data.size());
+        data[col_idx].set_attoid(attoid);
+    }
+
+    std::pmr::vector<types::complex_logical_type> schema_types(std::pmr::memory_resource* resource,
+                                                               const schema_t& schema) {
+        std::pmr::vector<types::complex_logical_type> types(resource);
+        types.reserve(schema.size());
+        for (const auto& record : schema) {
+            types.push_back(record.type);
+        }
+        return types;
+    }
+
+    schema_t clone_schema(std::pmr::memory_resource* resource, const schema_t& schema) {
+        schema_t copy(resource);
+        copy.reserve(schema.size());
+        for (const auto& record : schema) {
+            copy.push_back(record.clone(resource));
+        }
+        return copy;
+    }
+
+    // Stamp the identity the constructors could not: the chunk was built out of types, and
+    // both halves of what a column IS live on the record. The name is written even when the
+    // column already answers with it, because that agreement is an accident of where the name
+    // currently lives, not a guarantee.
+    static void stamp_schema(data_chunk_t& chunk, const schema_t& schema) {
+        const auto width = std::min<uint64_t>(chunk.column_count(), schema.size());
+        for (uint64_t i = 0; i < width; i++) {
+            if (chunk.data[i].name() != std::string_view{schema[i].name}) {
+                chunk.set_column_name(i, schema[i].name);
+            }
+            chunk.set_column_attoid(i, schema[i].attoid);
+        }
+    }
+
+    data_chunk_t make_chunk(std::pmr::memory_resource* resource, const schema_t& schema, uint64_t capacity) {
+        data_chunk_t chunk{resource, schema_types(resource, schema), capacity};
+        stamp_schema(chunk, schema);
+        return chunk;
+    }
+
+    data_chunk_t make_chunk(std::pmr::memory_resource* resource,
+                            const schema_t& schema,
+                            const std::vector<size_t>& projected_cols,
+                            uint64_t capacity) {
+        data_chunk_t chunk{resource, schema_types(resource, schema), projected_cols, capacity};
+        stamp_schema(chunk, schema);
+        return chunk;
+    }
+
+    const types::complex_logical_type& type_from_path(const schema_t& schema,
+                                                      const std::pmr::vector<size_t>& path) {
+        assert(!schema.empty() && "vector::type_from_path should not be called with an empty schema");
+        assert(!path.empty() && "vector::type_from_path should not be called with an empty path");
+        return schema.at(path.front()).type.type_from_path_tail(path);
     }
 
     // An unprojected placeholder vector has no data buffer AND no auxiliary buffer.
@@ -68,11 +198,15 @@ namespace components::vector {
         return v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
-    uint64_t data_chunk_t::allocation_size() const {
+    core::result_wrapper_t<uint64_t> data_chunk_t::allocation_size() const {
         uint64_t total_size = 0;
         auto cardinality = size();
         for (auto& vec : data) {
-            total_size += vec.allocation_size(cardinality);
+            auto column_size = vec.allocation_size(cardinality);
+            if (column_size.has_error()) {
+                return column_size;
+            }
+            total_size += column_size.value();
         }
         return total_size;
     }
@@ -111,13 +245,13 @@ namespace components::vector {
         return element.leaf->value(element.index);
     }
 
-    void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val) {
-        data[col_idx].set_value(index, val);
+    core::error_t data_chunk_t::set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val) {
+        return data[col_idx].set_value(index, val);
     }
 
-    void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_path,
-                                 uint64_t index,
-                                 const types::logical_value_t& val) {
+    core::error_t data_chunk_t::set_value(const std::pmr::vector<size_t>& col_path,
+                                          uint64_t index,
+                                          const types::logical_value_t& val) {
         vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             if (std::next(it) == col_path.end()) {
@@ -131,7 +265,7 @@ namespace components::vector {
                     // has no fixed width to grow into here).
                     const auto& offlen = sub_column->data<types::list_entry_t>()[index];
                     if (*it >= offlen.length) {
-                        return;
+                        return core::error_t::no_error();
                     }
                     return sub_column->entry().set_value(offlen.offset + *it, val);
                 } else {
@@ -202,15 +336,27 @@ namespace components::vector {
         set_cardinality(chunk.count_);
         for (uint64_t i = 0; i < chunk.column_count(); i++) {
             data[i].reference(chunk.data[i]);
+            data[i].set_attoid(chunk.data[i].attoid());
+            data[i].set_name(chunk.data[i].name());
         }
         row_ids.reference(chunk.row_ids);
     }
 
+    // M3-B4. Column i of the destination IS column i of the source — the assert below says
+    // so — and the engine's standard way to duplicate a chunk is to build a fresh one from
+    // types() and copy into it (operator_insert.cpp's copy_of, manager_disk_impl.hpp's
+    // rebuild_chunk, partial_copy here). types() cannot carry the identity, and it cannot
+    // carry the NAME either for every column — a STRUCT column's type slot holds the TYPE's
+    // name, so a chunk rebuilt from types() answers "test_struct" where the column is called
+    // "struct_column" (M3-B5, pinned in test_table.cpp). Both halves therefore travel here,
+    // from the source COLUMN, or every rebuild would silently strip them.
     void data_chunk_t::copy(data_chunk_t& other, uint64_t offset) const {
         assert(column_count() == other.column_count());
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
+            other.data[i].set_attoid(data[i].attoid());
+            other.data[i].set_name(data[i].name());
             if (is_unprojected_placeholder(data[i]))
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
@@ -230,6 +376,8 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
+            other.data[i].set_attoid(data[i].attoid());
+            other.data[i].set_name(data[i].name());
             if (is_unprojected_placeholder(data[i]))
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
@@ -273,6 +421,8 @@ namespace components::vector {
             auto& this_col = data[col_idx];
             assert(other_col.type() == this_col.type());
             this_col.reference(other_col);
+            this_col.set_attoid(other_col.attoid());
+            this_col.set_name(other_col.name());
         }
         set_cardinality(other.size());
     }
@@ -289,61 +439,6 @@ namespace components::vector {
             types.push_back(data[i].type());
         }
         return types;
-    }
-
-    size_t data_chunk_t::column_index(std::string_view key) const {
-        for (uint64_t i = 0; i < column_count(); i++) {
-            if (data[i].type().alias() == key) {
-                return i;
-            }
-        }
-        assert(false && "data_chunk_t::column_index: no such column");
-        return std::numeric_limits<size_t>::max();
-    }
-
-    std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
-        std::pmr::vector<size_t> res(resource_);
-        for (uint64_t i = 0; i < column_count(); i++) {
-            if (core::pmr::operator==(data[i].type().alias(), path.front())) {
-                res.emplace_back(i);
-                break;
-            }
-        }
-        if (res.empty()) {
-            assert(false && "data_chunk_t::column_index: no such column");
-            return {size_t(-1)};
-        } else {
-            const vector_t* sub_column = &data[res.front()];
-            for (auto it = std::next(path.begin()); it != path.end(); ++it) {
-                bool field_found = false;
-                if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    size_t index{};
-                    auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
-                    if (ec == std::errc{} &&
-                        index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
-                                    ->size()) {
-                        res.emplace_back(index);
-                        sub_column = &sub_column->entry();
-                        field_found = true;
-                    }
-                } else {
-                    for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
-                        if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
-                            res.emplace_back(i);
-                            if (std::next(it) != path.end()) {
-                                sub_column = sub_column->entries()[i].get();
-                            }
-                            field_found = true;
-                            break;
-                        }
-                    }
-                }
-                if (!field_found) {
-                    return {size_t(-1)};
-                }
-            }
-        }
-        return res;
     }
 
     std::pmr::memory_resource* data_chunk_t::resource() const { return resource_; }
@@ -486,10 +581,9 @@ namespace components::vector {
         }
         // No extractable value cell → SQL NULL, not an error. This covers a scalar sub-query that returned
         // zero rows AND the degenerate zero-column result an ungrouped aggregate emits when its input was
-        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no column). Yielding an untyped
-        // NA null matches the value get_parameter() returns for an unbound id, so `x = (NULL scalar
-        // subquery)` compares against NULL and selects nothing. Only a genuine shape violation (>1 row, or
-        // >1 column) falls through to the error.
+        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no column). The untyped NA null
+        // yielded here makes `x = (NULL scalar subquery)` compare against NULL and select nothing. Only a
+        // genuine shape violation (>1 row, or >1 column) falls through to the error.
         if (total_rows == 0 || cols == 0) {
             return types::logical_value_t{chunks.front().resource(), nullptr};
         }

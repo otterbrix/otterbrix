@@ -29,11 +29,6 @@ namespace components::logical_plan {
         [[nodiscard]] bool pushdown() const noexcept;
 
         size_t internal_aggregate_count{0};
-        // Number of visible SELECT-clause columns recorded BEFORE the
-        // transformer appends hidden internal aggregates for HAVING etc.
-        // PR #479-style projection lineage uses this to know where the
-        // visible SELECT list ends.
-        size_t visible_select_count{0};
 
     private:
         std::string dbname_;
@@ -42,7 +37,6 @@ namespace components::logical_plan {
         // reduce. Intentionally NOT folded into hash_impl().
         bool pushdown_{false};
 
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

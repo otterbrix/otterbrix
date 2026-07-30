@@ -1,6 +1,6 @@
 #include "operator_join.hpp"
 #include "join_utils.hpp"
-#include "predicates/predicate.hpp"
+#include "predicate_executor.hpp"
 
 #include <components/vector/vector_operations.hpp>
 
@@ -24,24 +24,38 @@ namespace components::operators {
         // operator_data_t always holds at least one (possibly empty) chunk.
         assert(!build_chunks.empty());
 
-        res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
         // Nested-loop is never swapped: it evaluates its ON via key.side(), so the
         // probe is always logical-left and the build always logical-right.
-        join_detail::compute_join_layout(probe_front,
+        join_detail::compute_join_layout(resource_,
+                                         probe_front,
                                          build_chunks.front(),
                                          /*swapped=*/false,
-                                         res_types_,
+                                         res_schema_,
                                          indices_left_,
                                          indices_right_);
 
-        predicate_ = expression_ ? predicates::create_predicate(resource_,
-                                                                context->function_registry,
-                                                                expression_,
-                                                                probe_front.types(),
-                                                                build_chunks.front().types(),
-                                                                &context->parameters,
-                                                                context->session_tz)
-                                 : predicates::create_all_true_predicate(resource_);
+        // A null expression means CROSS -- every pair matches -- and the facade turns that into a
+        // constant TRUE rather than a separate all-true predicate, so there is one evaluation path.
+        auto executor = predicate_executor_t::create(resource_,
+                                                     expression_,
+                                                     probe_front.schema(),
+                                                     build_chunks.front().schema(),
+                                                     context->function_registry,
+                                                     &context->parameters,
+                                                     context->session_tz);
+        if (executor.has_error()) {
+            set_error(executor.error());
+            return;
+        }
+        predicate_.emplace(std::move(executor.value()));
+        // Kept for probe_batch_, and REFRESHED on every push (see push()): the bound tree reads its
+        // parameter slots live, and a correlated (LATERAL) sub-query rebinds them between two runs
+        // of this same operator.
+        current_parameters_ = &context->parameters;
+        current_session_tz_ = context->session_tz;
+        // Sized ONCE to the widest build chunk this join can see: set_index is unchecked, and the
+        // selection is indexed by BUILD row because that is what a 1-probe-row batch answers.
+        match_selection_ = vector::indexing_vector_t{resource_, vector::DEFAULT_VECTOR_CAPACITY};
 
         // RIGHT/FULL: size the flat matched marker over all build rows, with
         // per-chunk start offsets so build row (chunk,row) maps to
@@ -74,7 +88,7 @@ namespace components::operators {
         const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
         const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
 
-        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        join_builder builder(resource_, res_schema_, indices_left_, indices_right_, out);
 
         const uint64_t n = probe.size();
         for (uint64_t li = 0; li < n; ++li) {
@@ -84,22 +98,28 @@ namespace components::operators {
                 if (B.size() == 0) {
                     continue;
                 }
-                auto results = predicates::batch_check_1vN(predicate_, probe, B, li, B.size());
-                if (results.has_error()) {
-                    set_error(results.error());
+                // ONE probe row against the whole build chunk. select_matches applies the join rule
+                // itself: a pair is emitted only when the ON predicate is definitely TRUE, so a NULL
+                // join key yields UNKNOWN and matches nothing.
+                match_selection_.reset(B.size());
+                auto matches = predicate_->select_matches(probe,
+                                                          li,
+                                                          B,
+                                                          B.size(),
+                                                          *current_parameters_,
+                                                          current_session_tz_,
+                                                          match_selection_);
+                if (matches.has_error()) {
+                    set_error(matches.error());
                     builder.flush();
                     return;
                 }
-                const auto& mask = results.value();
-                for (uint64_t rj = 0; rj < B.size(); ++rj) {
-                    // A join emits a pair only when the ON predicate is definitely TRUE; a NULL join
-                    // key yields UNKNOWN, which does not match.
-                    if (types::selects(mask[rj])) {
-                        builder.emit_matched(probe, li, B, rj);
-                        matched = true;
-                        if (mark_matched) {
-                            build_matched_[build_chunk_offsets_[ci] + rj] = 1;
-                        }
+                for (uint64_t k = 0; k < matches.value(); ++k) {
+                    const uint64_t rj = match_selection_.get_index(k);
+                    builder.emit_matched(probe, li, B, rj);
+                    matched = true;
+                    if (mark_matched) {
+                        build_matched_[build_chunk_offsets_[ci] + rj] = 1;
                     }
                 }
             }
@@ -120,7 +140,7 @@ namespace components::operators {
             return;
         }
         const auto& build_chunks = right_->output()->chunks();
-        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        join_builder builder(resource_, res_schema_, indices_left_, indices_right_, out);
         for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
             const auto& B = build_chunks[ci];
             const uint64_t base = build_chunk_offsets_[ci];
@@ -145,6 +165,8 @@ namespace components::operators {
         if (!layout_built_) {
             build_layout_(ctx, input);
         }
+        current_parameters_ = &ctx->parameters;
+        current_session_tz_ = ctx->session_tz;
         probe_batch_(input, out);
         if (has_error()) {
             return get_error();
@@ -156,11 +178,11 @@ namespace components::operators {
         // RIGHT/FULL: drain unmatched build rows, NULL-padded on the left side.
         //
         // If push() never ran (the probe source emitted its drain sentinel before
-        // any schema'd batch), the layout is unbuilt and res_types_ is empty: with no
+        // any schema'd batch), the layout is unbuilt and res_schema_ is empty: with no
         // probe schema there is no left column layout to NULL-pad against, so the
         // only safe action is to skip emission. The common 0-row-probe case still
-        // pushes a schema'd batch, so res_types_ is set and this branch is not taken.
-        if (!layout_built_ || res_types_.empty()) {
+        // pushes a schema'd batch, so res_schema_ is set and this branch is not taken.
+        if (!layout_built_ || res_schema_.empty()) {
             return core::error_t::no_error();
         }
         emit_unmatched_build_(out);

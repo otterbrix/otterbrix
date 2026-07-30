@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <filesystem>
 #include <memory>
 
@@ -30,7 +31,7 @@ namespace {
                                                                name,
                                                                keys_base_storage_t{key(resource, "count")});
         }
-        const auto base = std::filesystem::path("/tmp/index_disk/components_hash_tests");
+        const auto base = std::filesystem::path(test_temp_path("index_disk/components_hash_tests"));
         std::filesystem::create_directories(base);
         const auto file = base / (name + ".bin");
         std::filesystem::remove(file);
@@ -104,7 +105,7 @@ namespace {
         if (mode == hash_index_mode::in_memory) {
             id = make_index<hash_single_field_index_t>(index_engine, "hash_count", {key(&resource, "count")});
         } else {
-            const auto base = std::filesystem::path("/tmp/index_disk/components_hash_engine_tests");
+            const auto base = std::filesystem::path(test_temp_path("index_disk/components_hash_engine_tests"));
             std::filesystem::create_directories(base);
             const auto file = base / "hash_count_disk.bin";
             std::filesystem::remove(file);
@@ -260,7 +261,7 @@ TEST_CASE("disk_single_field_index:revert_cleanup_and_clear_memory") {
 
 TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys") {
     auto resource = core::pmr::otterbrix_resource();
-    const auto base = std::filesystem::path("/tmp/index_disk/components_hash_normalize_tests");
+    const auto base = std::filesystem::path(test_temp_path("index_disk/components_hash_normalize_tests"));
     std::filesystem::create_directories(base);
     const auto file = base / "hash_count_disk_normalize.bin";
     std::filesystem::remove(file);

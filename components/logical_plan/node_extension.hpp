@@ -32,7 +32,6 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string dbname_;

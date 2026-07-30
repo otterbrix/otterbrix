@@ -52,11 +52,22 @@ namespace services::index {
                                       btree_flush_threshold,
                                       std::move(committed_txn_ids),
                                       std::move(shared_hash_index)))
+        , index_type_(type)
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }
 
     index_agent_disk_t::~index_agent_disk_t() { trace(log_, "delete index_agent_disk_t"); }
+
+    // The same predicate make_index_disk() used to choose the backend, so the static_cast is exact
+    // by construction. Reading the stored type instead of asking RTTI keeps the two in one place:
+    // change the mapping in make_index_disk and this must change with it.
+    bitcask_index_disk_t* index_agent_disk_t::bitcask_backend() const noexcept {
+        if (index_type_ != components::logical_plan::index_type::hashed) {
+            return nullptr;
+        }
+        return static_cast<bitcask_index_disk_t*>(index_disk_.get());
+    }
 
     actor_zeta::behavior_t index_agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
@@ -109,7 +120,7 @@ namespace services::index {
               values.size(),
               txn_id,
               session.data());
-        auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
+        auto* bitcask = bitcask_backend();
         if (bitcask && txn_id != 0) {
             // M3.5: the only recoverable-failure branch — propagate the bitcask
             // txn-log IO error straight back to commit_inserts.
@@ -149,7 +160,7 @@ namespace services::index {
               values.size(),
               txn_id,
               session.data());
-        auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
+        auto* bitcask = bitcask_backend();
         if (bitcask && txn_id != 0) {
             // M3.5: propagate the bitcask txn-log IO error to commit_deletes.
             co_return bitcask->apply_txn_deletes(txn_id, values);

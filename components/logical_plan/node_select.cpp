@@ -9,8 +9,6 @@ namespace components::logical_plan {
         , dbname_(std::move(dbname))
         , relname_(std::move(relname)) {}
 
-    hash_t node_select_t::hash_impl() const { return 0; }
-
     std::string node_select_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$select: {";

@@ -5,6 +5,9 @@ add_definitions(-DDEV_MODE)
 set(${PROJECT_NAME}_SOURCES
         test_dispatcher_catalog.cpp
         test_variant_e3_differential.cpp
+        test_write_set_column_identity.cpp
+        test_positional_row_path.cpp
+        test_param_in_field_position.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

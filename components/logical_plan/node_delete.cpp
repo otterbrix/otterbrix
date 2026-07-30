@@ -18,8 +18,6 @@ namespace components::logical_plan {
     std::pmr::vector<expressions::expression_ptr>& node_delete_t::returning() { return returning_; }
     const std::pmr::vector<expressions::expression_ptr>& node_delete_t::returning() const { return returning_; }
 
-    hash_t node_delete_t::hash_impl() const { return 0; }
-
     std::string node_delete_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$delete: <oid:" << static_cast<std::uint64_t>(table_oid()) << "> {";

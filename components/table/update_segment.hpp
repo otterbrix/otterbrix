@@ -872,14 +872,24 @@ namespace components::table {
                 counter++;
             }
         }
+        // `counter`, not `count`. The two are different quantities and only one of them may
+        // move here: `count` is how many tuples THIS update carries and is the bound of the
+        // loop above it, while `counter` is the running position in the merged output — the
+        // value the merge loop advances. Incrementing `count` raised the loop's own bound on
+        // every iteration, so the drain never terminated and `aidx` walked off the end of
+        // `indexing` and `ids` (EXC_BAD_ACCESS). Reachable from SQL as two ALTER TABLE ...
+        // DROP COLUMN statements on one relation: each COMMIT patches one pg_attribute row
+        // in place, and the second patch is the one that has a base update chain to merge
+        // with. The third argument of pick_new/pick_old is unused by both lambdas; it is
+        // passed for symmetry with the merge loop.
         for (; aidx < count; aidx++) {
             auto a_index = indexing.get_index(aidx);
-            pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index, count);
-            count++;
+            pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index, counter);
+            counter++;
         }
         for (; bidx < base_info.N; bidx++) {
-            pick_old(base_info.tuples()[bidx], bidx, count);
-            count++;
+            pick_old(base_info.tuples()[bidx], bidx, counter);
+            counter++;
         }
 
         base_info.N = static_cast<uint32_t>(result_offset);

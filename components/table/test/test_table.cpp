@@ -252,16 +252,19 @@ TEST_CASE("components::table::data_table") {
         {
             logical_value_t value = result.data[L.strct].value(local);
             REQUIRE(value.type().type() == logical_type::STRUCT);
-            REQUIRE(value.type().alias() == "test_struct");
+            // M3-B3: "test_struct" is the COLUMN's name, and a cell has no column — value()
+            // no longer stamps it. The TYPE's own name still travels with the value.
+            REQUIRE(value.type().type_name() == "struct");
+            REQUIRE(value.type().field_name().empty());
             REQUIRE(value.type().child_types()[0].type() == logical_type::BOOLEAN);
-            REQUIRE(value.type().child_types()[0].alias() == "flag");
+            REQUIRE(value.type().child_types()[0].field_name() == "flag");
             REQUIRE(value.type().child_types()[1].type() == logical_type::INTEGER);
-            REQUIRE(value.type().child_types()[1].alias() == "number");
+            REQUIRE(value.type().child_types()[1].field_name() == "number");
             REQUIRE(value.type().child_types()[2].type() == logical_type::STRING_LITERAL);
-            REQUIRE(value.type().child_types()[2].alias() == "name");
+            REQUIRE(value.type().child_types()[2].field_name() == "name");
             REQUIRE(value.type().child_types()[3].type() == logical_type::LIST);
             REQUIRE(value.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
-            REQUIRE(value.type().child_types()[3].alias() == "array");
+            REQUIRE(value.type().child_types()[3].field_name() == "array");
 
             REQUIRE(value.children()[0].value<bool>() == test_data[idx].flag);
             REQUIRE(value.children()[1].value<int32_t>() == test_data[idx].number);
@@ -275,23 +278,26 @@ TEST_CASE("components::table::data_table") {
         {
             logical_value_t value = result.data[L.uni].value(local);
             REQUIRE(value.type().type() == logical_type::UNION);
-            REQUIRE(value.type().alias() == "test_union");
+            // M3-B3: "test_union" is the COLUMN's name and a cell has no column, so value()
+            // no longer stamps it. The union's member names below are part of the type and
+            // still arrive with the value.
+            REQUIRE(value.type().field_name().empty());
 
             auto tag = value.children()[0].value<uint8_t>();
             switch (tag) {
                 case 0:
                     REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
-                    REQUIRE(value.type().child_types()[1].alias() == "bool");
+                    REQUIRE(value.type().child_types()[1].field_name() == "bool");
                     REQUIRE(value.children()[1].value<bool>() == (idx % 2 == 0));
                     break;
                 case 1:
                     REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
-                    REQUIRE(value.type().child_types()[2].alias() == "int");
+                    REQUIRE(value.type().child_types()[2].field_name() == "int");
                     REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(idx));
                     break;
                 case 2:
                     REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
-                    REQUIRE(value.type().child_types()[3].alias() == "string");
+                    REQUIRE(value.type().child_types()[3].field_name() == "string");
                     REQUIRE(value.children()[3].value<std::string_view>() ==
                             std::string{"long_string_with_index_" + std::to_string(idx)});
                     break;
@@ -482,4 +488,138 @@ TEST_CASE("components::table::data_table") {
             });
         }
     }
+}
+
+// RED before the fix. adopt_schema used to name each storage column from the incoming type's
+// alias() — unguarded. complex_logical_type::alias() asserts on extension_ and dereferences
+// null in release (types.cpp:334-337), and a scalar type built with an empty alias has NO
+// extension at all (types.cpp:76-81), so an unnamed column reaching this path aborted in a
+// debug build and read through a null pointer in a release one.
+//
+// This is reachable, not hypothetical: adopt_schema is called with a live chunk's types at
+// agent_disk.cpp:527/2289 and manager_disk_storage.cpp:34, and the WAL decoder rebuilds a
+// column with no name as exactly that extension-less type (data_chunk_binary.cpp:207) — so a
+// replayed chunk carrying one unnamed column crashes recovery on the way into storage.
+//
+// M3-B2: the name a chunk's schema record answers for an unnamed column is "", and that is
+// what the storage column is now given.
+TEST_CASE("components::table::adopt_schema accepts a column with no name") {
+    using namespace components::types;
+    using namespace components::vector;
+    using namespace components::table;
+
+    auto resource = core::pmr::otterbrix_resource();
+    core::filesystem::local_file_system_t fs;
+    auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+    auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
+    auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
+
+    schema_t columns(&resource);
+    const char* const names[] = {"id", /*no name at all*/ "", "label"};
+    const logical_type column_types[] = {logical_type::BIGINT, logical_type::INTEGER,
+                                         logical_type::STRING_LITERAL};
+    for (size_t col = 0; col < 3; ++col) {
+        column_schema_t record{&resource};
+        record.name = names[col];
+        record.type = complex_logical_type{column_types[col]};
+        columns.push_back(std::move(record));
+    }
+
+    // The chunk these columns come from answers "" for the unnamed one.
+    auto chunk = make_chunk(&resource, columns, 1);
+    chunk.set_cardinality(0);
+    REQUIRE(std::string{chunk.schema()[1].name}.empty());
+
+    std::vector<column_definition_t> no_columns;
+    data_table_t table(&resource, block_manager, std::move(no_columns));
+    // The schema comes from the chunk, which is where the incoming names live (M3-B5).
+    table.adopt_schema(chunk.schema());
+
+    REQUIRE(table.columns().size() == 3);
+    REQUIRE(table.columns()[0].name() == "id");
+    REQUIRE(table.columns()[1].name().empty());
+    REQUIRE(table.columns()[2].name() == "label");
+}
+
+// M3-B4, and the stage's whole argument in one test.
+//
+// A column's name is stored in the alias slot of its TYPE, and for a self-naming complex
+// type that slot is already taken by the type's own name — so column_definition_t's
+// constructor refuses to write the column name there rather than destroy the type name
+// (column_definition.cpp:20-25, "the real fix is to stop overloading one field for two
+// names"). The column definition still knows its name in name_, but everything downstream
+// reads names off the type: copy_types() is what a scan chunk is built from, and the chunk's
+// schema memo derives each name from the column's type.
+//
+// The consequence used to be that a STRUCT column had NO recoverable column name once its
+// data was in a chunk — reproducible exactly, and B4 did not repair it. B5 does: the name
+// stops depending on the type's spare slot and is stamped onto the column from the definition
+// that knows it, alongside the attoid, by the same one line of the same scan path.
+TEST_CASE("components::table::a STRUCT column recovers its own name and its identity") {
+    using namespace components::types;
+    using namespace components::vector;
+    using namespace components::table;
+
+    auto resource = core::pmr::otterbrix_resource();
+    core::filesystem::local_file_system_t fs;
+    auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+    auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
+    auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
+
+    std::pmr::vector<complex_logical_type> fields(&resource);
+    fields.emplace_back(logical_type::BOOLEAN, "flag");
+    fields.emplace_back(logical_type::INTEGER, "number");
+    // create_struct's FIRST argument is the TYPE's own name. It used to be the slot a column
+    // name had to share, which is why a struct column could not be named at all.
+    auto struct_type = complex_logical_type::create_struct("struct", fields);
+
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("plain_column", complex_logical_type{logical_type::BIGINT});
+    columns.emplace_back("struct_column", struct_type);
+
+    // Stand in for the catalog: this is what build_create_table_writes now does for every
+    // column of a CREATE TABLE (ddl_metadata_builder.cpp), and it is the only reason a
+    // storage column knows its own attoid.
+    constexpr components::catalog::oid_t plain_attoid = components::catalog::FIRST_USER_OID + 11;
+    constexpr components::catalog::oid_t struct_attoid = components::catalog::FIRST_USER_OID + 12;
+    columns[0].set_attoid(plain_attoid);
+    columns[1].set_attoid(struct_attoid);
+
+    data_table_t table(&resource, block_manager, std::move(columns));
+
+    // M3-B5: the definition is the ONE place a column's name lives. Both columns answer the
+    // same way now — the scalar column's name used to be copied into its type as well, and
+    // the struct column's could not be, because that slot was already holding the TYPE's name.
+    REQUIRE(table.columns()[0].name() == "plain_column");
+    REQUIRE(table.columns()[0].type().field_name().empty());
+    REQUIRE(table.columns()[1].name() == "struct_column");
+    REQUIRE(table.columns()[1].type().field_name().empty());
+    REQUIRE(table.columns()[1].type().type_name() == "struct");
+
+    auto scan_types = table.copy_types();
+    data_chunk_t chunk(&resource, scan_types, 4);
+    chunk.set_cardinality(0);
+
+    // A bare list of types names nothing, and that is the point: it never could name both
+    // kinds of column, and now it names neither.
+    REQUIRE(std::string{chunk.schema()[0].name}.empty());
+    REQUIRE(std::string{chunk.schema()[1].name}.empty());
+
+    // GREEN (M3-B5): what a scan hands out carries BOTH halves of the column's identity, and
+    // for the struct column too. The name is stamped from the column definition, which is the
+    // one place that knows the column's name and the type's name apart.
+    table.stamp_column_identity(chunk);
+    REQUIRE(chunk.schema()[0].attoid == plain_attoid);
+    REQUIRE(chunk.schema()[1].attoid == struct_attoid);
+    REQUIRE(std::string{chunk.schema()[0].name} == "plain_column");
+    REQUIRE(std::string{chunk.schema()[1].name} == table.columns()[1].name());
+    REQUIRE(std::string{chunk.schema()[1].name} == "struct_column");
+
+    // And both survive the erase that would misalign a positionally-carried record: dropping
+    // the scalar column leaves the struct column answering with its own identity AND its own
+    // name, from slot 0.
+    chunk.data.erase(chunk.data.begin(), chunk.data.begin() + 1);
+    REQUIRE(chunk.column_count() == 1);
+    REQUIRE(chunk.schema()[0].attoid == struct_attoid);
+    REQUIRE(std::string{chunk.schema()[0].name} == "struct_column");
 }

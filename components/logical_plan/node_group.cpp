@@ -13,10 +13,6 @@ namespace components::logical_plan {
 
     bool node_group_t::pushdown() const noexcept { return pushdown_; }
 
-    // Intentionally still 0: pushdown_ is a static-rollout-gated annotation and is
-    // NOT folded in here (see the note on set_pushdown() in the header).
-    hash_t node_group_t::hash_impl() const { return 0; }
-
     std::string node_group_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$group: {";

@@ -29,7 +29,10 @@ namespace components::logical_plan {
         storage.parameters.emplace(id, value);
     }
 
-    const expr_value_t& get_parameter(const storage_parameters* storage, core::parameter_id_t id);
+    // nullptr when `id` is not bound. Absence is deliberately outside the value domain: a
+    // sentinel logical_value_t would have to name some memory resource, and every caller that
+    // copied it would carry that resource into arbitrary later allocations.
+    const expr_value_t* get_parameter(const storage_parameters* storage, core::parameter_id_t id) noexcept;
 
     class parameter_node_t : public boost::intrusive_ref_counter<parameter_node_t> {
     public:
@@ -54,7 +57,8 @@ namespace components::logical_plan {
             return id;
         }
 
-        auto parameter(core::parameter_id_t id) const -> const expr_value_t&;
+        // nullptr when `id` is not bound (see get_parameter).
+        auto parameter(core::parameter_id_t id) const noexcept -> const expr_value_t*;
 
         void set_parameter(core::parameter_id_t id, expr_value_t value) {
             values_.parameters.insert_or_assign(id, std::move(value));

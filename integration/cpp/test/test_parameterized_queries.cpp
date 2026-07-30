@@ -2,6 +2,8 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <limits>
 #include <string>
@@ -44,19 +46,8 @@ namespace {
     using param_t = std::pair<size_t, types::logical_value_t>;
     using params_t = std::vector<param_t>;
 
-    // Index of the column whose alias matches `name`, or column_count() if absent.
-    uint64_t column_index(const cursor_t_ptr& cur, const std::string& name) {
-        const auto& chunk = cur->chunks().front();
-        for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-            if (chunk.data[col].type().alias() == name) {
-                return col;
-            }
-        }
-        return chunk.column_count();
-    }
-
     test_spaces make_space(const std::string& subdir) {
-        auto config = test_create_config("/tmp/test_parameterized_queries/" + subdir);
+        auto config = test_create_config(test_temp_path("test_parameterized_queries/" + subdir));
         test_clear_directory(config);
         config.disk.on = false;
         config.wal.on = false;
@@ -101,16 +92,16 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
 
-            const uint64_t i_col = column_index(cur, "i");
-            const uint64_t u_col = column_index(cur, "u");
-            const uint64_t d_col = column_index(cur, "d");
-            const uint64_t s_col = column_index(cur, "s");
-            const uint64_t b_col = column_index(cur, "b");
-            REQUIRE(i_col < cur->column_count());
-            REQUIRE(u_col < cur->column_count());
-            REQUIRE(d_col < cur->column_count());
-            REQUIRE(s_col < cur->column_count());
-            REQUIRE(b_col < cur->column_count());
+            const uint64_t i_col = test_column_index(*cur, "i");
+            const uint64_t u_col = test_column_index(*cur, "u");
+            const uint64_t d_col = test_column_index(*cur, "d");
+            const uint64_t s_col = test_column_index(*cur, "s");
+            const uint64_t b_col = test_column_index(*cur, "b");
+            REQUIRE(i_col != test_column_not_found);
+            REQUIRE(u_col != test_column_not_found);
+            REQUIRE(d_col != test_column_not_found);
+            REQUIRE(s_col != test_column_not_found);
+            REQUIRE(b_col != test_column_not_found);
 
             REQUIRE(cur->value(i_col, 0).value<int64_t>() == -42);
             REQUIRE(cur->value(u_col, 0).value<uint64_t>() == 7);
@@ -153,8 +144,8 @@ TEST_CASE("integration::cpp::params::uint64_max") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.U;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            const uint64_t v_col = column_index(cur, "v");
-            REQUIRE(v_col < cur->column_count());
+            const uint64_t v_col = test_column_index(*cur, "v");
+            REQUIRE(v_col != test_column_not_found);
             REQUIRE(cur->value(v_col, 0).value<uint64_t>() == std::numeric_limits<uint64_t>::max());
         }
     }
@@ -189,10 +180,10 @@ TEST_CASE("integration::cpp::params::placeholders") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.Place;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            const uint64_t a_col = column_index(cur, "a");
-            const uint64_t b_col = column_index(cur, "b");
-            REQUIRE(a_col < cur->column_count());
-            REQUIRE(b_col < cur->column_count());
+            const uint64_t a_col = test_column_index(*cur, "a");
+            const uint64_t b_col = test_column_index(*cur, "b");
+            REQUIRE(a_col != test_column_not_found);
+            REQUIRE(b_col != test_column_not_found);
             REQUIRE(cur->value(a_col, 0).value<int64_t>() == 99);
             REQUIRE(cur->value(b_col, 0).value<int64_t>() == 99);
         }
@@ -216,8 +207,8 @@ TEST_CASE("integration::cpp::params::placeholders") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.Place WHERE name = 'row7';");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            const uint64_t name_col = column_index(cur, "name");
-            REQUIRE(name_col < cur->column_count());
+            const uint64_t name_col = test_column_index(*cur, "name");
+            REQUIRE(name_col != test_column_not_found);
             const auto name_cell = cur->value(name_col, 0);
             REQUIRE(name_cell.value<std::string_view>() == "row7");
         }
@@ -267,8 +258,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
                                                        params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->column_count());
+        const uint64_t name_col = test_column_index(*cur, "name");
+        REQUIRE(name_col != test_column_not_found);
         const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == "c");
     }
@@ -300,8 +291,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.Rows WHERE name = 'a';");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            const uint64_t count_col = column_index(cur, "count");
-            REQUIRE(count_col < cur->column_count());
+            const uint64_t count_col = test_column_index(*cur, "count");
+            REQUIRE(count_col != test_column_not_found);
             REQUIRE(cur->value(count_col, 0).value<int64_t>() == 777);
         }
     }
@@ -395,8 +386,8 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.T;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->column_count());
+        const uint64_t name_col = test_column_index(*cur, "name");
+        REQUIRE(name_col != test_column_not_found);
         const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == nasty);
     }
@@ -477,8 +468,8 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.T;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->column_count());
+        const uint64_t name_col = test_column_index(*cur, "name");
+        REQUIRE(name_col != test_column_not_found);
         const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == payload);
     }
@@ -511,8 +502,8 @@ TEST_CASE("integration::cpp::params::injection_int_param_type_safety") {
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.T WHERE id = $1;", params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->column_count());
+        const uint64_t name_col = test_column_index(*cur, "name");
+        REQUIRE(name_col != test_column_not_found);
         const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == "a");
     }
@@ -623,5 +614,125 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
         REQUIRE_FALSE(cur->get_error().what.empty());
+    }
+}
+
+// A `$n` placeholder is de-duplicated statement-wide: every occurrence of `$1`
+// resolves to ONE parameter slot. Constant folding used to write the folded result
+// back into its LEFT operand's slot, so folding `$1 + 1` overwrote `$1` itself and
+// every other expression reading `$1` silently saw the folded value.
+TEST_CASE("integration::cpp::params::constant_folding_keeps_shared_slot") {
+    auto space = make_space("constant_folding_keeps_shared_slot");
+    auto* dispatcher = space.dispatcher();
+    auto* resource = dispatcher->resource();
+
+    for (const auto* sql : {"CREATE DATABASE FoldDb;",
+                            "CREATE TABLE FoldDb.T (a BIGINT, b BIGINT);",
+                            "INSERT INTO FoldDb.T (a, b) VALUES (5, 6), (5, 25);"}) {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
+    }
+
+    INFO("$1 reused next to a foldable $1 + 1");
+    {
+        auto session = otterbrix::session_id_t();
+        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(5)}}};
+        auto cur = dispatcher->execute_sql_with_params(session,
+                                                       "SELECT a, b FROM FoldDb.T WHERE a = $1 AND b = $1 + 1;",
+                                                       params);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 6);
+    }
+
+    INFO("$1 reused next to a foldable $1 * $1");
+    {
+        auto session = otterbrix::session_id_t();
+        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(5)}}};
+        auto cur = dispatcher->execute_sql_with_params(session,
+                                                       "SELECT a, b FROM FoldDb.T WHERE a = $1 AND b = $1 * $1;",
+                                                       params);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 25);
+    }
+}
+
+// A `$n` projected as a result column — the one placeholder position that was never
+// covered. Every other test puts `$n` in a VALUES / WHERE / SET / LIMIT slot.
+//
+// The transformer builds a projected `$n` as scalar_type::constant, exactly like the
+// `T_A_Const` and `T_TypeCast` targets beside it and like every target in RETURNING.
+// An unaliased one is unnamed, again exactly like `SELECT 1;`.
+TEST_CASE("integration::cpp::params::projected_parameter") {
+    auto space = make_space("projected_parameter");
+    auto* dispatcher = space.dispatcher();
+    auto* resource = dispatcher->resource();
+
+    for (const auto* sql : {"CREATE DATABASE ProjDb;",
+                            "CREATE TABLE ProjDb.T (a BIGINT);",
+                            "INSERT INTO ProjDb.T (a) VALUES (10), (20);"}) {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
+    }
+
+    INFO("a bare projected parameter, no FROM");
+    {
+        auto session = otterbrix::session_id_t();
+        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(42)}}};
+        auto cur = dispatcher->execute_sql_with_params(session, "SELECT $1;", params);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 42);
+        REQUIRE(cur->column_count() == 1);
+        // Unaliased, so unnamed — the contract `SELECT 1;` already follows.
+        REQUIRE(cur->columns()[0].name.empty());
+        REQUIRE(cur->columns()[0].type.type() == types::logical_type::BIGINT);
+    }
+
+    INFO("an aliased projected parameter carries the alias and the bound type");
+    {
+        auto session = otterbrix::session_id_t();
+        params_t params{{1, types::logical_value_t{resource, std::string("hello")}}};
+        auto cur = dispatcher->execute_sql_with_params(session, "SELECT $1 AS x;", params);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const uint64_t x_col = test_column_index(*cur, "x");
+        REQUIRE(x_col != test_column_not_found);
+        const auto x_cell = cur->value(x_col, 0);
+        REQUIRE(x_cell.value<std::string_view>() == "hello");
+    }
+
+    INFO("a projected parameter beside a real column, once per row");
+    {
+        auto session = otterbrix::session_id_t();
+        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(7)}}};
+        auto cur =
+            dispatcher->execute_sql_with_params(session, "SELECT $1 AS p, a FROM ProjDb.T ORDER BY a;", params);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        const uint64_t p_col = test_column_index(*cur, "p");
+        const uint64_t a_col = test_column_index(*cur, "a");
+        REQUIRE(p_col != test_column_not_found);
+        REQUIRE(a_col != test_column_not_found);
+        REQUIRE(cur->value(p_col, 0).value<int64_t>() == 7);
+        REQUIRE(cur->value(p_col, 1).value<int64_t>() == 7);
+        REQUIRE(cur->value(a_col, 0).value<int64_t>() == 10);
+        REQUIRE(cur->value(a_col, 1).value<int64_t>() == 20);
+    }
+
+    INFO("a projected parameter bound to NULL");
+    {
+        auto session = otterbrix::session_id_t();
+        params_t params{
+            {1, types::logical_value_t{resource, types::complex_logical_type{types::logical_type::NA}}}};
+        auto cur = dispatcher->execute_sql_with_params(session, "SELECT $1 AS n;", params);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const uint64_t n_col = test_column_index(*cur, "n");
+        REQUIRE(n_col != test_column_not_found);
+        REQUIRE(cur->value(n_col, 0).is_null());
     }
 }

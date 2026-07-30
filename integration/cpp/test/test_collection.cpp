@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
@@ -20,15 +21,15 @@ using deleted_unique_ptr = std::unique_ptr<T, std::function<void(T*)>>;
 TEST_CASE("integration::cpp::test_collection") {
     auto resource = core::pmr::otterbrix_resource();
 
-    auto config = test_create_config("/tmp/test_collection");
+    auto config = test_create_config(test_temp_path("test_collection"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
     std::vector<components::table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (const auto& type : types) {
-        columns.emplace_back(type.alias(), type);
+    columns.reserve(schema.size());
+    for (const auto& column : schema) {
+        columns.emplace_back(std::string{column.name}, column.type);
     }
 
     INFO("initialization");

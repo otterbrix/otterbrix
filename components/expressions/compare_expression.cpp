@@ -2,22 +2,6 @@
 #include "like_to_regex.hpp"
 #include <sstream>
 
-namespace std {
-    template<>
-    struct hash<components::expressions::param_storage> {
-        std::size_t operator()(const components::expressions::param_storage& arg) const noexcept {
-            if (std::holds_alternative<components::expressions::key_t>(arg)) {
-                return std::get<components::expressions::key_t>(arg).hash();
-            } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
-                return std::hash<uint64_t>()(std::get<core::parameter_id_t>(arg));
-            } else {
-                assert(std::holds_alternative<components::expressions::expression_ptr>(arg));
-                return std::get<components::expressions::expression_ptr>(arg)->hash();
-            }
-        }
-    };
-} // namespace std
-
 namespace components::expressions {
 
     bool is_union_compare_condition(compare_type type) {
@@ -126,28 +110,6 @@ namespace components::expressions {
         assert(is_union_compare_condition(type));
         return new compare_expression_t(resource, type, nullptr, nullptr);
     }
-
-    bool is_key(const param_storage& param) noexcept { return std::holds_alternative<key_t>(param); }
-
-    const key_t& as_key(const param_storage& param) { return std::get<key_t>(param); }
-
-    key_t& as_key(param_storage& param) { return std::get<key_t>(param); }
-
-    bool is_expr(const param_storage& param) noexcept { return std::holds_alternative<expression_ptr>(param); }
-
-    const expression_ptr& as_expr(const param_storage& param) { return std::get<expression_ptr>(param); }
-
-    expression_ptr& as_expr(param_storage& param) { return std::get<expression_ptr>(param); }
-
-    bool is_parameter(const param_storage& param) noexcept {
-        return std::holds_alternative<core::parameter_id_t>(param);
-    }
-
-    const core::parameter_id_t& as_parameter(const param_storage& param) {
-        return std::get<core::parameter_id_t>(param);
-    }
-
-    core::parameter_id_t& as_parameter(param_storage& param) { return std::get<core::parameter_id_t>(param); }
 
     compare_type get_compare_type(const std::string& key) {
         if (key.empty()) {

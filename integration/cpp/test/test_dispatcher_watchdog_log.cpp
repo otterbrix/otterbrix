@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -13,7 +14,7 @@
 // only a slot stale across hundreds of consecutive poke rounds (a genuine
 // stall) escalates to warn, with a distinct message.
 TEST_CASE("integration::cpp::dispatcher::watchdog_quiet_on_healthy_runs") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_dispatcher_watchdog/healthy");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_dispatcher_watchdog/healthy"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

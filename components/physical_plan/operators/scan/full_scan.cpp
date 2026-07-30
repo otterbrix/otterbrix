@@ -50,7 +50,7 @@ namespace components::operators {
     core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
     transform_predicate(std::pmr::memory_resource* resource,
                         const expressions::compare_expression_ptr& expression,
-                        const std::pmr::vector<types::complex_logical_type>& types,
+                        const vector::schema_t& schema,
                         const logical_plan::storage_parameters* parameters,
                         core::date::timezone_offset_t session_tz) {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
@@ -71,7 +71,7 @@ namespace components::operators {
                     auto child_result =
                         transform_predicate(resource,
                                             reinterpret_cast<const expressions::compare_expression_ptr&>(child),
-                                            types,
+                                            schema,
                                             parameters,
                                             session_tz);
                     if (child_result.has_error()) {
@@ -94,7 +94,7 @@ namespace components::operators {
                     auto child_result =
                         transform_predicate(resource,
                                             reinterpret_cast<const expressions::compare_expression_ptr&>(child),
-                                            types,
+                                            schema,
                                             parameters,
                                             session_tz);
                     if (child_result.has_error()) {
@@ -118,7 +118,7 @@ namespace components::operators {
                     auto child_result =
                         transform_predicate(resource,
                                             reinterpret_cast<const expressions::compare_expression_ptr&>(child),
-                                            types,
+                                            schema,
                                             parameters,
                                             session_tz);
                     if (child_result.has_error()) {
@@ -137,8 +137,16 @@ namespace components::operators {
             }
             case expressions::compare_type::any:
             case expressions::compare_type::all: {
-                const auto& path = std::get<expressions::key_t>(expression->left()).path();
-                auto param_id = std::get<core::parameter_id_t>(expression->right());
+                // Same operand contract as the `column OP constant` lowering below: the
+                // transformer only ever builds ANY/ALL as (column key, bound parameter), and
+                // any other shape is not representable as a disk filter.
+                if (!expressions::is_key(expression->left()) || !expressions::is_parameter(expression->right())) {
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"unexpected operand shape in ANY/ALL to filter conversion", resource}};
+                }
+                const auto& path = expressions::as_key(expression->left()).path();
+                auto param_id = expressions::as_parameter(expression->right());
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 if (parameters->parameters.find(param_id) == parameters->parameters.end()) {
                     return core::error_t{
@@ -155,7 +163,7 @@ namespace components::operators {
                 }
                 // For a subscript path (v[i]) the comparison is against the element
                 // type, not the ARRAY/LIST column type; type_from_path resolves it.
-                const auto& col_type = types::complex_logical_type::type_from_path(types, path);
+                const auto& col_type = vector::type_from_path(schema, path);
                 const auto& arr_param = parameters->parameters.at(param_id);
                 const bool is_any = expression->type() == expressions::compare_type::any;
                 const bool is_regex = inner_op == expressions::compare_type::regex;
@@ -369,8 +377,8 @@ namespace components::operators {
                     // PostgreSQL rejects an implicit boolean <-> numeric comparison ("operator does not
                     // exist: boolean = integer"). Mirror the in-memory make_comparator guard so col-vs-col
                     // pushdown does not silently coerce and compare a bool column against a numeric column.
-                    const auto& lt = types::complex_logical_type::type_from_path(types, lp);
-                    const auto& rt = types::complex_logical_type::type_from_path(types, rp);
+                    const auto& lt = vector::type_from_path(schema, lp);
+                    const auto& rt = vector::type_from_path(schema, rp);
                     const bool l_bool = lt.to_physical_type() == types::physical_type::BOOL;
                     const bool r_bool = rt.to_physical_type() == types::physical_type::BOOL;
                     const auto other = l_bool ? rt.type() : lt.type();
@@ -424,7 +432,7 @@ namespace components::operators {
                     // Operand type guard (mirrors the in-memory regex predicates): a non-string subject
                     // column would be reinterpreted as string bytes inside the scan, a non-string
                     // pattern parameter as a std::string* here. PostgreSQL rejects both as type errors.
-                    const auto& subj_type = types::complex_logical_type::type_from_path(types, path);
+                    const auto& subj_type = vector::type_from_path(schema, path);
                     if (!types::is_string(subj_type.type()) || !types::is_string(pat.type().type())) {
                         return core::error_t{core::error_code_t::comparison_failure,
                                              std::pmr::string{"incorrect argument type for regex", resource}};
@@ -448,7 +456,7 @@ namespace components::operators {
                 // resolved to its ordinal up-front (else the filter matches 0 rows).
                 // For a subscript path (v[i]) this resolves to the element type, so the
                 // constant is coerced to what the per-element compare actually sees.
-                const auto& col_type = types::complex_logical_type::type_from_path(types, path);
+                const auto& col_type = vector::type_from_path(schema, path);
                 const auto& param_value = it->second;
                 if (col_type.type() == types::logical_type::ENUM &&
                     param_value.type().type() == types::logical_type::STRING_LITERAL) {
@@ -492,24 +500,35 @@ namespace components::operators {
                          components::catalog::oid_t table_oid,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit,
-                         std::vector<size_t> projected_cols)
+                         std::vector<size_t> projected_cols,
+                         const components::logical_plan::resolved_table_metadata_t* table_md)
         : read_only_operator_t(resource, log, operator_type::full_scan)
         , table_oid_(table_oid)
         , expression_(expression)
         , limit_(limit)
-        , projected_cols_(std::move(projected_cols)) {}
+        , projected_cols_(std::move(projected_cols)) {
+        identity_projection_.adopt(table_md);
+        if (identity_projection_.engaged()) {
+            projected_cols_.clear();
+        }
+    }
 
-    vector::data_chunk_t full_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
+    vector::data_chunk_t full_scan::make_drain_chunk(const vector::schema_t& schema) {
+        // Engaged: the guard describes the LOGICAL schema, which `schema` (the storage schema)
+        // no longer is. An empty `schema` is still the 0-column drain sentinel and stays one.
+        if (identity_projection_.engaged() && !schema.empty()) {
+            return identity_projection_.make_guard_chunk();
+        }
         if (projected_cols_.empty()) {
-            return vector::data_chunk_t{resource_, types, 0};
+            return vector::make_chunk(resource_, schema, 0);
         }
         // Pruned-scan contract (PR #477): pruned scans emit FULL-WIDTH chunks whose
         // non-projected columns are buffer-less placeholders, so column ordinals stay
         // stable plan-wide (expression key paths are never remapped after prune_columns).
         // The schema'd 0-row empty-guard must honor the same shape as real batches —
-        // operators above index it by table ordinal. An empty `types` (the 0-column
+        // operators above index it by table ordinal. An empty `schema` (the 0-column
         // drain sentinel) still degrades to a 0-column chunk here.
-        return vector::data_chunk_t{resource_, types, projected_cols_, 0};
+        return vector::make_chunk(resource_, schema, projected_cols_, 0);
     }
 
     // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
@@ -525,7 +544,7 @@ namespace components::operators {
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     full_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {
-            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            co_return make_drain_chunk(vector::schema_t{resource_});
         }
 
         // No-table sentinel (no-FROM SELECT): emit ONE synthetic single-row batch
@@ -545,10 +564,27 @@ namespace components::operators {
         if (!opened_) {
             opened_ = true;
 
+            // A displaced relation cannot carry a pushed-down filter: a table_filter_t addresses
+            // storage columns by the LOGICAL ordinal the validator resolved, and those two stopped
+            // agreeing the moment a column was tombstoned. create_plan_match routes such a
+            // predicate into an operator_match_t ABOVE this scan, where the chunk is already in
+            // logical layout. Refusing here (R6) is what keeps a missed routing loud instead of
+            // silently filtering on the neighbouring column.
+            if (identity_projection_.engaged() && expression_) {
+                auto error = core::error_t{
+                    core::error_code_t::physical_plan_error,
+                    std::pmr::string{"full_scan: a predicate cannot be pushed into a relation whose storage "
+                                     "layout no longer matches its schema (dropped column pending VACUUM)",
+                                     resource_}};
+                set_error(error);
+                mark_failed();
+                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(error));
+            }
+
             // Short-circuit: all_false → empty result, immediately drained.
             if (expression_ && expression_->type() == expressions::compare_type::all_false) {
                 drained_ = true;
-                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                co_return make_drain_chunk(vector::schema_t{resource_});
             }
 
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
@@ -556,29 +592,30 @@ namespace components::operators {
             bool null_param_skip_filter = false;
             if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
                 expression_->type() != expressions::compare_type::is_not_null &&
-                std::holds_alternative<core::parameter_id_t>(expression_->right())) {
-                auto pid = std::get<core::parameter_id_t>(expression_->right());
+                expressions::is_parameter(expression_->right())) {
+                auto pid = expressions::as_parameter(expression_->right());
                 auto it = ctx->parameters.parameters.find(pid);
                 if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
                     if (expression_->type() != expressions::compare_type::all) {
                         drained_ = true;
-                        co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                        co_return make_drain_chunk(vector::schema_t{resource_});
                     }
                     null_param_skip_filter = true;
                 }
             }
 
-            // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
+            // Get the relation schema to build the filter (await 1). Cached for the no-data
+            // empty-guard below, which needs the same records to name and identify its columns.
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
                                              table_oid_);
-            guard_types_ = co_await std::move(tf);
+            guard_schema_ = co_await std::move(tf);
 
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {
                 auto filter_result =
-                    transform_predicate(resource_, expression_, guard_types_, &ctx->parameters, ctx->session_tz);
+                    transform_predicate(resource_, expression_, guard_schema_, &ctx->parameters, ctx->session_tz);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();
@@ -645,12 +682,19 @@ namespace components::operators {
             // scalar aggregate emits COUNT=0 and an OUTER join NULL-pads.
             if (!emitted_any_) {
                 emitted_any_ = true;
-                co_return make_drain_chunk(guard_types_);
+                co_return make_drain_chunk(guard_schema_);
             }
-            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            co_return make_drain_chunk(vector::schema_t{resource_});
         }
 
         emitted_any_ = true;
+        // The batch left storage in PHYSICAL layout; every ordinal above this operator was
+        // resolved against the LOGICAL one. Disengaged (the two agree) this is not even a loop.
+        if (auto error = identity_projection_.apply(*batch); error.contains_error()) {
+            set_error(error);
+            mark_failed();
+            co_return error;
+        }
         co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
     }
 

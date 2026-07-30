@@ -8,10 +8,11 @@
 namespace components::vector::arrow::appender {
 
     struct arrow_fixed_size_list_data_t {
-        static void initialize(arrow_append_data_t& result, const types::complex_logical_type& type, uint64_t capacity);
-        static void
+        [[nodiscard]] static core::error_t
+        initialize(arrow_append_data_t& result, const types::complex_logical_type& type, uint64_t capacity);
+        [[nodiscard]] static core::error_t
         append(arrow_append_data_t& append_data, vector_t& input, uint64_t from, uint64_t to, uint64_t input_size);
-        static void
+        [[nodiscard]] static core::error_t
         finalize(arrow_append_data_t& append_data, const types::complex_logical_type& type, ArrowArray* result);
     };
 

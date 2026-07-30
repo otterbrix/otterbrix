@@ -22,6 +22,7 @@
 
 #include <initializer_list>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,7 +42,7 @@ using expressions::sort_order;
 // `comma_join_becomes_inner_hash`. These drive the REAL
 // services::dispatcher::validate_schema on synthetic node_data scans (so the
 // keys carry the true both-sides-left, merged-relative paths and every scan/join
-// node gets output_types() stamped), then run promote_cross_joins +
+// node gets output_schema() stamped), then run promote_cross_joins +
 // rewrite_hash_joins and assert on node structure + resolved column indices.
 //
 // The scenario is SSB q4-1: a fact-LAST 5-table star
@@ -85,13 +86,18 @@ namespace {
     // what the star reorder + P remap depend on, so BIGINT throughout is fine for
     // a planner-only test.
     node_data_ptr make_scan(std::pmr::memory_resource* res, std::initializer_list<const char*> cols) {
-        std::pmr::vector<types::complex_logical_type> types(res);
+        // The column NAME is the bare name the WHERE / ON keys resolve against, and it lives
+        // on the column (M3-B5), so the chunk is built from a schema.
+        vector::schema_t schema(res);
         for (const char* name : cols) {
-            types.emplace_back(types::logical_type::BIGINT, name);
+            vector::column_schema_t record{res};
+            record.name = name;
+            record.type = types::complex_logical_type{types::logical_type::BIGINT};
+            schema.push_back(std::move(record));
         }
-        vector::data_chunk_t chunk(res, types, 1);
+        auto chunk = vector::make_chunk(res, schema, 1);
         chunk.set_cardinality(1);
-        for (size_t i = 0; i < types.size(); ++i) {
+        for (size_t i = 0; i < schema.size(); ++i) {
             chunk.set_value(i, 0, static_cast<int64_t>(i + 1));
         }
         return make_node_raw_data(res, std::move(chunk));
@@ -243,10 +249,18 @@ namespace {
         return nullptr;
     }
 
-    // Merged column index of the left operand of a single conjunct (assumes it is a
-    // key). Used to inspect residual single-table filters.
-    size_t left_key_path0(const expressions::expression_ptr& e) {
+    // Merged column index of the left operand of a single conjunct. Used to inspect
+    // residual single-table filters.
+    //
+    // Empty when the operand is not a key: the containers this walks also hold union
+    // conjuncts, whose operands are the null-expression sentinel that
+    // make_compare_union_expression builds. Reading a key out of one is undefined now that
+    // param_storage is a tagged union — it used to be a clean bad_variant_access.
+    std::optional<size_t> left_key_path0(const expressions::expression_ptr& e) {
         auto* c = static_cast<compare_expression_t*>(e.get());
+        if (!is_key(c->left())) {
+            return std::nullopt;
+        }
         return as_key(c->left()).path()[0];
     }
 
@@ -342,6 +356,8 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     REQUIRE(is_expr(g_sum->params()[0]));
     auto* g_sub = static_cast<scalar_expression_t*>(as_expr(g_sum->params()[0]).get());
     REQUIRE(g_sub->params().size() == 2);
+    REQUIRE(is_key(g_sub->params()[0]));
+    REQUIRE(is_key(g_sub->params()[1]));
     REQUIRE(as_key(g_sub->params()[0]).path()[0] == 53); // lo_revenue
     REQUIRE(as_key(g_sub->params()[1]).path()[0] == 54); // lo_supplycost
 
@@ -424,9 +440,12 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     auto* g_dyear_a = static_cast<scalar_expression_t*>(group_after->expressions()[0].get());
     auto* g_cnat_a = static_cast<scalar_expression_t*>(group_after->expressions()[1].get());
     auto* g_sum_a = static_cast<aggregate_expression_t*>(group_after->expressions()[2].get());
+    REQUIRE(is_expr(g_sum_a->params()[0]));
     auto* g_sub_a = static_cast<scalar_expression_t*>(as_expr(g_sum_a->params()[0]).get());
     CHECK(g_dyear_a->key().path()[0] == 21);             // d_year        4  -> 21
     CHECK(g_cnat_a->key().path()[0] == 38);              // c_nation      21 -> 38
+    REQUIRE(is_key(g_sub_a->params()[0]));
+    REQUIRE(is_key(g_sub_a->params()[1]));
     CHECK(as_key(g_sub_a->params()[0]).path()[0] == 12); // lo_revenue    53 -> 12
     CHECK(as_key(g_sub_a->params()[1]).path()[0] == 13); // lo_supplycost 54 -> 13
 
@@ -549,6 +568,8 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
     auto validated = services::dispatcher::validate_schema(res, nullptr, agg.get(), sp);
     REQUIRE_FALSE(validated.has_error());
     // Pre-reorder merged coordinates.
+    REQUIRE(is_key(computed_sort->params()[0]));
+    REQUIRE(is_key(computed_sort->params()[1]));
     REQUIRE(as_key(computed_sort->params()[0]).path()[0] == 53);
     REQUIRE(as_key(computed_sort->params()[1]).path()[0] == 54);
     REQUIRE(computed_sort->key().path()[0] == 1);
@@ -559,6 +580,8 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
     out = planner::optimizer::rewrite_hash_joins(res, out);
 
     // Sort operands P-remapped; ASC/DESC preserved on the own key.
+    REQUIRE(is_key(computed_sort->params()[0]));
+    REQUIRE(is_key(computed_sort->params()[1]));
     CHECK(as_key(computed_sort->params()[0]).path()[0] == 12); // lo_revenue    53 -> 12
     CHECK(as_key(computed_sort->params()[1]).path()[0] == 13); // lo_supplycost 54 -> 13
     CHECK(computed_sort->key().path()[0] == 1);                // DESC preserved
@@ -607,13 +630,17 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     auto validated = services::dispatcher::validate_schema(res, nullptr, agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // The condition key resolved against the merged schema.
+    REQUIRE(is_expr(case_expr->params()[0]));
     auto* cond_after_validate = static_cast<compare_expression_t*>(as_expr(case_expr->params()[0]).get());
+    REQUIRE(is_key(cond_after_validate->left()));
     REQUIRE(as_key(cond_after_validate->left()).path()[0] == 53); // lo_revenue merged
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);
     out = planner::optimizer::rewrite_hash_joins(res, out);
 
+    REQUIRE(is_expr(case_expr->params()[0]));
     auto* cond_after = static_cast<compare_expression_t*>(as_expr(case_expr->params()[0]).get());
+    REQUIRE(is_key(cond_after->left()));
     CHECK(as_key(cond_after->left()).path()[0] == 12); // lo_revenue 53 -> 12 (condition remapped)
     CHECK(count_cross(out->children()[0]) == 0);
 }

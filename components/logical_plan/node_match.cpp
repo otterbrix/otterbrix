@@ -9,8 +9,6 @@ namespace components::logical_plan {
         , dbname_(std::move(static_cast<std::string&>(dbname)))
         , relname_(std::move(static_cast<std::string&>(relname))) {}
 
-    hash_t node_match_t::hash_impl() const { return 0; }
-
     std::string node_match_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$match: {";

@@ -25,8 +25,6 @@ namespace components::logical_plan {
     std::pmr::vector<expressions::expression_ptr>& node_update_t::returning() { return returning_; }
     const std::pmr::vector<expressions::expression_ptr>& node_update_t::returning() const { return returning_; }
 
-    hash_t node_update_t::hash_impl() const { return 0; }
-
     std::string node_update_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$update: <oid:" << static_cast<std::uint64_t>(table_oid()) << "> {";

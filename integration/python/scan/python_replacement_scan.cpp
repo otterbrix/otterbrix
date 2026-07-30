@@ -145,21 +145,25 @@ namespace otterbrix {
             otterbrix::optional_ptr<function::local_table_function_state_t>(local_state),
             otterbrix::optional_ptr<function::global_table_function_state_t>(global_state)};
 
-        // One merged data_chunk on PMR into the plan (previously: ToDocuments and a vector of document_ptr).
-        std::pmr::vector<types::complex_logical_type> pmr_types(resource);
+        // One merged data_chunk on PMR into the plan (previously: ToDocuments and a vector of
+        // document_ptr). The column NAME goes beside the type, not inside it: a type list has
+        // carried no column name since M3-B5, and validate_schema resolves against the chunk's
+        // schema record.
+        components::vector::schema_t pmr_schema(resource);
+        pmr_schema.reserve(return_types.size());
         for (size_t i = 0; i < return_types.size(); i++) {
-            auto t = return_types[i];
-            if (!t.has_alias() && i < names.size()) {
-                t.set_alias(names[i]);
+            components::vector::column_schema_t record{resource};
+            if (i < names.size()) {
+                record.name.assign(names[i].data(), names[i].size());
             }
-            // pmr_types: PMR copies for data_chunk_t; aliases so validate_schema can resolve column names.
-            pmr_types.push_back(t);
+            record.type = return_types[i];
+            pmr_schema.push_back(std::move(record));
         }
 
         // R8: engine-data container on the threaded memory_resource instead of the default heap.
         std::pmr::vector<components::vector::data_chunk_t> chunks(resource);
         while (true) {
-            components::vector::data_chunk_t chunk(resource, pmr_types);
+            auto chunk = components::vector::make_chunk(resource, pmr_schema, components::vector::DEFAULT_VECTOR_CAPACITY);
             ref->function->function(input, chunk);
             if (chunk.size() == 0) {
                 break;
@@ -172,12 +176,13 @@ namespace otterbrix {
             total_rows += c.size();
         }
 
-        components::vector::data_chunk_t result_chunk(resource, pmr_types, total_rows > 0 ? total_rows : 1);
+        auto result_chunk =
+            components::vector::make_chunk(resource, pmr_schema, total_rows > 0 ? total_rows : 1);
         result_chunk.set_cardinality(total_rows);
         uint64_t row_offset = 0;
         for (auto& c : chunks) {
             for (uint64_t r = 0; r < c.size(); r++) {
-                for (uint64_t col = 0; col < pmr_types.size(); col++) {
+                for (uint64_t col = 0; col < pmr_schema.size(); col++) {
                     result_chunk.set_value(col, row_offset + r, c.value(col, r));
                 }
             }

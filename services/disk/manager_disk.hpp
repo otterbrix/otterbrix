@@ -128,6 +128,22 @@ namespace services::disk {
         /// missing OR storage is DISK-mode).
         bool drop_column(const std::string& attname);
 
+        /// Physical compaction of the columns an ALTER TABLE ... DROP COLUMN removed from
+        /// the catalog of an ordinary (relkind='r') relation, keyed by CATALOG IDENTITY.
+        ///
+        /// Distinct from drop_column above on both axes that matter. It matches on the
+        /// attoid, not the name, so a renamed column (a rename never touches storage) can
+        /// never be mistaken for a dropped one; and it works in DISK mode as well as
+        /// IN_MEMORY, because data_table_t::compact_dropped_columns rebuilds the row groups
+        /// the same way data_table_t::compact already does for a DISK table on every
+        /// checkpoint. The narrowed width reaches the .otbx at the next checkpoint, which is
+        /// the same moment row-level compaction becomes durable.
+        ///
+        /// Forwards the MVCC refusal and the removed count; a missing table_ removes
+        /// nothing. See data_table_t::compact_dropped_columns for the gates.
+        [[nodiscard]] components::table::data_table_t::column_compaction_t
+        compact_dropped_columns(const std::pmr::vector<std::uint32_t>& dead_attoids, uint64_t compact_watermark);
+
     private:
         storage_mode_t mode_;
         core::filesystem::local_file_system_t fs_;
@@ -276,6 +292,25 @@ namespace services::disk {
                 return false;
             return agents_[idx]->has_storage_sync(table_oid);
         }
+        // Catalog identities (pg_attribute.attoid) of a storage's physical columns, in
+        // storage column order; INVALID_OID for a column that carries none. Empty when
+        // the oid owns no storage.
+        //
+        // This exists to make the identity invariant observable, and that is its whole
+        // justification. A column's identity changes which physical column an append
+        // routes to, but never what a query returns — a table whose columns lost their
+        // identity on restart answers every SELECT exactly as before, right up until
+        // DROP COLUMN moves a column's position and the two disagree. So no SQL-level
+        // assertion can distinguish a stamped column from an identity-less one, and
+        // without this accessor the only invariant that matters here would be the one
+        // nothing can check. An invariant nothing can observe is one nobody maintains.
+        //
+        // Same single-threaded sync-probe contract as has_storage(): pre-scheduler-start
+        // bootstrap, inside the manager's mailbox, or — as the restart tests use it —
+        // from the owning thread while the engine is quiescent and no statement is in
+        // flight. It reads the agent slices directly and takes no lock.
+        [[nodiscard]] std::pmr::vector<components::catalog::oid_t>
+        storage_column_attoids_sync(components::catalog::oid_t table_oid) const;
         // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
         wal::id_t peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                                    components::catalog::oid_t database_oid) const noexcept;
@@ -315,6 +350,31 @@ namespace services::disk {
         // load_user_table_storages_sync). Skips relkinds without row storage
         // (views, computed/virtual tables) and any oid already loaded.
         void rehydrate_in_memory_user_storages_sync();
+        // Give every user storage's columns the catalog identity pg_attribute records
+        // for them, for the columns that came back from a restart without one.
+        //
+        // Two restart paths produce such a column and neither can be fixed where it
+        // happens. (1) A .otbx written before the versioned table-metadata record holds
+        // {name, type, not_null} only, so its columns load identity-less — and old files
+        // must keep loading. (2) A table created after the last catalog checkpoint is
+        // invisible to rehydrate_in_memory_user_storages_sync (which runs BEFORE WAL
+        // replay, when pg_class does not know the table yet); its storage is synthesised
+        // during user-record replay from the WAL chunk's schema, and data_chunk_binary
+        // carries no attoid because that codec has no version field to widen.
+        //
+        // In both cases pg_attribute does hold the identity, so one pass over it after
+        // replay closes both. Matching is by NAME: an identity-less column has no other
+        // key, and the name is exactly what such a column is routed by today. Columns
+        // that already know their identity are skipped, so this never reaches
+        // set_attoid's immutable-after-first-write precondition and is safe to re-run.
+        //
+        // MUST run after WAL replay (pg_attribute complete) and after every storage is
+        // loaded/synthesised. Pre-scheduler-start, single-threaded. Restricted to live
+        // user tables with row storage (relkind 'r'/'m', via scan_live_table_oids_sync);
+        // system tables are seeded from static schemas and carry no attoid by design,
+        // and a computing table legitimately holds several same-named columns, which a
+        // by-name match could not tell apart.
+        void restamp_user_storage_attoids_sync();
         // Synchronous scan of pg_class.oid column, returning the set
         // of user-table OIDs (oid >= FIRST_USER_OID) currently alive in the
         // catalog. Called by base_spaces between system-record replay and
@@ -493,6 +553,21 @@ namespace services::disk {
                                                                components::catalog::oid_t table_oid,
                                                                std::set<std::string> live_attnames);
 
+        // Physical column compaction for an ordinary (relkind='r') relation: remove every
+        // storage column whose CATALOG IDENTITY is in `dead_attoids` — the columns an
+        // ALTER TABLE ... DROP COLUMN removed from pg_attribute and that no live snapshot
+        // can still resolve. Called by operator_vacuum_t, which owns the "dead enough"
+        // judgement; this side owns the "safe to swap" one (`compact_watermark`, plus the
+        // agent's open-cursor gate). Returns the number of columns removed — 0 for an
+        // unknown oid, a computing table, a deferral, or a relation already compact. Works
+        // in both storage modes; the narrowed width reaches the .otbx at the next
+        // checkpoint.
+        unique_future<std::uint64_t>
+        compact_dropped_columns(execution_context_t ctx,
+                                components::catalog::oid_t table_oid,
+                                std::pmr::vector<components::catalog::oid_t> dead_attoids,
+                                std::uint64_t compact_watermark);
+
         // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
         // tables maintained via operator_computed_field_register_t.
 
@@ -621,9 +696,11 @@ namespace services::disk {
         unique_future<void> drop_storage_many(session_id_t session,
                                               std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Storage queries
-        unique_future<std::pmr::vector<components::types::complex_logical_type>>
-        storage_types(session_id_t session, components::catalog::oid_t table_oid);
+        // Storage queries.
+        // The relation's schema — {attoid, name, type} per physical storage column, in storage
+        // order — routed to the owning agent and moved back. See disk_contract.hpp.
+        unique_future<components::vector::schema_t> storage_types(session_id_t session,
+                                                                  components::catalog::oid_t table_oid);
         unique_future<uint64_t> storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
 
         // Storage data operations.
@@ -749,6 +826,7 @@ namespace services::disk {
                                                        &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::read_chunks_by_keys,
                                                        &manager_disk_t::compact_relkind_g_storage,
+                                                       &manager_disk_t::compact_dropped_columns,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,

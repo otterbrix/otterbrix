@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 #include <core/btree/btree.hpp>
@@ -22,6 +23,8 @@ namespace components::index {
     private:
         class impl_t final : public index_t::iterator::iterator_impl_t {
         public:
+            static constexpr kind_t iterator_kind = kind_t::btree_single_field;
+
             explicit impl_t(const_iterator iterator);
             index_t::iterator::reference value_ref() const final;
             iterator_impl_t* next() final;
@@ -60,6 +63,11 @@ namespace components::index {
                                           const std::function<void(const value_t&, int64_t)>& fn) const final;
 
         void clean_memory_to_new_elements_impl(std::size_t count) final;
+
+        // The key normalised into stored_type_, or nullopt when it is OUT-OF-DOMAIN — i.e. when
+        // this index can not represent it without lying about its value. See the note above
+        // insert_impl for why a successful cast_as is not on its own proof of representability.
+        std::optional<value_t> in_domain(const value_t& key, core::date::timezone_offset_t local_timezone) const;
 
     private:
         storage_t storage_;

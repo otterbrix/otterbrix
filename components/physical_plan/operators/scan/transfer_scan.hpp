@@ -3,6 +3,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/scan/scan_identity_projection.hpp>
 
 #include <vector>
 
@@ -18,10 +19,19 @@ namespace components::operators {
         // within a single query for both relkind='r' (regular) and relkind='g'
         // (computed/dynamic-schema) tables — chunks are materialized from the
         // table's shared `types_`, and tombstones are filtered at resolve time.
+        //
+        // `table_md` is the relation's resolved catalog metadata (null when the plan has none:
+        // the no-table sentinel scan, a unit-test construction). It is read in the ctor and NOT
+        // retained — all it decides is whether the identity projection engages, and with which
+        // logical columns. When it does, `projected_cols` is dropped: a pruning index is a
+        // LOGICAL ordinal, and once the two layouts disagree it no longer names the storage
+        // column it meant to. Reading the relation whole and projecting by identity is the
+        // correct answer; VACUUM is what makes pruning meaningful again.
         transfer_scan(std::pmr::memory_resource* resource,
                       components::catalog::oid_t table_oid,
                       logical_plan::limit_t limit,
-                      std::vector<size_t> projected_cols = {});
+                      std::vector<size_t> projected_cols = {},
+                      const components::logical_plan::resolved_table_metadata_t* table_md = nullptr);
 
         const logical_plan::limit_t& limit() const { return limit_; }
         // Storage-chunk column indices the scan projects (empty ⇒ all columns), so a downstream
@@ -52,9 +62,9 @@ namespace components::operators {
             opened_ = false;
             drained_ = false;
             emitted_any_ = false;
-            guard_types_loaded_ = false;
+            guard_schema_loaded_ = false;
             cursor_id_ = 0;
-            guard_types_.clear();
+            guard_schema_.clear();
         }
 
     private:
@@ -65,7 +75,11 @@ namespace components::operators {
 
         // Projected empty chunk (drained sentinel) carrying the table schema, so a downstream OUTER
         // join can NULL-pad and a scalar aggregate can emit COUNT=0.
-        vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);
+        //
+        // Also the USER's result for a query over an empty table: the names its columns answer with
+        // are the names the cursor reports, so they are stamped from the schema records rather than
+        // inherited from whatever a bare type happens to carry.
+        vector::data_chunk_t make_drain_chunk(const vector::schema_t& schema);
 
         // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit
         // above; every scan receives offset()==0, so there is no per-batch skip.)
@@ -75,6 +89,9 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         const logical_plan::limit_t limit_;
         std::vector<size_t> projected_cols_;
+        // Disengaged unless the relation's storage layout has outlived its logical schema
+        // (ALTER TABLE ... DROP COLUMN before the next VACUUM). See scan_identity_projection.hpp.
+        scan_identity_projection_t identity_projection_{resource_};
 
         // Per-batch fetch-next cursor state (see full_scan.hpp for the field semantics; transfer_scan
         // has no filter — the empty-guard schema comes from a lazy storage_types await on the
@@ -82,9 +99,9 @@ namespace components::operators {
         bool opened_{false};
         bool drained_{false};
         bool emitted_any_{false};
-        bool guard_types_loaded_{false};
+        bool guard_schema_loaded_{false};
         uint64_t cursor_id_{0};
-        std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
+        vector::schema_t guard_schema_{resource_};
     };
 
 } // namespace components::operators

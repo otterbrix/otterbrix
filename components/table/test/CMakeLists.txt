@@ -13,6 +13,8 @@ set(${PROJECT_NAME}_SOURCES
         test_statistics.cpp
         test_block_e_procarray.cpp
         test_disk_backed_scan.cpp
+        test_filter_discrimination.cpp
+        test_column_compaction.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

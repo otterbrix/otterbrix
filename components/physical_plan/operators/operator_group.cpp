@@ -1,8 +1,9 @@
 #include "operator_group.hpp"
 
-#include "arithmetic_eval.hpp"
+#include "projection_executor.hpp"
 #include "compare_3vl.hpp"
 #include <cassert>
+#include <optional>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -23,6 +24,8 @@ namespace components::operators {
             return v.data() == nullptr && v.auxiliary() == nullptr;
         }
 
+        using expressions::to_arithmetic_op;
+
         // Extract a key value from chunk for a given group_key_t definition
         types::logical_value_t extract_key_value(std::pmr::memory_resource* resource,
                                                  const group_key_t& key,
@@ -31,32 +34,23 @@ namespace components::operators {
             switch (key.type) {
                 case group_key_t::kind::column: {
                     assert(!key.full_path.empty() && "group key path must be resolved before execution");
-                    types::logical_value_t val = chunk.value(key.full_path, row_idx);
-                    val.set_alias(std::string{key.name});
-                    return val;
+                    return chunk.value(key.full_path, row_idx);
                 }
                 case group_key_t::kind::coalesce: {
                     for (const auto& entry : key.coalesce_entries) {
                         if (entry.type == group_key_t::coalesce_entry::source::constant) {
                             if (!entry.constant.is_null()) {
-                                auto val = entry.constant;
-                                val.set_alias(std::string{key.name});
-                                return val;
+                                return entry.constant;
                             }
                         } else {
                             // column source
                             if (!chunk.data[entry.col_index].is_null(row_idx)) {
-                                auto val = chunk.value(entry.col_index, row_idx);
-                                val.set_alias(std::string{key.name});
-                                return val;
+                                return chunk.value(entry.col_index, row_idx);
                             }
                         }
                     }
                     // all NULL
-                    auto null_val =
-                        types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
-                    null_val.set_alias(std::string{key.name});
-                    return null_val;
+                    return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                 }
                 case group_key_t::kind::case_when: {
                     for (const auto& clause : key.case_clauses) {
@@ -82,7 +76,6 @@ namespace components::operators {
                                 (clause.res_type == group_key_t::case_clause::result_source::constant)
                                     ? clause.res_constant
                                     : chunk.value(clause.res_col, row_idx);
-                            result_val.set_alias(std::string{key.name});
                             return result_val;
                         }
                     }
@@ -99,7 +92,6 @@ namespace components::operators {
                                                               types::complex_logical_type{types::logical_type::NA});
                         }
                     }();
-                    else_val.set_alias(std::string{key.name});
                     return else_val;
                 }
             }
@@ -171,7 +163,7 @@ namespace components::operators {
         , values_(resource_)
         , computed_columns_(resource_)
         , post_aggregates_(resource_)
-        , output_types_(resource_)
+        , output_schema_(resource_)
         , internal_aggregate_count_(internal_aggregate_count)
         , agg_plan_(resource_)
         , group_key_chunk_storage_(resource_)
@@ -179,8 +171,8 @@ namespace components::operators {
         , agg_states_(resource_)
         , gathered_rows_per_group_(resource_) {}
 
-    void operator_group_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
-        output_types_.assign(types.begin(), types.end());
+    void operator_group_t::set_output_schema(const vector::schema_t& schema) {
+        output_schema_ = vector::clone_schema(resource_, schema);
     }
 
     void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
@@ -241,7 +233,8 @@ namespace components::operators {
         need_row_gather_ = false;
         for (const auto& value : values_) {
             agg_plan_t plan(resource_);
-            auto* func_op = dynamic_cast<aggregate::operator_func_t*>(value.aggregator.get());
+            // Tag-free, RTTI-free: the aggregator answers for itself (rule 14).
+            const auto* func_op = value.aggregator->as_function_call();
             bool vectorizable = false;
             if (func_op && func_op->func() && !func_op->distinct()) {
                 auto kind = aggregate::classify(func_op->func()->name());
@@ -253,8 +246,8 @@ namespace components::operators {
                         plan.col_type = types::logical_type::UBIGINT;
                         vectorizable = true;
                     } else if (func_op->args().size() == 1 &&
-                               std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
-                        auto& key = std::get<expressions::key_t>(func_op->args()[0]);
+                               expressions::is_key(func_op->args()[0])) {
+                        auto& key = expressions::as_key(func_op->args()[0]);
                         const auto& path = key.path();
                         if (!path.empty() && path.front() != SIZE_MAX) {
                             const auto* arg_vec = probe.at(path);
@@ -306,12 +299,23 @@ namespace components::operators {
         probe.set_cardinality(n);
         for (size_t k = 0; k < keys_.size(); k++) {
             const auto& key = keys_[k];
+            // The probe column's NAME is set on the column (M3-B5). A derived key used to get
+            // it by stamping every extracted VALUE and letting the r == 0 retype below carry
+            // the stamp into the column's type — a per-row heap allocation for a name that is
+            // the same on every row, and one that the retype could only deliver by accident.
             if (key.type == group_key_t::kind::column && key.full_path.size() == 1) {
                 probe.data[k].reference(input.data[key.full_path.front()]);
+                probe.data[k].set_name(input.data[key.full_path.front()].name());
             } else if (key.type == group_key_t::kind::column && !key.full_path.empty()) {
                 for (uint64_t r = 0; r < n; r++) {
                     probe.set_value(k, r, input.value(key.full_path, r));
                 }
+                // A nested key names itself after the group key. The leaf VECTOR cannot
+                // supply the name: struct-child and list-element vectors are name-less by
+                // contract (vector.hpp — "a nested child vector genuinely has none"), so
+                // asking the leaf always answered the empty string. `key.name` is the
+                // planner's leaf field name and survives LIST/ARRAY paths.
+                probe.data[k].set_name(key.name);
             } else {
                 // Derived key: compute per-row via extract_key_value (rare path; not
                 // the hot column-key path). Re-type the column from the first value.
@@ -322,6 +326,7 @@ namespace components::operators {
                     }
                     probe.set_value(k, r, val);
                 }
+                probe.data[k].set_name(key.name);
             }
         }
         return probe;
@@ -330,20 +335,17 @@ namespace components::operators {
     core::error_t operator_group_t::accumulate(pipeline::context_t* pipeline_context, vector::data_chunk_t& input) {
         // Pre-compute arithmetic key columns on this chunk (appended at the tail).
         for (auto& comp : computed_columns_) {
-            auto result_vec = evaluate_arithmetic(resource_,
-                                                  comp.op,
-                                                  comp.operands,
-                                                  input,
-                                                  pipeline_context->parameters,
-                                                  pipeline_context->session_tz);
+            auto result_vec = evaluate_scalar(resource_,
+                                              comp.op,
+                                              comp.operands,
+                                              input,
+                                              pipeline_context->function_registry,
+                                              pipeline_context->parameters,
+                                              pipeline_context->session_tz);
             if (result_vec.has_error()) {
                 return result_vec.error();
             }
-            if (result_vec.value().type().type() == types::logical_type::NA) {
-                return core::error_t(core::error_code_t::physical_plan_error,
-                                     std::pmr::string{"unknown error during evaluate_arithmetic", resource_});
-            }
-            result_vec.value().set_type_alias(std::string(comp.alias));
+            result_vec.value().set_name(comp.alias);
             input.data.emplace_back(std::move(result_vec.value()));
         }
 
@@ -368,10 +370,16 @@ namespace components::operators {
             }
         } else {
             auto probe = make_key_probe(input);
-            // Lazily create the per-group key chunk from the probe schema.
+            // Lazily create the per-group key chunk from the probe schema. types() carries
+            // TYPES ONLY — the column names live on the probe's vectors (M3-B5), and
+            // materialize_groups reads the output key names back from THIS chunk, so they
+            // are copied across explicitly or the whole result comes out name-less.
             if (group_key_chunk_storage_.empty()) {
                 auto key_types = probe.types();
                 group_key_chunk_storage_.emplace_back(resource_, key_types, vector::DEFAULT_VECTOR_CAPACITY);
+                for (uint64_t k = 0; k < probe.column_count(); k++) {
+                    group_key_chunk_storage_.front().set_column_name(k, probe.data[k].name());
+                }
             }
             auto& key_chunk = group_key_chunk_storage_.front();
 
@@ -511,9 +519,18 @@ namespace components::operators {
         // never NA) + one column per aggregate.
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         out_types.reserve(key_count_ + values_.size());
+        // Output NAMES, carried beside the types rather than inside them (M3-B5). A chunk
+        // built from a list of types can only be named afterwards, so the list of names has
+        // to be built in the same order and in the same two passes.
+        std::pmr::vector<std::pmr::string> out_names(resource_);
+        out_names.reserve(key_count_ + values_.size());
         for (size_t k = 0; k < key_count_; k++) {
             out_types.push_back(group_key_chunk_storage_.empty() ? types::complex_logical_type{types::logical_type::NA}
                                                                  : group_key_chunk_storage_.front().data[k].type());
+            const std::string_view key_name =
+                group_key_chunk_storage_.empty() ? std::string_view{} : group_key_chunk_storage_.front().data[k].name();
+            // Uses-allocator construction: the string lands on the vector's resource.
+            out_names.emplace_back(key_name);
         }
 
         // Finalize aggregates into per-group value columns.
@@ -563,7 +580,6 @@ namespace components::operators {
                                                          g < agg_states_[a].size() ? agg_states_[a][g]
                                                                                    : aggregate::raw_agg_state_t{},
                                                          plan.col_type);
-                    val.set_alias(std::string(values_[a].name));
                     results.push_back(std::move(val));
                 }
             } else {
@@ -587,7 +603,6 @@ namespace components::operators {
                             val = result_chunk.value(0, 0);
                         }
                     }
-                    val.set_alias(std::string(values_[a].name));
                     results.push_back(std::move(val));
                 }
             }
@@ -595,18 +610,9 @@ namespace components::operators {
         }
 
         // One column per aggregate at fixed position key_count + a. The output column type
-        // is the plan-resolved type (forwarded into output_types_), authoritative even for
-        // an all-NULL/empty group. Trailing internal aggregates (erased before output)
-        // have no plan output column -> their intermediate type is the computed value's.
-        for (size_t a = 0; a < values_.size(); a++) {
-            const size_t out_pos = key_count_ + a;
-            if (out_pos < output_types_.size()) {
-                out_types.push_back(output_types_[out_pos]);
-            } else {
-                out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
-                                                           : agg_results[a][0].type());
-            }
-        }
+        // is the plan-resolved type (forwarded into output_schema_), authoritative even for
+        // an all-NULL/empty group.
+        append_aggregate_output_columns(key_count_, agg_results, out_types, out_names);
 
         // CORE INVARIANT: never construct a data_chunk_t with capacity > 1024. Emit the
         // group table in <=DEFAULT_VECTOR_CAPACITY-group slices straight into `out`
@@ -622,6 +628,9 @@ namespace components::operators {
             const uint64_t cap = slice > 0 ? slice : 1;
             vector::data_chunk_t result(resource_, out_types, cap);
             result.set_cardinality(slice);
+            for (size_t col = 0; col < out_names.size(); col++) {
+                result.set_column_name(col, out_names[col]);
+            }
 
             // Key columns: copy the [emitted, emitted+slice) window of the typed per-group
             // key chunk (the key chunk may legally exceed 1024 — it grows via
@@ -652,7 +661,10 @@ namespace components::operators {
 
             // Post-aggregate arithmetic (columnar, per-slice).
             size_t size_before_post = result.data.size();
-            calc_post_aggregates(pipeline_context, result);
+            if (auto err = calc_post_aggregates(pipeline_context, result); err.contains_error()) {
+                set_error(std::move(err));
+                return;
+            }
 
             // Remove internal aggregate columns by position.
             if (internal_aggregate_count_ > 0) {
@@ -689,30 +701,26 @@ namespace components::operators {
                 auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
                 types::logical_value_t val =
                     vals.empty() ? types::logical_value_t(resource_, types::logical_type::NA) : std::move(vals[0]);
-                val.set_alias(std::string(value.name));
                 results.push_back(std::move(val));
             }
             agg_results.push_back(std::move(results));
         }
 
         // The output column type is the plan-resolved type (the validator resolved it
-        // data-independently and forwarded it into output_types_), so a global aggregate
+        // data-independently and forwarded it into output_schema_), so a global aggregate
         // over zero rows emits a correctly-typed NULL (e.g. SUM(int) -> INTEGER NULL)
         // rather than the 0-byte NA sentinel. Output position == aggregate index here
         // (no group keys). Trailing internal aggregates (HAVING/post-agg helpers, erased
         // before output) have no plan output column -> their intermediate type is the
         // computed value's.
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        for (size_t a = 0; a < values_.size(); a++) {
-            if (a < output_types_.size()) {
-                out_types.push_back(output_types_[a]);
-            } else {
-                out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
-                                                           : agg_results[a][0].type());
-            }
-        }
+        std::pmr::vector<std::pmr::string> out_names(resource_);
+        append_aggregate_output_columns(/*base=*/0, agg_results, out_types, out_names);
         vector::data_chunk_t result(resource_, out_types, 1);
         result.set_cardinality(1);
+        for (size_t col = 0; col < out_names.size(); col++) {
+            result.set_column_name(col, out_names[col]);
+        }
         // Keep the original NULL cell (NULL is an NA-typed logical_value; set_value into
         // the now-typed column just marks validity false). The COLUMN type (out_types) is
         // what was NA and is now the plan-resolved type -> no 0-byte NA column, no crash.
@@ -725,7 +733,30 @@ namespace components::operators {
         return result;
     }
 
-    void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
+    void operator_group_t::append_aggregate_output_columns(
+        size_t base,
+        const std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results,
+        std::pmr::vector<types::complex_logical_type>& out_types,
+        std::pmr::vector<std::pmr::string>& out_names) const {
+        for (size_t a = 0; a < values_.size(); a++) {
+            const size_t out_pos = base + a;
+            if (out_pos < output_schema_.size()) {
+                out_types.push_back(output_schema_[out_pos].type);
+                // The plan-stamped record spells the name out beside the type, so this read
+                // is total: an unnamed output column answers with an empty name.
+                out_names.emplace_back(output_schema_[out_pos].name);
+            } else {
+                // Trailing internal aggregate: no plan output column, so the aggregate's own
+                // name is the answer. It used to arrive by stamping every finalized VALUE.
+                out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
+                                                           : agg_results[a][0].type());
+                out_names.emplace_back(values_[a].name);
+            }
+        }
+    }
+
+    core::error_t operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context,
+                                                         vector::data_chunk_t& result) {
         auto num_groups = result.size();
         result.data.reserve(result.data.size() + post_aggregates_.size());
 
@@ -733,99 +764,97 @@ namespace components::operators {
             // Determine result type from first row computation
             types::complex_logical_type col_type{types::logical_type::NA};
 
-            auto resolve =
-                [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
-                if (std::holds_alternative<expressions::key_t>(param)) {
-                    auto& key = std::get<expressions::key_t>(param);
-                    assert(!key.path().empty());
-                    return result.value(key.path()[0], row_idx);
-                } else if (std::holds_alternative<core::parameter_id_t>(param)) {
-                    auto id = std::get<core::parameter_id_t>(param);
-                    return pipeline_context->parameters.parameters.at(id);
-                } else {
-                    auto& sub_expr = std::get<expressions::expression_ptr>(param);
-                    if (sub_expr->group() == expressions::expression_group::scalar) {
-                        auto* sub_scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
-                        if (sub_scalar->type() == expressions::scalar_type::unary_minus &&
-                            !sub_scalar->params().empty()) {
-                            auto inner = self(sub_scalar->params()[0], row_idx, self);
-                            return types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)),
-                                                                    inner);
-                        }
-                        if (sub_scalar->params().size() >= 2) {
-                            auto left_val = self(sub_scalar->params()[0], row_idx, self);
-                            auto right_val = self(sub_scalar->params()[1], row_idx, self);
-                            switch (sub_scalar->type()) {
-                                case expressions::scalar_type::add:
-                                    return types::logical_value_t::sum(left_val, right_val);
-                                case expressions::scalar_type::subtract:
-                                    return types::logical_value_t::subtract(left_val, right_val);
-                                case expressions::scalar_type::multiply:
-                                    return types::logical_value_t::mult(left_val, right_val);
-                                case expressions::scalar_type::divide:
-                                    return types::logical_value_t::divide(left_val, right_val);
-                                case expressions::scalar_type::mod:
-                                    return types::logical_value_t::modulus(left_val, right_val);
-                                default:
-                                    break;
-                            }
-                        }
-                    }
-                    assert(false && "Post-aggregate: unsupported sub-expression");
-                    return types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA});
-                }
+            // -x is 0 - x. Both operands are numeric here, so the entry point promotes them to
+            // one type before subtracting; it errors on anything it has no arm for.
+            auto negate = [&](const types::logical_value_t& value) {
+                return types::logical_value_t::arithmetic(resource_,
+                                                          vector::arithmetic_op::subtract,
+                                                          types::logical_value_t(resource_, int64_t(0)),
+                                                          value);
             };
 
-            // Compute result for each group and collect into a new vector
-            if (post.op == expressions::scalar_type::unary_minus) {
-                if (post.operands.empty())
-                    continue;
-                std::pmr::vector<types::logical_value_t> col_values(resource_);
-                for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
-                    auto inner = resolve(post.operands[0], group_idx, resolve);
-                    auto result_val =
-                        types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)), inner);
-                    result_val.set_alias(std::string(post.alias));
-                    if (group_idx == 0) {
-                        col_type = result_val.type();
+            auto resolve = [&](const expressions::param_storage& param, size_t row_idx, auto& self)
+                -> core::result_wrapper_t<types::logical_value_t> {
+                if (expressions::is_key(param)) {
+                    auto& key = expressions::as_key(param);
+                    assert(!key.path().empty());
+                    return result.value(key.path()[0], row_idx);
+                }
+                if (expressions::is_parameter(param)) {
+                    auto id = expressions::as_parameter(param);
+                    // Total lookup: .at() threw std::out_of_range out of an actor coroutine
+                    // for an unbound id — rule 2, errors leave via the return value.
+                    const auto* value = logical_plan::get_parameter(&pipeline_context->parameters, id);
+                    if (!value) {
+                        return core::error_t{
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"post-aggregate: operand references an unbound parameter", resource_}};
                     }
-                    col_values.push_back(std::move(result_val));
+                    return *value;
                 }
-                vector::vector_t new_col(resource_, col_type, result.capacity());
-                for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
-                    new_col.set_value(group_idx, std::move(col_values[group_idx]));
+                auto& sub_expr = expressions::as_expr(param);
+                if (sub_expr->group() == expressions::expression_group::scalar) {
+                    auto* sub_scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
+                    if (sub_scalar->type() == expressions::scalar_type::unary_minus && !sub_scalar->params().empty()) {
+                        auto inner = self(sub_scalar->params()[0], row_idx, self);
+                        if (inner.has_error()) {
+                            return inner;
+                        }
+                        return negate(inner.value());
+                    }
+                    if (sub_scalar->params().size() >= 2) {
+                        if (auto op = to_arithmetic_op(sub_scalar->type())) {
+                            auto left_val = self(sub_scalar->params()[0], row_idx, self);
+                            if (left_val.has_error()) {
+                                return left_val;
+                            }
+                            auto right_val = self(sub_scalar->params()[1], row_idx, self);
+                            if (right_val.has_error()) {
+                                return right_val;
+                            }
+                            return types::logical_value_t::arithmetic(resource_,
+                                                                      *op,
+                                                                      left_val.value(),
+                                                                      right_val.value());
+                        }
+                    }
                 }
-                new_col.set_type_alias(std::string(post.alias));
-                result.data.emplace_back(std::move(new_col));
+                return core::error_t{core::error_code_t::physical_plan_error,
+                                     std::pmr::string{"post-aggregate: unsupported sub-expression", resource_}};
+            };
+
+            // One value per group, then one column built from them. The column's type comes from
+            // group 0 -- with no groups there is nothing to type it from and nothing to emit.
+            std::pmr::vector<types::logical_value_t> col_values(resource_);
+            const bool unary = post.op == expressions::scalar_type::unary_minus;
+            if (unary ? post.operands.empty() : post.operands.size() < 2) {
                 continue;
             }
-            if (post.operands.size() < 2)
-                continue;
-            std::pmr::vector<types::logical_value_t> col_values(resource_);
+            auto op = to_arithmetic_op(post.op);
+            if (!unary && !op) {
+                return core::error_t{core::error_code_t::physical_plan_error,
+                                     std::pmr::string{"post-aggregate: unsupported operator", resource_}};
+            }
+
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                 auto left_val = resolve(post.operands[0], group_idx, resolve);
-                auto right_val = resolve(post.operands[1], group_idx, resolve);
-                types::logical_value_t result_val(resource_, types::complex_logical_type{types::logical_type::NA});
-                switch (post.op) {
-                    case expressions::scalar_type::add:
-                        result_val = types::logical_value_t::sum(left_val, right_val);
-                        break;
-                    case expressions::scalar_type::subtract:
-                        result_val = types::logical_value_t::subtract(left_val, right_val);
-                        break;
-                    case expressions::scalar_type::multiply:
-                        result_val = types::logical_value_t::mult(left_val, right_val);
-                        break;
-                    case expressions::scalar_type::divide:
-                        result_val = types::logical_value_t::divide(left_val, right_val);
-                        break;
-                    case expressions::scalar_type::mod:
-                        result_val = types::logical_value_t::modulus(left_val, right_val);
-                        break;
-                    default:
-                        break;
+                if (left_val.has_error()) {
+                    return left_val.error();
                 }
-                result_val.set_alias(std::string(post.alias));
+                auto computed = [&]() -> core::result_wrapper_t<types::logical_value_t> {
+                    if (unary) {
+                        return negate(left_val.value());
+                    }
+                    auto right_val = resolve(post.operands[1], group_idx, resolve);
+                    if (right_val.has_error()) {
+                        return right_val;
+                    }
+                    return types::logical_value_t::arithmetic(resource_, *op, left_val.value(), right_val.value());
+                }();
+                if (computed.has_error()) {
+                    return computed.error();
+                }
+                auto result_val = std::move(computed.value());
                 if (group_idx == 0) {
                     col_type = result_val.type();
                 }
@@ -837,9 +866,10 @@ namespace components::operators {
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                 new_col.set_value(group_idx, std::move(col_values[group_idx]));
             }
-            new_col.set_type_alias(std::string(post.alias));
+            new_col.set_name(post.alias);
             result.data.emplace_back(std::move(new_col));
         }
+        return core::error_t::no_error();
     }
 
     core::error_t
@@ -881,12 +911,17 @@ namespace components::operators {
             vector::data_chunk_t chunk(resource_, empty_types, 1);
             chunk.set_cardinality(1);
             for (auto& comp : computed_columns_) {
-                auto result_vec =
-                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, ctx->parameters, ctx->session_tz);
+                auto result_vec = evaluate_scalar(resource_,
+                                                  comp.op,
+                                                  comp.operands,
+                                                  chunk,
+                                                  ctx->function_registry,
+                                                  ctx->parameters,
+                                                  ctx->session_tz);
                 if (result_vec.has_error()) {
                     return result_vec.error();
                 }
-                result_vec.value().set_type_alias(std::string(comp.alias));
+                result_vec.value().set_name(comp.alias);
                 chunk.data.emplace_back(std::move(result_vec.value()));
             }
             out.emplace_back(std::move(chunk));

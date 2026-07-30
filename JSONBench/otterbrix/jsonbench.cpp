@@ -150,11 +150,11 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
     auto& chunk = cur->chunks().front();
     size_t ncols = chunk.column_count();
 
-    // Header: use type aliases as column names
+    // Header: each column's own name, empty for an unnamed column.
     std::cout << "  ";
     for (size_t c = 0; c < ncols; ++c) {
         if (c) std::cout << " | ";
-        std::cout << chunk.data[c].type().alias();
+        std::cout << chunk.data[c].name();
     }
     std::cout << "\n  " << std::string(40, '-') << "\n";
 

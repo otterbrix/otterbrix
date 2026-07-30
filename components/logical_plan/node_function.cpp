@@ -23,8 +23,6 @@ namespace components::logical_plan {
 
     compute::function_uid node_function_t::function_uid() const { return function_uid_; }
 
-    hash_t node_function_t::hash_impl() const { return 0; }
-
     std::string node_function_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$function: {";

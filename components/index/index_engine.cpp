@@ -44,34 +44,62 @@ namespace components::index {
         return {index_engine, core::pmr::deleter_t(resource)};
     }
 
-    bool is_match_column(const index_ptr& index, const components::vector::data_chunk_t& chunk) {
-        auto keys = index->keys();
-        for (auto key = keys.first; key != keys.second; ++key) {
-            bool key_found = false;
+    namespace {
+
+        // An index key names a column by NAME — the user gives the name, so this is one of the
+        // sites where name resolution genuinely belongs. Deliberately not by ordinal: a chunk
+        // carries only the columns of its statement's column list, in that list's order, so an
+        // ordinal would read a different column per statement shape. When a multi-type
+        // dynamic-schema field presents the same name twice, the FIRST match wins — see the
+        // characterization cases in test_index_engine_binding.cpp.
+        const vector::vector_t* find_column(const vector::data_chunk_t& chunk, const key_t& key) {
+            const auto name = key.as_string();
             for (const auto& column : chunk.data) {
-                if (column.type().alias() == key->as_string()) {
-                    key_found = true;
-                    break;
+                if (column.name() == name) {
+                    return &column;
                 }
             }
-            if (!key_found) {
-                return false;
-            }
+            return nullptr;
         }
-        return true;
+
+        // Resolve one index against one chunk in a SINGLE pass over its keys:
+        //   applies == every key has a column; column == the FIRST key's column (todo: multi-key).
+        // The old pair of helpers answered these two questions with two independent scans.
+        bool resolve_index(const vector::data_chunk_t& chunk, index_t* index, const vector::vector_t*& column_out) {
+            column_out = nullptr;
+            auto keys = index->keys();
+            bool first = true;
+            for (auto key = keys.first; key != keys.second; ++key) {
+                const auto* column = find_column(chunk, *key);
+                if (column == nullptr) {
+                    return false; // a key with no column: this index does not apply to this chunk
+                }
+                if (first) {
+                    column_out = column;
+                    first = false;
+                }
+            }
+            return true; // a key-less index vacuously applies, with a null column (an NA key)
+        }
+
+    } // namespace
+
+    value_t chunk_bindings_t::key_at(const binding_t& binding, size_t row) const {
+        if (binding.column == nullptr) {
+            return types::logical_value_t{chunk_resource_, types::complex_logical_type{types::logical_type::NA}};
+        }
+        return binding.column->value(row);
     }
 
-    value_t get_value_by_index(const index_ptr& index, const vector::data_chunk_t& chunk, size_t row) {
-        auto keys = index->keys();
-        if (keys.first != keys.second) {
-            //todo: multi values index
-            for (const auto& column : chunk.data) {
-                if (column.type().alias() == keys.first->as_string()) {
-                    return column.value(row);
-                }
+    auto index_engine_t::bind(const vector::data_chunk_t& chunk) const -> chunk_bindings_t {
+        chunk_bindings_t bindings(resource_, chunk.resource());
+        for (const auto& index : storage_) {
+            const vector::vector_t* column = nullptr;
+            if (resolve_index(chunk, index.get(), column)) {
+                bindings.bound_.push_back(chunk_bindings_t::binding_t{index.get(), column});
             }
         }
-        return types::logical_value_t{chunk.resource(), types::complex_logical_type{types::logical_type::NA}};
+        return bindings;
     }
 
     index_engine_t::index_engine_t(std::pmr::memory_resource* resource)
@@ -148,29 +176,23 @@ namespace components::index {
 
     auto index_engine_t::has_index(const std::string& name) -> bool { return matching(name) == nullptr ? false : true; }
 
-    void index_engine_t::insert_row(const vector::data_chunk_t& chunk,
+    void index_engine_t::insert_row(const chunk_bindings_t& bindings,
                                     size_t chunk_row,
                                     int64_t storage_row,
                                     uint64_t txn_id,
                                     core::date::timezone_offset_t local_timezone) {
-        for (auto& index : storage_) {
-            if (is_match_column(index, chunk)) {
-                auto key = get_value_by_index(index, chunk, chunk_row);
-                index->insert(key, storage_row, txn_id, local_timezone);
-            }
+        for (const auto& binding : bindings.bound_) {
+            binding.index->insert(bindings.key_at(binding, chunk_row), storage_row, txn_id, local_timezone);
         }
     }
 
-    void index_engine_t::mark_delete_row(const vector::data_chunk_t& chunk,
+    void index_engine_t::mark_delete_row(const chunk_bindings_t& bindings,
                                          size_t chunk_row,
                                          int64_t storage_row,
                                          uint64_t txn_id,
                                          core::date::timezone_offset_t local_timezone) {
-        for (auto& index : storage_) {
-            if (is_match_column(index, chunk)) {
-                auto key = get_value_by_index(index, chunk, chunk_row);
-                index->mark_delete(key, storage_row, txn_id, local_timezone);
-            }
+        for (const auto& binding : bindings.bound_) {
+            binding.index->mark_delete(bindings.key_at(binding, chunk_row), storage_row, txn_id, local_timezone);
         }
     }
 
@@ -239,10 +261,10 @@ namespace components::index {
         const vector::data_chunk_t& chunk,
         size_t row,
         const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const {
-        for (const auto& index : storage_) {
-            if (index->is_disk() && is_match_column(index, chunk)) {
-                auto key = get_value_by_index(index, chunk, row);
-                fn(index->disk_agent(), key);
+        auto bindings = bind(chunk);
+        for (const auto& binding : bindings.bound_) {
+            if (binding.index->is_disk()) {
+                fn(binding.index->disk_agent(), bindings.key_at(binding, row));
             }
         }
     }

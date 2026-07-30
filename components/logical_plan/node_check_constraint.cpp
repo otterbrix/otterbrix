@@ -17,8 +17,6 @@ namespace components::logical_plan {
         , check_exprs_(std::move(check_exprs))
         , array_size_reqs_(std::move(array_size_reqs)) {}
 
-    hash_t node_check_constraint_t::hash_impl() const { return 0; }
-
     std::string node_check_constraint_t::to_string_impl() const {
         std::ostringstream s;
         s << "$check_constraint: " << relname_ << " [nn=" << not_null_columns_.size() << "]";

@@ -39,7 +39,7 @@ namespace components::planner {
         node = optimizer::drop_redundant_distinct(resource, std::move(node));
         // Promote comma-join CROSS joins to INNER before pushdown_filter: its join
         // branch wraps the join's children in fresh, unstamped aggregates whose
-        // output_types() is empty (validation already ran), which would collapse the
+        // output_schema() is empty (validation already ran), which would collapse the
         // promote rule's left_width to 0. fold_constants (above) never restructures
         // joins, so the children stay stamped for the range classification.
         node = optimizer::promote_cross_joins(resource, std::move(node));

@@ -82,17 +82,17 @@ namespace components::operators::dml_detail {
     // Build the "affected-row count" carrier for a no-RETURNING DML result: a run of chunks whose
     // cardinalities SUM to affected_rows (the cursor totals chunk sizes), each capped at
     // DEFAULT_VECTOR_CAPACITY rows so no oversized data_chunk_t is built. insert/update pass an
-    // EMPTY col_types (column-less carrier); delete passes the table's storage types.
-    [[nodiscard]] inline chunks_vector_t
-    make_affected_count_chunks(std::pmr::memory_resource* resource,
-                               uint64_t affected_rows,
-                               const std::pmr::vector<types::complex_logical_type>& col_types) {
+    // EMPTY schema (column-less carrier); delete passes the relation's storage schema, so the
+    // carrier describes the same columns the table does instead of merely being shaped like them.
+    [[nodiscard]] inline chunks_vector_t make_affected_count_chunks(std::pmr::memory_resource* resource,
+                                                                    uint64_t affected_rows,
+                                                                    const vector::schema_t& schema) {
         const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
         chunks_vector_t batches(resource);
         batches.reserve((affected_rows + cap - 1) / cap);
         for (uint64_t base = 0; base < affected_rows; base += cap) {
             const uint64_t window = std::min<uint64_t>(cap, affected_rows - base);
-            vector::data_chunk_t chunk(resource, col_types, window);
+            auto chunk = vector::make_chunk(resource, schema, window);
             chunk.set_cardinality(window);
             batches.emplace_back(std::move(chunk));
         }

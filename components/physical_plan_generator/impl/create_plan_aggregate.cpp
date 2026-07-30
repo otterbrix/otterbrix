@@ -70,10 +70,10 @@ namespace services::planner::impl {
                         case ce::scalar_type::get_field:
                             // Guard the variant access (R2): a non-key_t first param
                             // (parameter_id / nested expression) is not POD-representable.
-                            if (!s->params().empty() && !std::holds_alternative<ce::key_t>(s->params().front())) {
+                            if (!s->params().empty() && !ce::is_key(s->params().front())) {
                                 return false;
                             }
-                            field = s->params().empty() ? &s->key() : &std::get<ce::key_t>(s->params().front());
+                            field = s->params().empty() ? &s->key() : &ce::as_key(s->params().front());
                             break;
                         default:
                             return false; // coalesce / case_when / arithmetic — not POD-representable
@@ -109,8 +109,8 @@ namespace services::planner::impl {
                     // multi-arg / expression / parameter argument (SUM(a+b)) is not representable.
                     if (a->params().empty()) {
                         // count-star: arg_col_path stays empty
-                    } else if (a->params().size() == 1 && std::holds_alternative<ce::key_t>(a->params().front())) {
-                        const auto& kp = std::get<ce::key_t>(a->params().front()).path();
+                    } else if (a->params().size() == 1 && ce::is_key(a->params().front())) {
+                        const auto& kp = ce::as_key(a->params().front()).path();
                         pa.arg_col_path.assign(kp.begin(), kp.end());
                     } else {
                         return false;
@@ -125,8 +125,11 @@ namespace services::planner::impl {
             }
             // FINAL output types (keys first, then aggregate values) forwarded from the
             // aggregate node, so the reduce types an empty-slice scalar result instead of NA.
-            if (agg_node->has_output_types()) {
-                out.output_types.assign(agg_node->output_types().begin(), agg_node->output_types().end());
+            // Types only — the spec names these same columns itself (pushed_aggregate_spec_t
+            // ::output_schema), in the same keys-then-aggregates order.
+            out.output_types.reserve(agg_node->output_schema().size());
+            for (const auto& column : agg_node->output_schema()) {
+                out.output_types.push_back(column.type);
             }
             return true;
         }
@@ -178,6 +181,14 @@ namespace services::planner::impl {
                                               const std::vector<size_t>& base_projected_cols) {
             const bool known = context.has_table_oid(node->table_oid());
             auto* resource = known ? context.resource : node->resource();
+
+            // A pushed reduce names its group keys and aggregate inputs by the LOGICAL ordinal
+            // the validator resolved, and evaluates them on the agent against a chunk in STORAGE
+            // layout. Those agree until a column is dropped. Fall back to the coordinator
+            // aggregate over an identity-projected scan for as long as they do not.
+            if (ops::scan_identity_projection_t::displaced(context.table_metadata_for(node->table_oid()))) {
+                return nullptr;
+            }
 
             ops::pushed_aggregate_spec_t spec{resource};
             if (!build_pushed_spec(group, node, resource, spec)) {
@@ -257,6 +268,12 @@ namespace services::planner::impl {
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         const auto& projected_cols = agg_node->projected_cols();
 
+        // Role-classified children, read once for all three lowering shapes below.
+        // This lowering's own policy: a LIMIT child is never lowered as an operator
+        // (wrap_limit owns the single authoritative window), and `source` is the
+        // explicit sub-plan that replaces the otherwise-implicit transfer_scan.
+        const auto roles = agg_node->pipeline();
+
         // operator_limit is the single authoritative limiter: inserted as the OUTERMOST
         // node (above DISTINCT — SQL applies LIMIT after DISTINCT) when the LIMIT/OFFSET is
         // effective, applying the real [offset, offset+limit) window. Every source below gets
@@ -294,13 +311,10 @@ namespace services::planner::impl {
         // non-representable shape returns nullptr and falls through to the normal coordinator
         // aggregate (R6: capability select).
         const components::logical_plan::node_group_t* pushdown_group = nullptr;
-        for (const components::logical_plan::node_ptr& child : node->children()) {
-            if (child->type() == node_type::group_t) {
-                const auto* g = static_cast<const components::logical_plan::node_group_t*>(child.get());
-                if (g->pushdown()) {
-                    pushdown_group = g;
-                }
-                break;
+        if (roles.group) {
+            const auto* g = static_cast<const components::logical_plan::node_group_t*>(roles.group.get());
+            if (g->pushdown()) {
+                pushdown_group = g;
             }
         }
         if (pushdown_group != nullptr) {
@@ -308,14 +322,22 @@ namespace services::planner::impl {
                 components::operators::operator_ptr executor = std::move(pushdown_scan);
                 components::operators::operator_ptr push_sort_op;
                 components::operators::operator_ptr push_select_op;
-                for (const components::logical_plan::node_ptr& child : node->children()) {
-                    if (child->type() == node_type::sort_t) {
-                        push_sort_op = create_plan_sort(
-                            context,
-                            child,
-                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
-                    } else if (child->type() == node_type::select_t) {
-                        push_select_op = create_plan_select(context, child, params);
+                if (roles.sort) {
+                    push_sort_op = create_plan_sort(
+                        context,
+                        roles.sort,
+                        static_cast<const components::logical_plan::node_sort_t*>(roles.sort.get())->read_cap());
+                    // A refused child invalidates the whole plan: the `if` guards below only
+                    // splice, so a nullptr here would silently drop the ORDER BY / projection
+                    // and return the raw pushed-reduce output as SUCCESS.
+                    if (!push_sort_op) {
+                        return nullptr;
+                    }
+                }
+                if (roles.select) {
+                    push_select_op = create_plan_select(context, roles.select, params);
+                    if (!push_select_op) {
+                        return nullptr;
                     }
                 }
                 if (push_sort_op) {
@@ -323,9 +345,7 @@ namespace services::planner::impl {
                     executor = std::move(push_sort_op);
                 }
                 if (push_select_op) {
-                    if (node->has_output_types()) {
-                        push_select_op->set_output_types(node->output_types());
-                    }
+                    push_select_op->set_output_schema(node->output_schema());
                     push_select_op->set_children(std::move(executor));
                     executor = std::move(push_select_op);
                 }
@@ -351,66 +371,94 @@ namespace services::planner::impl {
         components::operators::operator_ptr select_op;
         components::operators::operator_ptr child_op;
 
-        for (const components::logical_plan::node_ptr& child : node->children()) {
+        // A non-scan source (UNION / recursive-CTE / join): always unlimited —
+        // operator_limit applies the merged window on top. Forwarding the outer
+        // limit into each arm would apply limit/offset twice (wrong OFFSET).
+        //
+        // EVERY non-role child is lowered, in child order, not just the one the role
+        // classifier kept (its `source` slot is last-wins): a child that fails to lower
+        // (e.g. a host-extension node with no injected create_plan rule) must surface as
+        // an invalid plan even when a lowerable sibling follows it — NOT fall through to
+        // the transfer_scan branch below (which is only for an aggregate with no explicit
+        // source child), which would silently mis-execute over the wrong source. The last
+        // successful lowering is the source, matching pipeline()'s slot.
+        for (const auto& child : node->children()) {
+            if (!child) {
+                continue;
+            }
             switch (child->type()) {
-                case node_type::limit_t:
-                    break; // already handled above
                 case node_type::match_t:
-                    // Call create_plan_match directly so we can pass projected_cols. The
-                    // read-cap is the pushdown_limit stamp on this match node (unlimit when
-                    // the rule left it unstamped — e.g. under a sort / group / distinct).
-                    match_op = create_plan_match(
-                        context,
-                        child,
-                        static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
-                        projected_cols);
-                    break;
                 case node_type::group_t:
-                    // A GROUP BY is never cardinality-preserving from its scan and has no
-                    // output-cap hook — operator_limit windows the full grouped output.
-                    group_op = create_plan(context,
-                                           function_registry,
-                                           child,
-                                           components::logical_plan::limit_t::unlimit(),
-                                           params);
-                    break;
-                case node_type::sort_t:
-                    // The full sort truncates its OUTPUT to the read-cap the pushdown_limit
-                    // rule stamped (unlimit when a DISTINCT sits above); operator_limit
-                    // applies the real window on top.
-                    sort_op = create_plan_sort(
-                        context,
-                        child,
-                        static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
-                    break;
-                case node_type::select_t:
-                    select_op = create_plan_select(context, child, params);
-                    break;
                 case node_type::having_t:
-                    // HAVING → dedicated operator_having filter, spliced ABOVE the group (below),
-                    // between the group and the sort. It has no window (operator_limit is the sole
-                    // window), so create_plan_having takes no limit.
-                    having_op = create_plan_having(context, child);
+                case node_type::sort_t:
+                case node_type::select_t:
+                case node_type::limit_t:
                     break;
-                default:
-                    // A non-scan source (UNION / recursive-CTE / join): always unlimited —
-                    // operator_limit applies the merged window on top. Forwarding the outer
-                    // limit into each arm would apply limit/offset twice (wrong OFFSET).
+                default: {
                     child_op = create_plan(context,
                                            function_registry,
                                            child,
                                            components::logical_plan::limit_t::unlimit(),
                                            params);
-                    // A present source child that failed to lower (e.g. a
-                    // host-extension node with no injected create_plan rule) must
-                    // surface as an invalid plan — NOT fall through to the
-                    // transfer_scan branch below (which is only for an aggregate
-                    // with no explicit source child), which would silently
-                    // mis-execute over a synthetic single row.
                     if (!child_op) {
                         return nullptr;
                     }
                     break;
+                }
+            }
+        }
+        if (roles.match) {
+            // Call create_plan_match directly so we can pass projected_cols. The
+            // read-cap is the pushdown_limit stamp on this match node (unlimit when
+            // the rule left it unstamped — e.g. under a sort / group / distinct).
+            match_op = create_plan_match(
+                context,
+                roles.match,
+                static_cast<const components::logical_plan::node_match_t*>(roles.match.get())->read_cap(),
+                projected_cols);
+        }
+        // A refused role child invalidates the whole plan. The splice guards below are
+        // presence checks, not error checks: letting a nullptr through them silently drops
+        // the grouping / HAVING / ORDER BY / projection and runs the query without it.
+        // (create_plan_match never refuses — the no-FROM sentinel scan is its own arm —
+        // so match_op stays uncheck'd: a null match_op only means "no WHERE".)
+        if (roles.group) {
+            // A GROUP BY is never cardinality-preserving from its scan and has no
+            // output-cap hook — operator_limit windows the full grouped output.
+            group_op = create_plan(context,
+                                   function_registry,
+                                   roles.group,
+                                   components::logical_plan::limit_t::unlimit(),
+                                   params);
+            if (!group_op) {
+                return nullptr;
+            }
+        }
+        if (roles.having) {
+            // HAVING → dedicated operator_having filter, spliced ABOVE the group (below),
+            // between the group and the sort. It has no window (operator_limit is the sole
+            // window), so create_plan_having takes no limit.
+            having_op = create_plan_having(context, roles.having);
+            if (!having_op) {
+                return nullptr;
+            }
+        }
+        if (roles.sort) {
+            // The full sort truncates its OUTPUT to the read-cap the pushdown_limit
+            // rule stamped (unlimit when a DISTINCT sits above); operator_limit
+            // applies the real window on top.
+            sort_op = create_plan_sort(
+                context,
+                roles.sort,
+                static_cast<const components::logical_plan::node_sort_t*>(roles.sort.get())->read_cap());
+            if (!sort_op) {
+                return nullptr;
+            }
+        }
+        if (roles.select) {
+            select_op = create_plan_select(context, roles.select, params);
+            if (!select_op) {
+                return nullptr;
             }
         }
 
@@ -428,21 +476,22 @@ namespace services::planner::impl {
             // resolve-table time). For relkind='r' we read column_pruning output from
             // node_aggregate_t::projected_cols(). Empty → pass-through (read all cols).
             std::vector<size_t> projected_cols = relkind_projected_cols(context, node, agg_node->projected_cols());
-            executor = match_op ? std::move(match_op)
-                                : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource,
-                                                                               node->table_oid(),
-                                                                               agg_node->read_cap(),
-                                                                               std::move(projected_cols))));
+            executor = match_op
+                           ? std::move(match_op)
+                           : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
+                                 new components::operators::transfer_scan(plan_resource,
+                                                                          node->table_oid(),
+                                                                          agg_node->read_cap(),
+                                                                          std::move(projected_cols),
+                                                                          context.table_metadata_for(
+                                                                              node->table_oid()))));
         }
         if (group_op) {
-            // Forward the plan-time resolved output types (stamped on the aggregate node
-            // by validate_schema) into the group operator, so it builds correctly-typed
-            // results over zero input rows (PostgreSQL TupleDesc model) instead of NA.
-            // set_output_types is a base virtual (no-op by default) -> no downcast.
-            if (node->has_output_types()) {
-                group_op->set_output_types(node->output_types());
-            }
+            // Forward the plan-time resolved output schema (stamped on the aggregate node
+            // by validate_schema) into the group operator, so it builds correctly-typed and
+            // correctly-named results over zero input rows (PostgreSQL TupleDesc model)
+            // instead of NA. set_output_schema is a base virtual (no-op by default) -> no downcast.
+            group_op->set_output_schema(node->output_schema());
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);
         }
@@ -477,9 +526,7 @@ namespace services::planner::impl {
             // Forward the plan-resolved output types onto the projection columns so a
             // CASE/COALESCE/deep-field column over zero rows stays correctly typed instead
             // of being dropped as an untyped placeholder. Base virtual -> no downcast.
-            if (node->has_output_types()) {
-                select_op->set_output_types(node->output_types());
-            }
+            select_op->set_output_schema(node->output_schema());
             select_op->set_children(std::move(executor));
             executor = std::move(select_op);
         }

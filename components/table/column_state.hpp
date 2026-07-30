@@ -5,6 +5,7 @@
 #include <core/operations_helper.hpp>
 #include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
+#include <cassert>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -65,35 +66,55 @@ namespace components::table {
         std::vector<storage_index_t> child_indexes_;
     };
 
+    // Which concrete table_filter_t SUBCLASS a filter is. Distinct from table_filter_t::filter_type,
+    // which carries the comparison OPERATOR and therefore collides across classes: a
+    // constant_filter_t, a column_column_filter_t and an expression_filter_t can all be `gt`, and a
+    // set_membership_filter_t is always `eq`. Every dispatch site that needs the class reads this
+    // tag; nothing may infer the class from filter_type.
     enum class table_filter_type : uint8_t
     {
         CONSTANT_COMPARISON = 0,
         IS_NULL = 1,
         IS_NOT_NULL = 2,
         CONJUNCTION_OR = 3,
-        CONJUNCTION_AND = 4
+        CONJUNCTION_AND = 4,
+        CONJUNCTION_NOT = 5,
+        SET_MEMBERSHIP = 6,
+        REGEX = 7,
+        COLUMN_COLUMN = 8,
+        EXPRESSION = 9
     };
 
     // TODO: support function_expr in order to avoid full_scans
     class table_filter_t {
     public:
-        explicit table_filter_t(expressions::compare_type filter_type)
-            : filter_type(filter_type) {}
+        table_filter_t(table_filter_type filter_class, expressions::compare_type filter_type)
+            : filter_class(filter_class)
+            , filter_type(filter_type) {}
         virtual ~table_filter_t() = default;
 
+        // The concrete subclass (set at construction, never afterwards). Read it to discriminate;
+        // `filter_type` below cannot do that job.
+        const table_filter_type filter_class;
         expressions::compare_type filter_type;
 
         virtual std::unique_ptr<table_filter_t> copy() const = 0;
         virtual bool equals(const table_filter_t& other) const { return filter_type == other.filter_type; }
 
+        // Downcast to a concrete filter class. Every subclass declares `is_filter_class`, so the
+        // assert catches a cast to a class this filter is not — the check `filter_type` could never
+        // provide. A subclass that declares no `is_filter_class` fails to compile here rather than
+        // silently accepting every tag.
         template<class TARGET>
         TARGET& cast() {
-            return reinterpret_cast<TARGET&>(*this);
+            assert(TARGET::is_filter_class(filter_class) && "table_filter_t::cast to a different filter class");
+            return static_cast<TARGET&>(*this);
         }
 
         template<class TARGET>
         const TARGET& cast() const {
-            return reinterpret_cast<const TARGET&>(*this);
+            assert(TARGET::is_filter_class(filter_class) && "table_filter_t::cast to a different filter class");
+            return static_cast<const TARGET&>(*this);
         }
     };
 
@@ -102,9 +123,13 @@ namespace components::table {
         constant_filter_t(expressions::compare_type comparison_type,
                           types::logical_value_t constant,
                           std::pmr::vector<uint64_t> table_indices)
-            : table_filter_t(comparison_type)
+            : table_filter_t(table_filter_type::CONSTANT_COMPARISON, comparison_type)
             , constant(std::move(constant))
             , table_indices(std::move(table_indices)) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::CONSTANT_COMPARISON;
+        }
 
         bool compare(const types::logical_value_t& value) const;
         template<typename T>
@@ -188,8 +213,19 @@ namespace components::table {
     class is_null_filter_t : public table_filter_t {
     public:
         is_null_filter_t(expressions::compare_type type, std::pmr::vector<uint64_t> table_indices)
-            : table_filter_t(type)
-            , table_indices(std::move(table_indices)) {}
+            : table_filter_t(type == expressions::compare_type::is_null ? table_filter_type::IS_NULL
+                                                                       : table_filter_type::IS_NOT_NULL,
+                             type)
+            , table_indices(std::move(table_indices)) {
+            assert((type == expressions::compare_type::is_null || type == expressions::compare_type::is_not_null) &&
+                   "is_null_filter_t requires an IS NULL / IS NOT NULL comparison");
+        }
+
+        // One class, two tags: IS NULL and IS NOT NULL differ only in `filter_type`, so both
+        // resolve to this class.
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::IS_NULL || c == table_filter_type::IS_NOT_NULL;
+        }
 
         std::unique_ptr<table_filter_t> copy() const override {
             return std::make_unique<is_null_filter_t>(filter_type, table_indices);
@@ -209,9 +245,13 @@ namespace components::table {
     public:
         set_membership_filter_t(std::pmr::vector<types::logical_value_t> values,
                                 std::pmr::vector<uint64_t> table_indices)
-            : table_filter_t(expressions::compare_type::eq)
+            : table_filter_t(table_filter_type::SET_MEMBERSHIP, expressions::compare_type::eq)
             , values(std::move(values))
             , table_indices(std::move(table_indices)) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::SET_MEMBERSHIP;
+        }
 
         bool contains(const types::logical_value_t& value) const {
             for (const auto& v : values) {
@@ -245,15 +285,19 @@ namespace components::table {
     // LIKE / ILIKE / regexp disk filter. Holds the pattern as a plain std::pmr::string (not a
     // logical_value_t) and compiles it once with RE2 on first match; filter_type is always
     // compare_type::regex, so every zonemap path (which gates on eq/gt/gte/lt/lte) skips it — a regex
-    // has no min/max bound to prune on. Discriminated by dynamic_cast, never table_filter_t::cast<>
-    // (a reinterpret_cast). matches() is a partial RE2 search (== std::regex_search); ILIKE sets icase.
+    // has no min/max bound to prune on. Discriminated by its table_filter_type::REGEX tag.
+    // matches() is a partial RE2 search (== std::regex_search); ILIKE sets icase.
     class regex_filter_t : public table_filter_t {
     public:
         regex_filter_t(std::pmr::string pattern, bool icase, std::pmr::vector<uint64_t> table_indices)
-            : table_filter_t(expressions::compare_type::regex)
+            : table_filter_t(table_filter_type::REGEX, expressions::compare_type::regex)
             , pattern(std::move(pattern))
             , icase(icase)
             , table_indices(std::move(table_indices)) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::REGEX;
+        }
 
         bool matches(std::string_view subject) const {
             if (!compiled_) {
@@ -274,9 +318,7 @@ namespace components::table {
             return std::make_unique<regex_filter_t>(pattern, icase, table_indices);
         }
         bool equals(const table_filter_t& other) const override {
-            // filter_type == regex is unique to regex_filter_t (constant_filter_t never carries regex), so a
-            // matching filter_type guarantees `other` is a regex_filter_t — no dynamic_cast needed.
-            if (!table_filter_t::equals(other)) {
+            if (other.filter_class != table_filter_type::REGEX || !table_filter_t::equals(other)) {
                 return false;
             }
             const auto& o = other.cast<regex_filter_t>();
@@ -352,25 +394,33 @@ namespace components::table {
     // Column-vs-column disk filter: `a.x OP a.y` evaluated per row (fetch both column values,
     // compare via compare_values_promoting with the session timezone captured at plan time).
     // filter_type is the comparison (eq/ne/lt/lte/gt/gte). Not zonemap-prunable (no constant bound).
-    // Discriminated by dynamic_cast — its filter_type collides with constant_filter_t.
+    // Discriminated by its table_filter_type::COLUMN_COLUMN tag — its filter_type collides with
+    // constant_filter_t.
     class column_column_filter_t : public table_filter_t {
     public:
         column_column_filter_t(expressions::compare_type comparison_type,
                                std::pmr::vector<uint64_t> left_indices,
                                std::pmr::vector<uint64_t> right_indices,
                                core::date::timezone_offset_t session_tz)
-            : table_filter_t(comparison_type)
+            : table_filter_t(table_filter_type::COLUMN_COLUMN, comparison_type)
             , left_indices(std::move(left_indices))
             , right_indices(std::move(right_indices))
             , session_tz(session_tz) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::COLUMN_COLUMN;
+        }
 
         std::unique_ptr<table_filter_t> copy() const override {
             return std::make_unique<column_column_filter_t>(filter_type, left_indices, right_indices, session_tz);
         }
         bool equals(const table_filter_t& other) const override {
-            const auto* o = dynamic_cast<const column_column_filter_t*>(&other);
-            return o && filter_type == o->filter_type && left_indices == o->left_indices &&
-                   right_indices == o->right_indices;
+            if (other.filter_class != table_filter_type::COLUMN_COLUMN) {
+                return false;
+            }
+            const auto& o = other.cast<column_column_filter_t>();
+            return filter_type == o.filter_type && left_indices == o.left_indices &&
+                   right_indices == o.right_indices;
         }
 
         std::pmr::vector<uint64_t> left_indices;
@@ -401,19 +451,24 @@ namespace components::table {
     // other operand is a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. It is not
     // representable as a constant_filter_t (there is no single column/constant pair), so it is
     // dispatched by its OWN branch in row_group_t::check_predicate, which materializes the referenced
-    // columns of one row and runs `evaluator`. Discriminated by dynamic_cast: filter_type aliases the
-    // comparison op (eq/gt/...) and therefore collides with constant_filter_t.
+    // columns of one row and runs `evaluator`. Discriminated by its table_filter_type::EXPRESSION
+    // tag: filter_type aliases the comparison op (eq/gt/...) and therefore collides with
+    // constant_filter_t — and, when the compare is a LIKE/regexp, with regex_filter_t too.
     class expression_filter_t : public table_filter_t {
     public:
         expression_filter_t(expressions::compare_expression_ptr expression,
                             std::pmr::vector<std::pmr::vector<size_t>> column_paths,
                             std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters,
                             core::date::timezone_offset_t session_tz)
-            : table_filter_t(expression->type())
+            : table_filter_t(table_filter_type::EXPRESSION, expression->type())
             , expression(std::move(expression))
             , column_paths(std::move(column_paths))
             , parameters(std::move(parameters))
             , session_tz(session_tz) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::EXPRESSION;
+        }
 
         std::unique_ptr<table_filter_t> copy() const override;
         bool equals(const table_filter_t& other) const override;
@@ -437,17 +492,18 @@ namespace components::table {
     // Templated on the value type (fixed-width T, bool for validity, string_view).
     template<typename T>
     inline bool table_filter_dispatch(const table_filter_t* filter, T value) {
-        // filter_type == regex is unique to regex_filter_t, so no dynamic_cast is needed. Regex applies only
-        // to string subjects (the row-based string_check_row path passes a string_view).
-        if (filter->filter_type == expressions::compare_type::regex) {
+        // Regex applies only to string subjects (the row-based string_check_row path passes a
+        // string_view).
+        if (filter->filter_class == table_filter_type::REGEX) {
             if constexpr (std::is_same_v<T, std::string_view>) {
                 return filter->cast<regex_filter_t>().matches(value);
             } else {
                 return false;
             }
         }
-        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(types::logical_value_t{set->values.get_allocator().resource(), value});
+        if (filter->filter_class == table_filter_type::SET_MEMBERSHIP) {
+            const auto& set = filter->cast<set_membership_filter_t>();
+            return set.contains(types::logical_value_t{set.values.get_allocator().resource(), value});
         }
         return filter->cast<constant_filter_t>().compare(value);
     }
@@ -456,27 +512,36 @@ namespace components::table {
     // (the column path within a struct/list); is_null_filter_t too. This unifies access
     // for sites that need to navigate sub-columns regardless of which filter kind landed.
     inline const std::pmr::vector<uint64_t>& table_filter_table_indices(const table_filter_t* filter) {
-        if (filter->filter_type == expressions::compare_type::regex) {
-            return filter->cast<regex_filter_t>().table_indices;
+        switch (filter->filter_class) {
+            case table_filter_type::REGEX:
+                return filter->cast<regex_filter_t>().table_indices;
+            case table_filter_type::COLUMN_COLUMN:
+                // col-vs-col is dispatched by its own branch; this guard just avoids a bad constant_filter cast.
+                return filter->cast<column_column_filter_t>().left_indices;
+            case table_filter_type::SET_MEMBERSHIP:
+                return filter->cast<set_membership_filter_t>().table_indices;
+            case table_filter_type::IS_NULL:
+            case table_filter_type::IS_NOT_NULL:
+                return filter->cast<is_null_filter_t>().table_indices;
+            default:
+                // EXPRESSION and the conjunctions have no single column path; both are intercepted
+                // by their own branch before any caller reaches here, and the cast asserts if one
+                // ever is not.
+                return filter->cast<constant_filter_t>().table_indices;
         }
-        if (auto* cc = dynamic_cast<const column_column_filter_t*>(filter)) {
-            // col-vs-col is dispatched by its own branch; this guard just avoids a bad constant_filter cast.
-            return cc->left_indices;
-        }
-        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->table_indices;
-        }
-        if (auto* nul = dynamic_cast<const is_null_filter_t*>(filter)) {
-            return nul->table_indices;
-        }
-        return filter->cast<constant_filter_t>().table_indices;
     }
 
     class conjunction_filter_t : public table_filter_t {
     public:
-        explicit conjunction_filter_t(expressions::compare_type filter_type)
-            : table_filter_t(filter_type) {}
+        conjunction_filter_t(table_filter_type filter_class, expressions::compare_type filter_type)
+            : table_filter_t(filter_class, filter_type) {}
         ~conjunction_filter_t() override = default;
+
+        // The common base of the three folds, so a cast to it accepts any of their tags.
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::CONJUNCTION_OR || c == table_filter_type::CONJUNCTION_AND ||
+                   c == table_filter_type::CONJUNCTION_NOT;
+        }
 
         bool equals(const table_filter_t& other) const override;
 
@@ -486,7 +551,11 @@ namespace components::table {
     class conjunction_or_filter_t : public conjunction_filter_t {
     public:
         conjunction_or_filter_t()
-            : conjunction_filter_t(expressions::compare_type::union_or) {}
+            : conjunction_filter_t(table_filter_type::CONJUNCTION_OR, expressions::compare_type::union_or) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::CONJUNCTION_OR;
+        }
 
         std::unique_ptr<table_filter_t> copy() const override;
     };
@@ -494,7 +563,11 @@ namespace components::table {
     class conjunction_and_filter_t : public conjunction_filter_t {
     public:
         conjunction_and_filter_t()
-            : conjunction_filter_t(expressions::compare_type::union_and) {}
+            : conjunction_filter_t(table_filter_type::CONJUNCTION_AND, expressions::compare_type::union_and) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::CONJUNCTION_AND;
+        }
 
         std::unique_ptr<table_filter_t> copy() const override;
     };
@@ -502,7 +575,11 @@ namespace components::table {
     class conjunction_not_filter_t : public conjunction_filter_t {
     public:
         conjunction_not_filter_t()
-            : conjunction_filter_t(expressions::compare_type::union_not) {}
+            : conjunction_filter_t(table_filter_type::CONJUNCTION_NOT, expressions::compare_type::union_not) {}
+
+        static constexpr bool is_filter_class(table_filter_type c) noexcept {
+            return c == table_filter_type::CONJUNCTION_NOT;
+        }
 
         std::unique_ptr<table_filter_t> copy() const override;
     };

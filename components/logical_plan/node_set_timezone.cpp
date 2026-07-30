@@ -10,12 +10,6 @@ namespace components::logical_plan {
 
     const std::string& node_set_timezone_t::timezone_name() const noexcept { return timezone_name_; }
 
-    hash_t node_set_timezone_t::hash_impl() const {
-        hash_t hash_value{0};
-        boost::hash_combine(hash_value, timezone_name_);
-        return hash_value;
-    }
-
     std::string node_set_timezone_t::to_string_impl() const { return "$set_timezone: " + timezone_name_; }
 
     node_set_timezone_ptr make_node_set_timezone(std::pmr::memory_resource* resource, std::string timezone_name) {

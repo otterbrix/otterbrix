@@ -202,11 +202,11 @@ namespace otterbrix {
 
         auto& child_types = type.child_types();
         // unnamed struct
-        if (child_types.empty() || child_types[0].alias().empty()) {
+        if (child_types.empty() || child_types[0].field_name().empty()) {
             py::tuple py_tuple(struct_values.size());
             for (idx_t i = 0; i < struct_values.size(); i++) {
                 auto& child_type = child_types[i];
-                assert(child_type.alias().empty());
+                assert(child_type.field_name().empty());
                 auto field = from_value(r, struct_values[i], child_type);
                 if (field.has_error()) {
                     return field.error();
@@ -222,7 +222,7 @@ namespace otterbrix {
                 if (field.has_error()) {
                     return field.error();
                 }
-                py_struct[child_type.alias().c_str()] = field.value();
+                py_struct[child_type.field_name().c_str()] = field.value();
             }
             return py::object(std::move(py_struct));
         }

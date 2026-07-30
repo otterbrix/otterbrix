@@ -18,7 +18,6 @@ namespace components::logical_plan {
         compute::function_uid function_uid() const;
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string name_;

@@ -40,7 +40,7 @@ namespace otterbrix { namespace type_creation {
                         std::pmr::string("object has to be a list of OtterBrixPyType's, not " + actual_type, resource));
                 }
                 types.push_back(pytype->type());
-                types.back().set_alias("v" + std::to_string(i++));
+                types.back().set_field_name("v" + std::to_string(i++));
             }
             return types;
         } else if (py::isinstance<py::dict>(container)) {
@@ -57,7 +57,7 @@ namespace otterbrix { namespace type_creation {
                         std::pmr::string("object has to be a list of OtterBrixPyType's, not " + actual_type, resource));
                 }
                 types.push_back(pytype->type());
-                types.back().set_alias(name);
+                types.back().set_field_name(name);
             }
             return types;
         } else {

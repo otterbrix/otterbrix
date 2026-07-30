@@ -1,5 +1,7 @@
 #pragma once
 
+#include "join_utils.hpp"
+
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
@@ -85,7 +87,7 @@ namespace components::operators {
         void reset_pipeline_state() noexcept override {
             index_built_ = false;
             right_index_.clear();
-            res_types_.clear();
+            res_schema_.clear();
             build_matched_.clear();
             build_chunk_offsets_.clear();
             indices_left_.clear();
@@ -109,7 +111,13 @@ namespace components::operators {
         // --- Build/probe state (shared by push) ---
         bool index_built_{false};
         hash_join_detail::right_index_t right_index_{resource_};
-        std::pmr::vector<types::complex_logical_type> res_types_{resource_};
+        // The joined output schema: one record per output column, name and catalog
+        // identity included. A join merges two inputs into ONE chunk and the chunk keeps
+        // no record of the split, so the column's NAME is the only thing that says which
+        // side it came from — it cannot ride in the type, which is the slot M3 removes.
+        // Under `swapped_` the physical build side is the logical-LEFT one, so the record
+        // order is the only place the logical orientation is written down.
+        join_detail::output_schema_t res_schema_{resource_};
         // RIGHT/FULL only: a flat "matched" marker (one byte per build row) over all
         // build chunks, with per-chunk start offsets so a row_ref{chunk,row} maps to
         // build_matched_[build_chunk_offsets_[chunk] + row]. A flat byte vector (not

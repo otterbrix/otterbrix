@@ -57,8 +57,20 @@ namespace components::logical_plan {
             return column_defaults_;
         }
 
+        // DECLARED column types (name -> type), stamped by the enrich pass from the resolved table
+        // metadata and forwarded by the planner onto the node_check_constraint_t wrapper. A CHECK's
+        // literal is typed from these, so the comparison never has to reconcile two types at all.
+        void set_column_types(std::vector<std::pair<std::string, types::complex_logical_type>> v) {
+            column_types_ = std::move(v);
+        }
+        const std::vector<std::pair<std::string, types::complex_logical_type>>& column_types() const {
+            return column_types_;
+        }
+
     private:
-        hash_t hash_impl() const override;
+        // A plain INSERT reports an affected-count; only RETURNING makes it a query.
+        bool produces_rows_impl() const noexcept override { return !returning_.empty(); }
+
         std::string to_string_impl() const override;
 
         std::pmr::vector<expressions::key_t> key_translation_;
@@ -69,7 +81,8 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
+        std::vector<std::pair<std::string, types::complex_logical_type>> column_types_; // declared column types
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

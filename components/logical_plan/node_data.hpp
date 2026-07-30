@@ -34,7 +34,6 @@ namespace components::logical_plan {
     private:
         chunks_vector_t chunks_;
 
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

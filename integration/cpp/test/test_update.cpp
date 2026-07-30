@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/logical_value.hpp>
 
 // UPDATE SET used to dispatch operators by their FIRST character: '?' matched
@@ -9,7 +10,7 @@
 // factorial. Unknown operators must error; arithmetic keeps working, including
 // operators that merely share a first character with a rejected one.
 TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unknown_operators");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_update/set_unknown_operators"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -49,7 +50,7 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
 // prefix spellings had the operand in the wrong slot). Unary operators route
 // the operand to the left slot; binary ones require both operands.
 TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unary_operand_arity");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_update/set_unary_operand_arity"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -82,7 +83,7 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
 // segfaulted the executor, a top-level one was silently dropped (success
 // reported, nothing updated).
 TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unsupported_expressions");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_update/set_unsupported_expressions"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -113,7 +114,7 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
 // The executor also had no NA cast kernel, so an NA-typed constant vector
 // crashed cast_vector; nulls are now written directly.
 TEST_CASE("integration::cpp::test_update::set_null") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_null");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_update/set_null"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

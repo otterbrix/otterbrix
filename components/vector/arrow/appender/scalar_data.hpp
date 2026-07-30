@@ -24,7 +24,7 @@ namespace components::vector::arrow::appender {
 
     template<class TGT, class SRC = TGT, class OP = arrow_scalar_converter_t>
     struct arrow_scalar_base_data_t {
-        static void
+        [[nodiscard]] static core::error_t
         append(arrow_append_data_t& append_data, vector_t& input, uint64_t from, uint64_t to, uint64_t input_size) {
             assert(to >= from);
             uint64_t size = to - from;
@@ -32,10 +32,14 @@ namespace components::vector::arrow::appender {
             unified_vector_format format(input.resource(), input_size);
             input.to_unified_format(input_size, format);
 
-            append_data.add_validity(format, from, to);
+            if (auto error = append_data.add_validity(format, from, to); error.contains_error()) {
+                return error;
+            }
 
             auto& main_buffer = append_data.main_buffer();
-            main_buffer.resize(main_buffer.size() + sizeof(TGT) * size);
+            if (auto error = main_buffer.resize(main_buffer.size() + sizeof(TGT) * size); error.contains_error()) {
+                return error;
+            }
             auto data = format.get_data<SRC>();
             auto result_data = main_buffer.data<TGT>();
 
@@ -50,18 +54,22 @@ namespace components::vector::arrow::appender {
                 result_data[result_idx] = OP::template operation<TGT, SRC>(data[source_idx]);
             }
             append_data.row_count += size;
+            return core::error_t::no_error();
         }
     };
 
     template<class TGT, class SRC = TGT, class OP = arrow_scalar_converter_t>
     struct arrow_scala_data : public arrow_scalar_base_data_t<TGT, SRC, OP> {
-        static void initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
-            result.main_buffer().reserve(capacity * sizeof(TGT));
+        [[nodiscard]] static core::error_t
+        initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
+            return result.main_buffer().reserve(capacity * sizeof(TGT));
         }
 
-        static void finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
+        [[nodiscard]] static core::error_t
+        finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
             result->n_buffers = 2;
             result->buffers[1] = append_data.main_buffer().data();
+            return core::error_t::no_error();
         }
     };
 

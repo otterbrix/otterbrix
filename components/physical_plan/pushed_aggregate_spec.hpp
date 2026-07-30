@@ -1,7 +1,8 @@
 #pragma once
 
-#include <components/compute/function.hpp> // compute::function_uid / invalid_function_uid
-#include <components/types/types.hpp>      // types::complex_logical_type
+#include <components/compute/function.hpp>  // compute::function_uid / invalid_function_uid
+#include <components/types/types.hpp>       // types::complex_logical_type
+#include <components/vector/data_chunk.hpp> // vector::schema_t
 
 #include <cstdint>
 #include <memory_resource>
@@ -64,8 +65,10 @@ namespace components::operators {
         std::pmr::vector<pushed_group_key_t> group_keys;
         std::pmr::vector<pushed_aggregate_t> aggregates;
         // FINAL output column types (keys first, then aggregate values), forwarded from the
-        // aggregate node's output_types(). MANDATORY: operator_group::set_output_types uses it
-        // to type an empty-slice scalar result instead of the 0-byte NA sentinel (gcc -O3 crash).
+        // aggregate node's output_schema(). MANDATORY: operator_group::set_output_schema needs
+        // it to type an empty-slice scalar result instead of the 0-byte NA sentinel (gcc -O3
+        // crash). TYPES ONLY: this spec names its own output columns — group_keys[i].name and
+        // aggregates[j].alias, in that order — so a name is never recovered from a type here.
         std::pmr::vector<types::complex_logical_type> output_types;
         explicit pushed_aggregate_spec_t(std::pmr::memory_resource* resource)
             : group_keys(resource)
@@ -75,6 +78,30 @@ namespace components::operators {
         // "A reduce is armed": an all-empty spec (no keys, no aggregates) describes no
         // reduce at all — build_pushed_spec rejects it.
         [[nodiscard]] bool active() const noexcept { return !aggregates.empty() || !group_keys.empty(); }
+
+        // The spec's FINAL output columns as a schema — the currency operator_group takes.
+        // Types come from output_types positionally; NAMES come from the spec's own per-column
+        // names, which is where the reduce already carries them (group_keys[i].name feeds
+        // group_key_t::name and aggregates[j].alias feeds add_value on the very same operator).
+        // attoid stays INVALID_OID: a reduce output is a computed column with no catalog
+        // identity, exactly as on the coordinator side.
+        [[nodiscard]] vector::schema_t output_schema(std::pmr::memory_resource* resource) const {
+            vector::schema_t schema{resource};
+            schema.reserve(output_types.size());
+            for (size_t i = 0; i < output_types.size(); ++i) {
+                vector::column_schema_t column{resource};
+                const std::pmr::string* name = i < group_keys.size() ? &group_keys[i].name
+                                               : (i - group_keys.size()) < aggregates.size()
+                                                   ? &aggregates[i - group_keys.size()].alias
+                                                   : nullptr;
+                if (name) {
+                    column.name.assign(name->data(), name->size());
+                }
+                column.type = output_types[i];
+                schema.push_back(std::move(column));
+            }
+            return schema;
+        }
     };
 
 } // namespace components::operators

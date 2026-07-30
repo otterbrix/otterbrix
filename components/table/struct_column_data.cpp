@@ -15,7 +15,13 @@ namespace components::table {
         assert(type_.to_physical_type() == types::physical_type::STRUCT);
         auto& child_types = type_.child_types();
         assert(!child_types.empty());
-        if (type_.type() != types::logical_type::UNION && type_.is_unnamed()) {
+        // Only a real STRUCT can be an unnamed struct. The other logical types that store
+        // themselves as a physical STRUCT — UNION, and TIME_TZ / INTERVAL with their implicit
+        // two-field layouts — name no fields and are not supposed to: their sub-columns are
+        // addressed positionally by the type itself, never by a user-written field name.
+        // Before M3-B5 this read the type's own alias slot, which for a table column held the
+        // COLUMN's name, so it answered "named" for every column and asked nothing at all.
+        if (type_.type() == types::logical_type::STRUCT && type_.is_unnamed()) {
             throw std::logic_error("A table cannot be created from an unnamed struct");
         }
         uint64_t sub_column_index = 1;

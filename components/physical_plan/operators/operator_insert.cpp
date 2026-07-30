@@ -2,7 +2,6 @@
 
 #include "dml_util.hpp"
 
-#include <algorithm>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -35,10 +34,31 @@ namespace components::operators {
             // columns (positionally, in target order) so the name-based append routes
             // each value to the intended column. No-op for VALUES (rename_targets_ is
             // empty) and for a projection that already carries the target names.
+            //
+            // The rename DROPS the catalog identity it renames over. A positional rename
+            // decides what a column MEANS, so the attoid the column arrived with — the
+            // SOURCE column's, stamped by the scan (data_table_t::stamp_column_identity)
+            // and carried through intact by an UNPROJECTED star — stops describing it. It
+            // is not a demotion to drop it: a target-listed write set is exactly the
+            // identity-free input the append matcher's name pass exists for
+            // (agent_disk.cpp), and it is what an explicitly projected SELECT, whose
+            // columns are rebuilt as expression results, already hands over. Left in
+            // place, the matcher's "identity outranks name" rule — which is correct, and
+            // untouched here — routed `INSERT INTO z (c, a) SELECT * FROM z` straight back
+            // into the columns it read from and reported success.
+            //
+            // Identity is dropped across the WHOLE chunk, not only the renamed prefix: a
+            // target list makes the write set target-shaped throughout, and a column the
+            // list does not reach has no better claim to its source identity than one it
+            // does. Widths match for a static-schema table (validate_logical_plan fixes
+            // the arity against key_translation); a schemaless or relkind='g' target skips
+            // that check, and that is the only way the two can differ.
             if (!rename_targets_.empty()) {
-                const uint64_t n = std::min<uint64_t>(input.column_count(), rename_targets_.size());
-                for (uint64_t i = 0; i < n; ++i) {
-                    input.data[i].set_type_alias(std::string(rename_targets_[i]));
+                for (uint64_t i = 0; i < input.column_count(); ++i) {
+                    if (i < rename_targets_.size()) {
+                        input.set_column_name(i, rename_targets_[i]);
+                    }
+                    input.set_column_attoid(i, catalog::INVALID_OID);
                 }
             }
             output_->append_chunk(std::move(input));
@@ -238,7 +258,7 @@ namespace components::operators {
                 // No RETURNING: emit column-less chunks whose cardinalities sum to the
                 // affected-row count (the cursor totals chunk sizes).
                 set_output(make_operator_data(resource_,
-                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, vector::schema_t{resource_})));
             } else {
                 set_output(nullptr);
             }

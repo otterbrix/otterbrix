@@ -16,6 +16,7 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <services/collection/context_storage.hpp>
 
 #include <array>
@@ -47,11 +48,11 @@ constexpr int kDocuments = 100;
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
+            auto schema = gen_schema(dispatcher->resource());                                            \
             std::vector<components::table::column_definition_t> columns;                                               \
-            columns.reserve(types.size());                                                                             \
-            for (const auto& type : types) {                                                                           \
-                columns.emplace_back(type.alias(), type);                                                              \
+            columns.reserve(schema.size());                                                                            \
+            for (const auto& column : schema) {                                                                        \
+                columns.emplace_back(std::string{column.name}, column.type);                                           \
             }                                                                                                          \
             test_create_collection(dispatcher, session, database_name, collection_name, columns);                      \
         }                                                                                                              \
@@ -205,7 +206,7 @@ constexpr int kDocuments = 100;
     } while (false)
 
 TEST_CASE("integration::cpp::test_index::base") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/base"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -252,7 +253,7 @@ TEST_CASE("integration::cpp::test_index::base") {
 }
 
 TEST_CASE("integration::cpp::test_index::drop") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/drop");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/drop"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -304,7 +305,7 @@ TEST_CASE("integration::cpp::test_index::drop") {
 }
 
 TEST_CASE("integration::cpp::test_index::index already exist") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/index_already_exist");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/index_already_exist"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -346,7 +347,7 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
 }
 
 TEST_CASE("integration::cpp::test_index::no_type base check") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/no_type_base_check");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/no_type_base_check"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -379,7 +380,7 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
 }
 
 TEST_CASE("integration::cpp::test_index::delete_and_update") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/delete_and_update");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/delete_and_update"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -492,7 +493,8 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 // repopulate (txn_id=0) handler must rebuild the index against the compacted
 // ids so equality lookups stay exact with no restart in between.
 TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_then_index_scan_same_session");
+    auto config =
+        test_create_config(test_temp_path("otterbrix/integration/test_index/checkpoint_then_index_scan_same_session"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -609,8 +611,8 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
     constexpr int kRows = 500;
     static const std::string kHashIndexName = "idx_count_hash";
 
-    auto config =
-        test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_repopulate_persists_bitcask_keylog");
+    auto config = test_create_config(
+        test_temp_path("otterbrix/integration/test_index/checkpoint_repopulate_persists_bitcask_keylog"));
     test_clear_directory(config);
 
     INFO("phase 1: disk hash index, bulk load, CHECKPOINT, bitcask keylog on disk");
@@ -687,7 +689,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
 // repopulate path (txn_id=0, committed-for-everyone) so post-VACUUM lookups
 // return the correct surviving rows.
 TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/vacuum_rebuild_visible");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/vacuum_rebuild_visible"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -758,8 +760,8 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
     constexpr int kVectorCapacity = 1024;
     static_assert(kRows > kVectorCapacity);
 
-    auto config =
-        test_create_config("/tmp/otterbrix/integration/test_index/create_index_backfill_over_vector_capacity");
+    auto config = test_create_config(
+        test_temp_path("otterbrix/integration/test_index/create_index_backfill_over_vector_capacity"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1031,7 +1033,7 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
 
     INFO("e2e: dynamic-schema INSERT with an out-of-domain indexed key neither aborts nor corrupts");
     {
-        auto config = test_create_config("/tmp/otterbrix/integration/test_index/out_of_domain_key");
+        auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/out_of_domain_key"));
         test_clear_directory(config);
         config.disk.on = false;
         config.wal.on = false;
@@ -1085,7 +1087,7 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
 // uncaught std::logic_error out of execute_sql. They must be rejected with a
 // proper error cursor; plain column indexes keep working.
 TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/expression_elements_rejected");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_index/expression_elements_rejected"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

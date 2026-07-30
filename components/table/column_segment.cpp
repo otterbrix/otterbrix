@@ -1420,15 +1420,14 @@ namespace components::table {
         // it has multiple values, requiring per-row contains() rather than a SIMD compare.
         // Until M4 wires a vectorized IN-list path here, fall through to the row-based
         // check_row dispatch (which IS set_membership_filter_t-aware via table_filter_dispatch).
-        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+        if (filter.filter_class == table_filter_type::SET_MEMBERSHIP) {
             return approved_tuple_count;
         }
         // Regex is a per-row match, not a SIMD compare — filter_selection_switch has no regex case (it would
         // throw). Evaluate it here with regex_filter_t::matches (RE2) so the vectorized path is CORRECT:
         // declining (returning the count unchanged) would wrongly pass every row, because column_data_t::filter
-        // has no row-based fallback after this call. Checked before the constant_filter cast: filter_type ==
-        // regex is unique to regex_filter_t, so the cast below is safe.
-        if (filter.filter_type == expressions::compare_type::regex) {
+        // has no row-based fallback after this call. Checked before the constant_filter cast.
+        if (filter.filter_class == table_filter_type::REGEX) {
             vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
             approved_tuple_count = filter_selection_regex(uvf,
                                                           filter.cast<regex_filter_t>(),

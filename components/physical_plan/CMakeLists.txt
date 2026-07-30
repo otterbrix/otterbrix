@@ -15,15 +15,12 @@ set(${PROJECT_NAME}_SOURCES
         operators/aggregate/operator_func.cpp
         operators/aggregate/grouped_aggregate.cpp
 
-        operators/predicates/predicate.cpp
-        operators/predicates/simple_predicate.cpp
-        operators/predicates/function_predicate.cpp
-        operators/predicates/utils.cpp
-        operators/predicates/expression_filter_bridge.cpp
+        operators/expression_filter_bridge.cpp
 
         operators/scan/full_scan.cpp
         operators/scan/pushed_reduce_scan.cpp
         operators/scan/index_scan.cpp
+        operators/scan/scan_identity_projection.cpp
         operators/scan/transfer_scan.cpp
 
         operators/sort/sort.cpp
@@ -77,7 +74,8 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_resolve_constraint.cpp
         operators/operator_allocate_oids.cpp
 
-        operators/arithmetic_eval.cpp
+        operators/projection_executor.cpp
+        operators/predicate_executor.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME} OBJECT

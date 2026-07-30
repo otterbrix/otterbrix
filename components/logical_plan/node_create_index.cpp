@@ -18,8 +18,6 @@ namespace components::logical_plan {
 
     keys_base_storage_t& node_create_index_t::keys() noexcept { return keys_; }
 
-    hash_t node_create_index_t::hash_impl() const { return 0; }
-
     inline std::string name_index_type(index_type type) {
         switch (type) {
             case index_type::single:

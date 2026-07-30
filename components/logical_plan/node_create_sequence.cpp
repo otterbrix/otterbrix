@@ -17,8 +17,6 @@ namespace components::logical_plan {
         , min_value_(min_value)
         , max_value_(max_value) {}
 
-    hash_t node_create_sequence_t::hash_impl() const { return 0; }
-
     std::string node_create_sequence_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$create_sequence: " << seqname_;

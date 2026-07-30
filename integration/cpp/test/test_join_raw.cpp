@@ -7,6 +7,7 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -20,10 +21,14 @@ namespace {
                                      const std::string& col_a,
                                      const std::string& col_b,
                                      const std::vector<std::pair<int64_t, int64_t>>& rows) {
-        std::pmr::vector<types::complex_logical_type> types(res);
-        types.emplace_back(types::logical_type::BIGINT, col_a);
-        types.emplace_back(types::logical_type::BIGINT, col_b);
-        vector::data_chunk_t chunk(res, types, rows.size());
+        vector::schema_t schema(res);
+        for (const auto& name : {col_a, col_b}) {
+            vector::column_schema_t record{res};
+            record.name = name;
+            record.type = types::complex_logical_type{types::logical_type::BIGINT};
+            schema.push_back(std::move(record));
+        }
+        auto chunk = vector::make_chunk(res, schema, rows.size());
         chunk.set_cardinality(rows.size());
         for (size_t i = 0; i < rows.size(); ++i) {
             chunk.set_value(0, i, rows[i].first);
@@ -85,7 +90,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_raw_join") {
-    auto config = test_create_config("/tmp/test_raw_join/base");
+    auto config = test_create_config(test_temp_path("test_raw_join/base"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

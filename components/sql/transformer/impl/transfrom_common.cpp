@@ -160,8 +160,12 @@ namespace components::sql::transform {
         switch (nodeTag(node)) {
             case T_ColumnRef: {
                 // Correlated outer column in a SELECT-list operand: lower to the
-                // correlation parameter. operator_select / evaluate_arithmetic read
-                // parameters live per row, so the lateral per-outer-row rebind holds.
+                // correlation parameter. The projection binds that slot as a PARAMETER, which the
+                // bound tree re-reads on every execution rather than folding into the plan (a
+                // parameter is deliberately never foldable, for exactly this reason), and a lateral
+                // join re-runs the inner sub-plan once per outer row -- so the per-outer-row rebind
+                // holds. Note the granularity: live per EXECUTION, not per row; one execution covers
+                // a whole chunk, and one outer row is one execution.
                 if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
                     return *corr;
                 }
@@ -311,9 +315,10 @@ namespace components::sql::transform {
                                       std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
                     return nullptr;
                 }
-                // Scalar sub-query as an arithmetic operand: flatten it and return the bound parameter id
-                // (read live per row by evaluate_arithmetic). Save/restore the pending internal-aggregate
-                // stash around the inner transform so it does not drop this level's aggregates.
+                // Scalar sub-query as an arithmetic operand: flatten it and return the bound parameter
+                // id, which the bound arithmetic tree re-reads on every execution rather than folding
+                // in. Save/restore the pending internal-aggregate stash around the inner transform so
+                // it does not drop this level's aggregates.
                 auto param_id =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 auto prev_pending = std::move(pending_internal_aggs_);

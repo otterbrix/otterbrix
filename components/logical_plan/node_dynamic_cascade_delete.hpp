@@ -27,7 +27,6 @@ namespace components::logical_plan {
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         components::catalog::oid_t seed_classid_;

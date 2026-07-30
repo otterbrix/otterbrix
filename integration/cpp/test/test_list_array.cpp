@@ -2,6 +2,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <string>
 
 using namespace components;
@@ -14,7 +15,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::list_array::fixed_array_crud") {
-    auto config = test_create_config("/tmp/test_list_array/fixed_array_crud");
+    auto config = test_create_config(test_temp_path("test_list_array/fixed_array_crud"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -82,7 +83,7 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
 }
 
 TEST_CASE("integration::list_array::fixed_array_element_types") {
-    auto config = test_create_config("/tmp/test_list_array/element_types");
+    auto config = test_create_config(test_temp_path("test_list_array/element_types"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -108,7 +109,7 @@ TEST_CASE("integration::list_array::fixed_array_element_types") {
 }
 
 TEST_CASE("integration::list_array::variadic_list_crud") {
-    auto config = test_create_config("/tmp/test_list_array/variadic_list_crud");
+    auto config = test_create_config(test_temp_path("test_list_array/variadic_list_crud"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -184,7 +185,7 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
 }
 
 TEST_CASE("integration::list_array::list_array_conversion") {
-    auto config = test_create_config("/tmp/test_list_array/conversion");
+    auto config = test_create_config(test_temp_path("test_list_array/conversion"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -227,7 +228,7 @@ TEST_CASE("integration::list_array::list_array_conversion") {
 }
 
 TEST_CASE("integration::list_array::list_to_array_length") {
-    auto config = test_create_config("/tmp/test_list_array/length_reconcile");
+    auto config = test_create_config(test_temp_path("test_list_array/length_reconcile"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -278,7 +279,7 @@ TEST_CASE("integration::list_array::list_to_array_length") {
 }
 
 TEST_CASE("integration::list_array::empty_array_literal") {
-    auto config = test_create_config("/tmp/test_list_array/empty_array");
+    auto config = test_create_config(test_temp_path("test_list_array/empty_array"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -312,7 +313,7 @@ TEST_CASE("integration::list_array::empty_array_literal") {
 }
 
 TEST_CASE("integration::list_array::array_default_padding") {
-    auto config = test_create_config("/tmp/test_list_array/default_padding");
+    auto config = test_create_config(test_temp_path("test_list_array/default_padding"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -383,8 +384,68 @@ TEST_CASE("integration::list_array::array_default_padding") {
     }
 }
 
+// A NOT NULL fixed-ARRAY column is size-checked by name in operator_check_constraint.
+// When the INSERT carries NO column list the write-set is not name-addressed, so the
+// alias lookup can miss a column that IS in the write-set (here the source column is
+// `w`, positionally the target `v`). Dropping the requirement on that miss let a
+// too-short value through silently -- the requirement must not be droppable by a name
+// miss that proves nothing.
+TEST_CASE("integration::list_array::array_size_unnamed_write_set") {
+    auto config = test_create_config(test_temp_path("test_list_array/array_size_unnamed"));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.nn (id bigint, v int[3] NOT NULL);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.src (id bigint, w int[]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.src (id, w) VALUES (5, ARRAY[1,2]);")->is_success());
+
+    // No column list => the write-set aliases (id, w) are not the statement's target
+    // names, so 'v' is unresolvable rather than provably absent.
+    auto cur = exec(dispatcher, "INSERT INTO TestDatabase.nn SELECT id, w FROM TestDatabase.src;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+    REQUIRE_FALSE(cur->is_success());
+    REQUIRE(std::string(cur->get_error().what).find("array column 'v'") != std::string::npos);
+
+    auto sel = exec(dispatcher, "SELECT v FROM TestDatabase.nn;");
+    REQUIRE(sel->is_success());
+    REQUIRE(sel->size() == 0); // nothing stored
+
+    // Control: the same column-list-less INSERT whose write-set DOES carry the target
+    // name resolves 'v', passes the size check and stores the row. Refusing the
+    // unresolvable case must not cost this one.
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.ok_src (id bigint, v int[]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.ok_src (id, v) VALUES (7, ARRAY[1,2,3]);")->is_success());
+    auto ok = exec(dispatcher, "INSERT INTO TestDatabase.nn SELECT id, v FROM TestDatabase.ok_src;");
+    INFO("control error: " << (ok->is_error() ? ok->get_error().what.c_str() : "none"));
+    REQUIRE(ok->is_success());
+    auto sel_ok = exec(dispatcher, "SELECT v FROM TestDatabase.nn;");
+    REQUIRE(sel_ok->is_success());
+    REQUIRE(sel_ok->size() == 1);
+
+    // Control: legitimate ABSENCE is untouched. A partial-column INSERT names its
+    // columns, so omitting the fixed-ARRAY column proves the statement left it to the
+    // table DEFAULT -- that row must still be stored, padded from the default.
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.dflt (id bigint, v int[3] NOT NULL DEFAULT ARRAY[1,2,3]);")
+                ->is_success());
+    auto partial = exec(dispatcher, "INSERT INTO TestDatabase.dflt (id) VALUES (1);");
+    INFO("partial-insert error: " << (partial->is_error() ? partial->get_error().what.c_str() : "none"));
+    REQUIRE(partial->is_success());
+    auto sel_partial = exec(dispatcher, "SELECT v FROM TestDatabase.dflt WHERE id = 1;");
+    REQUIRE(sel_partial->is_success());
+    REQUIRE(sel_partial->size() == 1);
+    // The row lands with the column's full declared length. What the DEFAULT fill puts
+    // in those slots is the storage append's contract, not this operator's -- asserted
+    // by integration::list_array::array_default_padding.
+    auto defaulted = sel_partial->value(0, 0);
+    REQUIRE(defaulted.children().size() == 3);
+}
+
 TEST_CASE("integration::list_array::subscript_in_where") {
-    auto config = test_create_config("/tmp/test_list_array/subscript_where");
+    auto config = test_create_config(test_temp_path("test_list_array/subscript_where"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -434,7 +495,7 @@ TEST_CASE("integration::list_array::subscript_in_where") {
 }
 
 TEST_CASE("integration::list_array::unsupported_clean_failures") {
-    auto config = test_create_config("/tmp/test_list_array/unsupported");
+    auto config = test_create_config(test_temp_path("test_list_array/unsupported"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -479,7 +540,7 @@ TEST_CASE("integration::list_array::unsupported_clean_failures") {
 }
 
 TEST_CASE("integration::list_array::full_array_update") {
-    auto config = test_create_config("/tmp/test_list_array/full_array_update");
+    auto config = test_create_config(test_temp_path("test_list_array/full_array_update"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -522,7 +583,7 @@ TEST_CASE("integration::list_array::full_array_update") {
 }
 
 TEST_CASE("integration::list_array::full_list_update") {
-    auto config = test_create_config("/tmp/test_list_array/full_list_update");
+    auto config = test_create_config(test_temp_path("test_list_array/full_list_update"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -570,7 +631,7 @@ TEST_CASE("integration::list_array::full_list_update") {
     }
 }
 TEST_CASE("integration::list_array::null_array_value_reads_safely") {
-    auto config = test_create_config("/tmp/test_list_array/null_array_value");
+    auto config = test_create_config(test_temp_path("test_list_array/null_array_value"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -605,7 +666,7 @@ TEST_CASE("integration::list_array::null_array_value_reads_safely") {
 // and a NULL row's value read through the children() idiom must be empty rather
 // than crashing the process.
 TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
-    auto config = test_create_config("/tmp/test_list_array/null_array_sql_ops");
+    auto config = test_create_config(test_temp_path("test_list_array/null_array_sql_ops"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -666,7 +727,7 @@ TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
 // simply unequal (never truncated/padded), and an empty sub-query yields a real empty array {} (unequal
 // to a non-empty column), not the NA-null sentinel.
 TEST_CASE("integration::list_array::array_equality_subquery") {
-    auto config = test_create_config("/tmp/test_list_array/array_eq_subquery");
+    auto config = test_create_config(test_temp_path("test_list_array/array_eq_subquery"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -705,7 +766,7 @@ TEST_CASE("integration::list_array::array_equality_subquery") {
 // A NULL element inside an ARRAY/LIST literal must be storable and must survive the round trip as a
 // NULL element (validity mask honored), for both fixed ARRAY[n] and variable-length LIST columns.
 TEST_CASE("integration::list_array::null_elements") {
-    auto config = test_create_config("/tmp/test_list_array/null_elements");
+    auto config = test_create_config(test_temp_path("test_list_array/null_elements"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

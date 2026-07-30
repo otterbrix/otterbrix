@@ -50,7 +50,6 @@ auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
 
 using components::logical_plan::node_aggregate_t;
 using components::logical_plan::parameter_node_t;
-using components::logical_plan::aggregate::operator_type;
 
 using ex_key_t = components::expressions::key_t;
 using components::expressions::expression_ptr;
@@ -74,7 +73,7 @@ using components::expressions::scalar_expression_t;
 using components::expressions::scalar_type;
 
 void normalize(compare_expression_ptr& expr) {
-    if (expr->type() == compare_type::invalid && std::holds_alternative<components::expressions::key_t>(expr->left())) {
+    if (expr->type() == compare_type::invalid && components::expressions::is_key(expr->left())) {
         expr->set_type(compare_type::eq);
     }
 }
@@ -294,53 +293,19 @@ auto to_statement(std::pmr::memory_resource* resource,
             auto name = py::str(key).cast<std::string>();
             constexpr static std::string_view prefix = "$";
             std::string result = name.substr(prefix.length());
-            operator_type op_type = components::logical_plan::aggregate::get_aggregate_type(result);
-            switch (op_type) {
-                case operator_type::invalid:
-                    break;
-                case operator_type::count: {
-                    break;
-                }
-                case operator_type::group: {
-                    aggregate->append_child(parse_group(resource, obj[key], aggregate, params));
-                    break;
-                }
-                case operator_type::limit: {
-                    break;
-                }
-                case operator_type::match: {
-                    aggregate->append_child(components::logical_plan::make_node_match(
-                        resource,
-                        aggregate->dbname(),
-                        aggregate->relname(),
-                        parse_find_condition_(resource, obj[key], aggregate, params)));
-                    break;
-                }
-                case operator_type::merge: {
-                    break;
-                }
-                case operator_type::out: {
-                    break;
-                }
-                case operator_type::project: {
-                    break;
-                }
-                case operator_type::skip: {
-                    break;
-                }
-                case operator_type::sort: {
-                    aggregate->append_child(parse_sort(resource, obj[key]));
-                    break;
-                }
-                case operator_type::unset: {
-                    break;
-                }
-                case operator_type::unwind: {
-                    break;
-                }
-                case operator_type::finish: {
-                    break;
-                }
+            // Only three `$<stage>` names lower to anything here. Every other name —
+            // including an unrecognised one — is ignored, which is exactly what the
+            // enum dispatch this replaced did (its other eleven arms were bare breaks).
+            if (result == "group") {
+                aggregate->append_child(parse_group(resource, obj[key], aggregate, params));
+            } else if (result == "match") {
+                aggregate->append_child(components::logical_plan::make_node_match(
+                    resource,
+                    aggregate->dbname(),
+                    aggregate->relname(),
+                    parse_find_condition_(resource, obj[key], aggregate, params)));
+            } else if (result == "sort") {
+                aggregate->append_child(parse_sort(resource, obj[key]));
             }
         }
     }

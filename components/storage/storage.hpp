@@ -38,7 +38,10 @@ namespace components::storage {
         virtual const std::vector<table::column_definition_t>& columns() const = 0;
         virtual size_t column_count() const = 0;
         virtual bool has_schema() const = 0;
-        virtual void adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) = 0;
+        // A storage column's NAME is column identity, not part of its type, so the schema a
+        // table adopts is the incoming chunk's schema record — {name, type} per column — and
+        // not a bare list of types with the names buried inside them (M3-B5).
+        virtual void adopt_schema(const std::pmr::vector<vector::column_schema_t>& schema) = 0;
         virtual void overlay_not_null(const std::string& col_name) = 0;
 
         virtual uint64_t total_rows() const = 0;

@@ -2,6 +2,7 @@
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/file/local_file_system.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
@@ -17,7 +18,7 @@
 
 namespace {
     std::string test_db_path() {
-        static std::string path = "/tmp/test_otterbrix_block_manager_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = test_temp_path("test_otterbrix_block_manager.otbx");
         return path;
     }
 
@@ -280,7 +281,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
 
 namespace {
     std::string corrupt_db_path(const char* tag) {
-        return "/tmp/test_otterbrix_blockmgr_err_" + std::string(tag) + "_" + std::to_string(::getpid()) + ".otbx";
+        return test_temp_path("test_otterbrix_blockmgr_err_" + std::string(tag) + ".otbx");
     }
 } // namespace
 

@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -49,7 +50,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::null_deep::array_subscript_of_null_cell") {
-    auto config = test_create_config("/tmp/test_null_deep/arr");
+    auto config = test_create_config(test_temp_path("test_null_deep/arr"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

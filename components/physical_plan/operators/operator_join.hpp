@@ -1,6 +1,9 @@
 #pragma once
 
-#include "predicates/predicate.hpp"
+#include "join_utils.hpp"
+#include "predicate_executor.hpp"
+
+#include <optional>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -51,8 +54,8 @@ namespace components::operators {
         // state_/output_ but not this build state.
         void reset_pipeline_state() noexcept override {
             layout_built_ = false;
-            res_types_.clear();
-            predicate_ = nullptr;
+            res_schema_.clear();
+            predicate_.reset();
             build_matched_.clear();
             build_chunk_offsets_.clear();
             indices_left_.clear();
@@ -67,8 +70,17 @@ namespace components::operators {
 
         // --- Build/probe state ---
         bool layout_built_{false};
-        std::pmr::vector<types::complex_logical_type> res_types_{resource_};
-        predicates::predicate_ptr predicate_{nullptr};
+        // The joined output schema: one record per output column, name and catalog
+        // identity included. A join merges two inputs into ONE chunk and the chunk keeps
+        // no record of the split, so the column's NAME is the only thing that says which
+        // side it came from — it cannot ride in the type, which is the slot M3 removes.
+        join_detail::output_schema_t res_schema_{resource_};
+        std::optional<predicate_executor_t> predicate_;
+        // Matching BUILD row indices for one probe row; sized once, reset per build chunk.
+        vector::indexing_vector_t match_selection_{nullptr, nullptr};
+        // Re-read from the pipeline context on every batch, never captured into the bound tree.
+        const logical_plan::storage_parameters* current_parameters_{nullptr};
+        core::date::timezone_offset_t current_session_tz_{};
         // RIGHT/FULL only: a flat "matched" marker (one byte per build row) over all
         // build chunks, with per-chunk start offsets so build row (chunk,row) maps to
         // build_matched_[build_chunk_offsets_[chunk] + row]. Unmatched build rows are

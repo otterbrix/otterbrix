@@ -30,6 +30,8 @@ namespace components::catalog::alter_column_validators {
         if (default_value->is_null()) {
             return core::error_t::no_error();
         }
+        // The column type carries the column's name (column_definition.cpp:21) and the default
+        // is a bare literal, so this has to be the shape question or every default is rejected.
         if (default_value->type() != column_type) {
             std::pmr::string msg{resource};
             msg.append("default value type mismatch");
@@ -40,17 +42,16 @@ namespace components::catalog::alter_column_validators {
 
     core::error_t
     validate_default_value_evaluatable(std::pmr::memory_resource* /*resource*/,
-                                       const std::optional<components::types::logical_value_t>& default_value) {
+                                       const std::optional<components::types::logical_value_t>& /*default_value*/) {
         // A materialised logical_value_t is evaluatable by construction; nothing to check yet.
-        (void) default_value;
         return core::error_t::no_error();
     }
 
     core::error_t
-    validate_cascade_dependencies(std::pmr::memory_resource* /*resource*/,
-                                  const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents) {
+    validate_cascade_dependencies(
+        std::pmr::memory_resource* /*resource*/,
+        const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& /*dependents*/) {
         // TODO: stub; real handler table dispatches on pg_depend.classid (see .hpp).
-        (void) dependents;
         return core::error_t::no_error();
     }
 

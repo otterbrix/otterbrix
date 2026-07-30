@@ -20,7 +20,9 @@ namespace components::storage {
 
         bool has_schema() const override { return !table_.columns().empty(); }
 
-        void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override { table_.adopt_schema(t); }
+        void adopt_schema(const std::pmr::vector<vector::column_schema_t>& schema) override {
+            table_.adopt_schema(schema);
+        }
 
         void overlay_not_null(const std::string& col_name) override { table_.overlay_not_null(col_name); }
 
@@ -37,6 +39,7 @@ namespace components::storage {
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
+            table_.stamp_column_identity(output);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
@@ -56,6 +59,7 @@ namespace components::storage {
             state.table_state.txn = txn;
             state.local_state.txn = txn;
             table_.scan(output, state);
+            table_.stamp_column_identity(output);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
@@ -75,6 +79,7 @@ namespace components::storage {
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
+            table_.stamp_column_identity(output);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
@@ -97,6 +102,7 @@ namespace components::storage {
             state.table_state.txn = txn;
             state.local_state.txn = txn;
             table_.scan(output, state);
+            table_.stamp_column_identity(output);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
@@ -127,6 +133,12 @@ namespace components::storage {
             state.local_state.txn = txn;
             auto types = table_.copy_types();
             table_.scan_batched(types, projected_cols, batches, state, resource_);
+            // M3-B4: every batch leaves the storage carrying its columns' catalog identity.
+            // Stamped here rather than inside scan_batched so the empty-batch case emitted
+            // below goes through the same single line.
+            for (auto& batch : batches) {
+                table_.stamp_column_identity(batch);
+            }
             // data_table_t::scan_batched keeps its void shape and leaves any buffer-pool OOM /
             // data_corruption in state.table_state.scan_error; surface it here as a value so the
             // agent_disk scan reply can carry it across the mailbox. On error the partially-filled
@@ -143,6 +155,7 @@ namespace components::storage {
                     batches.emplace_back(resource_, types, vector::DEFAULT_VECTOR_CAPACITY);
                 }
                 batches.back().set_cardinality(0);
+                table_.stamp_column_identity(batches.back());
             }
             // Apply LIMIT post-hoc by truncating trailing batches and the boundary chunk.
             if (limit >= 0) {
@@ -196,7 +209,10 @@ namespace components::storage {
             // data_table_t owns the transient-scan-state seek + single-batch read + position
             // advance (it has row_group.hpp; the scan state and its pins live and die inside that
             // call, so nothing pinned survives this round-trip).
-            return table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
+            auto fetched =
+                table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
+            table_.stamp_column_identity(output);
+            return fetched;
         }
 
         void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
@@ -207,6 +223,7 @@ namespace components::storage {
                 column_indices.emplace_back(static_cast<int64_t>(i));
             }
             table_.fetch(output, column_indices, row_ids, count, state);
+            table_.stamp_column_identity(output);
         }
 
         void scan_segment(int64_t start,

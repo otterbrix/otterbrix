@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -50,7 +51,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
-    auto config = test_create_config("/tmp/test_null_agg/grp");
+    auto config = test_create_config(test_temp_path("test_null_agg/grp"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -78,7 +79,7 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
 }
 
 TEST_CASE("integration::cpp::null_agg::count_over_all_null_table_is_zero") {
-    auto config = test_create_config("/tmp/test_null_agg/nogrp");
+    auto config = test_create_config(test_temp_path("test_null_agg/nogrp"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;

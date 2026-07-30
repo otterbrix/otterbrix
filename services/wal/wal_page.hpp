@@ -69,14 +69,14 @@ namespace services::wal {
             // Actually we store checksum in this struct, which is at the start of the page.
             // Offset of checksum within wal_page_header_t:
             //   page_lsn(8) + page_end_lsn(8) + num_records(4) + data_size(4) + flags(2) = 26
-            uint32_t saved = checksum;
+            // The incoming checksum is not preserved: it is replaced by the one computed below,
+            // which is the whole point of the call.
             checksum = 0;
             // Write header to page buffer so CRC covers the zeroed checksum
             std::memcpy(page_data, this, PAGE_HEADER_SIZE);
             checksum = compute_page_crc(page_data);
             // Write final checksum back to page buffer
             std::memcpy(page_data + offsetof(wal_page_header_t, checksum), &checksum, sizeof(checksum));
-            (void) saved;
         }
 
         /// Verify the checksum of the full page.

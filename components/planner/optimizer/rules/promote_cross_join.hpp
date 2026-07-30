@@ -14,14 +14,14 @@ namespace components::planner::optimizer {
     // the merged join schema, validate_logical_plan.cpp same_schema path), so
     // detect_equi_columns can never accept the cross join as-is. This rule classifies
     // the equi keys by PATH RANGE against the intact stamped scan children
-    // (left_width = children()[0]->output_types().size()), moves ONE qualifying
+    // (left_width = children()[0]->output_schema().size()), moves ONE qualifying
     // eq(key,key) onto a fresh inner join, re-localizes + re-sides the right-range
     // key, and keeps every other conjunct as a residual match.
     //
     // Multi-way: `FROM a, b, c` lowers to a left-deep chain
     // join{cross}(join{cross}(a, b), c). This rule recurses into EVERY cross join in
     // the source subtree — each nested join classifies its two keys against ITS OWN
-    // children's output_types() (not the outer merged schema) and claims the one WHERE
+    // children's output_schema() (not the outer merged schema) and claims the one WHERE
     // conjunct that straddles ITS boundary. A key's outer-merged path equals its index
     // within the left child (which spans the merged prefix), so classification and the
     // right-range re-localization (path = mergedIdx - left_width) hold at every depth.

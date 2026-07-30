@@ -29,19 +29,29 @@ namespace otterbrix {
             auto from_batches_func = pyarrow_lib_module.attr("Table").attr("from_batches");
             auto schema_import_func = pyarrow_lib_module.attr("Schema").attr("_import_from_c");
 
-            // Core to_arrow_schema derives column names from the type aliases; fold names into typed aliases.
-            std::pmr::vector<components::types::complex_logical_type> schema_types(std::pmr::get_default_resource());
-            schema_types.reserve(types.size());
+            // The cursor's names and its types are two lists; to_arrow_schema takes the one
+            // record that carries both. They used to be folded into the types' name slot,
+            // which is the overload M3-B5 removed.
+            auto* resource = std::pmr::get_default_resource();
+            components::vector::schema_t export_schema(resource);
+            export_schema.reserve(types.size());
             for (std::size_t i = 0; i < types.size(); i++) {
-                auto t = types[i];
+                components::vector::column_schema_t record{resource};
                 if (i < names.size()) {
-                    t.set_alias(names[i]);
+                    record.name.assign(names[i].data(), names[i].size());
                 }
-                schema_types.push_back(std::move(t));
+                record.type = types[i];
+                export_schema.push_back(std::move(record));
             }
 
             ArrowSchema schema;
-            components::vector::arrow::to_arrow_schema(&schema, schema_types);
+            // A column type with no Arrow format string cannot be exported. This binding has no
+            // error channel of its own, so surface it as an empty table rather than a half-built
+            // schema (to_arrow_schema leaves out_schema unpublished on error).
+            if (auto error = components::vector::arrow::to_arrow_schema(&schema, export_schema);
+                error.contains_error()) {
+                return py::none();
+            }
             auto schema_obj = schema_import_func(reinterpret_cast<uint64_t>(&schema));
 
             return py::cast<otterbrix::pyarrow::arrow_table_t>(from_batches_func(batches, schema_obj));

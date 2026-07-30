@@ -5,6 +5,7 @@
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -34,7 +35,7 @@ using session_id_t = components::session::session_id_t;
 
 namespace {
     std::string clean_break_dir() {
-        static std::string p = "/tmp/test_otterbrix_clean_break_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_clean_break");
         return p;
     }
 
@@ -58,7 +59,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;

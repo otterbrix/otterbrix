@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/operations_helper.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -148,14 +149,14 @@ std::unique_ptr<row_function> make_modulo_func(std::pmr::memory_resource* resour
 }
 
 TEST_CASE("integration::cpp::test_udfs") {
-    auto config = test_create_config("/tmp/test_udfs");
+    auto config = test_create_config(test_temp_path("test_udfs"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    auto schema = gen_schema(dispatcher->resource());
 
     INFO("initialization");
     {
@@ -166,9 +167,9 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             std::vector<components::table::column_definition_t> columns;
-            columns.reserve(types.size());
-            for (const auto& type : types) {
-                columns.emplace_back(type.alias(), type);
+            columns.reserve(schema.size());
+            for (const auto& column : schema) {
+                columns.emplace_back(std::string{column.name}, column.type);
             }
             test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }

@@ -24,10 +24,16 @@ namespace services::disk::detail {
     // ---------------------------------------------------------------------------
 
     namespace detail_impl_ {
+        // `txn` is the snapshot the scan reads under. transaction_data{0,0} is the
+        // "see all committed" view every existing caller wants; a REAL transaction is what a
+        // caller wants when it is looking for rows ITS OWN transaction has just written and
+        // not yet published — those are invisible to {0,0}, and the rows it deleted are
+        // still visible to it.
         template<typename Range, typename Fn>
         void inline_scan_range(components::table::data_table_t& table,
                                const Range& col_indices,
                                std::pmr::memory_resource* resource,
+                               components::table::transaction_data txn,
                                Fn&& fn) {
             std::vector<components::table::storage_index_t> col_ids;
             const auto& all_cols = table.columns();
@@ -50,6 +56,8 @@ namespace services::disk::detail {
 
             components::table::table_scan_state state(resource);
             table.initialize_scan(state, col_ids);
+            state.table_state.txn = txn;
+            state.local_state.txn = txn;
 
             while (true) {
                 components::vector::data_chunk_t chunk(resource,
@@ -72,7 +80,11 @@ namespace services::disk::detail {
                      std::initializer_list<std::int64_t> col_indices,
                      std::pmr::memory_resource* resource,
                      Fn&& fn) {
-        detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
+        detail_impl_::inline_scan_range(table,
+                                        col_indices,
+                                        resource,
+                                        components::table::transaction_data{0, 0},
+                                        std::forward<Fn>(fn));
     }
 
     template<typename Fn>
@@ -80,7 +92,23 @@ namespace services::disk::detail {
                      const std::vector<std::int64_t>& col_indices,
                      std::pmr::memory_resource* resource,
                      Fn&& fn) {
-        detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
+        detail_impl_::inline_scan_range(table,
+                                        col_indices,
+                                        resource,
+                                        components::table::transaction_data{0, 0},
+                                        std::forward<Fn>(fn));
+    }
+
+    // Snapshot overload: read under a REAL transaction rather than "see all committed".
+    // The caller that needs this is one patching rows its own uncommitted statement just
+    // wrote — see agent_disk_t::update_pg_attribute_commit_id_field_inner.
+    template<typename Fn>
+    void inline_scan_in_txn(components::table::data_table_t& table,
+                            const std::vector<std::int64_t>& col_indices,
+                            std::pmr::memory_resource* resource,
+                            components::table::transaction_data txn,
+                            Fn&& fn) {
+        detail_impl_::inline_scan_range(table, col_indices, resource, txn, std::forward<Fn>(fn));
     }
 
     // const overload: data_table_t::scan is read-only but not declared const,
@@ -93,6 +121,7 @@ namespace services::disk::detail {
         detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
                                         col_indices,
                                         resource,
+                                        components::table::transaction_data{0, 0},
                                         std::forward<Fn>(fn));
     }
 
@@ -104,6 +133,7 @@ namespace services::disk::detail {
         detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
                                         col_indices,
                                         resource,
+                                        components::table::transaction_data{0, 0},
                                         std::forward<Fn>(fn));
     }
 

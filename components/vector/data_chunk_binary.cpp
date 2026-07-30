@@ -63,12 +63,17 @@ namespace components::vector {
         }
 
         // Compute the size of the type header for a single column.
-        // Format: [logical_type:1][alias_length:2][alias:N][extension_type:1][extension_data:0-5]
-        uint32_t compute_type_header_size(const types::complex_logical_type& column_type) {
-            uint32_t header_size = 1 + 2; // logical_type + alias_length
-            if (column_type.has_alias()) {
-                header_size += static_cast<uint32_t>(column_type.alias().size());
-            }
+        // Format: [logical_type:1][name_length:2][name:N][extension_type:1][extension_data:0-5]
+        //
+        // M3-B2/B5: the name comes from the chunk's schema record, passed in by the caller —
+        // the only per-column datum in this header that is column IDENTITY rather than type.
+        // The bytes are unchanged by the move of the name onto the column: this codec has no
+        // version field, so its layout is not something a refactor may touch (test_wal is the
+        // round-trip proof).
+        uint32_t compute_type_header_size(std::string_view column_name,
+                                          const types::complex_logical_type& column_type) {
+            uint32_t header_size = 1 + 2; // logical_type + name_length
+            header_size += static_cast<uint32_t>(column_name.size());
             header_size += 1; // extension_type byte
             auto* extension = column_type.extension();
             if (extension) {
@@ -87,21 +92,20 @@ namespace components::vector {
         }
 
         // Write the type header for a single column. Returns pointer past written data.
-        char* write_type_header(char* output, const types::complex_logical_type& column_type) {
+        char* write_type_header(char* output,
+                                std::string_view column_name,
+                                const types::complex_logical_type& column_type) {
             // Logical type
             *reinterpret_cast<uint8_t*>(output) = static_cast<uint8_t>(column_type.type());
             output += 1;
 
-            // Alias
-            if (column_type.has_alias()) {
-                auto alias_length = static_cast<uint16_t>(column_type.alias().size());
-                write_le16(output, alias_length);
-                output += 2;
-                std::memcpy(output, column_type.alias().data(), alias_length);
-                output += alias_length;
-            } else {
-                write_le16(output, 0);
-                output += 2;
+            // Column name (M3-B2: taken from the chunk's schema record)
+            auto name_length = static_cast<uint16_t>(column_name.size());
+            write_le16(output, name_length);
+            output += 2;
+            if (name_length > 0) {
+                std::memcpy(output, column_name.data(), name_length);
+                output += name_length;
             }
 
             // Extension
@@ -142,10 +146,17 @@ namespace components::vector {
             return output;
         }
 
-        // Read the type header for a single column. Advances scan pointer. On any
-        // buffer-overflow sets ok=false and returns an INVALID-typed placeholder
-        // (caller must check ok before using the result).
-        types::complex_logical_type read_type_header(const char*& scan, const char* end, bool& ok) {
+        // Read the type header for a single column. Advances scan pointer and fills
+        // `column_name` with the header's name field. On any buffer-overflow sets ok=false
+        // and returns an INVALID-typed placeholder (caller must check ok before using it).
+        //
+        // The name comes OUT separately because it goes onto the column, which is where the
+        // encoder read it from (M3-B5). Returning it inside the type would make the two
+        // halves of one codec disagree about where a column's name lives, and would leave
+        // every decoded column carrying an extension it does not need.
+        types::complex_logical_type
+        read_type_header(const char*& scan, const char* end, bool& ok, std::string& column_name) {
+            column_name.clear();
             if (scan + 4 > end) {
                 ok = false;
                 return types::complex_logical_type{types::logical_type::INVALID};
@@ -155,17 +166,16 @@ namespace components::vector {
             auto logical_type_value = static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
             scan += 1;
 
-            // Alias
-            uint16_t alias_length = read_le16(scan);
+            // Column name
+            uint16_t name_length = read_le16(scan);
             scan += 2;
-            std::string alias;
-            if (alias_length > 0) {
-                if (scan + alias_length > end) {
+            if (name_length > 0) {
+                if (scan + name_length > end) {
                     ok = false;
                     return types::complex_logical_type{types::logical_type::INVALID};
                 }
-                alias.assign(scan, alias_length);
-                scan += alias_length;
+                column_name.assign(scan, name_length);
+                scan += name_length;
             }
 
             // Extension type
@@ -187,8 +197,7 @@ namespace components::vector {
                     uint32_t array_size = read_le32(scan);
                     scan += 4;
                     return types::complex_logical_type::create_array(inner_logical_type,
-                                                                     static_cast<size_t>(array_size),
-                                                                     std::move(alias));
+                                                                     static_cast<size_t>(array_size));
                 }
                 case 2: { // DECIMAL
                     if (scan + 2 > end) {
@@ -199,10 +208,10 @@ namespace components::vector {
                     scan += 1;
                     uint8_t scale = *reinterpret_cast<const uint8_t*>(scan);
                     scan += 1;
-                    return types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+                    return types::complex_logical_type::create_decimal(width, scale);
                 }
                 default: // no extension
-                    return types::complex_logical_type(logical_type_value, std::move(alias));
+                    return types::complex_logical_type{logical_type_value};
             }
         }
 
@@ -221,6 +230,10 @@ namespace components::vector {
     void serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer) {
         const auto num_columns = static_cast<uint16_t>(chunk.column_count());
         const auto num_rows = static_cast<uint32_t>(chunk.size());
+        // M3-B2: the names written into the per-column headers come from the chunk's own
+        // schema. `chunk` is const and nothing below mutates `data`, so one read covers both
+        // passes (sizing and writing) and the reference stays valid across them.
+        const auto& schema = chunk.schema();
 
         // ----- Build null mask (row-major, 1 bit per cell, bit=1 means valid) -----
         const uint64_t total_cells = static_cast<uint64_t>(num_columns) * num_rows;
@@ -262,7 +275,8 @@ namespace components::vector {
                 column_data_sizes[column_index] = static_cast<uint32_t>(element_size * num_rows);
             }
 
-            column_type_header_sizes[column_index] = compute_type_header_size(column.type());
+            column_type_header_sizes[column_index] =
+                compute_type_header_size(schema[column_index].name, column.type());
             total += column_type_header_sizes[column_index] + 4 + column_data_sizes[column_index];
         }
 
@@ -299,7 +313,7 @@ namespace components::vector {
             auto physical_type = column.type().to_physical_type();
 
             // Write type header (logical_type + alias + extension)
-            output = write_type_header(output, column.type());
+            output = write_type_header(output, schema[column_index].name, column.type());
 
             // Write data_size
             write_le32(output, column_data_sizes[column_index]);
@@ -359,19 +373,23 @@ namespace components::vector {
             pointer += null_mask_size;
         }
 
-        // First pass: read column types (peek ahead).
-        std::pmr::vector<types::complex_logical_type> column_types(resource);
-        column_types.reserve(num_columns);
+        // First pass: read the column schema (peek ahead).
+        schema_t column_schema(resource);
+        column_schema.reserve(num_columns);
 
         {
             const char* scan = pointer;
+            std::string column_name;
             for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
                 // Read type header
-                auto column_type = read_type_header(scan, end, ok);
+                auto column_type = read_type_header(scan, end, ok, column_name);
                 if (!ok) {
                     return make_empty_error_chunk(resource);
                 }
-                column_types.push_back(std::move(column_type));
+                column_schema_t record{resource};
+                record.name.assign(column_name.data(), column_name.size());
+                record.type = std::move(column_type);
+                column_schema.push_back(std::move(record));
 
                 // Skip data_size + data
                 if (scan + 4 > end) {
@@ -388,13 +406,18 @@ namespace components::vector {
             }
         }
 
-        data_chunk_t chunk(resource, column_types, num_rows);
+        // Built FROM the decoded schema, so each column is born with the name the encoder
+        // took off it. This is the WAL replay path, where a column that lost its name is not
+        // a cosmetic defect but a column the storage matcher fills with NULLs
+        // (manager_disk_storage.cpp routes replayed columns by name).
+        data_chunk_t chunk = make_chunk(resource, column_schema, num_rows);
         chunk.set_cardinality(num_rows);
 
         // Second pass: populate column data.
+        std::string skipped_name;
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             // Skip type header (already parsed in first pass)
-            read_type_header(pointer, end, ok);
+            read_type_header(pointer, end, ok, skipped_name);
             if (!ok) {
                 return make_empty_error_chunk(resource);
             }
@@ -403,7 +426,7 @@ namespace components::vector {
             pointer += 4;
 
             auto& column = chunk.data[column_index];
-            auto physical_type = column_types[column_index].to_physical_type();
+            auto physical_type = column_schema[column_index].type.to_physical_type();
 
             if (is_variable_type(physical_type)) {
                 if (data_size < (num_rows + 1) * 4) {

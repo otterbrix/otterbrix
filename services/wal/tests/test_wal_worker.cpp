@@ -1,5 +1,6 @@
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
+#include <components/tests/temp_dir.hpp>
 #include <memory>
 #include <memory_resource>
 #include <actor-zeta/spawn.hpp>
@@ -60,7 +61,7 @@ inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chu
     return batch;
 }
 
-static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_wal_worker";
+static const std::filesystem::path base_wal_worker_path = test_temp_path("otterbrix_test_wal_worker");
 
 // The manager self-drives on an internal loop thread and runs its workers on
 // the real shared_work scheduler, so futures from a send() to it become ready
@@ -87,7 +88,7 @@ struct test_wal_worker {
     test_wal_worker(const std::filesystem::path& path)
         : path_(path)
         , resource_()
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(initialization_logger("python", test_temp_path("docker_logs")))
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);
@@ -338,7 +339,7 @@ TEST_CASE("wal_worker::corruption_stop") {
         std::filesystem::create_directories(test_path);
 
         test_pool_resource_t resource;
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        auto log = initialization_logger("python", test_temp_path("docker_logs"));
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
         config.on = true;
@@ -408,7 +409,7 @@ TEST_CASE("wal_worker::corruption_stop") {
 
     // Re-create the environment on the same path (without clearing).
     test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = initialization_logger("python", test_temp_path("docker_logs"));
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.on = true;
@@ -459,7 +460,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         std::filesystem::create_directories(test_path);
 
         test_pool_resource_t resource;
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        auto log = initialization_logger("python", test_temp_path("docker_logs"));
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
         config.on = true;
@@ -510,7 +511,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
     // Re-open on the same directory (no cleanup).
     {
         test_pool_resource_t resource;
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        auto log = initialization_logger("python", test_temp_path("docker_logs"));
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
         config.on = true;
@@ -563,7 +564,7 @@ TEST_CASE("wal_worker::segment_rotation") {
     std::filesystem::create_directories(test_path);
 
     test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = initialization_logger("python", test_temp_path("docker_logs"));
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.on = true;
@@ -624,12 +625,14 @@ TEST_CASE("wal_worker::spanning_record") {
     // Write a single large insert.
     {
         auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
-        std::pmr::vector<components::types::complex_logical_type> types(arena);
-        types.emplace_back(components::types::logical_type::BIGINT, "id");
-        types.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
-        types.emplace_back(components::types::logical_type::DOUBLE, "score");
-        types.emplace_back(components::types::logical_type::BOOLEAN, "active");
-        auto chunk = gen_data_chunk(500, 0, types, arena);
+        components::vector::schema_t schema(arena);
+        using components::types::complex_logical_type;
+        using components::types::logical_type;
+        schema.push_back(gen_column(arena, "id", complex_logical_type{logical_type::BIGINT}));
+        schema.push_back(gen_column(arena, "name", complex_logical_type{logical_type::STRING_LITERAL}));
+        schema.push_back(gen_column(arena, "score", complex_logical_type{logical_type::DOUBLE}));
+        schema.push_back(gen_column(arena, "active", complex_logical_type{logical_type::BOOLEAN}));
+        auto chunk = gen_data_chunk(500, 0, schema, arena);
         auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
 
         auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
@@ -673,7 +676,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     std::filesystem::create_directories(test_path);
 
     test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = initialization_logger("python", test_temp_path("docker_logs"));
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.on = true;
@@ -740,7 +743,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     std::filesystem::create_directories(test_path);
 
     test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = initialization_logger("python", test_temp_path("docker_logs"));
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.on = true;

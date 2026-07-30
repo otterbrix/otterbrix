@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <chrono>
 #include <thread>
@@ -39,7 +40,7 @@ namespace {
             : actor_zeta::actor::actor_mixin<differential_fixture>()
             , resource_(resource)
             , disk_path_(disk_path)
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
             , disk_config_(disk_path)
@@ -184,7 +185,7 @@ namespace {
 // then SELECT. Assert SELECT cursor is successful and column shape matches.
 TEST_CASE("variant-e3 differential: SELECT pass-through") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_select");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_select"));
 
     fx.execute_sql("CREATE DATABASE ve3_sel;");
     (void) fx.take_result();
@@ -206,7 +207,7 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
         // SELECT must return success + at least one column type descriptor.
-        REQUIRE(cur->type_data().size() >= 1);
+        REQUIRE(cur->columns().size() >= 1);
     }
 }
 
@@ -215,7 +216,7 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
 // test_dispatcher_catalog.cpp::schemeful_operations.
 TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_create");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_create"));
 
     fx.execute_sql("CREATE DATABASE ve3_ct;");
     (void) fx.take_result();
@@ -248,7 +249,7 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
 // relkind='g' (computed-column adoption) variant is covered separately.
 TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_insert");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_insert"));
 
     fx.execute_sql("CREATE DATABASE ve3_ins;");
     (void) fx.take_result();
@@ -277,7 +278,7 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        REQUIRE(cur->type_data().size() >= 1);
+        REQUIRE(cur->columns().size() >= 1);
     }
 }
 
@@ -287,7 +288,7 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
 // all written.
 TEST_CASE("variant-e3 differential: CREATE INDEX") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_index");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_index"));
 
     fx.execute_sql("CREATE DATABASE ve3_idx;");
     (void) fx.take_result();
@@ -321,7 +322,7 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
 // "pg_class delete_id set + dropped storage list".
 TEST_CASE("variant-e3 differential: DROP TABLE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_drop"));
 
     fx.execute_sql("CREATE DATABASE ve3_drop;");
     (void) fx.take_result();
@@ -357,7 +358,7 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
 // column name there transitively guarantees the row was inserted.
 TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_alter");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_alter"));
 
     fx.execute_sql("CREATE DATABASE ve3_alt;");
     (void) fx.take_result();
@@ -411,7 +412,7 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
 // registered without a database prefix.
 TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_type");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_type"));
 
     fx.execute_sql("CREATE TYPE ve3_point_t AS (px int, py int);");
     {
@@ -453,7 +454,7 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
 // declared statically. Mirrors test_dispatcher_catalog.cpp::computed_operations.
 TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_computed");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_computed"));
 
     fx.execute_sql("CREATE DATABASE ve3_cg;");
     (void) fx.take_result();
@@ -501,7 +502,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
 // namespace is gone, no resolve_table call can succeed regardless of relkind.
 TEST_CASE("variant-e3 differential: DROP DATABASE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop_db");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_drop_db"));
 
     fx.execute_sql("CREATE DATABASE ve3_dropdb;");
     {
@@ -527,7 +528,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
 // is required for SELECT-on-view expansion (covered e2e elsewhere).
 TEST_CASE("variant-e3 differential: CREATE VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_view");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_view"));
 
     fx.execute_sql("CREATE DATABASE ve3_view;");
     (void) fx.take_result();
@@ -561,7 +562,7 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
 // which together can only happen if those rows were written.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_fk");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_fk"));
 
     fx.execute_sql("CREATE DATABASE ve3_fk;");
     (void) fx.take_result();
@@ -624,7 +625,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
 // relkind=='m' + parent still resolvable.
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_matview"));
 
     fx.execute_sql("CREATE DATABASE ve3_mv;");
     (void) fx.take_result();
@@ -664,7 +665,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
 // contype='c' row (with its parsed conexpr) drives operator_check_constraint.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_check");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_check"));
 
     fx.execute_sql("CREATE DATABASE ve3_chk;");
     (void) fx.take_result();
@@ -708,7 +709,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
 // double-fail), and an unknown-TZ error exercising the validation path.
 TEST_CASE("variant-e3 differential: SET TIME ZONE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_settz");
+    differential_fixture fx(mr.get(), test_temp_path("test_variant_e3_diff_settz"));
 
     // Valid timezone succeeds (pg_settings append + default_tz_cat_ mutation).
     fx.execute_sql("SET TIMEZONE TO 'utc';");

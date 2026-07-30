@@ -12,16 +12,6 @@ namespace components::logical_plan {
         , column_("", components::types::complex_logical_type{components::types::logical_type::UNKNOWN})
         , registered_cols_(resource) {}
 
-    // Fold op_ and computed_ into the hash so the add/rename/drop and computed
-    // variants land in distinct buckets of any node-keyed container (they all
-    // share node_type::alter_column_t). No per-field payload is folded.
-    hash_t node_alter_column_t::hash_impl() const {
-        hash_t hash_value{0};
-        boost::hash_combine(hash_value, static_cast<uint8_t>(op_));
-        boost::hash_combine(hash_value, computed_);
-        return hash_value;
-    }
-
     std::string node_alter_column_t::to_string_impl() const {
         if (computed_) {
             switch (op_) {

@@ -44,6 +44,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_group_by_node_data.cpp
         test_group_operator_contracts.cpp
         test_arithmetic.cpp
+        test_float_arithmetic.cpp
         test_clean_break_startup.cpp
         test_column_projection.cpp
         test_computed_schema.cpp
@@ -74,6 +75,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_pushdown_traffic.cpp
         test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp
+        test_match_limit.cpp
+        test_check_constraint_types.cpp
+        test_check_constraint_absence.cpp
+        test_empty_result_schema.cpp
+        test_write_set_type_coercion.cpp
+        test_vacuum_column_compaction.cpp
 
         # stress tests with sanitizer are incredibly slow
         $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_sql_features.cpp>

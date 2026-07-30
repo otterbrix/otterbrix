@@ -30,7 +30,6 @@ namespace components::logical_plan {
         const std::string& seqname() const noexcept { return seqname_; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string seqname_;

@@ -119,6 +119,26 @@ namespace services::dispatcher { namespace {
         return defaults;
     }
 
+    // The DECLARED type of every column, by name. Sits beside decode_column_defaults because it
+    // walks the same metadata for a neighbouring field: resolved_column_metadata_t carries `type`
+    // right next to the `atthasdefault` / `attdefspec` that one reads.
+    //
+    // The constraint operators need it to type a CHECK's literal. operator_check_constraint parses
+    // its CHECK text by hand, and its parse_const can only answer one of three types
+    // (STRING_LITERAL / DOUBLE / BIGINT) -- so without the declared type it compares the column
+    // against a constant of some OTHER type. That mismatch used to abort with assertions on and,
+    // worse, silently accept violating rows without them. Every column is listed, not only the
+    // defaulted ones: a column with no DEFAULT is exactly the case that was broken.
+    std::vector<std::pair<std::string, components::types::complex_logical_type>>
+    decode_column_types(const components::logical_plan::resolved_table_metadata_t& md) {
+        std::vector<std::pair<std::string, components::types::complex_logical_type>> types;
+        types.reserve(md.columns.size());
+        for (const auto& col : md.columns) {
+            types.emplace_back(col.attname, col.type);
+        }
+        return types;
+    }
+
     void enrich_insert_sync(components::logical_plan::node_insert_t* node,
                             const plan_resolve_index_t* idx,
                             core::date::timezone_offset_t session_tz) {
@@ -179,7 +199,7 @@ namespace services::dispatcher { namespace {
                     if (ci < kt.size()) {
                         col_name = kt[ci].as_string();
                     } else {
-                        col_name = std::string(col.type().alias());
+                        col_name = std::string(col.name());
                     }
                     const components::types::complex_logical_type* target_type = nullptr;
                     for (const auto& tc : md->columns) {
@@ -220,7 +240,13 @@ namespace services::dispatcher { namespace {
                     // recursive composite descent + tz-aware temporal casts + null
                     // preservation. No suitable batch accessor today, so left as-is
                     // rather than inventing a new abstraction.
-                    components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
+                    //
+                    // The coerced column is the SAME column, so the rebuild constructor gives it
+                    // `col`'s name (storage_append matches on it) and `col`'s catalog identity,
+                    // which the append matcher prefers over the name (M3-B4/B5). The identity used
+                    // to be dropped here outright, and the name could only be carried by copying
+                    // it into the new TYPE after the fact.
+                    components::vector::vector_t replacement(col.resource(), *target_type, col, chunk.capacity());
                     const auto rows = chunk.size();
                     for (std::uint64_t row = 0; row < rows; ++row) {
                         auto v = col.value(row);
@@ -233,11 +259,6 @@ namespace services::dispatcher { namespace {
                             }
                         }
                         replacement.set_value(row, v);
-                    }
-                    // Preserve the original column alias (used by storage_append
-                    // for name-based key matching).
-                    if (col.type().has_alias()) {
-                        replacement.type().set_alias(col.type().alias());
                     }
                     col = std::move(replacement);
                 }
@@ -257,11 +278,11 @@ namespace services::dispatcher { namespace {
         node->set_not_null_cols(std::move(nn));
     }
 
-    void enrich_create_collection_sync(components::logical_plan::node_create_collection_t* node,
+    void enrich_create_collection_sync(components::logical_plan::node_create_collection_t* /*node*/,
                                        const plan_resolve_index_t* /*idx*/) {
         // namespace_oid stamped by stamp_drop_oids_from_resolves from the
-        // sibling catalog_resolve_namespace_t; no per-node work here.
-        (void) node;
+        // sibling catalog_resolve_namespace_t; no per-node work here. Kept so the
+        // per-node-type dispatch at the call site covers create_collection explicitly.
     }
 
     // Name→OID lookup via the plan-tree index. Returns INVALID_OID on miss;
@@ -311,10 +332,10 @@ namespace services::catalog_resolve {
             if (!expr) {
                 return {};
             }
-            auto* sc = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
-            if (!sc) {
+            if (expr->group() != components::expressions::expression_group::scalar) {
                 return {}; // non-scalar (function/aggregate): out of scope
             }
+            const auto* sc = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
             if (sc->type() != components::expressions::scalar_type::get_field) {
                 return {}; // arithmetic/case_expr/coalesce/...: out of scope
             }
@@ -504,8 +525,9 @@ namespace services::catalog_resolve {
                             // refresh: mv_oid comes from sibling rt's resolved_metadata
                             // (which also carries view_sql — operator_resolve_table
                             // reads pg_rewrite for relkind='m').
-                            // No fields to stamp here — planner reads from rt directly.
-                            (void) c;
+                            // No fields to stamp here — planner reads from rt directly. The case is
+                            // listed so the switch stays exhaustive over the node types this loop
+                            // can see.
                             break;
                         }
                         case node_type::create_index_t: {
@@ -858,6 +880,7 @@ namespace services::dispatcher { namespace {
                     }
                     if (md != nullptr) {
                         node->set_column_defaults(decode_column_defaults(node->resource(), *md));
+                        node->set_column_types(decode_column_types(*md));
                     }
                 }
                 break;
@@ -883,6 +906,7 @@ namespace services::dispatcher { namespace {
                     }
                     if (md != nullptr) {
                         node->set_column_defaults(decode_column_defaults(node->resource(), *md));
+                        node->set_column_types(decode_column_types(*md));
                     }
                 }
                 break;
@@ -1030,6 +1054,53 @@ namespace services::dispatcher { namespace {
                 }
                 break;
             }
+            case node_type::alter_column_t: {
+                // RENAME and DROP COLUMN both name their target column;
+                // operator_alter_column_rename_t / _drop_t key their pg_attribute rewrite off
+                // attoid and treat INVALID_OID as "column not found, no-op". Resolve it here
+                // from the table's column list — the same by-attname loop create_index_t uses
+                // above. table_oid comes from the node's construction in rewrite_alter_table;
+                // this pass is the ALTER re-enrich the executor runs after that rewrite
+                // (executor::execute_plan_full).
+                //
+                // The two ops that stay unstamped:
+                //   add   — allocates its own attoid at execute time, nothing to stamp.
+                //   computed (relkind='g') — identified in pg_computed_column, a different
+                //           catalog with its own attoids; operator_computed_field_unregister_t
+                //           matches those by attname. A pg_attribute attoid would mis-key it.
+                //
+                // DROP was gated off here until the read side could survive it: pg_attribute is
+                // the LOGICAL schema and shrinks on a drop, while the storage's PHYSICAL column
+                // list is a separate list that only ever grows, so a scan that projected a
+                // resolved column by its POSITION answered `SELECT c` with b's values on
+                // (a,b,c) after dropping b. The scan now joins the storage chunk to the logical
+                // schema on each column's catalog identity (scan_identity_projection_t), which
+                // is indifferent to the hole the tombstone leaves behind.
+                auto* node = static_cast<node_alter_column_t*>(root.get());
+                if (node->computed()) {
+                    break;
+                }
+                if (node->op() != alter_column_op::rename && node->op() != alter_column_op::drop) {
+                    break;
+                }
+                if (node->table_oid() == components::catalog::INVALID_OID) {
+                    break;
+                }
+                const auto* tbl = tbl_md_for_oid(idx, node->table_oid());
+                if (!tbl) {
+                    break;
+                }
+                // rename names its target in old_name(), drop in column_name().
+                const std::string& target =
+                    node->op() == alter_column_op::rename ? node->old_name() : node->column_name();
+                for (const auto& ci : tbl->columns) {
+                    if (ci.attname == target) {
+                        node->set_attoid(ci.attoid);
+                        break;
+                    }
+                }
+                break;
+            }
             case node_type::drop_t: {
                 // All DROP kinds (incl. index): OIDs are stamped by
                 // stamp_drop_oids_from_resolves at the top of enrich_plan from
@@ -1063,12 +1134,13 @@ namespace services::dispatcher {
 
     actor_zeta::unique_future<core::error_t> enrich_plan(std::pmr::memory_resource* resource,
                                                          components::logical_plan::node_ptr root,
-                                                         actor_zeta::address_t disk_address,
+                                                         actor_zeta::address_t /*disk_address*/,
                                                          components::execution_context_t ctx,
                                                          const services::catalog_resolve::plan_resolve_index_t* idx,
                                                          actor_zeta::address_t index_address,
                                                          services::context_storage_t* collections_ctx) {
-        (void) disk_address;
+        // disk_address is part of the enrich_plan signature but nothing in this pass talks to the
+        // disk manager any more: catalog metadata arrives pre-resolved in `idx`.
         if (!root)
             co_return core::error_t::no_error();
         // drop_* nodes no longer carry user-typed names; copy OIDs from their

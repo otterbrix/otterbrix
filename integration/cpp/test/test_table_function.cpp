@@ -1,5 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <array>
@@ -13,26 +15,17 @@ static const std::string database_name = "testdatabase";
 
 namespace {
 
-    int find_column(const cursor_t& cur, std::string_view name) {
-        for (uint64_t i = 0; i < cur.column_count(); ++i) {
-            if (cur.chunks().front().data[i].type().alias() == name) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    }
-
     // (id, n, generate_series) with std::nullopt marking a SQL NULL (LEFT JOIN pad).
     using lat_row_t = std::array<std::optional<int64_t>, 3>;
 
     // Collect every result row as an (id, n, series) tuple, mapping columns by name
     // so the check is independent of physical column order. Order-insensitive: a
     // join/scan need not preserve outer-row order, so compare as a multiset.
-    std::multiset<lat_row_t> collect_rows(const cursor_t& cur, int c_id, int c_n, int c_series) {
+    std::multiset<lat_row_t> collect_rows(const cursor_t& cur, uint64_t c_id, uint64_t c_n, uint64_t c_series) {
         std::multiset<lat_row_t> rows;
         for (uint64_t r = 0; r < cur.size(); ++r) {
-            auto read = [&](int col) -> std::optional<int64_t> {
-                auto cell = cur.value(static_cast<uint64_t>(col), r);
+            auto read = [&](uint64_t col) -> std::optional<int64_t> {
+                auto cell = cur.value(col, r);
                 if (cell.is_null()) {
                     return std::nullopt;
                 }
@@ -46,7 +39,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::table_function::generate_series") {
-    auto config = test_create_config("/tmp/test_table_function");
+    auto config = test_create_config(test_temp_path("test_table_function"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -65,7 +58,7 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         REQUIRE(cur->column_count() == 1);
-        REQUIRE(find_column(*cur, "generate_series") == 0);
+        REQUIRE(test_column_index(*cur, "generate_series") == 0);
         // Single table-function source emits in order — assert exact values.
         for (uint64_t i = 0; i < 5; ++i) {
             REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i + 1));
@@ -94,7 +87,7 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
 }
 
 TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
-    auto config = test_create_config("/tmp/test_table_function_lateral");
+    auto config = test_create_config(test_temp_path("test_table_function_lateral"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -111,14 +104,14 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
     // Assert the full (id, n, series) tuple set, not just the row count, so a
     // correlation-binding bug that yields the right cardinality but wrong values
     // (or mislabelled columns) is caught.
-    auto check_columns = [](const cursor_t& cur, int& id_i, int& n_i, int& series_i) {
+    auto check_columns = [](const cursor_t& cur, uint64_t& id_i, uint64_t& n_i, uint64_t& series_i) {
         REQUIRE(cur.column_count() == 3);
-        id_i = find_column(cur, "id");
-        n_i = find_column(cur, "n");
-        series_i = find_column(cur, "generate_series");
-        REQUIRE(id_i >= 0);
-        REQUIRE(n_i >= 0);
-        REQUIRE(series_i >= 0);
+        id_i = test_column_index(cur, "id");
+        n_i = test_column_index(cur, "n");
+        series_i = test_column_index(cur, "generate_series");
+        REQUIRE(id_i != test_column_not_found);
+        REQUIRE(n_i != test_column_not_found);
+        REQUIRE(series_i != test_column_not_found);
     };
 
     INFO("FROM t, generate_series(1, t.n) — correlated expansion");
@@ -128,7 +121,7 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM " + database_name + ".t, generate_series(1, t.n);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        int id_i, n_i, series_i;
+        uint64_t id_i, n_i, series_i;
         check_columns(*cur, id_i, n_i, series_i);
         std::multiset<lat_row_t> expected{{{1, 2, 1}}, {{1, 2, 2}}, {{2, 3, 1}}, {{2, 3, 2}}, {{2, 3, 3}}};
         REQUIRE(collect_rows(*cur, id_i, n_i, series_i) == expected);
@@ -142,7 +135,7 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
                                                ".t JOIN LATERAL generate_series(1, t.n) ON true;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        int id_i, n_i, series_i;
+        uint64_t id_i, n_i, series_i;
         check_columns(*cur, id_i, n_i, series_i);
         std::multiset<lat_row_t> expected{{{1, 2, 1}}, {{1, 2, 2}}, {{2, 3, 1}}, {{2, 3, 2}}, {{2, 3, 3}}};
         REQUIRE(collect_rows(*cur, id_i, n_i, series_i) == expected);
@@ -159,7 +152,7 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
                                                ".t LEFT JOIN LATERAL generate_series(1, t.n) ON true;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 6);
-        int id_i, n_i, series_i;
+        uint64_t id_i, n_i, series_i;
         check_columns(*cur, id_i, n_i, series_i);
         // The (3, 0) outer row survives with a NULL series column.
         std::multiset<lat_row_t> expected{{{1, 2, 1}},
@@ -180,7 +173,7 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
             dispatcher->execute_sql(session, "SELECT * FROM " + database_name + ".t, generate_series(t.id, t.n);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        int id_i, n_i, series_i;
+        uint64_t id_i, n_i, series_i;
         check_columns(*cur, id_i, n_i, series_i);
         std::multiset<lat_row_t> expected{{{1, 2, 1}}, {{1, 2, 2}}, {{2, 3, 2}}, {{2, 3, 3}}};
         REQUIRE(collect_rows(*cur, id_i, n_i, series_i) == expected);

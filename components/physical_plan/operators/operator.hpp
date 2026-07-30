@@ -159,8 +159,8 @@ namespace components::operators {
         // plan_resolve_index.
         resolve_constraint,
         // ALLOCATE_OIDS — sends one allocate-batch request to the disk actor's
-        // oid_generator and stamps the resulting vector on the back-pointed node
-        // so the DDL planner can read it via oids().
+        // oid_generator and publishes the resulting OIDs on its own output(): one
+        // UINTEGER column, one row per OID, in allocation order.
         allocate_oids,
         // Host-extension operator: an operator_t subclass owned by embedding-host
         // code, delivered into the plan via node_extension_t's payload factory
@@ -193,8 +193,11 @@ namespace components::operators {
     };
 
     // EXPLAIN: a POD typed-event sink (raw fn-pointers + void* ctx — same idiom as explain_render_fn,
-    // NOT std::function). The services-side builder installs ctx + callbacks. No IR type crosses into
-    // components — this stays a plain forwarder.
+    // NOT std::function). Nothing is installed anywhere: the executor builds one on the STACK from
+    // the walk's own collector/builder (explain_plan.hpp's sink()) and passes it straight into
+    // explain_root->explain() in the same full-expression, so it lives exactly as long as the
+    // synchronous EXPLAIN walk that consumes it. It is never held as a member and never crosses an
+    // actor boundary. No IR type crosses into components — this stays a plain forwarder.
     struct explain_sink {
         void (*on_node)(void*, operator_type, catalog::oid_t, uint64_t, std::chrono::nanoseconds, uint64_t);
         void (*on_end)(void*);
@@ -314,12 +317,13 @@ namespace components::operators {
         bool has_error() const noexcept;
         const core::error_t& get_error() const noexcept;
 
-        // Plan-time resolved output column types (one per output column, in output
+        // Plan-time resolved output column list (one record per output column, in output
         // order), forwarded by the physical-plan generator from the logical node's
-        // output_types(). Default no-op; operators that emit a typed result (group /
-        // select) override it so a column produced over zero input rows stays correctly
-        // typed instead of the 0-byte logical_type::NA sentinel.
-        virtual void set_output_types(const std::pmr::vector<types::complex_logical_type>& types);
+        // output_schema(). Default no-op; operators that emit a typed result (group /
+        // select / union) override it so a column produced over zero input rows stays
+        // correctly typed instead of the 0-byte logical_type::NA sentinel — and, since
+        // M3-B5 step 8, correctly NAMED without reading the name back out of the type.
+        virtual void set_output_schema(const vector::schema_t& schema);
 
         // --- EXPLAIN ANALYZE per-operator instrumentation ---
         // Written ONLY by execute_pipeline when ctx->analyze is set; read ONLY by the EXPLAIN

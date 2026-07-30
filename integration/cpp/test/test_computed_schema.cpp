@@ -1,5 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <set>
 #include <string>
 
@@ -11,7 +13,7 @@
 static const database_name_t cs_db = "cs_testdb";
 
 TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
-    auto config = test_create_config("/tmp/test_computed_schema/basic");
+    auto config = test_create_config(test_temp_path("test_computed_schema/basic"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -65,7 +67,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
 }
 
 TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
-    auto config = test_create_config("/tmp/test_computed_schema/evolving");
+    auto config = test_create_config(test_temp_path("test_computed_schema/evolving"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -121,7 +123,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
 // but different types. SELECT * returns ALL of them; an explicit reference to the
 // ambiguous name errors (type selection is needed — see ::? in a later step).
 TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
-    auto config = test_create_config("/tmp/test_computed_schema/multitype_star");
+    auto config = test_create_config(test_temp_path("test_computed_schema/multitype_star"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -143,30 +145,29 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
         REQUIRE(cur->size() == 3);
         REQUIRE(cur->column_count() == 3);
 
-        // Locate the two 'val' columns by physical type.
+        // Locate the two 'val' columns by physical type: a computed table projects the
+        // same name once per type, so walk every match and split them by type.
         const auto& chunk = cur->chunks().front();
-        int bigint_val = -1, string_val = -1;
-        for (size_t c = 0; c < chunk.column_count(); ++c) {
-            if (std::string(chunk.data[c].type().alias()) != "val") {
-                continue;
-            }
-            if (chunk.data[c].type().type() == components::types::logical_type::BIGINT) {
-                bigint_val = static_cast<int>(c);
+        uint64_t bigint_val = test_column_not_found, string_val = test_column_not_found;
+        for (uint64_t c = test_column_index(*cur, "val"); c != test_column_not_found;
+             c = test_column_index(*cur, "val", c + 1)) {
+            if (cur->columns()[c].type.type() == components::types::logical_type::BIGINT) {
+                bigint_val = c;
             } else {
-                string_val = static_cast<int>(c);
+                string_val = c;
             }
         }
-        REQUIRE(bigint_val >= 0);
-        REQUIRE(string_val >= 0);
+        REQUIRE(bigint_val != test_column_not_found);
+        REQUIRE(string_val != test_column_not_found);
 
         // bigint variant: rows id=1,2 have values; id=3 (string row) is NULL.
-        REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(bigint_val), 0) == 1);
-        REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(bigint_val), 1) == 2);
-        REQUIRE(chunk.value(static_cast<size_t>(bigint_val), 2).is_null());
+        REQUIRE(chunk.get_value<int64_t>(bigint_val, 0) == 1);
+        REQUIRE(chunk.get_value<int64_t>(bigint_val, 1) == 2);
+        REQUIRE(chunk.value(bigint_val, 2).is_null());
         // string variant: only id=3 has a value.
-        REQUIRE(chunk.value(static_cast<size_t>(string_val), 0).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(string_val), 1).is_null());
-        REQUIRE(chunk.get_value<std::string_view>(static_cast<size_t>(string_val), 2) == "hello");
+        REQUIRE(chunk.value(string_val, 0).is_null());
+        REQUIRE(chunk.value(string_val, 1).is_null());
+        REQUIRE(chunk.get_value<std::string_view>(string_val, 2) == "hello");
     }
 
     SECTION("an explicit reference to the multi-type name is ambiguous") {
@@ -182,7 +183,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
 }
 
 TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
-    auto config = test_create_config("/tmp/test_computed_schema/delete");
+    auto config = test_create_config(test_temp_path("test_computed_schema/delete"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -227,7 +228,7 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
 // Nested fields are flattened: INSERT (a.b, a.c) creates columns "a/b","a/c".
 // A scalar jsonb chain (terminated by ->>/#>>) addresses one flattened column.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_scalar");
+    auto config = test_create_config(test_temp_path("test_computed_schema/jsonb_scalar"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -257,7 +258,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<int64_t>() == 9);
         REQUIRE(cur->value(0, 1).value<int64_t>() == 90);
-        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "xx");
+        REQUIRE(std::string(cur->chunks().front().data[0].name()) == "xx");
     }
 
     SECTION("#>> with dotted path and PG-array path are equivalent") {
@@ -289,7 +290,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
         auto cur = exec("SELECT j -> 'a' -> 'b' FROM cs_testdb.j ORDER BY x;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->column_count() == 1);
-        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "b");
+        REQUIRE(std::string(cur->chunks().front().data[0].name()) == "b");
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
         REQUIRE(cur->value(0, 1).value<int64_t>() == 10);
     }
@@ -300,7 +301,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
 // Note: a key absent from the table schema currently errors (see plan §0.1),
 // so tests use keys that exist in the schema.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_exists");
+    auto config = test_create_config(test_temp_path("test_computed_schema/jsonb_exists"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -350,7 +351,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
 // JSONB delete '-' / '#-' over a computing table. Returns a table = all columns
 // except those under the deleted prefix (column-set exclusion, expanded in SELECT).
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_delete");
+    auto config = test_create_config(test_temp_path("test_computed_schema/jsonb_delete"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -364,7 +365,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
     auto alias_set = [](const auto& cur) {
         std::set<std::string> s;
         for (size_t c = 0; c < cur->column_count(); ++c) {
-            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
+            s.insert(std::string(cur->chunks().front().data[c].name()));
         }
         return s;
     };
@@ -398,7 +399,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
 // SELECT-list form; `SELECT * FROM t -> 'a'` is intentionally not supported
 // (it would require a parser/grammar change).
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_expand");
+    auto config = test_create_config(test_temp_path("test_computed_schema/jsonb_expand"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -412,7 +413,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
     auto alias_set = [](const auto& cur) {
         std::set<std::string> s;
         for (size_t c = 0; c < cur->column_count(); ++c) {
-            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
+            s.insert(std::string(cur->chunks().front().data[c].name()));
         }
         return s;
     };
@@ -437,7 +438,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
         auto cur = exec("SELECT je -> 'a' -> 'c' FROM cs_testdb.je;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->column_count() == 1);
-        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "c");
+        REQUIRE(std::string(cur->chunks().front().data[0].name()) == "c");
         REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
     }
 }
@@ -446,7 +447,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
 // matches (the '::' cast is left for value conversion). 'val' is inserted as
 // bigint then string, producing two physical 'val' columns.
 TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
-    auto config = test_create_config("/tmp/test_computed_schema/multitype_variant");
+    auto config = test_create_config(test_temp_path("test_computed_schema/multitype_variant"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -499,7 +500,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
 // resolve single-type fields normally, drop/expand around the multi-type one,
 // and an unselected reference to the multi-type name stays ambiguous.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multitype") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_multitype");
+    auto config = test_create_config(test_temp_path("test_computed_schema/jsonb_multitype"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -512,7 +513,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
     auto alias_set = [](const auto& cur) {
         std::set<std::string> s;
         for (size_t c = 0; c < cur->column_count(); ++c) {
-            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
+            s.insert(std::string(cur->chunks().front().data[c].name()));
         }
         return s;
     };
@@ -565,7 +566,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
 // '::?' composes onto a jsonb-nav chain to pick the variant of a nested
 // multi-type leaf.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_mt_sem");
+    auto config = test_create_config(test_temp_path("test_computed_schema/jsonb_mt_sem"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -630,7 +631,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
 // detection must not treat it as a delete (or it dereferences null). See the
 // crash that 'INSERT ... ; SELECT -x' would otherwise cause.
 TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete") {
-    auto config = test_create_config("/tmp/test_computed_schema/unary_minus");
+    auto config = test_create_config(test_temp_path("test_computed_schema/unary_minus"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -650,4 +651,108 @@ TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete"
     REQUIRE(cur->size() == 2);
     REQUIRE(cur->value(0, 0).value<int64_t>() == -5);
     REQUIRE(cur->value(0, 1).value<int64_t>() == -7);
+}
+
+// Secondary index over a dynamic-schema (relkind='g') field whose type LATER
+// evolves into a multi-type field.
+//
+// (a) An index can NOT be created on an ALREADY multi-type name: CREATE INDEX
+//     validation resolves the key against the resolved column list, which holds
+//     both 'val' variants, so the key is ambiguous and the DDL is refused. That
+//     is what keeps index_engine's first-alias-match key lookup out of reach of
+//     a duplicate-name chunk — the backfill never runs for such a field.
+//
+// (b) An index built BEFORE the type evolves does survive, and the planner still
+//     picks it for a '::?'-selected predicate (context_storage_t::has_index_on
+//     compares only key.as_string(), which is plain "val"). single_field_index_t
+//     locked stored_type_ to BIGINT when it was backfilled, so every later STRING
+//     value is cast into the BIGINT key domain on the way in — lossily, not
+//     rejected — and ALL of them collapse onto ONE key. The equality probe casts
+//     the same way and hits every one of them. index_scan carries no
+//     operator_match above it, so the surplus rows reach the caller unfiltered:
+//     `val::?string = 'hello'` also returns the row whose value is 'world'.
+//
+// The unindexed twin holds the identical data and is the oracle: adding an index
+// must never change an answer.
+TEST_CASE("integration::cpp::test_computed_schema::index_over_evolving_multitype_field") {
+    // disk+wal ON: operator_create_index_backfill_t only runs its streaming
+    // backfill when a disk actor is wired (see test_create_index_backfill_batched).
+    auto config = test_create_config(test_temp_path("test_computed_schema/multitype_index"));
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+
+    SECTION("an index on an already multi-type name is refused") {
+        REQUIRE(exec("CREATE TABLE cs_testdb.mx ();")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.mx (id, val) VALUES (1, 10);")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.mx (id, val) VALUES (2, 'hello');")->is_success());
+        // 'val' now names two physical columns -> the index key cannot be resolved.
+        auto refused = exec("CREATE INDEX mx_val ON cs_testdb.mx (val);");
+        REQUIRE_FALSE(refused->is_success());
+        // ...and the refusal must SAY it is ambiguous. validate_key runs find_types
+        // against both sides; with one schema both sides answer ambiguous_name, and
+        // collapsing that pair into field_not_exists made an ambiguous key report
+        // "was not found" -- the opposite diagnosis, on a key that exists twice.
+        INFO("CREATE INDEX refusal: " << refused->get_error().what);
+        REQUIRE(refused->get_error().type == core::error_code_t::ambiguous_name);
+        // A single-type sibling in the same table indexes fine.
+        REQUIRE(exec("CREATE INDEX mx_id ON cs_testdb.mx (id);")->is_success());
+    }
+
+    SECTION("an index built before the type evolves must not change any answer") {
+        // Indexed table: 'val' is single-type BIGINT when the index is built.
+        REQUIRE(exec("CREATE TABLE cs_testdb.q ();")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.q (id, val) VALUES (1, 10), (2, 20);")->is_success());
+        {
+            auto cur = exec("CREATE INDEX q_val ON cs_testdb.q (val);");
+            INFO("CREATE INDEX: " << (cur->is_error() ? cur->get_error().what : "ok"));
+            REQUIRE(cur->is_success());
+        }
+        // Now 'val' evolves: two more rows carry it as STRING.
+        REQUIRE(exec("INSERT INTO cs_testdb.q (id, val) VALUES (3, 'hello');")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.q (id, val) VALUES (4, 'world');")->is_success());
+
+        // Unindexed twin with the identical data — the oracle.
+        REQUIRE(exec("CREATE TABLE cs_testdb.qn ();")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.qn (id, val) VALUES (1, 10), (2, 20);")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.qn (id, val) VALUES (3, 'hello');")->is_success());
+        REQUIRE(exec("INSERT INTO cs_testdb.qn (id, val) VALUES (4, 'world');")->is_success());
+
+        // Oracle: exactly one row holds the string 'hello'.
+        {
+            auto cur = exec("SELECT id FROM cs_testdb.qn WHERE val::?string = 'hello';");
+            INFO("unindexed twin: " << (cur->is_error() ? cur->get_error().what : "ok"));
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+        }
+
+        // The first-registered (BIGINT) variant still answers correctly.
+        {
+            auto cur = exec("SELECT id FROM cs_testdb.q WHERE val::?bigint = 20;");
+            INFO("indexed, bigint variant: " << (cur->is_error() ? cur->get_error().what : "ok"));
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        }
+
+        // Index parity for the evolved STRING variant. Today the index scan also
+        // yields the 'world' row, because both strings were folded into the same
+        // BIGINT-domain key.
+        {
+            auto cur = exec("SELECT id FROM cs_testdb.q WHERE val::?string = 'hello';");
+            INFO("indexed, string variant: " << (cur->is_error() ? cur->get_error().what : "ok"));
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+        }
+    }
 }

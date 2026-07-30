@@ -1,11 +1,12 @@
 #pragma once
 
 #include <components/physical_plan/operators/operator.hpp>
-#include <components/physical_plan/operators/predicates/predicate.hpp>
+#include <components/expressions/bound/expression_executor.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <string>
 #include <utility>
+#include <optional>
 #include <vector>
 
 namespace components::operators {
@@ -29,7 +30,12 @@ namespace components::operators {
                                     std::vector<std::pair<std::string, std::string>> check_exprs = {},
                                     std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {},
                                     std::vector<std::pair<std::string, types::logical_value_t>> column_defaults = {},
-                                    bool write_set_named = false);
+                                    bool write_set_named = false,
+                                    // DECLARED column types (name -> type). Each CHECK literal is
+                                    // typed from these ONCE, here, so the per-row comparison never
+                                    // faces a mismatched pair.
+                                    std::vector<std::pair<std::string, types::complex_logical_type>> column_types =
+                                        {});
 
         // STREAMING CONSTRAINT SINK. check_constraint is the PARENT of a DML sink in
         // the plan chain (check_constraint -> insert/update -> scan). Its validation
@@ -65,10 +71,15 @@ namespace components::operators {
         // write-set by the NOT NULL loop and the compiled CHECK predicates.
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
         bool write_set_named_{false};                                                     // see ctor note
-        std::vector<std::pair<std::string, predicates::predicate_ptr>> check_predicates_; // (name, compiled)
+        // (name, SQL text). The tree is bound on the FIRST write-set batch -- presence and column
+        // ordinals both come from the write-set, which does not exist at construction.
+        std::vector<std::pair<std::string, std::string>> check_exprs_;
+        std::pmr::vector<std::optional<expressions::expression_executor_t>> check_executors_;
+        bool check_bound_{false};
         // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
         // shorter than the size cannot be padded and is rejected with an error.
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
+        std::vector<std::pair<std::string, types::complex_logical_type>> column_types_;
     };
 
 } // namespace components::operators

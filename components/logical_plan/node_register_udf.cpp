@@ -7,8 +7,6 @@ namespace components::logical_plan {
         : node_t(resource, node_type::register_udf_t)
         , function_(std::move(function)) {}
 
-    hash_t node_register_udf_t::hash_impl() const { return 0; }
-
     std::string node_register_udf_t::to_string_impl() const {
         std::string out = "$register_udf[";
         if (function_) {

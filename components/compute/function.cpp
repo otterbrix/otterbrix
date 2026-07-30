@@ -2,6 +2,7 @@
 
 #include <core/pmr.hpp>
 
+#include <algorithm>
 #include <optional>
 
 using namespace components::vector;
@@ -94,7 +95,14 @@ namespace components::compute {
 
             // all batches must have same types
             for (auto it = ++args.begin(); it != args.end(); ++it) {
-                if (types != it->types()) {
+                // Same SHAPE across batches; the batches' column names are not the kernel's
+                // business and two batches that differ only in them are not a type mismatch.
+                const auto& other_types = it->types();
+                if (!std::equal(types.begin(),
+                                types.end(),
+                                other_types.begin(),
+                                other_types.end(),
+                                [](const auto& lhs, const auto& rhs) { return lhs == rhs; })) {
                     return core::error_t(core::error_code_t::kernel_error,
 
                                          std::pmr::string{"Type mismatch", resource});

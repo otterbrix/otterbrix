@@ -3,6 +3,9 @@ project(expressions CXX)
 set(SOURCE_${PROJECT_NAME}
         forward.cpp
         expression.cpp
+        bound/bound_expression.cpp
+        bound/expression_executor.cpp
+        bound/binder.cpp
         clone_expression.cpp
         compare_expression.cpp
         aggregate_expression.cpp

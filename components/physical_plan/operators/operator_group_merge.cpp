@@ -44,7 +44,7 @@ namespace components::operators {
                 row.data[j].set_null(0, true);
             }
             if (j < aggs_.size()) {
-                row.data[j].set_type_alias(aggs_[j].first);
+                row.set_column_name(j, aggs_[j].first);
             }
         }
         row.set_cardinality(1);

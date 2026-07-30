@@ -13,18 +13,23 @@ namespace services::planner::impl {
                        const components::logical_plan::node_ptr& node,
                        const components::logical_plan::storage_parameters* params) {
         const auto* node_insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
-        auto returning = build_returning_columns(context.resource, node_insert->returning(), params);
+        std::pmr::vector<components::operators::select_column_t> returning(context.resource);
+        if (!build_returning_columns(context.resource, node_insert->returning(), params, returning)) {
+            // Defensive guard tripped: return nullptr -> executor surfaces the error
+            // (rule 9: no throw on the operator-build path).
+            return nullptr;
+        }
         // Forward the plan-resolved RETURNING output types (stamped on the insert node by
         // validate_schema) onto the projection columns, in projection order, so a
         // CASE/COALESCE/deep-field RETURNING column over the appended rows stays correctly
         // typed instead of being dropped as an untyped (NA) placeholder. evaluate_projection
         // reads col.result_type authoritatively. Mirrors create_plan_aggregate's select path.
-        // No RETURNING -> output_types() is empty -> guard skips (no-op). No data-derived
-        // fallback (rule 6): a column without a resolved type stays unset.
-        if (node->has_output_types()) {
-            const auto& out_types = node->output_types();
-            for (size_t i = 0; i < returning.size() && i < out_types.size(); ++i) {
-                returning[i].result_type = out_types[i];
+        // No RETURNING -> node->produces_rows() is false and there is nothing to forward.
+        // No data-derived fallback (rule 6): a column without a resolved type stays unset.
+        if (node->produces_rows()) {
+            const auto& out_schema = node->output_schema();
+            for (size_t i = 0; i < returning.size() && i < out_schema.size(); ++i) {
+                returning[i].result_type = out_schema[i].type;
             }
         }
         auto plan = boost::intrusive_ptr(new components::operators::operator_insert(context.resource,

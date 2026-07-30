@@ -1,34 +1,29 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <array>
 #include <optional>
 #include <set>
+#include <string>
+#include <vector>
 
 using namespace components;
 using namespace components::cursor;
 
 namespace {
 
-    int find_column(const cursor_t& cur, std::string_view name) {
-        for (uint64_t i = 0; i < cur.column_count(); ++i) {
-            if (cur.chunks().front().data[i].type().alias() == name) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    }
-
     using row3_t = std::array<std::optional<int64_t>, 3>;
 
     // Collect the result as (col0, col1, col2) tuples mapped by the given column
     // indices; std::nullopt marks a SQL NULL. Order-insensitive multiset compare.
-    std::multiset<row3_t> collect(const cursor_t& cur, int c0, int c1, int c2) {
+    std::multiset<row3_t> collect(const cursor_t& cur, uint64_t c0, uint64_t c1, uint64_t c2) {
         std::multiset<row3_t> rows;
         for (uint64_t r = 0; r < cur.size(); ++r) {
-            auto read = [&](int col) -> std::optional<int64_t> {
-                auto cell = cur.value(static_cast<uint64_t>(col), r);
+            auto read = [&](uint64_t col) -> std::optional<int64_t> {
+                auto cell = cur.value(col, r);
                 if (cell.is_null()) {
                     return std::nullopt;
                 }
@@ -51,7 +46,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_where");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_where"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -67,12 +62,12 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     // outer (1,10) -> inner v in {100,101}; outer (2,20) -> inner v {200}.
     std::multiset<row3_t> expected{{{1, 10, 100}}, {{1, 10, 101}}, {{2, 20, 200}}};
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
@@ -88,7 +83,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
 // at emit time, fixing both. This asserts the full, correct 1:1 output at scale.
 TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     constexpr int64_t N = 1100; // > 1024 so the outer input spans >= 2 chunks
-    auto config = test_create_config("/tmp/test_lateral_subquery_multichunk");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_multichunk"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -128,16 +123,16 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == static_cast<uint64_t>(N));
-    int id_i = find_column(*cur, "id");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     // Every outer id must appear exactly once, paired with its own inner v (id + 100000).
     // A left/right chunk mixup would break the pairing; a UAF would abort under ASan.
     std::set<int64_t> seen_ids;
     for (uint64_t r = 0; r < cur->size(); ++r) {
-        auto id_cell = cur->value(static_cast<uint64_t>(id_i), r);
-        auto v_cell = cur->value(static_cast<uint64_t>(v_i), r);
+        auto id_cell = cur->value(id_i, r);
+        auto v_cell = cur->value(v_i, r);
         REQUIRE_FALSE(id_cell.is_null());
         REQUIRE_FALSE(v_cell.is_null());
         const int64_t id = id_cell.value<int64_t>();
@@ -149,7 +144,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::left_join_empty") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_left");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_left"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -170,18 +165,18 @@ TEST_CASE("integration::cpp::lateral_subquery::left_join_empty") {
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 4);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     std::multiset<row3_t> expected{{{1, 10, 100}}, {{1, 10, 101}}, {{2, 20, 200}}, {{5, 50, std::nullopt}}};
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::correlated_in_arithmetic") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_arith");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_arith"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -200,18 +195,18 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_in_arithmetic") {
     REQUIRE(cur->is_success());
     // id=1 -> v>150 -> {200,300}; id=2 -> v>300 -> {}.
     REQUIRE(cur->size() == 2);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     std::multiset<row3_t> expected{{{1, 10, 200}}, {{1, 10, 300}}};
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::right_full_lateral_rejected") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_rightfull");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_rightfull"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -236,7 +231,7 @@ TEST_CASE("integration::cpp::lateral_subquery::right_full_lateral_rejected") {
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::inner_join_on_predicate") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_on");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_on"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -254,18 +249,18 @@ TEST_CASE("integration::cpp::lateral_subquery::inner_join_on_predicate") {
     REQUIRE(cur->is_success());
     // outer (1,10): v in {100,101}, keep v>100 -> {101}; outer (2,20): v {200} -> {200}.
     REQUIRE(cur->size() == 2);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     std::multiset<row3_t> expected{{{1, 10, 101}}, {{2, 20, 200}}};
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::left_join_on_predicate_null_pads") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_on_left");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_on_left"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -283,18 +278,18 @@ TEST_CASE("integration::cpp::lateral_subquery::left_join_on_predicate_null_pads"
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     std::multiset<row3_t> expected{{{1, 10, std::nullopt}}, {{2, 20, std::nullopt}}};
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_fn");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_fn"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -318,22 +313,21 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
-    int id_i = find_column(*cur, "id");
-    int v_i = find_column(*cur, "v");
-    REQUIRE(id_i >= 0);
-    REQUIRE(v_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t v_i = test_column_index(*cur, "v");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(v_i != test_column_not_found);
     // length('a')=1 -> k=1 -> v{100,101}; length('bb')=2 -> k=2 -> v{200}.
     std::multiset<std::pair<int64_t, int64_t>> got;
     for (uint64_t r = 0; r < cur->size(); ++r) {
-        got.emplace(cur->value(static_cast<uint64_t>(id_i), r).value<int64_t>(),
-                    cur->value(static_cast<uint64_t>(v_i), r).value<int64_t>());
+        got.emplace(cur->value(id_i, r).value<int64_t>(), cur->value(v_i, r).value<int64_t>());
     }
     std::multiset<std::pair<int64_t, int64_t>> expected{{1, 100}, {1, 101}, {2, 200}};
     REQUIRE(got == expected);
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_arithmetic") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_projarith");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_projarith"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -349,18 +343,18 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_arithmetic") 
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int ten_i = find_column(*cur, "ten");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(ten_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t ten_i = test_column_index(*cur, "ten");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(ten_i != test_column_not_found);
     std::multiset<row3_t> expected{{{1, 10, 10}}, {{2, 20, 20}}};
     REQUIRE(collect(*cur, id_i, n_i, ten_i) == expected);
 }
 
 TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column") {
-    auto config = test_create_config("/tmp/test_lateral_subquery_proj");
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_proj"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -375,14 +369,60 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column"
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    int id_i = find_column(*cur, "id");
-    int n_i = find_column(*cur, "n");
-    int x_i = find_column(*cur, "x");
-    REQUIRE(id_i >= 0);
-    REQUIRE(n_i >= 0);
-    REQUIRE(x_i >= 0);
+    uint64_t id_i = test_column_index(*cur, "id");
+    uint64_t n_i = test_column_index(*cur, "n");
+    uint64_t x_i = test_column_index(*cur, "x");
+    REQUIRE(id_i != test_column_not_found);
+    REQUIRE(n_i != test_column_not_found);
+    REQUIRE(x_i != test_column_not_found);
     std::multiset<row3_t> expected{{{1, 10, 1}}, {{2, 20, 2}}};
     REQUIRE(collect(*cur, id_i, n_i, x_i) == expected);
+}
+
+// A LATERAL correlation is captured by TABLE QUALIFIER alone (outer_t.<anything>
+// lowers to a correlation parameter), so a reference to a column the outer relation
+// does not have reaches the plan as a parameter no schema check ever sees. Validation
+// must refuse it: it is a name that resolves to nothing, and only the lateral join
+// operator would notice — mid-execution, and never at all for EXPLAIN, which then
+// reports a plan for a query that cannot run.
+TEST_CASE("integration::cpp::lateral_subquery::unmatched_correlation_rejected") {
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_badcorr"));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed(dispatcher);
+
+    const std::string sql =
+        "SELECT * FROM s.outer_t, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = outer_t.nosuch) sub;";
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto explained = dispatcher->execute_sql(session, "EXPLAIN " + sql);
+        INFO("explain error: " << (explained->is_error() ? explained->get_error().what.c_str() : "none"));
+        REQUIRE(explained->is_error());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, sql);
+        REQUIRE(cur->is_error());
+        INFO("error: " << cur->get_error().what.c_str());
+        // Refused by the schema validator (the name does not exist), not by the
+        // operator's runtime binding step.
+        REQUIRE(cur->get_error().type == core::error_code_t::field_not_exists);
+    }
+
+    // A correlation that DOES name an outer column still validates and runs.
+    {
+        auto session = otterbrix::session_id_t();
+        auto ok = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM s.outer_t, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = outer_t.id) sub;");
+        INFO("control error: " << (ok->is_error() ? ok->get_error().what.c_str() : "none"));
+        REQUIRE(ok->is_success());
+        REQUIRE(ok->size() == 3);
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -394,7 +434,7 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column"
 // -------------------------------------------------------------------------
 
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series") {
-    auto config = test_create_config("/tmp/test_dml_lateral_delete");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_delete"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -429,7 +469,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series")
 }
 
 TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquery") {
-    auto config = test_create_config("/tmp/test_dml_lateral_update");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_update"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -467,7 +507,7 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquer
 }
 
 TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source") {
-    auto config = test_create_config("/tmp/test_dml_lateral_del_nowhere");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_del_nowhere"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -502,7 +542,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source"
 }
 
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preserves_rows") {
-    auto config = test_create_config("/tmp/test_dml_lateral_del_empty");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_del_empty"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -529,7 +569,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preser
 }
 
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_duplicate_matches_delete_once") {
-    auto config = test_create_config("/tmp/test_dml_lateral_del_dup");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_del_dup"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -558,7 +598,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_duplicate_matches
 }
 
 TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_change") {
-    auto config = test_create_config("/tmp/test_dml_lateral_upd_empty");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_upd_empty"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -591,7 +631,7 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_chan
 }
 
 TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_update_once") {
-    auto config = test_create_config("/tmp/test_dml_lateral_upd_dup");
+    auto config = test_create_config(test_temp_path("test_dml_lateral_upd_dup"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -625,4 +665,82 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_
         rows.insert(std::array<int64_t, 2>{check->value(0, r).value<int64_t>(), check->value(1, r).value<int64_t>()});
     }
     REQUIRE(rows == std::multiset<std::array<int64_t, 2>>{{{1, 111}}, {{2, 222}}, {{3, 0}}});
+}
+
+namespace {
+    // The result's column names, in output order.
+    std::vector<std::string> result_column_names(const cursor_t& cur) {
+        std::vector<std::string> names;
+        names.reserve(cur.columns().size());
+        for (const auto& column : cur.columns()) {
+            names.emplace_back(column.name.data(), column.name.size());
+        }
+        return names;
+    }
+} // namespace
+
+// A LATERAL join merges outer and inner into ONE chunk, and the merged chunk records
+// the split nowhere — the column NAME is the only user-visible trace of which side a
+// column came from. Unlike the other two joins it lays the output out from its
+// PLAN-TIME side schemas rather than from the input chunks (the inner sub-plan may
+// yield no chunk at all, for every outer row), so this pins the names its plan-time
+// currency has to carry, in all three layouts: (outer ++ inner) for the comma form,
+// the same under LEFT with an outer row whose inner side is empty, and the OUTER-only
+// layout of a semi join, where the inner columns are absent entirely.
+TEST_CASE("integration::cpp::lateral_subquery::output_column_names") {
+    auto config = test_create_config(test_temp_path("test_lateral_subquery_names"));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed(dispatcher);
+    {
+        auto session = otterbrix::session_id_t();
+        // (5,50) has no matching inner_t.k — the LEFT form must keep it, NULL-padded.
+        dispatcher->execute_sql(session, "INSERT INTO s.outer_t (id, n) VALUES (5, 50);");
+    }
+
+    const std::vector<std::string> outer_and_inner{"id", "n", "v"};
+
+    INFO("comma LATERAL — (outer ++ inner)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM s.outer_t, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = outer_t.id) sub;");
+        INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(result_column_names(*cur) == outer_and_inner);
+    }
+
+    INFO("LEFT JOIN LATERAL — the NULL-padded outer row keeps the inner column named");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM s.outer_t LEFT JOIN LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = "
+            "outer_t.id) sub ON true;");
+        INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(result_column_names(*cur) == outer_and_inner);
+    }
+
+    // A CORRELATED EXISTS in WHERE lowers to a lateral SEMI join (transform_select.cpp),
+    // whose output is the outer schema alone — the one layout where the two side
+    // schemas do not simply concatenate.
+    INFO("correlated EXISTS — the semi layout is the OUTER schema alone");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM s.outer_t WHERE EXISTS (SELECT 1 FROM s.inner_t WHERE inner_t.k = outer_t.id);");
+        INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        const std::vector<std::string> outer_only{"id", "n"};
+        REQUIRE(result_column_names(*cur) == outer_only);
+    }
 }

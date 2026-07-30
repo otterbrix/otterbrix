@@ -1,22 +1,14 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <core/operations_helper.hpp>
 #include <services/collection/executor.hpp>
 
 namespace {
-
-    int find_column(const components::cursor::cursor_t& cur, std::string_view name) {
-        const auto& chunk = cur.chunks().front();
-        for (uint64_t i = 0; i < chunk.column_count(); ++i) {
-            if (chunk.data[i].type().alias() == name) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    }
 
     template<typename Int>
     void check_int_array_1_2_3(const components::cursor::cursor_t& cur) {
@@ -34,7 +26,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/array_int_slot_width");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/array_int_slot_width"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -88,7 +80,7 @@ TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/alias_collision");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/alias_collision"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -126,19 +118,19 @@ TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->column_count() == 2);
 
-        int ai = find_column(*cur, "aname");
-        int bi = find_column(*cur, "bname");
-        REQUIRE(ai >= 0);
-        REQUIRE(bi >= 0);
+        uint64_t ai = test_column_index(*cur, "aname");
+        uint64_t bi = test_column_index(*cur, "bname");
+        REQUIRE(ai != test_column_not_found);
+        REQUIRE(bi != test_column_not_found);
         REQUIRE(ai != bi);
-        REQUIRE(cur->value(static_cast<uint64_t>(ai), 0).value<std::string_view>() == "A1");
-        REQUIRE(cur->value(static_cast<uint64_t>(bi), 0).value<std::string_view>() == "B1");
+        REQUIRE(cur->value(ai, 0).value<std::string_view>() == "A1");
+        REQUIRE(cur->value(bi, 0).value<std::string_view>() == "B1");
     }
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
     SECTION("table-qualified star") {
-        auto config = test_create_config("/tmp/test_correctness_bugs/star_prefix_table");
+        auto config = test_create_config(test_temp_path("test_correctness_bugs/star_prefix_table"));
         test_clear_directory(config);
         config.disk.on = false;
         config.wal.on = false;
@@ -174,20 +166,20 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->column_count() == 3);
 
-            int id_i = find_column(*cur, "id");
-            int a_i = find_column(*cur, "a");
-            int b_i = find_column(*cur, "b");
-            REQUIRE(id_i >= 0);
-            REQUIRE(a_i >= 0);
-            REQUIRE(b_i >= 0);
-            REQUIRE(cur->value(static_cast<uint64_t>(id_i), 0).value<int32_t>() == 1);
-            REQUIRE(cur->value(static_cast<uint64_t>(a_i), 0).value<std::string_view>() == "a");
-            REQUIRE(cur->value(static_cast<uint64_t>(b_i), 0).value<std::string_view>() == "b");
+            uint64_t id_i = test_column_index(*cur, "id");
+            uint64_t a_i = test_column_index(*cur, "a");
+            uint64_t b_i = test_column_index(*cur, "b");
+            REQUIRE(id_i != test_column_not_found);
+            REQUIRE(a_i != test_column_not_found);
+            REQUIRE(b_i != test_column_not_found);
+            REQUIRE(cur->value(id_i, 0).value<int32_t>() == 1);
+            REQUIRE(cur->value(a_i, 0).value<std::string_view>() == "a");
+            REQUIRE(cur->value(b_i, 0).value<std::string_view>() == "b");
         }
     }
 
     SECTION("struct field wildcard (out of scope, must error)") {
-        auto config = test_create_config("/tmp/test_correctness_bugs/star_prefix_struct");
+        auto config = test_create_config(test_temp_path("test_correctness_bugs/star_prefix_struct"));
         test_clear_directory(config);
         config.disk.on = false;
         config.wal.on = false;
@@ -222,7 +214,7 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/count_case_no_else");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/count_case_no_else"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -268,7 +260,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/min_max_avg_case_no_else");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/min_max_avg_case_no_else"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -347,7 +339,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
 // Now cast_as returns an error and the condition is guarded: a NULL operand makes
 // the comparison UNKNOWN, so the row falls through to ELSE. The query must succeed.
 TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/case_condition_null_operand");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/case_condition_null_operand"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -386,7 +378,7 @@ TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/enum_scan_predicate");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/enum_scan_predicate"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -458,7 +450,7 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
 // "re-insert the same id succeeds" probe, which is RED if a uniqueness-free physical
 // row still sits in the table.
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_linger") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_autocommit_no_linger");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/check_violation_autocommit_no_linger"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -526,7 +518,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_autocommit_no_linger");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/fk_violation_autocommit_no_linger"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -614,7 +606,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
 // move and the physical slot lingers — this assertion is RED. After the fix it bumps by
 // exactly one per leaked range.
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_reverts_physical_append") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_reverts_physical_append");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/check_violation_reverts_physical_append"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -652,7 +644,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_physical_append") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_reverts_physical_append");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/fk_violation_reverts_physical_append"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -704,7 +696,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_p
 // column key against a 0-column chunk. This is the deterministic, single-threaded
 // reproduction of the integration::cpp::production::concurrent_read_write abort.
 TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/aggregate_column_arg_empty_table");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/aggregate_column_arg_empty_table"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -768,7 +760,7 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
 // correctly-typed column, not an untyped logical_type::NA column (which crashes under
 // gcc -O3, same class as the empty-aggregate bug). Type is config-invariant.
 TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/projection_over_empty_table");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/projection_over_empty_table"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -814,7 +806,7 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
 // plain and the negated form. The transformer used to feed the NULL pattern's (nullptr)
 // string storage straight into like_to_regex and crash the process at transform time.
 TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/like_null_pattern");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/like_null_pattern"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -861,7 +853,7 @@ TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
 // the negated ANY/ALL forms already had (one canonical shape, disk pushdown included —
 // this test runs with disk on so the guarded filter goes through the storage scan).
 TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/scalar_not_like_null_subject");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/scalar_not_like_null_subject"));
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = false;
@@ -910,7 +902,7 @@ TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
 // are pinned, not counts: the wrong and the right row set both have 2 rows for `a < b`, and
 // 1 row for `a > b`.
 TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descale") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/decimal_operand_comparison_descale");
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/decimal_operand_comparison_descale"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -954,5 +946,53 @@ TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descal
         REQUIRE(cur->value(0, 0).value<int16_t>() == 5);
         REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DECIMAL);
         REQUIRE(cur->value(1, 0).value<int64_t>() == payload_3_00);
+    }
+}
+
+// A multi-argument aggregate whose argument list mixes a COLUMN with an ARITHMETIC EXPRESSION.
+//
+// This is the SQL surface of the argument-resolution hazard pinned at the operator level in
+// test_group_operator_contracts.cpp ("a column key survives an expression argument appended after
+// it"): resolving the expression argument APPENDS its computed column to the input chunk, which
+// reallocates chunk.data and used to invalidate the address of the column resolved before it.
+//
+// The gate that keeps that hazard off the SQL surface is FUNCTION VALIDATION, and this pins it:
+// the arity is rejected with a clean query error before any operator is built, and the engine
+// stays usable afterwards. Without this pin, relaxing the arity check would silently reopen the
+// operator-level path.
+TEST_CASE("integration::cpp::correctness_bugs::multi_arg_aggregate_rejected_by_arity") {
+    auto config = test_create_config(test_temp_path("test_correctness_bugs/multi_arg_aggregate_rejected_by_arity"));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.multiarg (id bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.multiarg (id) VALUES (1), (2), (3);")->is_success());
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT count(id, id + 1) AS c FROM t.multiarg;");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().what.find("count") != std::pmr::string::npos);
+    }
+    // The engine is still usable: the rejection is a query error, not a poisoned session.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT count(id) AS c FROM t.multiarg;");
+        INFO("count(id) error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 3);
     }
 }

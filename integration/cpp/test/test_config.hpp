@@ -3,12 +3,16 @@
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
 #include <sstream>
 #include <string>
 
-inline configuration::config test_create_config(const std::filesystem::path& path = std::filesystem::current_path()) {
+// `path` is normally built with test_temp_path(); the default keeps a caller that
+// passes nothing inside this run's private root rather than in the shared working
+// directory, where a second test process would write over it.
+inline configuration::config test_create_config(const std::filesystem::path& path = test_temp_root()) {
     return configuration::config::create_config(path);
     // To change log level
     // config.log.level =log_t::level::trace;
@@ -60,6 +64,17 @@ public:
         // null function at plan-gen).
         components::compute::function_registry_t::reset_default();
     }
+
+    // Test-only window onto the disk manager, for invariants that have no SQL surface.
+    // A storage column's catalog identity is one of them: it changes which column an
+    // append routes to, but never what a query returns, so a test that can only issue
+    // SQL cannot tell a stamped column from an identity-less one. Observing it directly
+    // is cheaper than asserting it indirectly, and an invariant nothing can observe is
+    // an invariant nobody will maintain.
+    //
+    // Only safe to call while the engine is quiescent (no statement in flight) — it
+    // reads the agent slices directly, the same contract as manager_disk_t::has_storage.
+    services::disk::manager_disk_t* disk_manager() { return manager_disk_.get(); }
 };
 
 // Shared integration-test helpers. Kept in a NAMED namespace (not global) so

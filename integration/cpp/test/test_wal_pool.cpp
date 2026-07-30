@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -28,11 +29,11 @@ static const collection_name_t collection_name_2 = "testcollection2";
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
+            auto schema = gen_schema(dispatcher->resource());                                            \
             std::vector<components::table::column_definition_t> columns;                                               \
-            columns.reserve(types.size());                                                                             \
-            for (const auto& type : types) {                                                                           \
-                columns.emplace_back(type.alias(), type);                                                              \
+            columns.reserve(schema.size());                                                                            \
+            for (const auto& column : schema) {                                                                        \
+                columns.emplace_back(std::string{column.name}, column.type);                                           \
             }                                                                                                          \
             test_create_collection(dispatcher, session, DB, COLL, columns);                                            \
         }                                                                                                              \
@@ -85,7 +86,7 @@ static const collection_name_t collection_name_2 = "testcollection2";
     } while (false)
 
 TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/per_worker_files");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/per_worker_files"));
     test_clear_directory(config);
 
     INFO("insert data to trigger WAL writes");
@@ -120,7 +121,7 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::recovery_after_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/recovery");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/recovery"));
     test_clear_directory(config);
 
     constexpr int kDocuments = 100;
@@ -152,7 +153,7 @@ TEST_CASE("integration::cpp::test_wal_pool::recovery_after_restart") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/index_durability");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/index_durability"));
     test_clear_directory(config);
 
     constexpr int kDocuments = 100;
@@ -210,7 +211,7 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/multi_coll_routing");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/multi_coll_routing"));
     test_clear_directory(config);
 
     constexpr int kDocuments = 50;
@@ -227,11 +228,11 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
         // Collection 2
         {
             auto session = otterbrix::session_id_t();
-            auto types = gen_data_chunk(0, dispatcher->resource()).types();
+            auto schema = gen_schema(dispatcher->resource());
             std::vector<components::table::column_definition_t> columns;
-            columns.reserve(types.size());
-            for (const auto& type : types) {
-                columns.emplace_back(type.alias(), type);
+            columns.reserve(schema.size());
+            for (const auto& column : schema) {
+                columns.emplace_back(std::string{column.name}, column.type);
             }
             test_create_collection(dispatcher, session, database_name, collection_name_2, columns);
         }
@@ -277,7 +278,7 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::update_wal_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/update_recovery");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/update_recovery"));
     test_clear_directory(config);
 
     constexpr int kDocuments = 100;
@@ -317,7 +318,7 @@ TEST_CASE("integration::cpp::test_wal_pool::update_wal_recovery") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/sql_dml_cycle");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/sql_dml_cycle"));
     test_clear_directory(config);
 
     constexpr int kDocuments = 100;
@@ -415,7 +416,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/constraint_enforce");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/constraint_enforce"));
     test_clear_directory(config);
 
     INFO("phase 1: create table with NOT NULL, test enforcement");
@@ -502,7 +503,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/constant_checkpoint");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/constant_checkpoint"));
     test_clear_directory(config);
 
     INFO("phase 1: create table, insert 100 constant-value rows, checkpoint");
@@ -558,7 +559,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
 }
 
 TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/insert_delete_checkpoint");
+    auto config = test_create_config(test_temp_path("otterbrix/integration/test_wal_pool/insert_delete_checkpoint"));
     test_clear_directory(config);
 
     INFO("phase 1: insert 100 rows, delete where count < 50, checkpoint");

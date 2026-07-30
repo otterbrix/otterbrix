@@ -27,7 +27,9 @@ using vec = std::vector<v>;
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
-                REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                            \
+                const auto* bound = agg->parameter(core::parameter_id_t(uint16_t(i)));                                 \
+                REQUIRE(bound != nullptr);                                                                             \
+                REQUIRE(*bound == PARAMS.at(i));                                                                       \
             }                                                                                                          \
         }                                                                                                              \
     }

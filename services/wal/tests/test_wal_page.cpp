@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <core/pmr.hpp>
 #include <filesystem>
 #include <fstream>
@@ -15,7 +16,7 @@ namespace {
         std::filesystem::path path;
 
         explicit tmp_dir_t(const std::string& name)
-            : path(std::filesystem::temp_directory_path() / name) {
+            : path(test_temp_path(name)) {
             std::filesystem::create_directories(path);
         }
 

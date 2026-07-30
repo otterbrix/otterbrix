@@ -28,38 +28,47 @@ using id_par = core::parameter_id_t;
 static const core::dbname_t db{"db"};
 static const core::relname_t rel{"t"};
 
+// A plan-node output schema of BIGINT columns with the given names, in the order the
+// validator would stamp them. An EMPTY name is a nameless column (a projected constant)
+// and is spelled with an empty string, where it used to be a type with no alias.
+static components::vector::schema_t node_schema(std::pmr::memory_resource* r,
+                                                std::initializer_list<std::string_view> col_names) {
+    components::vector::schema_t schema(r);
+    schema.reserve(col_names.size());
+    for (std::string_view name : col_names) {
+        components::vector::column_schema_t column{r};
+        column.name.assign(name.data(), name.size());
+        column.type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
+        schema.push_back(std::move(column));
+    }
+    return schema;
+}
+
 // data node with all BIGINT columns
-static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_list<const char*> col_names) {
-    std::pmr::vector<components::types::complex_logical_type> types(r);
-    for (const char* name : col_names) {
-        types.emplace_back(components::types::logical_type::BIGINT, name);
+static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_list<std::string_view> col_names) {
+    components::vector::schema_t schema(r);
+    for (std::string_view name : col_names) {
+        schema.push_back(
+            gen_column(r, name, components::types::complex_logical_type{components::types::logical_type::BIGINT}));
     }
     // optimizer only looks at the schema, so one row is enough
-    auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
+    auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, schema, r);
     auto node = make_node_raw_data(r, std::move(chunk));
-    // collect_subtree_columns() now reads a node's output_types() (the
-    // node_data_t column-name branch was removed). Stamp them here so a scan used
+    // collect_subtree_columns() now reads a node's output_schema() (the
+    // node_data_t column-name branch was removed). Stamp it here so a scan used
     // under a join exposes its columns to pushdown exactly as validate_schema would
-    // — otherwise the columns come back empty and nothing is pushed. Build the list
-    // on `r` and move it in.
-    std::pmr::vector<components::types::complex_logical_type> out_types(r);
-    for (const char* name : col_names) {
-        out_types.emplace_back(components::types::logical_type::BIGINT, name);
-    }
-    node->set_output_types(std::move(out_types));
+    // — otherwise the columns come back empty and nothing is pushed.
+    node->set_output_schema(node_schema(r, col_names));
     return node;
 }
 
 // disk-shaped scan: an aggregate_t{db,rel} that carries its columns ONLY in
-// output_types() (a real disk scan has no in-memory node_data_t child). Used to
-// prove collect_subtree_columns() reads output_types() rather than a data node.
-static node_aggregate_ptr make_disk_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> col_names) {
+// output_schema() (a real disk scan has no in-memory node_data_t child). Used to
+// prove collect_subtree_columns() reads output_schema() rather than a data node.
+static node_aggregate_ptr make_disk_scan(std::pmr::memory_resource* r,
+                                         std::initializer_list<std::string_view> col_names) {
     auto agg = make_node_aggregate(r, db, rel);
-    std::pmr::vector<components::types::complex_logical_type> out_types(r);
-    for (const char* name : col_names) {
-        out_types.emplace_back(components::types::logical_type::BIGINT, name);
-    }
-    agg->set_output_types(std::move(out_types));
+    agg->set_output_schema(node_schema(r, col_names));
     return agg;
 }
 
@@ -610,11 +619,11 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
     REQUIRE(schema.size() == 2);
 }
 
-// --- pushdown reads output_types(), not a node_data_t --------------
+// --- pushdown reads output_schema(), not a node_data_t --------------
 
-// A disk scan is an aggregate_t{db,rel} whose columns live ONLY in output_types()
+// A disk scan is an aggregate_t{db,rel} whose columns live ONLY in output_schema()
 // (no in-memory node_data_t). collect_subtree_columns() reads
-// output_types(), so single-table filters still bucket to the correct join side.
+// output_schema(), so single-table filters still bucket to the correct join side.
 // Before the fix: the old code looked for a node_data_t under each side, found
 // none, produced empty column sets, and pushed nothing (out == outer).
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
@@ -727,35 +736,34 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort")
     REQUIRE(join->children()[1]->children()[1]->type() == node_type::match_t);
 }
 
-// --- WHERE over a UNION whose output carries an alias-less column ------------
+// --- WHERE over a UNION whose output carries a NAMELESS column ---------------
 
-// A stamped union output column can be alias-less: a projected constant
-// (`SELECT id, 1 FROM t1 UNION ALL SELECT id, 2 FROM t2`) has no type extension,
-// and complex_logical_type::alias() asserts on a missing extension (nullptr
-// deref in Release). union_pos_of / branch_identity / collect_subtree_columns
-// must skip alias-less columns — they can never match a WHERE column name.
-// Before the fix: optimize() SIGABRTs inside the union pushdown.
-// After: the WHERE on "id" is pushed into both branches and the alias-less
-// column is simply ignored.
-TEST_CASE("logical_plan::pushdown_filter_union_skips_aliasless_output_column") {
+// A stamped union output column can be nameless: a projected constant
+// (`SELECT id, 1 FROM t1 UNION ALL SELECT id, 2 FROM t2`) has no name of its own.
+// union_pos_of / branch_identity / collect_subtree_columns must skip it — it can
+// never match a WHERE column name.
+//
+// This began as the pin for a CRASH: the name used to live inside the type, the
+// column had no type extension, and complex_logical_type::alias() asserts on that
+// (nullptr deref in Release), so optimize() SIGABRTed inside the union pushdown.
+// Since M3-B5 step 8 the name is a std::pmr::string in the plan node's schema
+// record, so "no name" is an empty string and the crash shape is gone by
+// construction. What the case still pins is the BEHAVIOUR the crash-fix bought:
+// the WHERE on "id" is pushed into both branches and the nameless column is
+// simply ignored.
+TEST_CASE("logical_plan::pushdown_filter_union_skips_nameless_output_column") {
     auto resource = core::pmr::otterbrix_resource();
 
     auto make_branch = [&]() {
         auto scan = make_node_aggregate(&resource, db, rel);
-        std::pmr::vector<components::types::complex_logical_type> out_types(&resource);
-        out_types.emplace_back(components::types::logical_type::BIGINT, "id");
-        out_types.emplace_back(components::types::logical_type::BIGINT); // projected constant: no alias
-        scan->set_output_types(std::move(out_types));
+        scan->set_output_schema(node_schema(&resource, {"id", ""})); // "" = projected constant, unnamed
         return scan;
     };
     auto b1 = make_branch();
     auto b2 = make_branch();
 
     auto uni = make_node_union(&resource, b1, b2, /*all=*/true);
-    std::pmr::vector<components::types::complex_logical_type> u_types(&resource);
-    u_types.emplace_back(components::types::logical_type::BIGINT, "id");
-    u_types.emplace_back(components::types::logical_type::BIGINT);
-    uni->set_output_types(std::move(u_types));
+    uni->set_output_schema(node_schema(&resource, {"id", ""}));
 
     auto cmp = make_compare_expression(&resource, compare_type::eq, key(&resource, "id", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
@@ -804,20 +812,12 @@ TEST_CASE("logical_plan::pushdown_filter_union_branches_do_not_share_mutated_con
     join->append_child(left_data);
     join->append_child(right_data);
     // Stamp the join's merged output schema exactly as validate_schema would.
-    std::pmr::vector<components::types::complex_logical_type> j_types(&resource);
-    for (const char* name : {"a", "b", "id", "d"}) {
-        j_types.emplace_back(components::types::logical_type::BIGINT, name);
-    }
-    join->set_output_types(std::move(j_types));
+    join->set_output_schema(node_schema(&resource, {"a", "b", "id", "d"}));
 
     auto scan2 = make_data(&resource, {"x", "y", "id", "z"});
 
     auto uni = make_node_union(&resource, join, scan2, /*all=*/true);
-    std::pmr::vector<components::types::complex_logical_type> u_types(&resource);
-    for (const char* name : {"a", "b", "id", "d"}) {
-        u_types.emplace_back(components::types::logical_type::BIGINT, name);
-    }
-    uni->set_output_types(std::move(u_types));
+    uni->set_output_schema(node_schema(&resource, {"a", "b", "id", "d"}));
 
     // WHERE id > ? — key stamped at union output position 2 (validator shape).
     key match_key(&resource, "id", side_t::left);

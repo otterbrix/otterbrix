@@ -1,6 +1,6 @@
 #include "operator_delete.hpp"
 #include "dml_util.hpp"
-#include "predicates/predicate.hpp"
+#include "predicate_executor.hpp"
 #include <components/vector/vector_operations.hpp>
 
 #include <components/context/context.hpp>
@@ -50,19 +50,20 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         const bool collect_returning = !returning_.empty();
-        auto types = chunk.types();
 
         // Match each row. expression_ is null for the simple predicate-scan DELETE
         // (the scan already pushed the WHERE), so create_all_true_predicate matches
         // every scan row; a non-null expression_ (legacy callers) is honored too.
-        auto predicate = expression_ ? predicates::create_predicate(resource_,
-                                                                    pipeline_context->function_registry,
-                                                                    expression_,
-                                                                    types,
-                                                                    types,
-                                                                    &pipeline_context->parameters,
-                                                                    pipeline_context->session_tz)
-                                     : predicates::create_all_true_predicate(resource_);
+        auto compiled = predicate_executor_t::create(resource_,
+                                                     expression_,
+                                                     chunk.schema(),
+                                                     chunk.schema(),
+                                                     pipeline_context->function_registry,
+                                                     &pipeline_context->parameters,
+                                                     pipeline_context->session_tz);
+        if (compiled.has_error()) {
+            return compiled.error();
+        }
 
         // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
         // pairs each staged old-row with its own id, regardless of batch order).
@@ -71,16 +72,20 @@ namespace components::operators {
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk.size());
 
+        // ONE evaluation for the batch. select() applies the rule itself: only a definitely-TRUE
+        // predicate deletes the row, so UNKNOWN (a NULL operand) keeps it.
+        vector::indexing_vector_t matched_rows(resource_, chunk.size() > 0 ? chunk.size() : 1);
+        auto selected = compiled.value().select(chunk,
+                                                chunk.size(),
+                                                pipeline_context->parameters,
+                                                pipeline_context->session_tz,
+                                                matched_rows);
+        if (selected.has_error()) {
+            return selected.error();
+        }
         size_t index = 0;
-        for (size_t i = 0; i < chunk.size(); i++) {
-            auto check_result = predicate->check(chunk, i);
-            if (check_result.has_error()) {
-                return check_result.error();
-            }
-            // Only a definitely-TRUE predicate deletes the row; UNKNOWN (NULL operand) keeps it.
-            if (!types::selects(check_result.value())) {
-                continue;
-            }
+        for (uint64_t sel = 0; sel < selected.value(); ++sel) {
+            const size_t i = matched_rows.get_index(sel);
             int64_t abs_id;
             if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                 abs_id = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
@@ -98,15 +103,18 @@ namespace components::operators {
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
-        for (const auto& type : types) {
-            modified_->updated_types_map()[{std::pmr::string(type.alias(), resource_), type}] += index;
+        // The key is (column name, column type), and both halves come off the chunk's schema —
+        // where the name is total. Read from the type, alias() asserted on its extension and
+        // dereferenced null in release for any column nobody had named (M3-B5).
+        for (const auto& record : chunk.schema()) {
+            modified_->updated_types_map()[{std::pmr::string(record.name, resource_), record.type}] += index;
         }
 
         // Stage the matched OLD scan rows + their absolute ids for the index mirror
         // (bounded: only matched rows). The merged staged chunk row k pairs with
         // index_old_row_ids_[k], so manager_index_t::delete_rows reads them aligned.
         {
-            data_chunk_t old_matched(resource_, types, index);
+            auto old_matched = vector::make_chunk(resource_, chunk.schema(), index);
             chunk.copy(old_matched, matched_indexing, index);
             old_matched.set_cardinality(index);
             index_old_chunks_.emplace_back(std::move(old_matched));
@@ -118,7 +126,7 @@ namespace components::operators {
         // Stage matched RETURNING rows: gather the matched subset, then project the
         // requested columns straight into capacity-bounded chunks.
         if (collect_returning) {
-            data_chunk_t affected(resource_, types, index);
+            auto affected = vector::make_chunk(resource_, chunk.schema(), index);
             chunk.copy(affected, matched_indexing, index);
             affected.set_cardinality(index);
             if (affected.size() != 0) {
@@ -156,25 +164,30 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         const bool collect_returning = !returning_.empty();
-        auto types_left = chunk_left.types();
-        // Right column types come from the first non-empty right chunk (every chunk
-        // shares the build-side schema); an all-empty build side yields no matches.
-        std::pmr::vector<types::complex_logical_type> types_right(resource_);
+        // The right schema comes from the first non-empty right chunk (every chunk shares the
+        // build-side schema); an all-empty build side yields no matches, and binds against no
+        // columns. Held as a POINTER, not a copy: a schema record is move-only by design, so
+        // "the schema of that chunk over there" is said by naming the chunk.
+        const vector::data_chunk_t* right_front = nullptr;
         for (const auto& rc : right_chunks) {
             if (rc.size() > 0) {
-                types_right = rc.types();
+                right_front = &rc;
                 break;
             }
         }
+        const vector::schema_t empty_schema{resource_};
 
-        auto predicate = expression_ ? predicates::create_predicate(resource_,
-                                                                    pipeline_context->function_registry,
-                                                                    expression_,
-                                                                    types_left,
-                                                                    types_right,
-                                                                    &pipeline_context->parameters,
-                                                                    pipeline_context->session_tz)
-                                     : predicates::create_all_true_predicate(resource_);
+        auto compiled = predicate_executor_t::create(resource_,
+                                                     expression_,
+                                                     chunk_left.schema(),
+                                                     right_front ? right_front->schema() : empty_schema,
+                                                     pipeline_context->function_registry,
+                                                     &pipeline_context->parameters,
+                                                     pipeline_context->session_tz);
+        if (compiled.has_error()) {
+            return compiled.error();
+        }
+        vector::indexing_vector_t right_matches(resource_, vector::DEFAULT_VECTOR_CAPACITY);
 
         // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
         // pairs each staged old-row with its own id, regardless of batch order).
@@ -192,7 +205,9 @@ namespace components::operators {
         // row into slot `index` directly instead. Bounded by chunk_left.size()
         // (<=DEFAULT_VECTOR_CAPACITY): the semi-join takes at most one right row per
         // left row.
-        data_chunk_t affected_right(resource_, types_right, chunk_left.size());
+        auto affected_right = vector::make_chunk(resource_,
+                                                 right_front ? right_front->schema() : empty_schema,
+                                                 chunk_left.size());
 
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
@@ -207,14 +222,23 @@ namespace components::operators {
                 if (chunk_right.size() == 0) {
                     continue;
                 }
-                for (size_t j = 0; j < chunk_right.size(); j++) {
-                    auto check_result = predicate->check(chunk_left, chunk_right, i, j);
-                    if (check_result.has_error()) {
-                        return check_result.error();
-                    }
-                    if (!types::selects(check_result.value())) {
-                        continue;
-                    }
+                // ONE left row against the whole right chunk, replacing a per-PAIR boxed check.
+                // DELETE ... USING is a SEMI-join -- the target is deleted once however many USING
+                // rows it matches -- so only the FIRST match is consumed, which is what the previous
+                // `break` expressed.
+                right_matches.reset(chunk_right.size());
+                auto matches = compiled.value().select_matches(chunk_left,
+                                                               i,
+                                                               chunk_right,
+                                                               chunk_right.size(),
+                                                               pipeline_context->parameters,
+                                                               pipeline_context->session_tz,
+                                                               right_matches);
+                if (matches.has_error()) {
+                    return matches.error();
+                }
+                if (matches.value() > 0) {
+                    const size_t j = right_matches.get_index(0);
                     // Storage / index delete keys on the ABSOLUTE table row id of the
                     // matched left row, NOT the left-chunk loop index — the two diverge
                     // once the table has gaps, multiple row groups, or a non-zero
@@ -234,10 +258,11 @@ namespace components::operators {
                     }
                     index++;
                     vector::validate_chunk_capacity(affected_right, index);
-                    // Semi-join: stop after the first matching USING row.
+                    // Semi-join: this target row is done, however many USING rows matched.
                     row_matched = true;
-                    break;
                 }
+                // Leaving the right-CHUNK loop is what the old inner `break` plus this one achieved
+                // together: the first match anywhere in the USING side finishes the target row.
                 if (row_matched) {
                     break;
                 }
@@ -254,8 +279,8 @@ namespace components::operators {
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
-        for (const auto& type : types_left) {
-            modified_->updated_types_map()[{std::pmr::string(type.alias(), resource_), type}] += index;
+        for (const auto& record : chunk_left.schema()) {
+            modified_->updated_types_map()[{std::pmr::string(record.name, resource_), record.type}] += index;
         }
 
         // Stage the matched OLD left rows + their absolute ids for the index mirror,
@@ -263,7 +288,7 @@ namespace components::operators {
         // row k pairs with index_old_row_ids_[k], so manager_index_t::delete_rows
         // reads them aligned, even when streaming leaves left_->output() empty.
         {
-            data_chunk_t old_matched(resource_, types_left, index);
+            auto old_matched = vector::make_chunk(resource_, chunk_left.schema(), index);
             chunk_left.copy(old_matched, matched_indexing, index);
             old_matched.set_cardinality(index);
             index_old_chunks_.emplace_back(std::move(old_matched));
@@ -278,7 +303,7 @@ namespace components::operators {
         // returning_staged_, which await_async_and_resume drains exactly like the
         // simple path.
         if (collect_returning) {
-            data_chunk_t affected_left(resource_, types_left, index);
+            auto affected_left = vector::make_chunk(resource_, chunk_left.schema(), index);
             chunk_left.copy(affected_left, matched_indexing, index);
             affected_left.set_cardinality(index);
 
@@ -495,11 +520,12 @@ namespace components::operators {
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
                                              table_oid_);
-            auto types = co_await std::move(tf);
+            auto schema = co_await std::move(tf);
             // The result carries only the affected-row count as cardinality (no row data),
-            // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the table's types.
-            set_output(make_operator_data(resource_,
-                                          dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
+            // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the relation's schema.
+            set_output(
+                make_operator_data(resource_,
+                                   dml_detail::make_affected_count_chunks(resource_, affected_rows_, schema)));
         }
         mark_executed();
     }

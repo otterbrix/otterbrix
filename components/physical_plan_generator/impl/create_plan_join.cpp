@@ -73,13 +73,13 @@ namespace services::planner::impl {
             // Filters each inner row against the outer row inside the operator.
             components::expressions::expression_ptr on_expression =
                 node->expressions().empty() ? nullptr : node->expressions()[0];
-            // Output types already were determined by the validator
-            std::pmr::vector<components::types::complex_logical_type> outer_schema(node->resource());
-            std::pmr::vector<components::types::complex_logical_type> inner_schema(node->resource());
-            outer_schema.assign(node->children().front()->output_types().begin(),
-                                node->children().front()->output_types().end());
-            inner_schema.assign(node->children().back()->output_types().begin(),
-                                node->children().back()->output_types().end());
+            // Output schema already was determined by the validator; each side's record
+            // carries its column's name beside its type, so the operator never has to
+            // recover one from a type.
+            auto outer_schema =
+                components::vector::clone_schema(node->resource(), node->children().front()->output_schema());
+            auto inner_schema =
+                components::vector::clone_schema(node->resource(), node->children().back()->output_schema());
             auto lateral =
                 boost::intrusive_ptr(new components::operators::operator_lateral_join_t(resource,
                                                                                         log.clone(),

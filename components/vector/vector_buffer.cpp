@@ -122,12 +122,12 @@ namespace components::vector {
         size_ += size - offset;
     }
 
-    void list_vector_buffer_t::push_back(types::logical_value_t&& node) {
+    core::error_t list_vector_buffer_t::push_back(types::logical_value_t&& node) {
         while (size_ + 1 > capacity_) {
             nested_data_->resize(capacity_, capacity_ * 2);
             capacity_ *= 2;
         }
-        nested_data_->set_value(size_++, node);
+        return nested_data_->set_value(size_++, node);
     }
 
     array_vector_buffer_t::array_vector_buffer_t(std::unique_ptr<vector_t> vector, uint64_t size, uint64_t capacity)

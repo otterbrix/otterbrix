@@ -13,7 +13,8 @@
 #include <absl/numeric/int128.h>
 
 #include <cassert>
-#include <stdexcept>
+#include <memory_resource>
+#include <string>
 #include <vector>
 
 namespace components::vector::arrow {
@@ -22,21 +23,33 @@ namespace components::vector::arrow {
     using types::logical_type;
     using types::physical_type;
 
-    arrow_appender_t::arrow_appender_t(std::pmr::vector<complex_logical_type> types, uint64_t initial_capacity)
-        : types_(std::move(types)) {
-        for (auto& type : types_) {
+    arrow_appender_t::arrow_appender_t(std::pmr::vector<complex_logical_type> types)
+        : types_(std::move(types)) {}
+
+    core::result_wrapper_t<arrow_appender_t> arrow_appender_t::create(std::pmr::vector<complex_logical_type> types,
+                                                                      uint64_t initial_capacity) {
+        arrow_appender_t appender(std::move(types));
+        for (auto& type : appender.types_) {
             auto entry = initialize_child(type, initial_capacity);
-            root_data_.push_back(std::move(entry));
+            if (entry.has_error()) {
+                return entry.error();
+            }
+            appender.root_data_.push_back(std::move(entry.value()));
         }
+        return appender;
     }
 
-    void arrow_appender_t::append(data_chunk_t& input, uint64_t from, uint64_t to, uint64_t input_size) {
+    core::error_t arrow_appender_t::append(data_chunk_t& input, uint64_t from, uint64_t to, uint64_t input_size) {
         assert(types_ == input.types());
         assert(to >= from);
         for (uint64_t i = 0; i < input.column_count(); i++) {
-            root_data_[i]->append_vector(*root_data_[i], input.data[i], from, to, input_size);
+            if (auto error = root_data_[i]->append_vector(*root_data_[i], input.data[i], from, to, input_size);
+                error.contains_error()) {
+                return error;
+            }
         }
         row_count_ += to - from;
+        return core::error_t::no_error();
     }
 
     uint64_t arrow_appender_t::row_count() const { return row_count_; }
@@ -61,8 +74,9 @@ namespace components::vector::arrow {
         delete holder;
     }
 
-    ArrowArray* arrow_appender_t::finalize_child(const types::complex_logical_type& type,
-                                                 std::unique_ptr<arrow_append_data_t> append_data_p) {
+    core::result_wrapper_t<ArrowArray*>
+    arrow_appender_t::finalize_child(const types::complex_logical_type& type,
+                                     std::unique_ptr<arrow_append_data_t> append_data_p) {
         auto result = std::make_unique<ArrowArray>();
 
         auto& append_data = *append_data_p;
@@ -78,14 +92,16 @@ namespace components::vector::arrow {
         result->buffers[0] = append_data.validity_buffer().data();
 
         if (append_data.finalize) {
-            append_data.finalize(append_data, type, result.get());
+            if (auto error = append_data.finalize(append_data, type, result.get()); error.contains_error()) {
+                return error;
+            }
         }
 
         append_data.array = std::move(result);
         return append_data.array.get();
     }
 
-    ArrowArray arrow_appender_t::finalize() {
+    core::result_wrapper_t<ArrowArray> arrow_appender_t::finalize() {
         assert(root_data_.size() == types_.size());
         auto root_holder = std::make_unique<arrow_append_data_t>();
 
@@ -103,8 +119,11 @@ namespace components::vector::arrow {
         root_holder->child_data = std::move(root_data_);
 
         for (uint64_t i = 0; i < root_holder->child_data.size(); i++) {
-            root_holder->child_arrays[i] =
-                *arrow_appender_t::finalize_child(types_[i], std::move(root_holder->child_data[i]));
+            auto child_array = arrow_appender_t::finalize_child(types_[i], std::move(root_holder->child_data[i]));
+            if (child_array.has_error()) {
+                return child_array.error();
+            }
+            root_holder->child_arrays[i] = *child_array.value();
         }
 
         result.private_data = root_holder.release();
@@ -119,8 +138,8 @@ namespace components::vector::arrow {
         append_data.finalize = OP::finalize;
     }
 
-    static void initialize_function_pointers(arrow_append_data_t& append_data,
-                                             const types::complex_logical_type& type) {
+    [[nodiscard]] static core::error_t initialize_function_pointers(arrow_append_data_t& append_data,
+                                                                    const types::complex_logical_type& type) {
         switch (type.type()) {
             case logical_type::BOOLEAN:
                 initialize_appender_templated<appender::arrow_bool_data_t>(append_data);
@@ -176,8 +195,15 @@ namespace components::vector::arrow {
                         initialize_appender_templated<appender::arrow_scala_data<absl::int128>>(append_data);
                         break;
                     default:
-                        throw std::runtime_error("Unsupported internal decimal type");
-                        break;
+                        // Unreachable: decimal_logical_type_extension fixes stored_as() once, in its
+                        // constructor, to one of the four widths above (decimal_storage_type). Kept as
+                        // an error rather than an assert so a future storage width fails loudly here
+                        // instead of producing an unappended column.
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string("arrow appender: no appender for DECIMAL stored as physical type " +
+                                                 std::to_string(static_cast<int>(type.to_physical_type())),
+                                             std::pmr::get_default_resource()));
                 }
                 break;
             }
@@ -224,18 +250,31 @@ namespace components::vector::arrow {
                 initialize_appender_templated<appender::arrow_interval_appender_t>(append_data);
                 break;
             default:
-                throw std::runtime_error("Unsupported type in OtterBrix -> initialize_function_pointers()");
+                // Reachable: to_arrow_schema writes a format string for types this switch has no
+                // appender for (NA -> "n" is the live case), so a schema can be built for a column
+                // whose data cannot be appended.
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("arrow appender: no appender for logical type " +
+                                                          std::to_string(static_cast<int>(type.type())),
+                                                      std::pmr::get_default_resource()));
         }
+        return core::error_t::no_error();
     }
 
-    std::unique_ptr<arrow_append_data_t> arrow_appender_t::initialize_child(const types::complex_logical_type& type,
-                                                                            const uint64_t capacity) {
+    core::result_wrapper_t<std::unique_ptr<arrow_append_data_t>>
+    arrow_appender_t::initialize_child(const types::complex_logical_type& type, const uint64_t capacity) {
         auto result = std::make_unique<arrow_append_data_t>();
-        initialize_function_pointers(*result, type);
+        if (auto error = initialize_function_pointers(*result, type); error.contains_error()) {
+            return error;
+        }
 
         const auto byte_count = (capacity + 7) / 8;
-        result->validity_buffer().reserve(byte_count);
-        result->initialize(*result, type, capacity);
+        if (auto error = result->validity_buffer().reserve(byte_count); error.contains_error()) {
+            return error;
+        }
+        if (auto error = result->initialize(*result, type, capacity); error.contains_error()) {
+            return error;
+        }
         return result;
     }
 

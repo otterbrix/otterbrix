@@ -37,6 +37,8 @@ namespace services::index {
 
     using index_name_t = std::string;
 
+    class bitcask_index_disk_t;
+
     // Owns its bitcask + btree state exclusively; callers reach it only via
     // mailbox sends to its address (no shared mutable state across the actor
     // boundary).
@@ -101,8 +103,16 @@ namespace services::index {
     private:
         log_t log_;
         std::unique_ptr<index_disk_t> index_disk_;
+        // The index_type the agent was built with. make_index_disk() picks the concrete
+        // index_disk_t from it (hashed -> bitcask, everything else -> btree), so it is also the
+        // discriminator for the two places that need the bitcask-only txn-log API: keeping it
+        // removes the dynamic_cast that used to re-derive what construction already decided.
+        components::logical_plan::index_type index_type_;
         components::catalog::oid_t table_oid_;
         bool is_dropped_{false};
+
+        // Non-null only for a hashed index — the sole kind backed by bitcask_index_disk_t.
+        bitcask_index_disk_t* bitcask_backend() const noexcept;
     };
 
     using index_agent_disk_ptr = std::unique_ptr<index_agent_disk_t, actor_zeta::pmr::deleter_t>;

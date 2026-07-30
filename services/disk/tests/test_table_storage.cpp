@@ -1,5 +1,6 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
@@ -16,7 +17,7 @@ using namespace components::vector;
 
 namespace {
     std::string test_dir() {
-        static std::string path = "/tmp/test_otterbrix_table_storage_" + std::to_string(::getpid());
+        static std::string path = test_temp_path("test_otterbrix_table_storage");
         return path;
     }
     void cleanup_test_dir() { std::filesystem::remove_all(test_dir()); }

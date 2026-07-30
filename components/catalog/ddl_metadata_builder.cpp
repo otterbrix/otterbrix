@@ -114,7 +114,7 @@ namespace components::catalog {
     build_create_table_writes(std::pmr::memory_resource* resource,
                               const std::string& /*dbname*/, // namespace resolved via namespace_oid
                               const std::string& relname,
-                              const std::vector<table::column_definition_t>& columns,
+                              std::vector<table::column_definition_t>& columns,
                               bool is_disk_storage,
                               oid_t namespace_oid,
                               oid_batch_t& oid_batch,
@@ -159,10 +159,16 @@ namespace components::catalog {
         attrs.reserve(columns.size());
         {
             std::int32_t attnum = 0;
-            for (const auto& col : columns) {
+            for (auto& col : columns) {
                 ++attnum;
                 attr_t a;
                 a.attoid = oid_batch.allocate();
+                // M3-B4: hand the identity back to the column definition, not only to the
+                // pg_attribute row. This vector goes on to become the physical storage's
+                // column list, so this single line is what lets the storage layer route by
+                // attoid instead of by name. set_attoid is immutable-after-first-write by
+                // contract, so a re-plan of the same node can only ever agree with itself.
+                col.set_attoid(a.attoid);
                 a.atttypid = (col.atttypid() != INVALID_OID) ? col.atttypid() : builtin_type_to_oid(col.type().type());
                 a.name = col.name();
                 a.attnum = attnum;

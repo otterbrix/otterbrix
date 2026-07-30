@@ -24,9 +24,10 @@ namespace components::operators {
 
     // Multi-chunk literal data: each input chunk already honours the ≤DEFAULT_VECTOR_CAPACITY
     // bound, so copy them across as the output batch one-for-one.
-    operator_raw_data_t::operator_raw_data_t(const std::pmr::vector<vector::data_chunk_t>& src_chunks)
+    operator_raw_data_t::operator_raw_data_t(std::pmr::memory_resource* resource,
+                                             const std::pmr::vector<vector::data_chunk_t>& src_chunks)
         : read_only_operator_t(nullptr, log_t{}, operator_type::raw_data) {
-        auto* resource = src_chunks.empty() ? std::pmr::get_default_resource() : src_chunks.front().resource();
+        assert(resource);
         chunks_vector_t chunks(resource);
         chunks.reserve(src_chunks.size());
         for (const auto& chunk : src_chunks) {

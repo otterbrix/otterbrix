@@ -48,9 +48,9 @@ namespace services::planner::impl {
             }
 
             // Check key_t on left, parameter_id_t on right
-            if (std::holds_alternative<expr::key_t>(comp.left()) &&
-                std::holds_alternative<core::parameter_id_t>(comp.right())) {
-                const auto& key = std::get<expr::key_t>(comp.left());
+            if (expr::is_key(comp.left()) &&
+                expr::is_parameter(comp.right())) {
+                const auto& key = expr::as_key(comp.left());
                 const bool range = is_range_compare(comp.type());
                 if (context.has_index_on(key) &&
                     (!range ||
@@ -60,9 +60,9 @@ namespace services::planner::impl {
                 }
             }
             // Check key_t on right, parameter_id_t on left (symmetric)
-            if (std::holds_alternative<core::parameter_id_t>(comp.left()) &&
-                std::holds_alternative<expr::key_t>(comp.right())) {
-                const auto& key = std::get<expr::key_t>(comp.right());
+            if (expr::is_parameter(comp.left()) &&
+                expr::is_key(comp.right())) {
+                const auto& key = expr::as_key(comp.right());
                 const bool range = is_range_compare(comp.type());
                 if (context.has_index_on(key) &&
                     (!range ||
@@ -130,29 +130,46 @@ namespace services::planner::impl {
                                                                const components::expressions::expression_ptr& expr,
                                                                components::logical_plan::limit_t limit,
                                                                const std::vector<size_t>& projected_cols) {
+            const auto* table_md = context.table_metadata_for(table_oid);
+            // A relation whose storage layout has outlived its logical schema (ALTER TABLE ...
+            // DROP COLUMN, before the next VACUUM) takes NEITHER a pushed-down filter NOR an
+            // index probe: both name a storage column by the LOGICAL ordinal the validator
+            // resolved, and those two stopped agreeing at the tombstone. The predicate runs
+            // ABOVE the scan instead, over a chunk the scan has already put back into logical
+            // layout (scan_identity_projection_t).
+            const bool displaced = components::operators::scan_identity_projection_t::displaced(table_md);
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
-                if (is_pure_compare(expr)) {
+                if (!displaced && is_pure_compare(expr)) {
                     auto comp_expr = reinterpret_cast<const expr::compare_expression_ptr&>(expr);
                     // Index selection: detect if an index is available for this predicate.
                     if (!comp_expr->is_union()) {
                         bool key_on_left = true;
                         if (can_use_index(context, *comp_expr, key_on_left)) {
-                            auto& key = key_on_left ? std::get<expr::key_t>(comp_expr->left())
-                                                    : std::get<expr::key_t>(comp_expr->right());
-                            auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())
-                                                        : std::get<core::parameter_id_t>(comp_expr->left());
-                            auto& value = get_parameter(context.parameters, param_id);
-                            auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
-                            auto preferred_index_type = context.preferred_index_type_for_compare(key, ctype);
-                            return boost::intrusive_ptr(new components::operators::index_scan(context.resource,
-                                                                                              context.log.clone(),
-                                                                                              table_oid,
-                                                                                              key,
-                                                                                              value,
-                                                                                              ctype,
-                                                                                              preferred_index_type,
-                                                                                              limit));
+                            auto& key = key_on_left ? expr::as_key(comp_expr->left())
+                                                    : expr::as_key(comp_expr->right());
+                            auto param_id = key_on_left ? expr::as_parameter(comp_expr->right())
+                                                        : expr::as_parameter(comp_expr->left());
+                            // An unbound parameter has no probe key, so there is nothing to look up
+                            // in the index. Fall through to the full_scan below, whose filter
+                            // lowering reports the missing binding as invalid_parameter — an
+                            // unbound parameter is an ERROR now, not an empty result. (It used to
+                            // probe the index with a NULL sentinel and yield no rows, before
+                            // absence moved outside the value domain; SQL statements cannot reach
+                            // this — the transformer registers a slot for every placeholder.)
+                            if (const auto* value = get_parameter(context.parameters, param_id)) {
+                                auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
+                                auto preferred_index_type = context.preferred_index_type_for_compare(key, ctype);
+                                return boost::intrusive_ptr(
+                                    new components::operators::index_scan(context.resource,
+                                                                          context.log.clone(),
+                                                                          table_oid,
+                                                                          key,
+                                                                          *value,
+                                                                          ctype,
+                                                                          preferred_index_type,
+                                                                          limit));
+                            }
                         }
                     }
 
@@ -161,7 +178,8 @@ namespace services::planner::impl {
                                                                                      table_oid,
                                                                                      comp_expr,
                                                                                      limit,
-                                                                                     projected_cols));
+                                                                                     projected_cols,
+                                                                                     table_md));
                 } else {
                     // Non-pushable predicate (column-vs-column, a function, a non-representable
                     // shape): the inner full_scan reads ALL raw rows (unlimit) because the filter
@@ -181,7 +199,8 @@ namespace services::planner::impl {
                                                              table_oid,
                                                              nullptr,
                                                              components::logical_plan::limit_t::unlimit(),
-                                                             projected_cols)));
+                                                             projected_cols,
+                                                             table_md)));
                     return match_operator;
                 }
             } else {
@@ -206,7 +225,8 @@ namespace services::planner::impl {
             // live columns by their chunk_position (resolved at resolve-table time).
             // For relkind='r' use caller's projected_cols (column_pruning output).
             std::vector<size_t> effective_cols;
-            if (const auto* md = context.table_metadata_for(node->table_oid())) {
+            const auto* md = context.table_metadata_for(node->table_oid());
+            if (md) {
                 if (md->relkind == components::catalog::relkind::computed) {
                     effective_cols.reserve(md->columns.size());
                     for (const auto& col : md->columns) {
@@ -222,7 +242,8 @@ namespace services::planner::impl {
                 return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
                                                                                      node->table_oid(),
                                                                                      limit,
-                                                                                     std::move(effective_cols)));
+                                                                                     std::move(effective_cols),
+                                                                                     md));
             } else {
                 // No-table sentinel scan (INVALID_OID, e.g. a no-FROM SELECT). It is a
                 // SOURCE that emits one synthetic 1-row placeholder batch (see

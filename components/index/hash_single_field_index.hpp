@@ -28,6 +28,8 @@ namespace components::index {
     private:
         class impl_t final : public index_t::iterator::iterator_impl_t {
         public:
+            static constexpr kind_t iterator_kind = kind_t::hash_single_field;
+
             explicit impl_t(const_iterator iterator);
             index_t::iterator::reference value_ref() const final;
             iterator_impl_t* next() final;

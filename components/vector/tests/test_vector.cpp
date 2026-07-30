@@ -209,16 +209,20 @@ TEST_CASE("components::vector::vector") {
         for (size_t i = 0; i < test_size; i++) {
             components::types::logical_value_t value = v.value(i);
             REQUIRE(value.type().type() == components::types::logical_type::STRUCT);
-            REQUIRE(value.type().alias() == "test_struct");
+            // M3-B3: "test_struct" is the COLUMN's name, and a cell has no column — value()
+            // no longer stamps it (it cost a global allocation per cell to do so). The TYPE's
+            // own name lives in the struct extension and still comes back with the value.
+            REQUIRE(value.type().type_name() == "struct");
+            REQUIRE(value.type().field_name().empty());
             REQUIRE(value.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
-            REQUIRE(value.type().child_types()[0].alias() == "flag");
+            REQUIRE(value.type().child_types()[0].field_name() == "flag");
             REQUIRE(value.type().child_types()[1].type() == components::types::logical_type::INTEGER);
-            REQUIRE(value.type().child_types()[1].alias() == "number");
+            REQUIRE(value.type().child_types()[1].field_name() == "number");
             REQUIRE(value.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
-            REQUIRE(value.type().child_types()[2].alias() == "name");
+            REQUIRE(value.type().child_types()[2].field_name() == "name");
             REQUIRE(value.type().child_types()[3].type() == components::types::logical_type::LIST);
             REQUIRE(value.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
-            REQUIRE(value.type().child_types()[3].alias() == "array");
+            REQUIRE(value.type().child_types()[3].field_name() == "array");
 
             REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
             REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);

@@ -147,4 +147,29 @@ namespace services::disk {
         co_return 0;
     }
 
+    manager_disk_t::unique_future<std::uint64_t>
+    manager_disk_t::compact_dropped_columns(execution_context_t /*ctx*/,
+                                            components::catalog::oid_t table_oid,
+                                            std::pmr::vector<components::catalog::oid_t> dead_attoids,
+                                            std::uint64_t compact_watermark) {
+        // Single route, same shape as compact_relkind_g_storage above: the whole compaction
+        // (identity match + rebuild + swap) runs intra-agent on the oid's owning agent.
+        if (!agents_.empty()) {
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[idx];
+            if (agent != nullptr) {
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                      &agent_disk_t::compact_dropped_columns_inner,
+                                                                      table_oid,
+                                                                      std::move(dead_attoids),
+                                                                      compact_watermark);
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                co_return co_await std::move(fut);
+            }
+        }
+        co_return 0;
+    }
+
 } // namespace services::disk

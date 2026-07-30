@@ -269,7 +269,7 @@ namespace components::sql::transform {
                         for (auto& chunk : data_node->chunks()) {
                             size_t column_index = 0;
                             for (auto colname : sub_select->alias->colnames->lst) {
-                                chunk.data[column_index].set_type_alias(strVal(colname.data));
+                                chunk.set_column_name(column_index, strVal(colname.data));
                                 column_index++;
                             }
                         }
@@ -441,7 +441,7 @@ namespace components::sql::transform {
                     for (auto& chunk : data_node->chunks()) {
                         size_t column_index = 0;
                         for (auto colname : sub_select->alias->colnames->lst) {
-                            chunk.data[column_index].set_type_alias(strVal(colname.data));
+                            chunk.set_column_name(column_index, strVal(colname.data));
                             column_index++;
                         }
                     }
@@ -755,10 +755,10 @@ namespace components::sql::transform {
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                             // PostgreSQL names unlabeled VALUES columns column1, column2, ... —
                             // an aggregate wrapper (LIMIT/ORDER BY tail) and the result cursor
-                            // read a column alias, and an untitled VALUES column would abort in
-                            // complex_logical_type::alias(). Only name columns left unaliased.
-                            if (!chunk.data[column_index].type().has_alias()) {
-                                chunk.data[column_index].set_type_alias("column" + std::to_string(column_index + 1));
+                            // read a column's name, and an untitled VALUES column would have
+                            // none. Only name columns left unnamed.
+                            if (!chunk.data[column_index].has_name()) {
+                                chunk.set_column_name(column_index, "column" + std::to_string(column_index + 1));
                             }
                         }
                         chunk.set_value(column_index, chunk_row, std::move(value.value()));
@@ -927,16 +927,6 @@ namespace components::sql::transform {
                         }
                         break;
                     }
-                    case T_ParamRef: {
-                        has_non_star = true;
-                        auto expr = make_scalar_expression(
-                            resource_,
-                            scalar_type::get_field,
-                            expressions::key_t{resource_, res->name ? res->name : get_str_value(res->val)});
-                        expr->append_param(add_param_value(res->val, plan->parameters.get()));
-                        select_node->append_expression(expr);
-                        break;
-                    }
                     case T_TypeCast: {
                         auto cast = pg_ptr_cast<TypeCast>(res->val);
                         if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
@@ -992,6 +982,12 @@ namespace components::sql::transform {
                         }
                         [[fallthrough]];
                     }
+                    // A positional parameter in the target list is a constant, exactly like the
+                    // literal it stands in for -- it names no column and resolves against no
+                    // schema. RETURNING has always grouped the three tags this way
+                    // (transform_returning.cpp); here T_ParamRef was left on the field-reference
+                    // path, where every reader then read its parameter slot as a key_t.
+                    case T_ParamRef:
                     case T_A_Const: {
                         has_non_star = true;
                         auto expr = make_scalar_expression(resource_,

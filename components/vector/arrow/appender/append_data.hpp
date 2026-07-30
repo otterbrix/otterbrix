@@ -31,17 +31,21 @@ namespace components::vector::arrow::appender {
         }
     }
 
-    typedef void (*initialize_t)(arrow_append_data_t& result,
-                                 const types::complex_logical_type& type,
-                                 uint64_t capacity);
-    typedef void (*append_vector_t)(arrow_append_data_t& append_data,
-                                    vector_t& input,
-                                    uint64_t from,
-                                    uint64_t to,
-                                    uint64_t input_size);
-    typedef void (*finalize_t)(arrow_append_data_t& append_data,
-                               const types::complex_logical_type& type,
-                               ArrowArray* result);
+    // The three appender hooks answer a core::error_t: buffer growth, unsupported column types
+    // and Arrow's own shape rules (32-bit list offsets, non-null map keys) all fail here, and
+    // components/vector may not throw -- an exception escaping an actor coroutine is swallowed
+    // by an empty unhandled_exception() under NDEBUG, losing the batch silently.
+    typedef core::error_t (*initialize_t)(arrow_append_data_t& result,
+                                          const types::complex_logical_type& type,
+                                          uint64_t capacity);
+    typedef core::error_t (*append_vector_t)(arrow_append_data_t& append_data,
+                                             vector_t& input,
+                                             uint64_t from,
+                                             uint64_t to,
+                                             uint64_t input_size);
+    typedef core::error_t (*finalize_t)(arrow_append_data_t& append_data,
+                                        const types::complex_logical_type& type,
+                                        ArrowArray* result);
 
     struct arrow_append_data_t {
         explicit arrow_append_data_t() {
@@ -67,11 +71,13 @@ namespace components::vector::arrow::appender {
             null_count++;
         }
 
-        void add_validity(unified_vector_format& format, uint64_t from, uint64_t to) {
+        [[nodiscard]] core::error_t add_validity(unified_vector_format& format, uint64_t from, uint64_t to) {
             uint64_t size = to - from;
-            validity_buffer().resize_validity(row_count + size);
+            if (auto error = validity_buffer().resize_validity(row_count + size); error.contains_error()) {
+                return error;
+            }
             if (format.validity.all_valid()) {
-                return;
+                return core::error_t::no_error();
             }
 
             auto validity_data = validity_buffer().data();
@@ -85,6 +91,7 @@ namespace components::vector::arrow::appender {
                 }
                 next_bit(current_byte, current_bit);
             }
+            return core::error_t::no_error();
         }
 
         uint64_t row_count = 0;

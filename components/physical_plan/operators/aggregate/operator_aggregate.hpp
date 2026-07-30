@@ -6,9 +6,21 @@
 
 namespace components::operators::aggregate {
 
+    class operator_func_t;
+
     class operator_aggregate_t : public read_only_operator_t {
     public:
         compute::datum_t take_batch_values();
+
+        // Is this aggregator a call to a REGISTERED function, and if so, which one?
+        //
+        // operator_group_t asks in order to decide whether a group can take the vectorised
+        // per-group path (a builtin SUM/MIN/MAX/COUNT/AVG over one plain column key) or must fall
+        // back to gathering rows. It used to ask with a dynamic_cast (rule 14); asking the object
+        // instead costs one virtual call per aggregate per PLAN and cannot answer wrongly.
+        //
+        // NVI: this accessor is public and non-virtual, the customisation point is private.
+        [[nodiscard]] const operator_func_t* as_function_call() const noexcept { return as_function_call_impl(); }
 
         // Synchronous per-group aggregation entry point for operator_group_t.
         // operator_func_t aggregation is pure-CPU (no await / cross-actor send):
@@ -26,6 +38,10 @@ namespace components::operators::aggregate {
         aggregate_batch_impl(pipeline::context_t* pipeline_context) = 0;
 
     private:
+        // Default: an aggregator that is not a registered-function call answers "not one". Only
+        // operator_func_t overrides it.
+        [[nodiscard]] virtual const operator_func_t* as_function_call_impl() const noexcept { return nullptr; }
+
         // Reached by compute(): runs the batch aggregation over the source child
         // (always an already-executed operator_batch_t wired as left_ by the caller)
         // and stamps batch_results_.

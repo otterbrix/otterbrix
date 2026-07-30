@@ -123,7 +123,7 @@ namespace components::operators {
         const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
         const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
 
-        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        join_builder builder(resource_, res_schema_, indices_left_, indices_right_, out);
 
         const uint64_t n = probe.size();
         if (n == 0) {
@@ -169,7 +169,7 @@ namespace components::operators {
             return;
         }
         const auto& build_chunks = right_->output()->chunks();
-        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        join_builder builder(resource_, res_schema_, indices_left_, indices_right_, out);
         for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
             const auto& B = build_chunks[ci];
             const uint64_t base = build_chunk_offsets_[ci];
@@ -206,11 +206,11 @@ namespace components::operators {
         if (!index_built_) {
             const auto& build_chunks = right_->output()->chunks();
             // Non-empty by the degenerate-build guard above.
-            res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-            join_detail::compute_join_layout(input,
+            join_detail::compute_join_layout(resource_,
+                                             input,
                                              build_chunks.front(),
                                              swapped_,
-                                             res_types_,
+                                             res_schema_,
                                              indices_left_,
                                              indices_right_);
             build_index_();
@@ -226,17 +226,17 @@ namespace components::operators {
         // left side. Other join types finalize to a no-op.
         //
         // If push() never ran (the probe source emitted its drain sentinel before
-        // any schema'd batch), the index is unbuilt and res_types_ is empty. With no
+        // any schema'd batch), the index is unbuilt and res_schema_ is empty. With no
         // probe schema there is no left column layout to NULL-pad against, so the
         // only safe action is to build the index (so build_matched_ is sized) and
         // skip emission — there is genuinely no probe side to preserve rows next to.
-        // The common 0-row-probe case still pushes a schema'd batch, so res_types_
+        // The common 0-row-probe case still pushes a schema'd batch, so res_schema_
         // is set there and this branch is not taken.
         if (!index_built_) {
             build_index_();
             index_built_ = true;
         }
-        if (res_types_.empty()) {
+        if (res_schema_.empty()) {
             return core::error_t::no_error();
         }
         emit_unmatched_build_(out);

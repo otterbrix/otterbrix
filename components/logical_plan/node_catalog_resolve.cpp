@@ -10,15 +10,6 @@ namespace components::logical_plan {
         : node_t(resource, node_type::catalog_resolve_t)
         , kind_(kind) {}
 
-    // Fold kind_ into the hash so the per-target resolve variants land in
-    // distinct buckets of any node-keyed container (they all share
-    // node_type::catalog_resolve_t). No per-field payload is folded.
-    hash_t node_catalog_resolve_t::hash_impl() const {
-        hash_t hash_value{0};
-        boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
-        return hash_value;
-    }
-
     std::string node_catalog_resolve_t::to_string_impl() const {
         std::stringstream stream;
         switch (kind_) {

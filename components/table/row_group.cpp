@@ -262,10 +262,11 @@ namespace components::table {
         if (element_value.is_null()) {
             return filter_match_t::unknown;
         }
-        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(element_value) ? filter_match_t::yes : filter_match_t::no;
+        if (filter->filter_class == table_filter_type::SET_MEMBERSHIP) {
+            return filter->cast<set_membership_filter_t>().contains(element_value) ? filter_match_t::yes
+                                                                                   : filter_match_t::no;
         }
-        if (filter->filter_type == expressions::compare_type::regex) {
+        if (filter->filter_class == table_filter_type::REGEX) {
             return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>()) ? filter_match_t::yes
                                                                                                    : filter_match_t::no;
         }
@@ -379,8 +380,8 @@ namespace components::table {
         // An expression_filter_t (WHERE f(col) OP const) aliases a constant comparison filter_type
         // but has a different layout and its own multi-column evaluation, so intercept it BEFORE the
         // filter_type switch (which would mis-cast it to constant_filter_t in the default arm).
-        if (auto* expr_filter = dynamic_cast<const expression_filter_t*>(filter)) {
-            return check_expression_predicate(row_id, *expr_filter, expression_layouts, error);
+        if (filter->filter_class == table_filter_type::EXPRESSION) {
+            return check_expression_predicate(row_id, filter->cast<expression_filter_t>(), expression_layouts, error);
         }
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
@@ -470,7 +471,8 @@ namespace components::table {
                 // Column-vs-column (`a.x OP a.y`): fetch both column values for this row and compare. A NULL
                 // operand makes the comparison UNKNOWN (see filter_match_t). Checked before the
                 // single-column dispatch below (a distinct multi-column filter type).
-                if (auto* cc = dynamic_cast<const column_column_filter_t*>(filter)) {
+                if (filter->filter_class == table_filter_type::COLUMN_COLUMN) {
+                    const auto& cc = filter->cast<column_column_filter_t>();
                     auto resolve = [&](const std::pmr::vector<uint64_t>& path) -> column_data_t* {
                         column_data_t* c = &get_column(path.front());
                         for (size_t i = 1; i < path.size(); i++) {
@@ -478,8 +480,8 @@ namespace components::table {
                         }
                         return c;
                     };
-                    column_data_t* lcol = resolve(cc->left_indices);
-                    column_data_t* rcol = resolve(cc->right_indices);
+                    column_data_t* lcol = resolve(cc.left_indices);
+                    column_data_t* rcol = resolve(cc.right_indices);
                     column_fetch_state lstate, rstate;
                     vector::vector_t lvec(lcol->resource(), lcol->type(), 1);
                     vector::vector_t rvec(rcol->resource(), rcol->type(), 1);
@@ -503,7 +505,7 @@ namespace components::table {
                     // the filter captured at plan time — never a one-way zero-tz cast that drops a
                     // row whose value merely overflows the narrower side's type. NULL operands never
                     // reach it (gated to unknown above).
-                    auto matched = compare_values_promoting(lval, rval, cc->filter_type, cc->session_tz);
+                    auto matched = compare_values_promoting(lval, rval, cc.filter_type, cc.session_tz);
                     if (matched.has_error()) {
                         error = matched.error();
                         return filter_match_t::no;
@@ -515,8 +517,8 @@ namespace components::table {
                 // A NULL on the CONSTANT side is UNKNOWN for every row, exactly as a NULL column
                 // value is: `WHERE x > NULL` selects nothing, and must not be flipped in by NOT.
                 // This is decided before the column is even read.
-                if (const auto* const_filter = dynamic_cast<const constant_filter_t*>(filter);
-                    const_filter && const_filter->constant.is_null()) {
+                if (filter->filter_class == table_filter_type::CONSTANT_COMPARISON &&
+                    filter->cast<constant_filter_t>().constant.is_null()) {
                     return filter_match_t::unknown;
                 }
 
@@ -534,8 +536,8 @@ namespace components::table {
                 // `x IN (1, NULL)`: a hit is TRUE, but a miss is UNKNOWN rather than FALSE, because
                 // the NULL element might have been the match.
                 if (match == filter_match_t::no) {
-                    if (const auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                        for (const auto& v : set->values) {
+                    if (filter->filter_class == table_filter_type::SET_MEMBERSHIP) {
+                        for (const auto& v : filter->cast<set_membership_filter_t>().values) {
                             if (v.is_null()) {
                                 return filter_match_t::unknown;
                             }
@@ -555,7 +557,7 @@ namespace components::table {
         // An expression_filter_t has no single column/constant pair to prune against and its
         // filter_type aliases a constant comparison — never treat it as a constant_filter_t here
         // (its layout differs). Let every segment through to the per-row check_predicate.
-        if (dynamic_cast<const expression_filter_t*>(f)) {
+        if (f->filter_class == table_filter_type::EXPRESSION) {
             return true;
         }
         // For constant comparison filters, check if any column's zonemap prunes this segment

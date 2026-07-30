@@ -44,7 +44,9 @@ using vec = std::vector<v>;
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
-            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                                  \
+            const auto* bound = agg->parameter(core::parameter_id_t(uint16_t(i)));                                     \
+            REQUIRE(bound != nullptr);                                                                                 \
+            REQUIRE(*bound == BIND.at(i));                                                                             \
         }                                                                                                              \
     }
 
@@ -67,7 +69,9 @@ using vec = std::vector<v>;
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
-            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                                  \
+            const auto* bound = agg->parameter(core::parameter_id_t(uint16_t(i)));                                     \
+            REQUIRE(bound != nullptr);                                                                                 \
+            REQUIRE(*bound == BIND.at(i));                                                                             \
         }                                                                                                              \
     }
 
@@ -88,6 +92,17 @@ TEST_CASE("components::sql::select_bind") {
     TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE id > $1 AND flag = $2;)_",
                        R"_($aggregate: {$match: {$and: ["id": {$gt: #0}, "flag": {$eq: #1}]}})_",
                        vec({v(&resource, 5l), v(&resource, true)}));
+
+    // A `$n` in the target list is a constant, like the literal beside it — never a
+    // field reference. Compare with `10 size` in components::sql::select_from_fields.
+    TEST_PARAMS_SELECT(R"_(SELECT number, $1 AS p FROM TestDatabase.TestCollection;)_",
+                       R"_($aggregate: {$select: {number, p: {$constant: #0}}})_",
+                       vec({v(&resource, 10l)}));
+
+    // Unaliased, so unnamed — the same rendering an unaliased literal already gets.
+    TEST_PARAMS_SELECT(R"_(SELECT number, $1 FROM TestDatabase.TestCollection;)_",
+                       R"_($aggregate: {$select: {number, {$constant: #0}}})_",
+                       vec({v(&resource, 10l)}));
 }
 
 TEST_CASE("components::sql::update_bind") {
@@ -332,10 +347,14 @@ TEST_CASE("components::sql::transform_result") {
                        return _w.value();
                    }(binder.finalize()))
                        .parameters;
-        REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, "doc"));
+        const auto* bound = agg->parameter(core::parameter_id_t(uint16_t(0)));
+        REQUIRE(bound != nullptr);
+        REQUIRE(*bound == v(&resource, "doc"));
 
         binder.bind(1, v(&resource, 100l)).finalize();
-        REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, 100l));
+        const auto* rebound = agg->parameter(core::parameter_id_t(uint16_t(0)));
+        REQUIRE(rebound != nullptr);
+        REQUIRE(*rebound == v(&resource, 100l));
     }
 
     SECTION("reuse insert binding") {

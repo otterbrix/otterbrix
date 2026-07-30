@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <optional>
 
 namespace components::index {
 
@@ -19,53 +20,97 @@ namespace components::index {
         return this;
     }
 
+    // A btree position is only ever equal to another btree position: the tag check rejects a null
+    // or foreign body BEFORE the downcast, where the old dynamic_cast folded both cases into a
+    // nullptr that was dereferenced unchecked.
     bool single_field_index_t::impl_t::equals(const iterator_impl_t* other) const {
-        return iterator_ == dynamic_cast<const impl_t*>(other)->iterator_; //todo
+        const auto* rhs = same_kind_as<impl_t>(other);
+        return rhs != nullptr && iterator_ == rhs->iterator_;
     }
 
     bool single_field_index_t::impl_t::not_equals(const iterator_impl_t* other) const {
-        return iterator_ != dynamic_cast<const impl_t*>(other)->iterator_; //todo
+        const auto* rhs = same_kind_as<impl_t>(other);
+        return rhs == nullptr || iterator_ != rhs->iterator_;
     }
 
     index_t::iterator::iterator_impl_t* single_field_index_t::impl_t::copy() const { return new impl_t(*this); }
 
     single_field_index_t::impl_t::impl_t(const_iterator iterator)
-        : iterator_(iterator) {}
+        : iterator_impl_t(iterator_kind)
+        , iterator_(iterator) {}
 
-    // A key that can not be cast into the locked key domain (stored_type_ locks to the
-    // first inserted key's type) is OUT-OF-DOMAIN: the btree holds only
-    // stored_type_-typed keys (its comparator requires one type), and rebuilding the
-    // index when a dynamic-schema column's type evolves is the caller's responsibility
-    // (the CREATE INDEX relkind='g' validation contract). The index_t maintenance API is
-    // void, so the defined no-exception semantics are:
-    //   * writes: an out-of-domain key stays un-indexed (insert/insert_txn); remove /
-    //     mark_delete on one is an exact no-op (it was never stored);
-    //   * probes: an out-of-domain probe orders AFTER every in-domain key (type
-    //     bracketing), so its equal-range and both bounds sit at cend() — eq/gt/gte are
-    //     empty, lt/lte cover the in-domain keys, and in-domain lookups stay exact.
-    // Never assert-then-value(): a failed cast in Release would dereference an empty
-    // optional (UB, garbage key, silent index corruption).
+    // The btree holds keys of exactly ONE type: stored_type_ locks to the first inserted key's
+    // type, and the comparator (std::less<logical_value_t>) requires both operands to carry that
+    // type — a mixed tree is not a strict weak ordering. Rebuilding the index when a
+    // dynamic-schema column's type evolves is the caller's responsibility (the CREATE INDEX
+    // relkind='g' validation contract). So every key that enters or probes the tree is first
+    // normalised into stored_type_, and a key that can not be is OUT-OF-DOMAIN.
+    //
+    // "Can not be" is NOT "cast_as reported an error". cast_as is a SQL CAST, not a domain check:
+    // STRING -> BIGINT runs std::atoll, which maps every non-numeric string to 0 and reports
+    // success. Trusting it let 'hello' and 'world' both be indexed under the key 0, so an equality
+    // probe — which collapses the same way — matched rows that do not satisfy the predicate. That
+    // is an INVENTED key, and index_scan carries no operator_match above it, so the invention
+    // reached the caller as an answer.
+    //
+    // in_domain() therefore accepts a conversion only when it is LOSSLESS: casting the result back
+    // to the source type must reproduce the source value. Widening (INTEGER 5 -> BIGINT 5) passes;
+    // 'hello' -> 0 does not, because 0 -> '0' is not 'hello'. The check costs nothing on the hot
+    // path — a key already of stored_type_ short-circuits before any cast.
+    //
+    // The index_t maintenance API is void, so the defined no-exception semantics are:
+    //   * writes: an out-of-domain key stays un-indexed (insert/insert_txn); remove / mark_delete
+    //     on one is an exact no-op (it was never stored);
+    //   * probes: an out-of-domain probe orders AFTER every in-domain key (type bracketing), so
+    //     its equal-range and both bounds sit at cend() — eq/gt/gte are empty, lt/lte cover the
+    //     in-domain keys, and in-domain lookups stay exact.
+    //
+    // A rejected key leaves the index INCOMPLETE, never wrong. Completeness is the planner's
+    // side of the contract: context_storage_t::has_index_on only offers this index for a predicate
+    // whose key is the one it was built on, so a '::?'-selected type-variant of an evolved field
+    // is answered by a full scan instead of by an index that cannot represent it.
+    //
+    // Never assert-then-value(): a failed cast in Release would dereference an empty optional
+    // (UB, garbage key, silent index corruption).
+
+    std::optional<value_t> single_field_index_t::in_domain(const value_t& key,
+                                                           core::date::timezone_offset_t local_timezone) const {
+        // The shape question: the index stores VALUES, and a value carries no column name.
+        if (key.type() == stored_type_) {
+            return key; // already the key domain's type — nothing to convert, nothing to verify
+        }
+        auto casted = key.cast_as(stored_type_, local_timezone);
+        if (casted.has_error()) {
+            return std::nullopt;
+        }
+        // Round-trip: only a conversion that survives coming back is faithful enough to index by.
+        auto restored = casted.value().cast_as(key.type(), local_timezone);
+        if (restored.has_error() || !(restored.value() == key)) {
+            return std::nullopt;
+        }
+        return std::move(casted.value());
+    }
 
     auto single_field_index_t::insert_impl(value_t key,
                                            index_value_t value,
                                            core::date::timezone_offset_t local_timezone) -> void {
-        if (stored_type_ == types::logical_type::NA) {
+        if (stored_type_.type() == types::logical_type::NA) {
             stored_type_ = key.type();
         }
-        auto casted = key.cast_as(stored_type_, local_timezone);
-        if (casted.has_error()) {
+        auto casted = in_domain(key, local_timezone);
+        if (!casted) {
             return; // out-of-domain key: not representable in this index (see note above)
         }
-        storage_.insert({std::move(casted.value()), std::move(value)});
+        storage_.insert({std::move(*casted), std::move(value)});
     }
 
     auto single_field_index_t::remove_impl(components::index::value_t key, core::date::timezone_offset_t local_timezone)
         -> void {
-        auto casted = key.cast_as(stored_type_, local_timezone);
-        if (casted.has_error()) {
+        auto casted = in_domain(key, local_timezone);
+        if (!casted) {
             return; // out-of-domain key: never stored, nothing to erase
         }
-        auto it = storage_.find(casted.value());
+        auto it = storage_.find(*casted);
         if (it != storage_.end()) {
             storage_.erase(it);
         }
@@ -73,28 +118,28 @@ namespace components::index {
 
     index_t::range single_field_index_t::find_impl(const value_t& value,
                                                    core::date::timezone_offset_t local_timezone) const {
-        auto casted = value.cast_as(stored_type_, local_timezone);
-        if (casted.has_error()) {
+        auto casted = in_domain(value, local_timezone);
+        if (!casted) {
             // out-of-domain probe orders after every in-domain key: empty range at cend()
             return std::make_pair(iterator(new impl_t(storage_.cend())), iterator(new impl_t(storage_.cend())));
         }
-        auto range = storage_.equal_range(casted.value());
+        auto range = storage_.equal_range(*casted);
         return std::make_pair(iterator(new impl_t(range.first)), iterator(new impl_t(range.second)));
     }
 
     index_t::range single_field_index_t::lower_bound_impl(const value_t& value,
                                                           core::date::timezone_offset_t local_timezone) const {
-        auto casted = value.cast_as(stored_type_, local_timezone);
+        auto casted = in_domain(value, local_timezone);
         // out-of-domain probe orders after every in-domain key -> its bound is cend()
-        auto it = casted.has_error() ? storage_.cend() : storage_.lower_bound(casted.value());
+        auto it = casted ? storage_.lower_bound(*casted) : storage_.cend();
         return std::make_pair(cbegin(), index_t::iterator(new impl_t(it)));
     }
 
     index_t::range single_field_index_t::upper_bound_impl(const value_t& value,
                                                           core::date::timezone_offset_t local_timezone) const {
-        auto casted = value.cast_as(stored_type_, local_timezone);
+        auto casted = in_domain(value, local_timezone);
         // out-of-domain probe orders after every in-domain key -> its bound is cend()
-        auto it = casted.has_error() ? storage_.cend() : storage_.upper_bound(casted.value());
+        auto it = casted ? storage_.upper_bound(*casted) : storage_.cend();
         return std::make_pair(index_t::iterator(new impl_t(it)), cend());
     }
 
@@ -109,14 +154,14 @@ namespace components::index {
                                                uint64_t txn_id,
                                                core::date::timezone_offset_t local_timezone) {
         index_value_t val(row_index, txn_id, table::NOT_DELETED_ID);
-        if (stored_type_ == types::logical_type::NA) {
+        if (stored_type_.type() == types::logical_type::NA) {
             stored_type_ = key.type();
         }
-        auto casted = key.cast_as(stored_type_, local_timezone);
-        if (casted.has_error()) {
+        auto casted = in_domain(key, local_timezone);
+        if (!casted) {
             return; // out-of-domain key: not representable; pending/storage stay in lockstep
         }
-        auto casted_key = std::move(casted.value());
+        auto casted_key = std::move(*casted);
         pending_inserts_[txn_id].emplace_back(casted_key, row_index);
         storage_.insert({std::move(casted_key), std::move(val)});
     }
@@ -125,11 +170,11 @@ namespace components::index {
                                                 int64_t row_index,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t local_timezone) {
-        auto casted = key.cast_as(stored_type_, local_timezone);
-        if (casted.has_error()) {
+        auto casted = in_domain(key, local_timezone);
+        if (!casted) {
             return; // out-of-domain key: never stored, nothing to mark deleted
         }
-        auto casted_key = std::move(casted.value());
+        auto casted_key = std::move(*casted);
         auto range = storage_.equal_range(casted_key);
         for (auto it = range.first; it != range.second; ++it) {
             if (it->second.row_index == row_index && it->second.delete_id == table::NOT_DELETED_ID) {

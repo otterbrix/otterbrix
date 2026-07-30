@@ -1,6 +1,9 @@
 #pragma once
 
+#include <core/arithmetic_op.hpp>
 #include <core/strong_typedef.hpp>
+
+#include <optional>
 
 STRONG_TYPEDEF(uint16_t, parameter_id_t);
 
@@ -91,6 +94,27 @@ namespace components::expressions {
         left,
         right
     };
+
+    // THE scalar_type -> vector::arithmetic_op mapping. nullopt for a scalar_type that is
+    // not one of the five binary arithmetic operators. Lives beside the enum so a sixth
+    // operator is added in ONE switch — the binder, the validator and the group operator
+    // each used to keep a private copy that had to agree by hand.
+    constexpr std::optional<vector::arithmetic_op> to_arithmetic_op(scalar_type type) noexcept {
+        switch (type) {
+            case scalar_type::add:
+                return vector::arithmetic_op::add;
+            case scalar_type::subtract:
+                return vector::arithmetic_op::subtract;
+            case scalar_type::multiply:
+                return vector::arithmetic_op::multiply;
+            case scalar_type::divide:
+                return vector::arithmetic_op::divide;
+            case scalar_type::mod:
+                return vector::arithmetic_op::mod;
+            default:
+                return std::nullopt;
+        }
+    }
 
     std::string to_string(compare_type type);
 

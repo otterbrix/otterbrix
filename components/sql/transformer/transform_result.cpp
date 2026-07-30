@@ -144,23 +144,39 @@ namespace components::sql::transform {
                     continue;
                 }
                 auto& chunk = param_insert_rows_[chunk_index];
-                auto column = std::find_if(chunk.data.begin(), chunk.data.end(), [&param](const vector::vector_t& col) {
-                    return col.type().alias() == param.second;
-                });
-                size_t column_index = static_cast<size_t>(column - chunk.data.begin());
+                // M3-B2/B3: the column's name is read from the chunk's schema record, which
+                // answers an empty name for an unnamed column instead of asserting the way
+                // complex_logical_type::alias() does (types.cpp:334-337).
+                const auto& schema = chunk.schema();
+                size_t column_index = chunk.column_count();
+                for (size_t col = 0; col < chunk.column_count(); ++col) {
+                    if (std::string_view{schema[col].name} == std::string_view{param.second}) {
+                        column_index = col;
+                        break;
+                    }
+                }
                 // Column add / retype must touch EVERY chunk so all chunks keep one type layout
                 // (column_index is identical across chunks because they grow in lockstep).
-                if (column == chunk.data.end()) {
-                    // Param-only column (no literal anywhere): append it to every chunk.
-                    value.set_alias(param.second);
+                if (column_index == chunk.column_count()) {
+                    // Param-only column (no literal anywhere): append it to every chunk. The
+                    // name goes on the COLUMN (M3-B5), not through the bound value's type —
+                    // which is how it used to arrive, and which meant every bind carried a
+                    // heap-allocated name it did not need.
                     for (auto& c : param_insert_rows_) {
                         c.data.emplace_back(c.resource(), value.type(), c.capacity());
+                        c.set_column_name(c.column_count() - 1, param.second);
                     }
-                } else if (column->type() != value.type()) {
-                    // Column type changed after creation: retype it in every chunk.
-                    value.set_alias(param.second);
+                    // The shape question, and only that one: `value` is not named until the
+                    // branch below names it, so comparing names here would retype the column on
+                    // every single bind — dropping the name the column was created with and
+                    // leaving the next parameter for it unable to find it.
+                } else if (chunk.data[column_index].type() != value.type()) {
+                    // Column type changed after creation: retype it in every chunk. Retyping
+                    // replaces the vector, so the name has to be put back on the replacement —
+                    // without it the next parameter for this column cannot find it.
                     for (auto& c : param_insert_rows_) {
                         c.data[column_index] = vector::vector_t(c.resource(), value.type(), c.capacity());
+                        c.set_column_name(column_index, param.second);
                     }
                 }
                 chunk.set_value(column_index, local_row, value);

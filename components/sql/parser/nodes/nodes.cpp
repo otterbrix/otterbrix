@@ -15,9 +15,6 @@
             return false;                                                                                              \
     } while (0)
 
-/* Compare a parse location field (this is a no-op, per note above) */
-//#define COMPARE_LOCATION_FIELD(fldname) \
-//	((void) 0)
 
 void* copyObject(std::pmr::memory_resource* resource, const void* obj) { // mdxn: only copies TypeName
     TypeName* n = makeNode(resource, TypeName);

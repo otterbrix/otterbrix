@@ -22,8 +22,9 @@ namespace components::operators {
     // an outer row with no inner rows, NULL-padded on the right.
     //
     // The output layout is fixed at plan time: outer_schema/inner_schema are the
-    // resolved output column types of the two sub-plans (stamped on the logical
-    // nodes by validate_schema). Building the join layout, ON predicate, and
+    // resolved output column lists of the two sub-plans (stamped on the logical
+    // nodes by validate_schema), each record naming its column beside its type.
+    // Building the join layout, ON predicate, and
     // correlation bindings from these — rather than discovering them from the first
     // inner run's chunks — is what lets join_type::left NULL-pad an outer row whose
     // inner side yields zero rows for EVERY outer row (there is no runtime chunk to
@@ -37,8 +38,8 @@ namespace components::operators {
                                 components::logical_plan::join_type type,
                                 std::pmr::vector<correlation_t> correlations,
                                 expressions::expression_ptr on_expression,
-                                std::pmr::vector<types::complex_logical_type> outer_schema,
-                                std::pmr::vector<types::complex_logical_type> inner_schema);
+                                vector::schema_t outer_schema,
+                                vector::schema_t inner_schema);
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -72,9 +73,10 @@ namespace components::operators {
         // comma / ON true forms; a real predicate filters each inner row per outer row.
         expressions::expression_ptr on_expression_;
         // Plan-time resolved output schemas of the two sides; the output layout is
-        // (outer_schema_ ++ inner_schema_).
-        std::pmr::vector<types::complex_logical_type> outer_schema_;
-        std::pmr::vector<types::complex_logical_type> inner_schema_;
+        // (outer_schema_ ++ inner_schema_). Each record carries its column's name, so
+        // the operator no longer recovers one from a type (M3-B5 step 8).
+        vector::schema_t outer_schema_;
+        vector::schema_t inner_schema_;
         operator_ptr outer_{nullptr};
         operator_ptr inner_{nullptr};
     };

@@ -494,8 +494,8 @@ namespace services::collection::executor {
             // bool column anyway) is accepted — it selects nothing, not a type error.
             if (mapping.boolean_required) {
                 const auto& sub_node = plan.sub_queries[i];
-                assert(sub_node->has_output_types() && "boolean-required sub-query must be schema-stamped");
-                const auto out_type = sub_node->output_types().front().type();
+                assert(sub_node->has_output_schema() && "boolean-required sub-query must be schema-stamped");
+                const auto out_type = sub_node->output_schema().front().type.type();
                 if (out_type != components::types::logical_type::BOOLEAN &&
                     out_type != components::types::logical_type::NA) {
                     co_return execute_result_t{make_cursor(
@@ -535,10 +535,10 @@ namespace services::collection::executor {
                 // array. The element type is the sub-query's schema-derived output type (stamped by its
                 // own validation in the recursive execute_plan_full above).
                 const auto& sub_node = plan.sub_queries[i];
-                assert(sub_node->has_output_types() && "array-equality sub-query must be schema-stamped");
+                assert(sub_node->has_output_schema() && "array-equality sub-query must be schema-stamped");
                 plan.parameters->set_parameter(
                     mapping.id,
-                    components::types::logical_value_t::create_array(resource(), sub_node->output_types().front(), {}));
+                    components::types::logical_value_t::create_array(resource(), sub_node->output_schema().front().type, {}));
                 continue;
             }
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
@@ -1058,11 +1058,7 @@ namespace services::collection::executor {
                             }
                             const auto lt = components::catalog::pg_name_to_logical_type(col_def.type().type_name());
                             if (lt != logical_type::UNKNOWN) {
-                                std::string alias = col_def.type().has_alias() ? col_def.type().alias() : std::string{};
                                 col_def.type() = components::types::complex_logical_type{lt};
-                                if (!alias.empty()) {
-                                    col_def.type().set_alias(alias);
-                                }
                                 continue;
                             }
                             if (auto err =
@@ -1079,12 +1075,7 @@ namespace services::collection::executor {
                                     std::string_view(col_def.type().type_name()),
                                     std::span<const std::string>(str_path));
                                 if (md) {
-                                    std::string alias =
-                                        col_def.type().has_alias() ? col_def.type().alias() : std::string{};
                                     col_def.type() = md->type;
-                                    if (!alias.empty()) {
-                                        col_def.type().set_alias(alias);
-                                    }
                                 }
                             }
                         }
@@ -1106,7 +1097,7 @@ namespace services::collection::executor {
                     error = make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::schema_error,
-                                      std::pmr::string{("type: \'" + n->type().alias() + "\' already exists").c_str(),
+                                      std::pmr::string{("type: \'" + n->type().type_name() + "\' already exists").c_str(),
                                                        resource()}});
                     break;
                 }
@@ -1115,10 +1106,13 @@ namespace services::collection::executor {
                         if (field.type() == logical_type::UNKNOWN) {
                             const auto lt = components::catalog::pg_name_to_logical_type(field.type_name());
                             if (lt != logical_type::UNKNOWN) {
-                                std::string alias = field.has_alias() ? field.alias() : std::string{};
+                                // The FIELD's name has to survive the type being replaced —
+                                // it is what addresses the field, and it lives on the type
+                                // being overwritten (M3-B5).
+                                std::string field_name = field.field_name();
                                 field = components::types::complex_logical_type{lt};
-                                if (!alias.empty()) {
-                                    field.set_alias(alias);
+                                if (!field_name.empty()) {
+                                    field.set_field_name(field_name);
                                 }
                                 continue;
                             }
@@ -1135,10 +1129,10 @@ namespace services::collection::executor {
                                                                               std::string_view(field.type_name()),
                                                                               str_path);
                             if (md) {
-                                std::string alias = field.has_alias() ? field.alias() : std::string{};
+                                std::string field_name = field.field_name();
                                 field = md->type;
-                                if (!alias.empty()) {
-                                    field.set_alias(alias);
+                                if (!field_name.empty()) {
+                                    field.set_field_name(field_name);
                                 }
                             }
                         }
@@ -1307,7 +1301,7 @@ namespace services::collection::executor {
                         }
                         auto it = bound_params.parameters.find(m.id);
                         if (it == bound_params.parameters.end() || !it->second.is_null() ||
-                            !plan.sub_queries[i]->has_output_types()) {
+                            !plan.sub_queries[i]->has_output_schema()) {
                             continue;
                         }
                         if (!overridden) {
@@ -1315,7 +1309,7 @@ namespace services::collection::executor {
                             overridden = true;
                         }
                         validate_params.parameters.find(m.id)->second =
-                            components::types::logical_value_t(resource(), plan.sub_queries[i]->output_types().front());
+                            components::types::logical_value_t(resource(), plan.sub_queries[i]->output_schema().front().type);
                     }
                     auto schema_res =
                         services::dispatcher::validate_schema(resource(),
@@ -1440,8 +1434,8 @@ namespace services::collection::executor {
                 // operator_allocate_oids_t is a sourceless sink (role()==sink,
                 // needs_async_finalize()==true): drive it through the SAME streaming
                 // seam every other sub-plan uses — execute_pipeline drives its
-                // await_async_and_resume (the allocate_oids_batch round-trip + node
-                // stamp) via the executor's bottom-up async-finalize pass.
+                // await_async_and_resume (the allocate_oids_batch round-trip + the
+                // set_output) via the executor's bottom-up async-finalize pass.
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {
                     co_return std::vector<components::catalog::oid_t>{};
@@ -1450,7 +1444,18 @@ namespace services::collection::executor {
                     auto futures = pctx.take_pending_disk_futures();
                     for (auto& f : futures) co_await std::move(f);
                 }
-                co_return node->oids();
+                // Read the batch off the operator's DATA channel: one UINTEGER
+                // column, one row per OID, in allocation order.
+                std::vector<components::catalog::oid_t> oids;
+                if (const auto& out = op->output()) {
+                    oids.reserve(out->size());
+                    for (const auto& chunk : out->chunks()) {
+                        for (uint64_t row = 0; row < chunk.size(); ++row) {
+                            oids.push_back(chunk.get_value<components::catalog::oid_t>(0, row));
+                        }
+                    }
+                }
+                co_return oids;
             };
 
             using components::catalog::relkind::computed;
@@ -1490,10 +1495,8 @@ namespace services::collection::executor {
                             auto* data_node = static_cast<const components::logical_plan::node_data_t*>(child.get());
                             const auto& chunk = data_node->data_chunk();
                             registered_cols.reserve(chunk.column_count());
-                            for (size_t i = 0; i < chunk.column_count(); ++i) {
-                                const auto& type = chunk.data[i].type();
-                                assert(type.has_alias());
-                                registered_cols.emplace_back(type.alias(), type);
+                            for (const auto& record : chunk.schema()) {
+                                registered_cols.emplace_back(std::string{record.name}, record.type);
                             }
                             break;
                         }

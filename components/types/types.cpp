@@ -1,7 +1,9 @@
 #include "types.hpp"
 #include "logical_value.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <string_view>
 
 namespace components::types {
 
@@ -46,23 +48,26 @@ namespace components::types {
 
         const auto physical_type_table = make_physical_type_table();
 
+        // Preconditioned on is_valid_decimal_spec, which every untrusted boundary applies before
+        // naming a width (see types.hpp). A width outside it is an invariant violation, and one
+        // that must NOT throw: an exception raised here unwinds through an actor coroutine whose
+        // unhandled_exception() is empty under NDEBUG, so the statement fails with no diagnostic
+        // anywhere. The widest storage is the closest defined answer.
         physical_type decimal_storage_type(uint8_t width) {
             static constexpr uint8_t max_width_16 = 4;
             static constexpr uint8_t max_width_32 = 9;
             static constexpr uint8_t max_width_64 = 18;
-            static constexpr uint8_t max_width_128 = 38;
+            assert(is_valid_decimal_spec(width, 0) && "DECIMAL width must be validated at its boundary");
             if (width <= max_width_16) {
                 return physical_type::INT16;
-            } else if (width <= max_width_32) {
-                return physical_type::INT32;
-            } else if (width <= max_width_64) {
-                return physical_type::INT64;
-            } else if (width <= max_width_128) {
-                return physical_type::INT128;
-            } else {
-                throw std::runtime_error("can not create decimal with width bigger than: " +
-                                         std::to_string(static_cast<int>(max_width_128)));
             }
+            if (width <= max_width_32) {
+                return physical_type::INT32;
+            }
+            if (width <= max_width_64) {
+                return physical_type::INT64;
+            }
+            return physical_type::INT128;
         }
     } // anonymous namespace
 
@@ -70,20 +75,20 @@ namespace components::types {
 
     static const complex_logical_type INVALID_TYPE = complex_logical_type{logical_type::INVALID};
 
-    complex_logical_type::complex_logical_type(logical_type type, std::string alias)
+    complex_logical_type::complex_logical_type(logical_type type, std::string field_name)
         : type_(type) {
-        if (!alias.empty()) {
-            set_alias(alias);
+        if (!field_name.empty()) {
+            set_field_name(field_name);
         }
     }
 
     complex_logical_type::complex_logical_type(logical_type type,
                                                std::unique_ptr<logical_type_extension> extension,
-                                               std::string alias)
+                                               std::string field_name)
         : type_(type)
         , extension_(std::move(extension)) {
-        if (!alias.empty()) {
-            set_alias(alias);
+        if (!field_name.empty()) {
+            set_field_name(field_name);
         }
     }
 
@@ -188,6 +193,13 @@ namespace components::types {
         return *this;
     }
 
+    // Equality is shape equality. It used to be shape PLUS the outermost name, because that
+    // slot held the COLUMN's name and a BIGINT column called `a` is not a BIGINT column
+    // called `b`; a separate same_shape() then existed for the 32 production callers that
+    // were asking "can these carry the same values" and had no business with the name.
+    // M3-B5 moved the column's name onto the column, so the two relations became the same
+    // relation and same_shape() folded back in here. A struct's FIELD names are still
+    // compared — they are what address its sub-columns — through the extensions' operator==.
     bool complex_logical_type::operator==(const complex_logical_type& rhs) const {
         if (type_ != rhs.type_) {
             return false;
@@ -312,45 +324,69 @@ namespace components::types {
         }
     }
 
-    void complex_logical_type::set_alias(const std::string& alias) {
+    // The answer a type with no extension gives to every total name question here. A name a
+    // type does not have is an EMPTY name, not a missing one — which is exactly what lets
+    // these be read without a guard in front of them.
+    static const std::string NO_NAME{};
+
+    void complex_logical_type::set_field_name(const std::string& field_name) {
         if (extension_) {
-            extension_->set_alias(alias);
+            extension_->set_field_name(field_name);
         } else {
             extension_ =
-                std::make_unique<logical_type_extension>(logical_type_extension::extension_type::GENERIC, alias);
+                std::make_unique<logical_type_extension>(logical_type_extension::extension_type::GENERIC, field_name);
         }
     }
 
-    bool complex_logical_type::has_alias() const {
-        if (extension_ && !extension_->alias().empty()) {
-            return true;
-        }
-        return false;
+    const std::string& complex_logical_type::field_name() const {
+        return extension_ ? extension_->field_name() : NO_NAME;
     }
 
-    const std::string& complex_logical_type::alias() const {
+    void complex_logical_type::set_label(const std::string& label) {
+        if (!extension_) {
+            extension_ = std::make_unique<logical_type_extension>(logical_type_extension::extension_type::GENERIC);
+        }
+        extension_->set_label(label);
+    }
+
+    bool complex_logical_type::has_label() const { return extension_ && !extension_->label().empty(); }
+
+    const std::string& complex_logical_type::label() const {
         assert(extension_);
-        return extension_->alias();
+        return extension_->label();
     }
 
     const std::string& complex_logical_type::type_name() const {
-        assert(extension_);
+        if (!extension_) {
+            return NO_NAME;
+        }
         if (extension_->type() == logical_type_extension::extension_type::UNKNOWN) {
             return static_cast<unknown_logical_type_extension*>(extension_.get())->type_name();
-        } else if (extension_->type() == logical_type_extension::extension_type::STRUCT) {
+        }
+        if (extension_->type() == logical_type_extension::extension_type::STRUCT) {
             return static_cast<struct_logical_type_extension*>(extension_.get())->type_name();
-        } else if (extension_->type() == logical_type_extension::extension_type::ENUM) {
+        }
+        if (extension_->type() == logical_type_extension::extension_type::ENUM) {
             return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
         }
-        return extension_->alias();
+        // No fall-through to the field-name slot: a scalar does not name itself, and the
+        // slot it used to borrow held the COLUMN's name, which made every named column look
+        // like a named type (M3-B5).
+        return NO_NAME;
     }
 
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
+        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].field_name();
     }
 
-    bool complex_logical_type::is_unnamed() const { return extension_->alias().empty(); }
+    bool complex_logical_type::is_unnamed() const {
+        if (!extension_ || extension_->type() != logical_type_extension::extension_type::STRUCT) {
+            return true;
+        }
+        const auto& fields = static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+        return fields.empty() || fields.front().field_name().empty();
+    }
 
     bool complex_logical_type::is_nested() const {
         switch (type_) {
@@ -373,7 +409,12 @@ namespace components::types {
                                          const std::pmr::vector<size_t>& path) {
         assert(!types.empty() && "complex_logical_type::type_from_path should not be called with empty types");
         assert(!path.empty() && "complex_logical_type::type_from_path should not be called with empty path");
-        return types.at(path.front()).child_type(path.data() + 1, path.size() - 1);
+        return types.at(path.front()).type_from_path_tail(path);
+    }
+
+    const complex_logical_type& complex_logical_type::type_from_path_tail(const std::pmr::vector<size_t>& path) const {
+        assert(!path.empty() && "complex_logical_type::type_from_path_tail should not be called with empty path");
+        return child_type(path.data() + 1, path.size() - 1);
     }
 
     const complex_logical_type& complex_logical_type::child_type(const size_t* path_data, size_t remaining) const {
@@ -447,6 +488,9 @@ namespace components::types {
     logical_type_extension* complex_logical_type::extension() const { return extension_.get(); }
 
     bool complex_logical_type::is_convertable_to(const complex_logical_type& other) const {
+        // Convertibility is about what a value can BE, and since M3-B5 that is all equality
+        // asks: renaming a column has never required converting anything, and the name is no
+        // longer on the type to be asked about.
         if (*this == other) {
             return true;
         }
@@ -534,62 +578,62 @@ namespace components::types {
                (type >= logical_type::UTINYINT && type <= logical_type::UHUGEINT);
     }
 
-    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
-        assert(width >= scale);
+    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string field_name) {
+        assert(is_valid_decimal_spec(width, scale) && "DECIMAL spec must be validated at its boundary");
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
     complex_logical_type
-    complex_logical_type::create_enum(std::string name, std::vector<logical_value_t> entries, std::string alias) {
+    complex_logical_type::create_enum(std::string name, std::vector<logical_value_t> entries, std::string field_name) {
         return complex_logical_type(logical_type::ENUM,
                                     std::make_unique<enum_logical_type_extension>(std::move(name), std::move(entries)),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
     complex_logical_type complex_logical_type::create_list(const complex_logical_type& internal_type,
-                                                           std::string alias) {
+                                                           std::string field_name) {
         return complex_logical_type(logical_type::LIST,
                                     std::make_unique<list_logical_type_extension>(internal_type),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
     complex_logical_type complex_logical_type::create_array(const complex_logical_type& internal_type,
                                                             size_t array_size,
-                                                            std::string alias) {
+                                                            std::string field_name) {
         return complex_logical_type(logical_type::ARRAY,
                                     std::make_unique<array_logical_type_extension>(internal_type, array_size),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
     complex_logical_type complex_logical_type::create_map(std::pmr::memory_resource* resource,
                                                           const complex_logical_type& key_type,
                                                           const complex_logical_type& value_type,
-                                                          std::string alias) {
+                                                          std::string field_name) {
         return complex_logical_type(logical_type::MAP,
                                     std::make_unique<map_logical_type_extension>(resource, key_type, value_type),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
     complex_logical_type complex_logical_type::create_struct(std::string name,
                                                              const std::pmr::vector<complex_logical_type>& fields,
-                                                             std::string alias) {
+                                                             std::string field_name) {
         return complex_logical_type(logical_type::STRUCT,
                                     std::make_unique<struct_logical_type_extension>(std::move(name), fields),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
     complex_logical_type complex_logical_type::create_union(std::pmr::vector<complex_logical_type> fields,
-                                                            std::string alias) {
+                                                            std::string field_name) {
         // union types always have a hidden "tag" field in front
         fields.emplace(fields.begin(), complex_logical_type{logical_type::UTINYINT});
         return complex_logical_type(logical_type::UNION,
                                     std::make_unique<struct_logical_type_extension>("union", fields),
-                                    std::move(alias));
+                                    std::move(field_name));
     }
 
-    complex_logical_type complex_logical_type::create_variant(std::pmr::memory_resource* resource, std::string alias) {
+    complex_logical_type complex_logical_type::create_variant(std::pmr::memory_resource* resource, std::string field_name) {
         std::pmr::vector<complex_logical_type> children(resource);
         children.reserve(4);
         children.emplace_back(create_list(logical_type::STRING_LITERAL, "keys"));
@@ -610,25 +654,32 @@ namespace components::types {
         children.emplace_back(logical_type::BLOB, "data");
 
         auto info = std::make_unique<struct_logical_type_extension>("data", std::move(children));
-        return {logical_type::VARIANT, std::move(info), std::move(alias)};
+        return {logical_type::VARIANT, std::move(info), std::move(field_name)};
     }
 
-    complex_logical_type complex_logical_type::create_unknown(std::string type_name, std::string alias) {
+    complex_logical_type complex_logical_type::create_unknown(std::string type_name, std::string field_name) {
         auto info = std::make_unique<unknown_logical_type_extension>(std::move(type_name));
-        return {logical_type::UNKNOWN, std::move(info), std::move(alias)};
+        return {logical_type::UNKNOWN, std::move(info), std::move(field_name)};
     }
 
-    logical_type_extension::logical_type_extension(extension_type t, std::string alias)
+    logical_type_extension::logical_type_extension(extension_type t, std::string field_name)
         : type_(t)
-        , alias_(std::move(alias)) {}
+        , field_name_(std::move(field_name)) {}
 
-    void logical_type_extension::set_alias(const std::string& alias) { alias_ = alias; }
+    void logical_type_extension::set_field_name(const std::string& field_name) { field_name_ = field_name; }
+
+    void logical_type_extension::set_label(const std::string& label) { label_ = label; }
 
     array_logical_type_extension::array_logical_type_extension(const complex_logical_type& type, uint64_t size)
         : logical_type_extension(extension_type::ARRAY)
         , items_type_(type)
         , size_(size) {}
 
+    // Extension comparison is the SHAPE half of complex_logical_type::operator==, so every
+    // Extension comparison IS complex_logical_type::operator==, one level down: since M3-B5
+    // took the column's name off the type, equality is shape equality at every depth, and the
+    // field names a struct carries take no part in it (a struct's fields can be renamed
+    // without changing what values it holds).
     bool array_logical_type_extension::operator==(const array_logical_type_extension& rhs) const {
         return items_type_ == rhs.items_type_ && size_ == rhs.size_;
     }
@@ -641,9 +692,9 @@ namespace components::types {
                                                      const complex_logical_type& value) {
             std::pmr::vector<complex_logical_type> kv(resource);
             kv.emplace_back(key);
-            kv.back().set_alias("key");
+            kv.back().set_field_name("key");
             kv.emplace_back(value);
-            kv.back().set_alias("value");
+            kv.back().set_field_name("value");
             return complex_logical_type::create_struct("entries", kv);
         }
     } // namespace
@@ -674,8 +725,8 @@ namespace components::types {
         , entries_(make_map_entries_struct(resource, key, value)) {}
 
     bool map_logical_type_extension::operator==(const map_logical_type_extension& rhs) const {
-        return key_ == rhs.key_ && value_ == rhs.value_ && key_id_ == rhs.key_id_ && value_id_ == rhs.value_id_ &&
-               value_required_ == rhs.value_required_;
+        return key_ == rhs.key_ && value_ == rhs.value_ && key_id_ == rhs.key_id_ &&
+               value_id_ == rhs.value_id_ && value_required_ == rhs.value_required_;
     }
 
     list_logical_type_extension::list_logical_type_extension(complex_logical_type type)
@@ -715,7 +766,13 @@ namespace components::types {
     }
 
     bool struct_logical_type_extension::operator==(const struct_logical_type_extension& rhs) const {
-        return fields_ == rhs.fields_;
+        return std::equal(fields_.begin(),
+                          fields_.end(),
+                          rhs.fields_.begin(),
+                          rhs.fields_.end(),
+                          [](const complex_logical_type& lhs_field, const complex_logical_type& rhs_field) {
+                              return lhs_field == rhs_field;
+                          });
     }
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
@@ -754,7 +811,14 @@ namespace components::types {
         , argument_types_(std::move(arguments)) {}
 
     bool function_logical_type_extension::operator==(const function_logical_type_extension& rhs) const {
-        return return_type_ == rhs.return_type_ && argument_types_ == rhs.argument_types_;
+        return return_type_ == rhs.return_type_ &&
+               std::equal(argument_types_.begin(),
+                          argument_types_.end(),
+                          rhs.argument_types_.begin(),
+                          rhs.argument_types_.end(),
+                          [](const complex_logical_type& lhs_arg, const complex_logical_type& rhs_arg) {
+                              return lhs_arg == rhs_arg;
+                          });
     }
 
     unknown_logical_type_extension::unknown_logical_type_extension(std::string type_name)

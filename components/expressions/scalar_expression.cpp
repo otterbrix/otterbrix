@@ -68,19 +68,7 @@ namespace components::expressions {
         boost::hash_combine(hash_, type_);
         boost::hash_combine(hash_, key_.hash());
         for (const auto& param : params_) {
-            auto param_hash = std::visit(
-                [](const auto& value) {
-                    using param_type = std::decay_t<decltype(value)>;
-                    if constexpr (std::is_same_v<param_type, core::parameter_id_t>) {
-                        return std::hash<uint64_t>()(value);
-                    } else if constexpr (std::is_same_v<param_type, key_t>) {
-                        return value.hash();
-                    } else if constexpr (std::is_same_v<param_type, expression_ptr>) {
-                        return value->hash();
-                    }
-                },
-                param);
-            boost::hash_combine(hash_, param_hash);
+            boost::hash_combine(hash_, std::hash<param_storage>()(param));
         }
         return hash_;
     }

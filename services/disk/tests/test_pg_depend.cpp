@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
@@ -31,7 +32,7 @@ using session_id_t = components::session::session_id_t;
 
 namespace {
     std::string dep_dir() {
-        static std::string p = "/tmp/test_otterbrix_dep_" + std::to_string(::getpid());
+        static std::string p = test_temp_path("test_otterbrix_dep");
         return p;
     }
     void cleanup() { std::filesystem::remove_all(dep_dir()); }
@@ -44,7 +45,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", test_temp_path("docker_logs")))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;

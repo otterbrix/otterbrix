@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
@@ -19,7 +20,7 @@ using namespace components::vector;
 
 namespace {
     std::string torn_test_dir() {
-        static std::string path = "/tmp/test_otterbrix_torn_" + std::to_string(::getpid());
+        static std::string path = test_temp_path("test_otterbrix_torn");
         return path;
     }
     void cleanup_torn_dir() { std::filesystem::remove_all(torn_test_dir()); }

@@ -33,7 +33,10 @@ namespace {
 
     struct value_storage_t {
         state_t state;
-        logical_value_t value{std::pmr::null_memory_resource(),
+        // Placeholder until cursor_get_value assigns the real cell (assignment adopts the
+        // source's resource). It still needs a usable allocator: a logical_value_t must
+        // never name a resource that cannot serve an allocation.
+        logical_value_t value{std::pmr::get_default_resource(),
                               components::types::complex_logical_type{components::types::logical_type::NA}};
     };
 
@@ -315,11 +318,11 @@ extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
 extern "C" int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index) {
     try {
         auto storage = convert_cursor(ptr);
-        const auto& types = storage->cursor->type_data();
-        if (column_index < 0 || static_cast<size_t>(column_index) >= types.size()) {
+        const auto& columns = storage->cursor->columns();
+        if (column_index < 0 || static_cast<size_t>(column_index) >= columns.size()) {
             return -1;
         }
-        return static_cast<int32_t>(types[static_cast<size_t>(column_index)].type());
+        return static_cast<int32_t>(columns[static_cast<size_t>(column_index)].type.type());
     } catch (...) {
         return -1;
     }
@@ -358,11 +361,14 @@ extern "C" error_message cursor_get_error(cursor_ptr ptr) {
 extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
     try {
         auto storage = convert_cursor(ptr);
-        const auto& types = storage->cursor->type_data();
-        if (static_cast<size_t>(column_index) < types.size()) {
-            auto name = types[static_cast<size_t>(column_index)].alias();
+        const auto& columns = storage->cursor->columns();
+        if (static_cast<size_t>(column_index) < columns.size()) {
+            // The descriptor's name is TOTAL — an unnamed result column answers "" instead of
+            // asserting the way complex_logical_type::alias() did (M3-B5).
+            const auto& name = columns[static_cast<size_t>(column_index)].name;
             char* str_ptr = new char[name.size() + 1];
-            std::strcpy(str_ptr, std::string(name).data());
+            std::memcpy(str_ptr, name.data(), name.size());
+            str_ptr[name.size()] = '\0';
             return str_ptr;
         }
         return nullptr;
@@ -389,11 +395,11 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
 
 extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name) {
     auto storage = convert_cursor(ptr);
-    const auto& types = storage->cursor->type_data();
+    const auto& columns = storage->cursor->columns();
 
     std::string name(column_name.data, column_name.size);
-    for (size_t col = 0; col < types.size(); ++col) {
-        if (types[col].alias() == name) {
+    for (size_t col = 0; col < columns.size(); ++col) {
+        if (std::string_view{columns[col].name} == name) {
             return cursor_get_value(ptr, row_index, static_cast<int32_t>(col));
         }
     }

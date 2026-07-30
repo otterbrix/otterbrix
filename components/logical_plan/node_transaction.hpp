@@ -42,7 +42,6 @@ namespace components::logical_plan {
         void set_database_oid(components::catalog::oid_t v) noexcept { database_oid_ = v; }
 
     private:
-        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         transaction_op op_;

@@ -6,6 +6,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_types.cpp
         test_type_switch.cpp
         test_tri_bool.cpp
+        test_logical_value_arithmetic.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -2,7 +2,7 @@
 
 #include "join_utils.hpp"
 #include "operator_data.hpp"
-#include "predicates/predicate.hpp"
+#include "predicate_executor.hpp"
 
 #include <components/context/context.hpp>
 #include <components/context/subplan_runner.hpp>
@@ -20,8 +20,8 @@ namespace components::operators {
                                                      join_type type,
                                                      std::pmr::vector<correlation_t> correlations,
                                                      expressions::expression_ptr on_expression,
-                                                     std::pmr::vector<types::complex_logical_type> outer_schema,
-                                                     std::pmr::vector<types::complex_logical_type> inner_schema)
+                                                     vector::schema_t outer_schema,
+                                                     vector::schema_t inner_schema)
         : read_only_operator_t(resource, std::move(log), operator_type::join)
         , type_(type)
         , correlations_(std::move(correlations))
@@ -60,7 +60,7 @@ namespace components::operators {
                                     std::pmr::string{"lateral join: no sub-plan runner", res}};
         }
         // The output layout is fully determined at plan time (see the class comment).
-        // validate_schema stamps every node's output_types(), so both must be present.
+        // validate_schema stamps every node's output_schema(), so both must be present.
         if (outer_schema_.empty() || inner_schema_.empty()) {
             co_return core::error_t{core::error_code_t::create_physical_plan_error,
                                     std::pmr::string{"lateral join: unresolved side schema", res}};
@@ -69,8 +69,54 @@ namespace components::operators {
         const size_t outer_count = outer_schema_.size();
         const size_t inner_count = inner_schema_.size();
 
-        // Resolve each correlated parameter to its outer column index (by column
-        // alias: full slash-joined name first, then the trailing segment).
+        // Output layout: (outer columns ++ inner columns), fixed from the plan-time
+        // schemas. Built once, up front — so a LEFT join can NULL-pad an outer row
+        // even when the inner side produces zero rows for every outer row.
+        // Semi-/anti-join output is the OUTER (left) schema ONLY: each outer row is
+        // emitted at most once (semi iff the inner side has >=1 matching row, anti iff
+        // it has none), with no inner columns. inner/left keep the (outer ++ inner) layout.
+        //
+        // The output layout is assembled from the PLAN-TIME side schemas rather than from
+        // input chunks — the inner sub-plan may yield no chunk at all, for every outer row,
+        // so there is nothing to learn a column's name or type from at runtime. Each side
+        // schema already spells its columns out ({name, type}); this operator was the LAST
+        // consumer that had to recover a name from a type, and it no longer does (M3-B5
+        // step 8). The concatenation is cloned onto `res` because that is where the emitted
+        // chunks live; the side schemas themselves are read where they lie (they belong to
+        // the plan node's resource, which outlives this drive).
+        const bool semi_anti = (type_ == join_type::semi || type_ == join_type::anti);
+
+        join_detail::output_schema_t out_schema(res);
+        out_schema.reserve(outer_count + (semi_anti ? 0 : inner_count));
+        for (const auto& record : outer_schema_) {
+            out_schema.push_back(record.clone(res));
+        }
+        if (!semi_anti) {
+            for (const auto& record : inner_schema_) {
+                out_schema.push_back(record.clone(res));
+            }
+        }
+        std::vector<size_t> indices_left;
+        indices_left.reserve(outer_count);
+        for (size_t i = 0; i < outer_count; ++i) {
+            indices_left.push_back(i);
+        }
+        // Empty for semi/anti: emit_left_only then NULL-pads no right columns, i.e. emits
+        // the bare outer row.
+        std::vector<size_t> indices_right;
+        if (!semi_anti) {
+            indices_right.reserve(inner_count);
+            for (size_t i = 0; i < inner_count; ++i) {
+                indices_right.push_back(outer_count + i);
+            }
+        }
+
+        // Resolve each correlated parameter to its outer column index by NAME: full
+        // slash-joined name first, then the trailing segment. The names come from the
+        // schema built above — out_schema's first outer_count records ARE the outer side,
+        // in every layout — so this reads a name where a name is kept, and needs no guard
+        // in front of it: an unnamed column answers with an empty name and matches
+        // nothing, which is what skipping it meant.
         std::pmr::vector<std::pair<core::parameter_id_t, size_t>> bindings(res);
         bindings.reserve(correlations_.size());
         for (const auto& [param_id, key] : correlations_) {
@@ -79,11 +125,11 @@ namespace components::operators {
                 key.storage().empty() ? full : std::string(key.storage().back().data(), key.storage().back().size());
             size_t found = outer_count;
             for (size_t col = 0; col < outer_count; ++col) {
-                if (!outer_schema_[col].has_alias()) {
+                const std::string_view name{out_schema[col].name};
+                if (name.empty()) {
                     continue;
                 }
-                const std::string& alias = outer_schema_[col].alias();
-                if (alias == full || alias == last) {
+                if (name == full || name == last) {
                     found = col;
                     break;
                 }
@@ -124,40 +170,8 @@ namespace components::operators {
             }
         } restorer{&ctx->parameters, saved_slots};
 
-        // Output layout: (outer columns ++ inner columns), fixed from the plan-time
-        // schemas. Built once, up front — so a LEFT join can NULL-pad an outer row
-        // even when the inner side produces zero rows for every outer row.
-        // Semi-/anti-join output is the OUTER (left) schema ONLY: each outer row is
-        // emitted at most once (semi iff the inner side has >=1 matching row, anti iff
-        // it has none), with no inner columns. inner/left keep the (outer ++ inner) layout.
-        const bool semi_anti = (type_ == join_type::semi || type_ == join_type::anti);
-        std::pmr::vector<types::complex_logical_type> out_types(res);
-        out_types.reserve(outer_count + (semi_anti ? 0 : inner_count));
-        for (const auto& t : outer_schema_) {
-            out_types.emplace_back(t);
-        }
-        if (!semi_anti) {
-            for (const auto& t : inner_schema_) {
-                out_types.emplace_back(t);
-            }
-        }
-        std::vector<size_t> indices_left;
-        indices_left.reserve(outer_count);
-        for (size_t i = 0; i < outer_count; ++i) {
-            indices_left.push_back(i);
-        }
-        // Empty for semi/anti: emit_left_only then NULL-pads no right columns, i.e. emits
-        // the bare outer row.
-        std::vector<size_t> indices_right;
-        if (!semi_anti) {
-            indices_right.reserve(inner_count);
-            for (size_t i = 0; i < inner_count; ++i) {
-                indices_right.push_back(outer_count + i);
-            }
-        }
-
         chunks_vector_t result(res);
-        eager_join_builder builder(res, out_types, indices_left, indices_right, result);
+        eager_join_builder builder(res, out_schema, indices_left, indices_right, result);
         // The ON predicate spans (outer columns | inner columns); build it over the
         // outer (left/probe) and inner (right/build) schemas. all_true for the comma /
         // ON true forms passes every inner row. Correlation parameters are read live
@@ -166,15 +180,21 @@ namespace components::operators {
         // they use the schema-free all_true predicate — the inner side of an EXISTS body
         // may project an alias-less constant, which the schema-bound predicate builder
         // would reject.
-        predicates::predicate_ptr predicate = (on_expression_ && !semi_anti)
-                                                  ? predicates::create_predicate(res,
-                                                                                 ctx->function_registry,
-                                                                                 on_expression_,
-                                                                                 outer_schema_,
-                                                                                 inner_schema_,
-                                                                                 &ctx->parameters,
-                                                                                 ctx->session_tz)
-                                                  : predicates::create_all_true_predicate(res);
+        // A null expression (the comma / ON-true forms, and semi/anti) becomes a constant TRUE
+        // inside the facade, which also binds NOTHING -- that is what keeps an EXISTS body's
+        // alias-less projected constant from being rejected by a schema-bound binder.
+        auto compiled = predicate_executor_t::create(res,
+                                                     (on_expression_ && !semi_anti) ? on_expression_
+                                                                                    : expressions::expression_ptr{},
+                                                     outer_schema_,
+                                                     inner_schema_,
+                                                     ctx->function_registry,
+                                                     &ctx->parameters,
+                                                     ctx->session_tz);
+        if (compiled.has_error()) {
+            co_return compiled.error();
+        }
+        vector::indexing_vector_t inner_matches(res, vector::DEFAULT_VECTOR_CAPACITY);
 
         auto outer_res = co_await ctx->runner->run_subplan(outer_, ctx);
         if (outer_res.has_error()) {
@@ -203,16 +223,27 @@ namespace components::operators {
                     if (inner_chunk.size() == 0) {
                         continue;
                     }
-                    auto mask_res =
-                        predicates::batch_check_1vN(predicate, outer_chunk, inner_chunk, row, inner_chunk.size());
+                    // ctx->parameters is passed HERE, per row-check, and never captured at build
+                    // time: the loop above rebinds the correlation slots into that very map before
+                    // each inner run, so the compiled ON must read them live to see the current
+                    // outer row. This is the contract the boxed predicate kept by holding a pointer;
+                    // the facade keeps it by taking the map as an argument.
+                    inner_matches.reset(inner_chunk.size());
+                    auto mask_res = compiled.value().select_matches(outer_chunk,
+                                                                    row,
+                                                                    inner_chunk,
+                                                                    inner_chunk.size(),
+                                                                    ctx->parameters,
+                                                                    ctx->session_tz,
+                                                                    inner_matches);
                     if (mask_res.has_error()) {
                         co_return mask_res.error();
                     }
-                    const auto& mask = mask_res.value();
-                    for (uint64_t inner_row = 0; inner_row < inner_chunk.size(); ++inner_row) {
-                        // selects(): only a definite TRUE joins the pair — an UNKNOWN (NULL
-                        // operand) ON result matches nothing, exactly as in operator_join.
-                        if (types::selects(mask[inner_row])) {
+                    // select_matches applies selects() itself: only a definite TRUE joins the pair,
+                    // so an UNKNOWN (NULL operand) ON result matches nothing, as in operator_join.
+                    for (uint64_t m = 0; m < mask_res.value(); ++m) {
+                        const uint64_t inner_row = inner_matches.get_index(m);
+                        {
                             matched = true;
                             // inner/left emit every matched (outer ++ inner) pair; semi/anti
                             // only need the EXISTENCE of a match, not the matched rows —

@@ -4,6 +4,7 @@
 #include <actor-zeta.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <core/pmr.hpp>
+#include <cstdint>
 #include <functional>
 
 namespace components::index {
@@ -70,12 +71,52 @@ namespace components::index {
 
             class iterator_impl_t {
             public:
+                // Which concrete iterator body this is. equals/not_equals receive a BASE pointer and
+                // need the underlying container iterator, i.e. a downcast. The tag is what makes that
+                // downcast checkable: a mismatched tag means the two iterators belong to different
+                // index implementations, and two positions in different containers are never equal.
+                //
+                // `foreign` covers implementations outside this component (test doubles) that compare
+                // by body identity and never downcast; it matches no built-in kind, so a built-in
+                // comparison against one answers "not equal" instead of reinterpreting its storage.
+                enum class kind_t : uint8_t
+                {
+                    foreign = 0,
+                    btree_single_field = 1,
+                    hash_single_field = 2,
+                    disk_hash_single_field = 3
+                };
+
                 virtual ~iterator_impl_t() = default;
                 virtual reference value_ref() const = 0;
                 virtual iterator_impl_t* next() = 0;
                 virtual bool equals(const iterator_impl_t* other) const = 0;
                 virtual bool not_equals(const iterator_impl_t* other) const = 0;
                 virtual iterator_impl_t* copy() const = 0;
+
+                kind_t kind() const noexcept { return kind_; }
+
+                // Checked downcast for equals/not_equals. Returns nullptr when `other` is absent or
+                // belongs to a different implementation — the two cases dynamic_cast used to fold
+                // into a nullptr that the callers then dereferenced unchecked.
+                template<class TARGET>
+                const TARGET* same_kind_as(const iterator_impl_t* other) const noexcept {
+                    if (other == nullptr || other->kind_ != TARGET::iterator_kind) {
+                        return nullptr;
+                    }
+                    return static_cast<const TARGET*>(other);
+                }
+
+            protected:
+                // Built-in implementations stamp their own kind.
+                explicit iterator_impl_t(kind_t kind) noexcept
+                    : kind_(kind) {}
+                // Implementations outside this component that never downcast (see `foreign`).
+                iterator_impl_t() noexcept
+                    : kind_(kind_t::foreign) {}
+
+            private:
+                kind_t kind_;
             };
 
         private:

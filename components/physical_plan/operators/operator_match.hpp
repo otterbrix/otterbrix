@@ -2,9 +2,12 @@
 
 #include <components/physical_plan/operators/operator.hpp>
 
-#include "predicates/predicate.hpp"
+#include <components/expressions/bound/binder.hpp>
+#include <components/expressions/bound/expression_executor.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
+
+#include <optional>
 
 namespace components::operators {
 
@@ -32,10 +35,10 @@ namespace components::operators {
         //   (a) row_ids: filter_batch_ only propagates the input row_id when it is real
         //       (row_ids_meaningful_(): left_ is a scan source); over a sink it leaves
         //       the zero sentinel so no bogus absolute id reaches a downstream consumer.
-        //   (b) predicate resource: build_predicate_ allocates the predicate + the types
-        //       working copy on the operator's STABLE resource_, not the (foreign /
-        //       transient) sink chunk's arena, so the cached predicate's value-getter
-        //       closures stay valid across the second finalize chunk.
+        //   (b) executor resource: build_executor_ allocates the bound tree + the
+        //       executor's intermediates on the operator's STABLE resource_, not the
+        //       (foreign / transient) sink chunk's arena, so a cached executor's result
+        //       slots stay valid across the second finalize chunk.
         // The executor FLUSH/PUMP path itself already streams a filter above a sink
         // correctly (select-over-sink works), so with both defects fixed the filter
         // streams in every shape.
@@ -94,41 +97,54 @@ namespace components::operators {
         // zero-initialized sentinel (the same value the materialized path produced
         // over a sink), and NO foreign id is copied in.
         [[nodiscard]] core::error_t filter_batch_(std::pmr::memory_resource* resource,
-                                                  predicates::predicate_ptr& predicate,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
                                                   bool row_ids_meaningful,
-                                                  const std::pmr::vector<types::complex_logical_type>& types,
+                                                  const vector::schema_t& schema,
                                                   const vector::data_chunk_t& chunk,
                                                   int64_t& limit_total,
                                                   chunks_vector_t& out);
 
-        // Build the predicate + projection metadata (populated_cols / sparse / types)
+        // Build the predicate + projection metadata (populated_cols / sparse / schema)
         // for an input chunk schema. Shared one-time setup for both entry points; the
         // predicate depends only on the (stable) chunk schema, so push() rebuilds it
         // only on the first batch it sees. `resource` is the STABLE resource to allocate
-        // the predicate (and the types working copy) on — the caller chooses it (the
+        // the predicate (and the schema working copy) on — the caller chooses it (the
         // operator's resource_ for a scan-source match, the captured input-chunk
         // resource for a sink match whose resource_ is null).
-        [[nodiscard]] core::error_t build_predicate_(pipeline::context_t* ctx,
-                                                     const vector::data_chunk_t& sample,
-                                                     std::pmr::memory_resource* resource,
-                                                     std::pmr::vector<types::complex_logical_type>& types,
-                                                     std::vector<size_t>& populated_cols,
-                                                     bool& sparse,
-                                                     predicates::predicate_ptr& predicate);
+        [[nodiscard]] core::error_t build_executor_(pipeline::context_t* ctx,
+                                                    const vector::data_chunk_t& sample,
+                                                    std::pmr::memory_resource* resource,
+                                                    vector::schema_t& schema,
+                                                    std::vector<size_t>& populated_cols,
+                                                    bool& sparse);
 
-        // Streaming-path predicate cache: built lazily on the first push() batch and
-        // reused for every subsequent batch (schema is stable across batches).
-        predicates::predicate_ptr stream_predicate_{nullptr};
+        // Streaming-path expression executor: the tree is BOUND and the executor's
+        // intermediates are allocated on the first push() batch, then reused for every
+        // subsequent batch (the schema is stable across batches). expression_executor_t
+        // is move-constructible but not assignable -- its slots hand out pointers that
+        // must not be invalidated -- so it lives in an optional and is emplaced once.
+        std::optional<expressions::expression_executor_t> stream_executor_;
+        // The surviving-row selection, sized ONCE to the largest chunk this operator can
+        // be handed. sel.reset() is on the FULL input length every batch, because
+        // indexing_vector_t::set_index is unchecked.
+        vector::indexing_vector_t stream_selection_{nullptr, nullptr};
         // The stable resource the streaming run allocates on (resource_ when non-null,
-        // else the first batch's resource — captured once). stream_types_ is rebound to
+        // else the first batch's resource — captured once). stream_schema_ is rebound to
         // it in push() before first use, so it is never left bound to a null resource_.
         std::pmr::memory_resource* stream_resource_{nullptr};
-        std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
+        // The input SCHEMA, cloned once off the first batch. A gather (data_chunk_t::copy) moves
+        // values, not identities, so the filtered chunk describes its columns from here — a WHERE
+        // narrows which rows a relation answers with, never what its columns are.
+        vector::schema_t stream_schema_{resource_};
         std::vector<size_t> stream_populated_cols_;
         bool stream_sparse_{false};
         bool stream_ready_{false};
+        // Re-read from the pipeline context on EVERY batch, never captured into the bound tree: a
+        // correlated (LATERAL) sub-query rebinds its correlation slots between two runs of this same
+        // operator, and the tree reads those slots live.
+        const logical_plan::storage_parameters* current_parameters_{nullptr};
+        core::date::timezone_offset_t current_session_tz_{};
     };
 
 } // namespace components::operators

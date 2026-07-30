@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/tests/temp_dir.hpp>
 
 #include <demo_extension.hpp>
 
@@ -8,7 +9,7 @@ using namespace components;
 using namespace components::cursor;
 
 TEST_CASE("integration::cpp::parser_extension_demo") {
-    auto config = test_create_config("/tmp/test_demo_extension");
+    auto config = test_create_config(test_temp_path("test_demo_extension"));
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -44,8 +45,8 @@ TEST_CASE("integration::cpp::parser_extension_demo") {
 }
 
 TEST_CASE("integration::cpp::parser_extension_is_per_instance") {
-    auto config_a = test_create_config("/tmp/test_demo_extension_a");
-    auto config_b = test_create_config("/tmp/test_demo_extension_b");
+    auto config_a = test_create_config(test_temp_path("test_demo_extension_a"));
+    auto config_b = test_create_config(test_temp_path("test_demo_extension_b"));
     test_clear_directory(config_a);
     test_clear_directory(config_b);
     config_a.disk.on = false;

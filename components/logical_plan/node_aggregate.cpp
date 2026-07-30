@@ -23,7 +23,38 @@ namespace components::logical_plan {
         , relname_(std::move(relname))
         , distinct_on_keys_(resource) {}
 
-    hash_t node_aggregate_t::hash_impl() const { return 0; }
+    node_aggregate_t::pipeline_t node_aggregate_t::pipeline() const {
+        pipeline_t roles;
+        for (const auto& child : children_) {
+            if (!child) {
+                continue;
+            }
+            switch (child->type()) {
+                case node_type::match_t:
+                    roles.match = child;
+                    break;
+                case node_type::group_t:
+                    roles.group = child;
+                    break;
+                case node_type::having_t:
+                    roles.having = child;
+                    break;
+                case node_type::sort_t:
+                    roles.sort = child;
+                    break;
+                case node_type::select_t:
+                    roles.select = child;
+                    break;
+                case node_type::limit_t:
+                    roles.limit = child;
+                    break;
+                default:
+                    roles.source = child;
+                    break;
+            }
+        }
+        return roles;
+    }
 
     std::string node_aggregate_t::to_string_impl() const {
         std::stringstream stream;

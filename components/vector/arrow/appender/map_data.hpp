@@ -90,6 +90,15 @@ namespace components::vector::arrow::appender {
         [[nodiscard]] static core::error_t
         finalize(arrow_append_data_t& append_data, const types::complex_logical_type& type, ArrowArray* result) {
             assert(result);
+            // Checked BEFORE any child is finalized: finalize_child hands a child's ownership
+            // to its ArrowArray (freed only through the release callback), so refusing after
+            // that point strands every child already attached. The key child's null count is
+            // known right here.
+            if (append_data.child_data[0]->child_data[0]->null_count > 0) {
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("arrow appender: Arrow does not accept NULL keys on a MAP",
+                                                      std::pmr::get_default_resource()));
+            }
             result->n_buffers = 2;
             result->buffers[1] = append_data.main_buffer().data();
 
@@ -127,11 +136,6 @@ namespace components::vector::arrow::appender {
                 return value_data.error();
             }
             struct_data.child_arrays[1] = *value_data.value();
-            if (key_data.value()->null_count > 0) {
-                return core::error_t(core::error_code_t::conversion_failure,
-                                     std::pmr::string("arrow appender: Arrow does not accept NULL keys on a MAP",
-                                                      std::pmr::get_default_resource()));
-            }
             return core::error_t::no_error();
         }
     };

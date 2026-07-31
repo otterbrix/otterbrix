@@ -841,7 +841,13 @@ namespace components::table {
 
         result_offset = 0;
         auto pick_new = [&](uint64_t id, uint64_t aidx, uint64_t) {
-            result_values[result_offset] = extractor(update_vector_data, aidx);
+            // Interned like every other stored element (identity for scalars). For STRING the
+            // extractor answers a view into the CALLER's update chunk, which dies with the
+            // update statement while this tuple set lives on — a raw view here was the one
+            // dangling store on the second-update-to-the-same-vector path (the compaction
+            // scan then reads a freed buffer).
+            result_values[result_offset] =
+                update_select_element_t::operation<T>(update_info.segment, extractor(update_vector_data, aidx));
             result_ids[result_offset] = static_cast<uint32_t>(id);
             result_offset++;
         };

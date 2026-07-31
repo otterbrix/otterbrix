@@ -80,8 +80,6 @@ namespace components::vector::arrow {
         auto result = std::make_unique<ArrowArray>();
 
         auto& append_data = *append_data_p;
-        result->private_data = append_data_p.release();
-        result->release = release_array;
         result->n_children = 0;
         result->null_count = 0;
         result->offset = 0;
@@ -93,10 +91,15 @@ namespace components::vector::arrow {
 
         if (append_data.finalize) {
             if (auto error = append_data.finalize(append_data, type, result.get()); error.contains_error()) {
+                // Ownership has not moved yet: append_data_p still frees the whole subtree
+                // on this return. Handing it to private_data FIRST leaked it — the plain
+                // unique_ptr<ArrowArray> deletes the struct without running release_array.
                 return error;
             }
         }
 
+        result->private_data = append_data_p.release();
+        result->release = release_array;
         append_data.array = std::move(result);
         return append_data.array.get();
     }
@@ -121,6 +124,15 @@ namespace components::vector::arrow {
         for (uint64_t i = 0; i < root_holder->child_data.size(); i++) {
             auto child_array = arrow_appender_t::finalize_child(types_[i], std::move(root_holder->child_data[i]));
             if (child_array.has_error()) {
+                // Children already finalized own themselves through their release callback
+                // (their unique_ptrs were moved out above); release them before abandoning
+                // the array, or they leak.
+                for (uint64_t j = 0; j < i; j++) {
+                    auto& done = root_holder->child_arrays[j];
+                    if (done.release) {
+                        done.release(&done);
+                    }
+                }
                 return child_array.error();
             }
             root_holder->child_arrays[i] = *child_array.value();

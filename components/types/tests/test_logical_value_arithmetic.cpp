@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
 #include <core/arithmetic_op.hpp>
@@ -98,7 +99,7 @@ TEST_CASE("components::types::logical_value::arithmetic_numeric_arms") {
         auto div = arith(&resource, arithmetic_op::divide, a, b);
         REQUIRE_FALSE(div.has_error());
         CHECK(div.value().type().type() == logical_type::DOUBLE);
-        CHECK(div.value().value<double>() == 3.0);
+        CHECK(div.value().value<double>() == Catch::Approx(3.0));
     }
 
     SECTION("128-bit") {

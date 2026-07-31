@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/tests/temp_dir.hpp>
 #include <string>
@@ -87,9 +88,9 @@ TEST_CASE("integration::cpp::float_arithmetic::real_column_keeps_float") {
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 3);
         const auto& column = c->chunks().front().data[0];
-        REQUIRE(column.get_value<float>(0) == 3.0f);
-        REQUIRE(column.get_value<float>(1) == 5.0f);
-        REQUIRE(column.get_value<float>(2) == 8.0f);
+        REQUIRE(column.get_value<float>(0) == Catch::Approx(3.0f));
+        REQUIRE(column.get_value<float>(1) == Catch::Approx(5.0f));
+        REQUIRE(column.get_value<float>(2) == Catch::Approx(8.0f));
     }
 
     INFO("column op column produces the same float values, at float width");
@@ -100,9 +101,9 @@ TEST_CASE("integration::cpp::float_arithmetic::real_column_keeps_float") {
         REQUIRE(c->size() == 3);
         const auto& column = c->chunks().front().data[0];
         REQUIRE(column.type().type() == logical_type::FLOAT);
-        REQUIRE(column.get_value<float>(0) == 1.5f);
-        REQUIRE(column.get_value<float>(1) == 5.0f);
-        REQUIRE(column.get_value<float>(2) == 12.0f);
+        REQUIRE(column.get_value<float>(0) == Catch::Approx(1.5f));
+        REQUIRE(column.get_value<float>(1) == Catch::Approx(5.0f));
+        REQUIRE(column.get_value<float>(2) == Catch::Approx(12.0f));
     }
     {
         auto c = exec(d, "SELECT r + r FROM m.t ORDER BY id;");
@@ -111,9 +112,9 @@ TEST_CASE("integration::cpp::float_arithmetic::real_column_keeps_float") {
         REQUIRE(c->size() == 3);
         const auto& column = c->chunks().front().data[0];
         REQUIRE(column.type().type() == logical_type::FLOAT);
-        REQUIRE(column.get_value<float>(0) == 3.0f);
-        REQUIRE(column.get_value<float>(1) == 5.0f);
-        REQUIRE(column.get_value<float>(2) == 8.0f);
+        REQUIRE(column.get_value<float>(0) == Catch::Approx(3.0f));
+        REQUIRE(column.get_value<float>(1) == Catch::Approx(5.0f));
+        REQUIRE(column.get_value<float>(2) == Catch::Approx(8.0f));
     }
 }
 

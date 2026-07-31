@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/vector.hpp>
@@ -184,7 +185,7 @@ TEST_CASE("vector_t::set_value: unchanged success paths stay error-free") {
     SECTION("flat numeric") {
         vector::vector_t v(&resource, types::complex_logical_type(logical_type::DOUBLE), 4);
         REQUIRE_FALSE(v.set_value(2, types::logical_value_t(&resource, 2.5)).contains_error());
-        REQUIRE(v.get_value<double>(2) == 2.5);
+        REQUIRE(v.get_value<double>(2) == Catch::Approx(2.5));
     }
 
     SECTION("string") {

@@ -154,6 +154,13 @@ namespace components::operators::predicates::impl {
                 if (inner_val.has_error()) {
                     return inner_val;
                 }
+                // A NULL operand negates to NULL (three-valued logic); anything else must be
+                // numeric before it reaches the value machinery.
+                if (!inner_val.value().is_null() &&
+                    !types::is_arithmetic_numeric(inner_val.value().type().type())) {
+                    return core::error_t(core::error_code_t::arithmetics_failure,
+                                         std::pmr::string{"unary minus requires a numeric operand", resource});
+                }
                 return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
                                                         inner_val.value());
             };
@@ -180,6 +187,38 @@ namespace components::operators::predicates::impl {
             // scalar-scalar arithmetic helper exists (only vector::compute_* over vectors/scalars,
             // and logical_value_t::sum/...); using vectors per row would be the L4 anti-pattern.
             // Skipped: a typed path would require a new helper, which is out of scope here.
+            // NULL operands answer NULL through the value ops' own early-outs; a pair of
+            // concrete types with no operator entry must not reach them.
+            if (!left_val.value().is_null() && !right_val.value().is_null()) {
+                vector::arithmetic_op vop;
+                switch (op) {
+                    case expressions::scalar_type::add:
+                        vop = vector::arithmetic_op::add;
+                        break;
+                    case expressions::scalar_type::subtract:
+                        vop = vector::arithmetic_op::subtract;
+                        break;
+                    case expressions::scalar_type::multiply:
+                        vop = vector::arithmetic_op::multiply;
+                        break;
+                    case expressions::scalar_type::divide:
+                        vop = vector::arithmetic_op::divide;
+                        break;
+                    case expressions::scalar_type::mod:
+                        vop = vector::arithmetic_op::mod;
+                        break;
+                    default:
+                        return core::error_t(core::error_code_t::comparison_failure,
+                                             std::pmr::string{"Unsupported arithmetic op in predicate", resource});
+                }
+                if (types::arithmetic_result_type(left_val.value().type().type(),
+                                                  right_val.value().type().type(),
+                                                  vop) == types::logical_type::NA) {
+                    return core::error_t(
+                        core::error_code_t::arithmetics_failure,
+                        std::pmr::string{"arithmetic requires numeric or compatible temporal operands", resource});
+                }
+            }
             switch (op) {
                 case expressions::scalar_type::add:
                     return types::logical_value_t::sum(left_val.value(), right_val.value());

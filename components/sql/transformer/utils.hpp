@@ -207,6 +207,22 @@ namespace components::sql::transform {
         return op == "+" || op == "-" || op == "*" || op == "/" || op == "%";
     }
 
+    // Unary plus is the identity (SQLite semantics: "+X is equivalent to X"): peel every
+    // `+`-layer off an expression and return what remains. A unary operator parses as
+    // A_Expr{op, lexpr = NULL, rexpr = operand}. Returns nullptr for a malformed `+` with
+    // no operand — callers must reject that.
+    inline Node* strip_unary_plus(Node* node) {
+        while (node && nodeTag(node) == T_A_Expr) {
+            auto* plus = pg_ptr_cast<A_Expr>(node);
+            if (plus->lexpr != nullptr || !plus->name || plus->name->lst.empty() ||
+                std::string_view(strVal(plus->name->lst.front().data)) != "+") {
+                break;
+            }
+            node = plus->rexpr;
+        }
+        return node;
+    }
+
     inline expressions::scalar_type get_arithmetic_scalar_type(std::string_view op) {
         if (op == "+")
             return expressions::scalar_type::add;

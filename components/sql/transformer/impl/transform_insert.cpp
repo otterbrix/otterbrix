@@ -416,7 +416,11 @@ namespace components::sql::transform {
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.value().type().type();
-                            if (types::is_numeric(col_type) && types::is_numeric(val_type) && col_type != val_type) {
+                            // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
+                            // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
+                            // An unpromotable mix takes the plain per-value store below.
+                            if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type) &&
+                                col_type != val_type) {
                                 auto promoted = types::promote_type(col_type, val_type);
                                 if (promoted != col_type) {
                                     chunk.data[column_index] =
@@ -447,7 +451,11 @@ namespace components::sql::transform {
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.value().type().type();
-                            if (types::is_numeric(col_type) && types::is_numeric(val_type) && col_type != val_type) {
+                            // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
+                            // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
+                            // An unpromotable mix takes the plain per-value store below.
+                            if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type) &&
+                                col_type != val_type) {
                                 auto promoted = types::promote_type(col_type, val_type);
                                 if (promoted != col_type) {
                                     chunk.data[column_index] =

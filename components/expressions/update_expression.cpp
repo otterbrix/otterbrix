@@ -410,6 +410,17 @@ namespace components::expressions {
             owned_output_.emplace(vector_ops::apply_unary_vector_op(resource, *unary_op, *left_vec, vec_count));
         } else if (auto arith_op = to_arith_op(type_)) {
             auto* right_vec = right_->output_vec();
+            // A NULL literal answers NULL through the kernels' NA path; a pair of concrete
+            // types with no operator entry must not silently overwrite the column with the
+            // kernels' all-NULL unresolvable result.
+            if (left_vec->type().type() != types::logical_type::NA &&
+                right_vec->type().type() != types::logical_type::NA &&
+                types::arithmetic_result_type(left_vec->type().type(), right_vec->type().type(), *arith_op) ==
+                    types::logical_type::NA) {
+                return core::error_t{
+                    core::error_code_t::arithmetics_failure,
+                    std::pmr::string{"arithmetic requires numeric or compatible temporal operands", resource}};
+            }
             if (*arith_op == arithmetic_op::divide || *arith_op == arithmetic_op::mod) {
                 types::logical_value_t zero(resource, right_vec->type());
                 for (uint64_t i = 0; i < vec_count; ++i) {

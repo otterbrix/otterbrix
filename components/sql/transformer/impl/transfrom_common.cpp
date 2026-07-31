@@ -53,6 +53,13 @@ namespace components::sql::transform {
         if (node->lexpr) {
             expr->append_param(transform_a_expr_operand(node->lexpr, names, params));
             expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
+        } else if (op_str == "+") {
+            // Unary plus in an expression slot: the identity, encoded as 0 + x (an
+            // expression is required here; the pure strip happens in operand position).
+            auto zero_id = params->add_parameter(types::logical_value_t(resource_, int64_t(0)));
+            expr = make_scalar_expression(resource_, scalar_type::add);
+            expr->append_param(zero_id);
+            expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         } else {
             // Unary minus: proper unary operator with single operand
             expr = make_scalar_expression(resource_, scalar_type::unary_minus);
@@ -64,6 +71,14 @@ namespace components::sql::transform {
     param_storage transformer::transform_a_expr_operand(Node* node,
                                                         const name_collection_t& names,
                                                         logical_plan::parameter_node_t* params) {
+        // `+x` is x in operand position too: peel the identity layers so the stripped node
+        // takes its own arm below.
+        node = strip_unary_plus(node);
+        if (!node) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"operator is missing its operand", resource_});
+            return nullptr;
+        }
         switch (nodeTag(node)) {
             case T_ColumnRef: {
                 // Predicate-arithmetic operand: a correlated outer column is lowered to a
@@ -146,6 +161,15 @@ namespace components::sql::transform {
             }
             expr = make_scalar_expression(resource_, stype, expressions::key_t{resource_, std::move(expr_name)});
             expr->append_param(resolve_select_operand(node->lexpr, names, plan, group));
+            expr->append_param(resolve_select_operand(node->rexpr, names, plan, group));
+        } else if (op_str == "+") {
+            // Unary plus in an expression slot: the identity, encoded as 0 + x (the SELECT
+            // field-clause strip handles the top-level `SELECT +x` form).
+            auto zero_id = plan->parameters->add_parameter(types::logical_value_t(resource_, int64_t(0)));
+            expr = make_scalar_expression(resource_,
+                                          scalar_type::add,
+                                          expressions::key_t{resource_, std::move(expr_name)});
+            expr->append_param(zero_id);
             expr->append_param(resolve_select_operand(node->rexpr, names, plan, group));
         } else {
             // Unary minus: proper unary operator with single operand

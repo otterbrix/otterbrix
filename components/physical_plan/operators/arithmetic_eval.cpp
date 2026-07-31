@@ -96,15 +96,21 @@ namespace components::operators {
                         if (inner_op.has_error()) {
                             return inner_op;
                         }
-                        if (!types::is_arithmetic_numeric(operand_type(inner_op.value()))) {
-                            return unsupported_unary_minus_error(resource);
-                        }
-
+                        // A NULL literal (NA-typed operand) negates to NULL — three-valued
+                        // logic, never an operator error.
                         uint64_t count = chunk.size();
                         vector::vector_t computed(resource,
                                                   types::complex_logical_type(types::logical_type::BIGINT),
                                                   0);
-                        if (inner_op.value().vec) {
+                        if (operand_type(inner_op.value()) == types::logical_type::NA) {
+                            uint64_t out_count = count > 0 ? count : 1;
+                            computed = vector::vector_t(resource,
+                                                        types::complex_logical_type(types::logical_type::NA),
+                                                        out_count);
+                            computed.validity().set_all_invalid(out_count);
+                        } else if (!types::is_arithmetic_numeric(operand_type(inner_op.value()))) {
+                            return unsupported_unary_minus_error(resource);
+                        } else if (inner_op.value().vec) {
                             computed = vector::compute_unary_neg(resource, *inner_op.value().vec, count);
                         } else {
                             uint64_t out_count = count > 0 ? count : 1;
@@ -141,8 +147,13 @@ namespace components::operators {
                     if (right_op.has_error()) {
                         return right_op;
                     }
-                    if (types::arithmetic_result_type(operand_type(left_op.value()), operand_type(right_op.value()), op) ==
-                        types::logical_type::NA) {
+                    // A NULL literal answers NULL through the kernels' NA path; only a pair
+                    // of concrete types with no operator is an error.
+                    if (operand_type(left_op.value()) != types::logical_type::NA &&
+                        operand_type(right_op.value()) != types::logical_type::NA &&
+                        types::arithmetic_result_type(operand_type(left_op.value()),
+                                                      operand_type(right_op.value()),
+                                                      op) == types::logical_type::NA) {
                         return unsupported_arithmetic_error(resource);
                     }
                     uint64_t count = chunk.size();
@@ -247,7 +258,8 @@ namespace components::operators {
                         if (inner.has_error()) {
                             return inner;
                         }
-                        if (!types::is_arithmetic_numeric(inner.value().type().type())) {
+                        if (!inner.value().is_null() &&
+                            !types::is_arithmetic_numeric(inner.value().type().type())) {
                             return unsupported_unary_minus_error(resource);
                         }
                         return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
@@ -268,7 +280,10 @@ namespace components::operators {
                         return r;
                     }
                     vector::arithmetic_op arithmetic_op;
-                    if (!scalar_to_arithmetic_op(scalar->type(), arithmetic_op) ||
+                    if (!scalar_to_arithmetic_op(scalar->type(), arithmetic_op)) {
+                        return unsupported_arithmetic_error(resource);
+                    }
+                    if (!l.value().is_null() && !r.value().is_null() &&
                         types::arithmetic_result_type(l.value().type().type(),
                                                       r.value().type().type(),
                                                       arithmetic_op) == types::logical_type::NA) {
@@ -648,10 +663,16 @@ namespace components::operators {
             if (operand_res.has_error()) {
                 return operand_res.convert_error<vector::vector_t>();
             }
+            uint64_t count = chunk.size();
+            if (detail::operand_type(operand_res.value()) == types::logical_type::NA) {
+                uint64_t out_count = count > 0 ? count : 1;
+                vector::vector_t nulls(resource, types::complex_logical_type(types::logical_type::NA), out_count);
+                nulls.validity().set_all_invalid(out_count);
+                return nulls;
+            }
             if (!types::is_arithmetic_numeric(detail::operand_type(operand_res.value()))) {
                 return detail::unsupported_unary_minus_error(resource);
             }
-            uint64_t count = chunk.size();
             if (operand_res.value().vec) {
                 return vector::compute_unary_neg(resource, *operand_res.value().vec, count);
             } else {
@@ -685,7 +706,9 @@ namespace components::operators {
             return core::error_t(core::error_code_t::arithmetics_failure,
                                  std::pmr::string{"Not an arithmetic scalar_type", resource});
         }
-        if (types::arithmetic_result_type(detail::operand_type(left_op.value()),
+        if (detail::operand_type(left_op.value()) != types::logical_type::NA &&
+            detail::operand_type(right_op.value()) != types::logical_type::NA &&
+            types::arithmetic_result_type(detail::operand_type(left_op.value()),
                                           detail::operand_type(right_op.value()),
                                           arith_op) == types::logical_type::NA) {
             return detail::unsupported_arithmetic_error(resource);

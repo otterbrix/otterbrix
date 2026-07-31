@@ -48,7 +48,7 @@ namespace services::planner::impl {
                 // Computed arithmetic sort key (from ORDER BY arithmetic expression).
                 // Sort order is encoded in key.path()[0]: 0 = ascending, 1 = descending.
                 const auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
-                components::operators::computed_sort_key_t ck(plan_resource);
+                components::operators::sort_key_spec_t ck(plan_resource);
                 ck.op = scalar_expr->type();
                 ck.operands = scalar_expr->params();
                 const auto& sort_path = scalar_expr->key().path();

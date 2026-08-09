@@ -54,8 +54,9 @@ namespace components::sql::transform {
             expr->append_param(transform_a_expr_operand(node->lexpr, names, params));
             expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         } else {
-            // Unary minus: proper unary operator with single operand
-            expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+            if (stype == scalar_type::subtract) {
+                expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+            }
             expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         }
         return expr;
@@ -94,6 +95,19 @@ namespace components::sql::transform {
                     auto sub_op = std::string_view(strVal(sub_expr->name->lst.front().data));
                     if (is_arithmetic_operator(sub_op)) {
                         return transform_a_expr_arithmetic(sub_expr, names, params);
+                    }
+                    if (auto function_name = operator_function_name(sub_op); !function_name.empty()) {
+                        auto call = make_function_expression(resource_, std::string{function_name});
+                        if (sub_expr->lexpr) {
+                            call->args().push_back(transform_a_expr_operand(sub_expr->lexpr, names, params));
+                        }
+                        if (sub_expr->rexpr) {
+                            call->args().push_back(transform_a_expr_operand(sub_expr->rexpr, names, params));
+                        }
+                        if (has_error()) {
+                            return nullptr;
+                        }
+                        return expression_ptr{call};
                     }
                     if (is_jsonb_nav_operator(sub_op)) {
                         expressions::key_t k{resource_};
@@ -184,11 +198,11 @@ namespace components::sql::transform {
                     }
                     auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                     col_ref.deduce_side(names);
-                    col_ref.field.set_cast_type(target_type_res.value());
-                    if (cast->variant_select) {
-                        col_ref.field.set_variant_select(true);
-                    }
-                    return col_ref.field;
+                    return param_storage{expression_ptr{make_cast_expression(resource_,
+                                                                             param_storage{std::move(col_ref.field)},
+                                                                             target_type_res.value(),
+                                                                             casts::cast_t{},
+                                                                             cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                 }
                 // A cast over a scalar jsonb navigation, e.g. (t #>> 'a.c')::bigint:
                 // resolve the navigation to its flattened column key and annotate it,
@@ -206,15 +220,15 @@ namespace components::sql::transform {
                             error_ = target_type_res.error();
                             return nullptr;
                         }
-                        expressions::key_t k{resource_};
-                        if (!resolve_jsonb_scalar_key(sub, names, k)) {
+                        expressions::key_t navigated{resource_};
+                        if (!resolve_jsonb_scalar_key(sub, names, navigated)) {
                             return nullptr;
                         }
-                        k.set_cast_type(target_type_res.value());
-                        if (cast->variant_select) {
-                            k.set_variant_select(true);
-                        }
-                        return k;
+                        return param_storage{expression_ptr{make_cast_expression(resource_,
+                                                                                 param_storage{std::move(navigated)},
+                                                                                 target_type_res.value(),
+                                                                                 casts::cast_t{},
+                                                                                 cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                     }
                 }
                 return add_param_value(node, plan->parameters.get());
@@ -265,41 +279,16 @@ namespace components::sql::transform {
                 if (!func->agg_star) {
                     args.reserve(func->args->lst.size());
                     for (const auto& arg : func->args->lst) {
-                        auto arg_node = pg_ptr_cast<Node>(arg.data);
-                        if (nodeTag(arg_node) == T_ColumnRef) {
-                            auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
-                            key.deduce_side(names);
-                            args.emplace_back(std::move(key.field));
-                        } else if (nodeTag(arg_node) == T_A_Expr) {
-                            auto sub = pg_ptr_cast<A_Expr>(arg_node);
-                            if (sub->kind == AEXPR_OP && is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                args.emplace_back(resolve_select_operand(arg_node, names, plan, group));
-                            } else {
-                                args.emplace_back(add_param_value(arg_node, plan->parameters.get()));
-                            }
-                        } else if (nodeTag(arg_node) == T_CaseExpr) {
-                            // CASE WHEN ... inside aggregate arg, e.g. SUM(CASE ...)
-                            args.emplace_back(
-                                case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_node), nullptr, names, plan, group));
-                        } else {
-                            args.emplace_back(add_param_value(arg_node, plan->parameters.get()));
-                        }
+                        args.emplace_back(resolve_select_operand(pg_ptr_cast<Node>(arg.data), names, plan, group));
                     }
                 }
 
-                // Create aggregate with auto-generated alias
-                // TODO: default aggregate aliases should come from function registry, not hardcoded here
-                std::string auto_alias = "__agg_" + funcname + "_" + std::to_string(aggregate_counter_++);
-                auto agg_expr =
-                    make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, auto_alias});
-                for (auto& arg : args) {
-                    agg_expr->append_param(arg);
-                }
-                pending_internal_aggs_.push_back(agg_expr);
-
-                // Return key referencing the aggregate result
-                return expressions::key_t{resource_, auto_alias};
+                auto call = make_function_expression(resource_, std::move(funcname), std::move(args));
+                call->set_star_argument(func->agg_star);
+                return param_storage{expressions::expression_ptr{call}};
             }
+            case T_CaseExpr:
+                return case_expr_to_scalar(pg_ptr_cast<CaseExpr>(node), nullptr, names, plan, group);
             case T_SubLink: {
                 auto sub = pg_ptr_cast<SubLink>(node);
                 if (sub->subLinkType != EXPR_SUBLINK) {
@@ -423,6 +412,17 @@ namespace components::sql::transform {
         return param_id;
     }
 
+    void transformer::note_cast_type(const types::complex_logical_type& target) {
+        if (target.type() != types::logical_type::UNKNOWN) {
+            // a built-in target needs no catalog trip
+            return;
+        }
+        const std::string& name = target.type_name();
+        if (std::find(cast_type_names_.begin(), cast_type_names_.end(), name) == cast_type_names_.end()) {
+            cast_type_names_.push_back(name);
+        }
+    }
+
     core::parameter_id_t transformer::add_param_value(Node* node, logical_plan::parameter_node_t* params) {
         if (nodeTag(node) == T_ParamRef) {
             auto ref = pg_ptr_cast<ParamRef>(node);
@@ -542,16 +542,16 @@ namespace components::sql::transform {
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
                     const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE
                     const bool negate = (op_str == "!~~" || op_str == "!~~*"); // NOT LIKE / NOT ILIKE
-                    auto cmp = make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
-                    // On the SCALAR path the pattern is already like_to_regex-converted, so regex_like is not
-                    // needed; negation is expressed by the union_not wrapper. Only case-insensitivity rides
-                    // the compare (the executor compiles the regex with icase when set).
+
+                    // Convert to regex function call
+                    std::pmr::vector<expressions::param_storage> args{resource_};
+                    args.emplace_back(key_left.field);
+                    args.emplace_back(param_id);
                     if (icase) {
-                        // ILIKE: the storage constant_filter compiles the pattern with RE2's case-insensitive
-                        // option (regex_icase is threaded into the disk filter by transform_predicate), so this
-                        // pushes down to disk exactly like plain LIKE — no in-memory diversion.
-                        cmp->set_regex_flags(/*like=*/false, /*icase=*/true, /*negate=*/false);
+                        args.emplace_back(
+                            plan->parameters->add_parameter(types::logical_value_t(resource_, std::string{"i"})));
                     }
+                    auto cmp = make_function_expression(resource_, "regexp_like", std::move(args));
                     if (negate) {
                         auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
                         not_expr->append_child(cmp);
@@ -614,11 +614,14 @@ namespace components::sql::transform {
                                 }
                                 auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
-                                col_ref.field.set_cast_type(target_type_res.value());
-                                if (cast->variant_select) {
-                                    col_ref.field.set_variant_select(true);
-                                }
-                                return col_ref.field;
+                                note_cast_type(target_type_res.value());
+                                auto conversion = make_cast_expression(
+                                    resource_,
+                                    param_storage{std::move(col_ref.field)},
+                                    target_type_res.value(),
+                                    casts::cast_t{},
+                                    cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast);
+                                return param_storage{expressions::expression_ptr{conversion}};
                             }
                             // '<jsonb nav chain> ::? type' in a predicate, e.g.
                             // WHERE m -> 'a' ->> 'b' ::? bigint > 0.
@@ -642,6 +645,31 @@ namespace components::sql::transform {
                                     }
                                     return k;
                                 }
+                            }
+                            if (cast->arg && nodeTag(cast->arg) == T_A_Const) {
+                                auto target_type_res = get_type(resource_, cast->typeName);
+                                if (target_type_res.has_error()) {
+                                    error_ = target_type_res.error();
+                                    return nullptr;
+                                }
+                                auto value_res = get_value(resource_, node);
+                                if (value_res.has_error()) {
+                                    error_ = value_res.error();
+                                    return nullptr;
+                                }
+                                bool converts = value_res.value().type() != target_type_res.value();
+                                param_storage bound{plan->parameters->add_parameter(std::move(value_res.value()))};
+                                if (!converts) {
+                                    return bound;
+                                }
+                                note_cast_type(target_type_res.value());
+                                auto conversion = make_cast_expression(
+                                    resource_,
+                                    bound,
+                                    target_type_res.value(),
+                                    casts::cast_t{},
+                                    cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast);
+                                return param_storage{expressions::expression_ptr{conversion}};
                             }
                             return add_param_value(node, plan->parameters.get());
                         }
@@ -1476,12 +1504,17 @@ namespace components::sql::transform {
             case T_FuncCall: {
                 auto func = pg_ptr_cast<FuncCall>(node);
                 auto funcname = std::string{strVal(linitial(func->funcname))};
-                // Find matching aggregate already registered by SELECT
+                // Find a matching aggregate already registered by SELECT
                 for (const auto& expr : group->expressions()) {
                     if (expr->group() == expression_group::aggregate) {
                         auto* agg = static_cast<const aggregate_expression_t*>(expr.get());
                         if (agg->function_name() == funcname) {
                             return agg->key();
+                        }
+                    } else if (expr->group() == expression_group::function) {
+                        auto* call = static_cast<const function_expression_t*>(expr.get());
+                        if (call->name() == funcname) {
+                            return call->key();
                         }
                     }
                 }

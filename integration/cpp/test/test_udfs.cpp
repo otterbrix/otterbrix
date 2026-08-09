@@ -54,7 +54,7 @@ std::unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* 
     auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
 
     kernel_signature_t sig(function_type_t::aggregate,
-                           {exact_type_matcher(types::logical_type::STRING_LITERAL)},
+                           {parameter_type::exact(types::logical_type::STRING_LITERAL)},
                            {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_init, concat_consume, concat_merge, concat_finalize};
 
@@ -96,7 +96,7 @@ std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* re
 
     kernel_signature_t sig(
         function_type_t::aggregate,
-        {exact_type_matcher(types::logical_type::DOUBLE), exact_type_matcher(types::logical_type::BIGINT)},
+        {parameter_type::exact(types::logical_type::DOUBLE), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), mult_init, mult_consume, mult_merge, mult_finalize};
     fn->add_kernel(resource, std::move(k));
@@ -117,7 +117,7 @@ std::unique_ptr<row_function> make_is_even_func(std::pmr::memory_resource* resou
     auto fn = std::make_unique<row_function>(udf3_name, arity::unary(), doc, 1);
 
     kernel_signature_t sig(function_type_t::row,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), is_even_exec};
 
@@ -139,7 +139,7 @@ std::unique_ptr<row_function> make_modulo_func(std::pmr::memory_resource* resour
 
     kernel_signature_t sig(
         function_type_t::row,
-        {exact_type_matcher(types::logical_type::BIGINT), exact_type_matcher(types::logical_type::BIGINT)},
+        {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), modulo_exec};
 

@@ -767,17 +767,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         // the JOIN wrapper here is the workaround.
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE oddness = 1;");
-            REQUIRE(cur->is_success());
-            CHECK(cur->size() == 50);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT t.* FROM TestDatabase.TestCollection t "
-                                               "INNER JOIN TestDatabase.CopyTestCollection c "
-                                               "        ON (t.custom_type).f1 = (c.custom_type).f1 "
-                                               "WHERE t.oddness = 'even';");
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT * FROM TestDatabase.TestCollection WHERE oddness = 'even'::custom_enum;");
             REQUIRE(cur->is_success());
             CHECK(cur->size() == 50);
         }

@@ -23,12 +23,26 @@ namespace components::expressions {
         const std::string& result_alias() const;
         void set_result_alias(const std::string& alias);
 
+
+        const types::complex_logical_type& result_type() const noexcept { return result_type_; }
+        void set_result_type(const types::complex_logical_type& type) { result_type_ = type; }
+
+        cardinality_t cardinality() const noexcept { return cardinality_; }
+        void set_cardinality(cardinality_t cardinality) noexcept { cardinality_ = cardinality; }
+
+        // The name this expression is addressed by
+        const key_t& key() const noexcept { return key_; }
+        key_t& key() noexcept { return key_; }
+
     protected:
-        explicit expression_i(expression_group group);
+        expression_i(expression_group group, key_t key);
 
     private:
         const expression_group group_;
+        key_t key_;
         std::string result_alias_;
+        types::complex_logical_type result_type_{types::logical_type::INVALID};
+        cardinality_t cardinality_{cardinality_t::unknown};
 
         virtual hash_t hash_impl() const = 0;
 

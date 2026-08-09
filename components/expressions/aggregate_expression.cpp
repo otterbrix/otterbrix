@@ -36,44 +36,41 @@ namespace components::expressions {
     aggregate_expression_t::aggregate_expression_t(std::pmr::memory_resource* resource,
                                                    const std::string& function_name,
                                                    const key_t& key)
-        : expression_i(expression_group::aggregate)
-        , function_name_(function_name)
-        , key_(key)
-        , params_(resource) {}
+        : expression_i(expression_group::aggregate, key)
+        , child_(make_function_expression(resource, std::string(function_name))) {}
 
-    const key_t& aggregate_expression_t::key() const { return key_; }
+    aggregate_expression_t::aggregate_expression_t(const expression_ptr& call, const key_t& key)
+        : expression_i(expression_group::aggregate, key)
+        , child_(call) {}
 
-    const std::string& aggregate_expression_t::function_name() const { return function_name_; }
+    function_expression_t* aggregate_expression_t::call() noexcept {
+        return static_cast<function_expression_t*>(child_.get());
+    }
 
-    void aggregate_expression_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
+    const function_expression_t* aggregate_expression_t::call() const noexcept {
+        return static_cast<const function_expression_t*>(child_.get());
+    }
 
-    compute::function_uid aggregate_expression_t::function_uid() const { return function_uid_; }
+    const std::string& aggregate_expression_t::function_name() const { return call()->name(); }
 
-    std::pmr::vector<param_storage>& aggregate_expression_t::params() { return params_; }
+    void aggregate_expression_t::add_function_uid(compute::function_uid uid) { call()->add_function_uid(uid); }
 
-    const std::pmr::vector<param_storage>& aggregate_expression_t::params() const { return params_; }
+    compute::function_uid aggregate_expression_t::function_uid() const { return call()->function_uid(); }
 
-    void aggregate_expression_t::append_param(const param_storage& param) { params_.push_back(param); }
+    std::pmr::vector<param_storage>& aggregate_expression_t::params() { return call()->args(); }
+
+    const std::pmr::vector<param_storage>& aggregate_expression_t::params() const { return call()->args(); }
+
+    void aggregate_expression_t::append_param(const param_storage& param) { call()->args().push_back(param); }
+
+    void aggregate_expression_t::set_distinct(bool d) { call()->set_distinct(d); }
+
+    bool aggregate_expression_t::is_distinct() const { return call()->is_distinct(); }
 
     hash_t aggregate_expression_t::hash_impl() const {
         hash_t hash_{0};
-        boost::hash_combine(hash_, std::hash<std::string>{}(function_name_));
-        boost::hash_combine(hash_, key_.hash());
-        for (const auto& param : params_) {
-            auto param_hash = std::visit(
-                [](const auto& value) {
-                    using param_type = std::decay_t<decltype(value)>;
-                    if constexpr (std::is_same_v<param_type, core::parameter_id_t>) {
-                        return std::hash<uint64_t>()(value);
-                    } else if constexpr (std::is_same_v<param_type, key_t>) {
-                        return value.hash();
-                    } else if constexpr (std::is_same_v<param_type, expression_ptr>) {
-                        return value->hash();
-                    }
-                },
-                param);
-            boost::hash_combine(hash_, param_hash);
-        }
+        boost::hash_combine(hash_, child_->hash());
+        boost::hash_combine(hash_, key().hash());
         return hash_;
     }
 
@@ -85,9 +82,7 @@ namespace components::expressions {
 
     bool aggregate_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const aggregate_expression_t*>(rhs);
-        return function_name_ == other->function_name_ && key_ == other->key_ &&
-               params_.size() == other->params_.size() &&
-               std::equal(params_.begin(), params_.end(), other->params_.begin());
+        return key() == other->key() && *child_ == *other->child_;
     }
 
     aggregate_expression_ptr
@@ -98,6 +93,10 @@ namespace components::expressions {
     aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource,
                                                        const std::string& function_name) {
         return make_aggregate_expression(resource, function_name, key_t(resource));
+    }
+
+    aggregate_expression_ptr make_aggregate_over(const expression_ptr& call, const key_t& key) {
+        return new aggregate_expression_t(call, key);
     }
 
     aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource,

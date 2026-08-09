@@ -740,50 +740,23 @@ namespace components::catalog {
         }
     }
 
-    std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers) {
-        using K = components::compute::input_type::kind_t;
+    std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters) {
         std::string out;
-        for (size_t i = 0; i < matchers.size(); ++i) {
+        for (size_t i = 0; i < parameters.size(); ++i) {
             if (i > 0)
                 out += '|';
-            const auto& m = matchers[i];
-            switch (m.kind()) {
-                case K::exact:
-                    out += "e:";
-                    out += std::to_string(static_cast<int>(m.exact_type()));
-                    break;
-                case K::numeric:
-                    out += "n";
-                    break;
-                case K::integer:
-                    out += "i";
-                    break;
-                case K::floating:
-                    out += "f";
-                    break;
-                case K::string:
-                    out += "s";
-                    break;
-                case K::any_of: {
-                    out += "a:";
-                    const auto& list = m.any_of_list();
-                    for (size_t j = 0; j < list.size(); ++j) {
-                        if (j > 0)
-                            out += ',';
-                        out += std::to_string(static_cast<int>(list[j]));
-                    }
-                    break;
-                }
-                case K::always_true:
-                    out += "t";
-                    break;
-                case K::custom:
-                    // Closure-only matcher (non-introspectable). Persist as a
-                    // placeholder so the row still parses; the on-restart
-                    // restore will need to rebuild the matcher elsewhere or
-                    // skip restoring this overload.
-                    out += "t";
-                    break;
+            const auto& parameter = parameters[i];
+            if (!parameter.is_variable()) {
+                out += "e:";
+                out += std::to_string(static_cast<int>(parameter.type().type()));
+                continue;
+            }
+            out += "v:";
+            out += std::to_string(static_cast<int>(parameter.id()));
+            const auto& admissible = parameter.admissible();
+            for (size_t j = 0; j < admissible.size(); ++j) {
+                out += j > 0 ? ',' : ':';
+                out += std::to_string(static_cast<int>(admissible[j].type()));
             }
         }
         return out;

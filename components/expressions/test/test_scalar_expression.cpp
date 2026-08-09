@@ -9,7 +9,7 @@ TEST_CASE("components::expression::scalar::equals") {
     auto resource = core::pmr::otterbrix_resource();
     auto expr1 = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "name"));
     auto expr2 = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "name"));
-    auto expr3 = make_scalar_expression(&resource, scalar_type::abs, key(&resource, "name"));
+    auto expr3 = make_scalar_expression(&resource, scalar_type::unary_minus, key(&resource, "name"));
     auto expr4 = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
     auto expr_union1 = make_scalar_expression(&resource, scalar_type::multiply);
     expr_union1->append_param(core::parameter_id_t(0));
@@ -45,8 +45,8 @@ TEST_CASE("components::expression::scalar::to_string") {
     auto expr =
         make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"), key(&resource, "count"));
     REQUIRE(expr->to_string() == R"(count: "count")");
-    expr = make_scalar_expression(&resource, scalar_type::floor, key(&resource, "count"), key(&resource, "count"));
-    REQUIRE(expr->to_string() == R"(count: {$floor: "count"})");
+    expr = make_scalar_expression(&resource, scalar_type::mod, key(&resource, "count"), key(&resource, "count"));
+    REQUIRE(expr->to_string() == R"(count: {$mod: "count"})");
 
     expr = make_scalar_expression(&resource, scalar_type::multiply, key(&resource, "multi"));
     expr->append_param(core::parameter_id_t(1));

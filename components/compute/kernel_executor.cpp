@@ -27,7 +27,18 @@ namespace components::compute::detail {
             return core::error_t::no_error();
         }
 
+        [[nodiscard]] core::error_t consume(const data_chunk_t&) override { return not_accumulating(); }
+
+        [[nodiscard]] core::result_wrapper_t<datum_t> finalize() override { return not_accumulating(); }
+
     protected:
+        [[nodiscard]] core::error_t not_accumulating() const {
+            return core::error_t(core::error_code_t::kernel_error,
+                                 std::pmr::string{"this kernel does not accumulate across chunks",
+                                                  kernel_ctx_ ? kernel_ctx_->exec_context().resource()
+                                                              : std::pmr::get_default_resource()});
+        }
+
         vector_t prepare_vector_output(size_t length) {
             assert(kernel_ctx_);
             return vector_t(exec_ctx().resource(), output_type_, length);
@@ -84,6 +95,7 @@ namespace components::compute::detail {
 
             data_chunk_t out(kernel_ctx().exec_context().resource(), {});
             out.data.emplace_back(std::move(results_.front()));
+            out.set_cardinality(inputs.size());
             if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
                 return st;
             }
@@ -141,6 +153,7 @@ namespace components::compute::detail {
 
             data_chunk_t out(exec_ctx().resource(), {});
             out.data.emplace_back(std::move(results_.front()));
+            out.set_cardinality(1);
             if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
                 return st;
             }
@@ -180,25 +193,13 @@ namespace components::compute::detail {
         }
 
         core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-
             if (auto st = consume(inputs); st.contains_error()) {
                 return st;
             }
-
-            if (auto st = kernel().finalize(*agg_ctx_); st.contains_error()) {
-                return st;
-            }
-            return agg_ctx_->batch_results;
+            return finalize();
         }
 
         core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-
             // All chunks belong to one logical group: consume folds each chunk's partial
             // into the running state, finalize emits the group's result. An accumulating
             // kernel (sum/min/max/count/avg) yields exactly one value — even for an empty
@@ -210,11 +211,16 @@ namespace components::compute::detail {
                     return st;
                 }
             }
+            return finalize();
+        }
 
+        core::result_wrapper_t<datum_t> finalize() override {
+            if (auto st = check_kernel(); st.contains_error()) {
+                return st;
+            }
             if (auto st = kernel().finalize(*agg_ctx_); st.contains_error()) {
                 return st;
             }
-
             return agg_ctx_->batch_results;
         }
 
@@ -225,8 +231,10 @@ namespace components::compute::detail {
                                                   kernel_ctx_->exec_context().resource()});
         }
 
-    private:
-        core::error_t consume(const data_chunk_t& inputs) {
+        core::error_t consume(const data_chunk_t& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
+                return st;
+            }
             // TODO: find another way of getting memory_resource
             if (state() == nullptr) {
                 core::error_t(core::error_code_t::kernel_error,
@@ -261,6 +269,7 @@ namespace components::compute::detail {
             return core::error_t::no_error();
         }
 
+    private:
         std::optional<aggregate_kernel_context> agg_ctx_;
         const std::pmr::vector<types::complex_logical_type>* input_types_ = nullptr;
         const function_options* options_ = nullptr;

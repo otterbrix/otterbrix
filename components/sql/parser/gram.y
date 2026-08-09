@@ -672,7 +672,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 
 	TABLE TABLES TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN TIME TIMESTAMP
 	TO TRAILING TRANSACTION TREAT TRIGGER TRIM TRUE_P
-	TRUNCATE TRUSTED TYPE_P TYPES_P
+	TRUNCATE TRUSTED TRY_CAST TYPE_P TYPES_P
 
 	UNBOUNDED UNCOMMITTED UNENCRYPTED UNION UNIQUE UNKNOWN UNLISTEN UNLOGGED
 	UNTIL UPDATE USER USING
@@ -14430,6 +14430,12 @@ func_expr_common_subexpr:
 				}
 			| CAST '(' a_expr AS Typename ')'
 				{ $$ = makeTypeCast(resource, $3, $5, @1); }
+			| TRY_CAST '(' a_expr AS Typename ')'
+				{
+					TypeCast *n = (TypeCast *) makeTypeCast(resource, $3, $5, @1);
+					n->try_cast = true;
+					$$ = (Node *) n;
+				}
 			| EXTRACT '(' extract_list ')'
 				{
 					$$ = (Node *) makeFuncCall(resource, SystemFuncName(resource, "date_part"), $3, @1);
@@ -16435,6 +16441,7 @@ col_name_keyword:
 			| TIMESTAMP
 			| TREAT
 			| TRIM
+			| TRY_CAST
 			| VALUES
 			| VARCHAR
 			| XMLATTRIBUTES
@@ -16650,6 +16657,7 @@ makeTypeCast(std::pmr::memory_resource* resource, Node *arg, TypeName *type, int
 	n->typeName = type;
 	n->location = location;
 	n->variant_select = false;
+	n->try_cast = false;
 	return (Node *) n;
 }
 

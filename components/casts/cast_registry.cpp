@@ -1,7 +1,10 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/casts/composite_cast.hpp>
+#include <components/casts/kernels/null_cast.hpp>
 
 #include <algorithm>
+#include <functional>
+#include <iterator>
 
 namespace components::casts {
 
@@ -17,10 +20,9 @@ namespace components::casts {
             return type.extension_as<types::array_logical_type_extension>()->size();
         }
 
-        // A registered DECIMAL target is a placeholder: identity collapses width/scale, so only
-        // one can be registered per source. Scoring it as a candidate would invent a width.
+        // There is one function for all variations
         [[nodiscard]] bool is_family_key(const types::complex_logical_type& type) noexcept {
-            return type.type() == types::logical_type::DECIMAL;
+            return type.type() == types::logical_type::DECIMAL || type.type() == types::logical_type::ENUM;
         }
 
         // Can this entry hold a position ordered by cost? Only if it promotes, its cost does not
@@ -115,6 +117,11 @@ namespace components::casts {
 
     std::optional<cast_info> cast_registry_t::lookup(const types::complex_logical_type& source,
                                                      const types::complex_logical_type& target) const {
+        // NULL comming from parser has to be converted to usable type
+        if (source.type() == types::logical_type::NA) {
+            return cast_info{cast_type::implicit,
+                             cast_cost{.precision_loss = 0, .footprint = static_cast<uint32_t>(target.size())}};
+        }
         if (const cast_entry* entry = find(source, target)) {
             return cast_info{entry->level, entry->promotes() ? entry->resolve_cost({source, target}) : no_cost};
         }
@@ -204,6 +211,9 @@ namespace components::casts {
             return std::nullopt;
         }
         // Same order as lookup(), so what is built always matches what was just approved.
+        if (source.type() == types::logical_type::NA) {
+            return leaf_closure(cast_function_t{&kernels::null_cast, nullptr});
+        }
         if (const cast_entry* entry = find(source, target)) {
             return leaf_closure(entry->fn);
         }
@@ -298,6 +308,137 @@ namespace components::casts {
             return std::nullopt;
         }
         return common_via(left, right, *best_type);
+    }
+
+    std::optional<cast_registry_t::common_type_n>
+    cast_registry_t::find_best_common_type(std::span<const types::complex_logical_type> inputs) const {
+        if (inputs.empty()) {
+            return std::nullopt;
+        }
+
+        // Parameterized families settle by their own rule
+        if (std::optional<types::complex_logical_type> constructed = constructed_common_candidate(inputs)) {
+            return common_n_via(inputs, *constructed);
+        }
+
+        std::optional<types::complex_logical_type> best_type;
+        cast_cost best_cost = no_cost;
+
+        // A candidate must be reachable from every input
+        auto consider = [&](const types::complex_logical_type& candidate) {
+            cast_cost score{.precision_loss = 0, .footprint = static_cast<uint32_t>(candidate.size())};
+            for (const auto& source : inputs) {
+                std::optional<cast_info> info = lookup(source, candidate);
+                if (!info.has_value() || info->level != cast_type::implicit) {
+                    return;
+                }
+                score.precision_loss = std::max(score.precision_loss, info->cost.precision_loss);
+            }
+            if (!best_type.has_value() || score < best_cost) {
+                best_type = candidate;
+                best_cost = score;
+            }
+        };
+
+        // Any common type is reachable from the first input
+        for (const auto& candidate : inputs) {
+            consider(candidate);
+        }
+        if (const target_entries_t* targets = targets_from(inputs.front())) {
+            for (size_t index = 0; index < targets->implicit_count; ++index) {
+                const auto& candidate = targets->entries[index].first;
+                if (is_family_key(candidate)) {
+                    continue;
+                }
+                consider(candidate);
+            }
+        }
+        auto declared_iterator = complex_entries_.find(inputs.front());
+        if (declared_iterator != complex_entries_.end()) {
+            const complex_target_entries_t& declared_targets = declared_iterator->second;
+            for (size_t index = 0; index < declared_targets.implicit_count; ++index) {
+                const auto& candidate = declared_targets.entries[index].first;
+                if (is_family_key(candidate)) {
+                    continue;
+                }
+                consider(candidate);
+            }
+        }
+
+        if (!best_type.has_value()) {
+            return std::nullopt;
+        }
+        return common_n_via(inputs, *best_type);
+    }
+
+    std::optional<cast_registry_t::common_type_n>
+    cast_registry_t::common_n_via(std::span<const types::complex_logical_type> inputs,
+                                  const types::complex_logical_type& candidate) const {
+        common_type_n result{candidate, std::pmr::vector<cast_t>(resource_)};
+        result.casts.reserve(inputs.size());
+        for (const auto& source : inputs) {
+            std::optional<cast_t> cast = reach_implicitly(source, candidate);
+            if (!cast.has_value()) {
+                return std::nullopt;
+            }
+            result.casts.push_back(std::move(*cast));
+        }
+        return result;
+    }
+
+    std::optional<types::complex_logical_type>
+    cast_registry_t::constructed_common_candidate(std::span<const types::complex_logical_type> inputs) const {
+        // NULL can be casted to any type and can be ignored here
+        std::pmr::vector<types::complex_logical_type> concrete(resource_);
+        const auto is_null_type = [](const types::complex_logical_type& type) {
+            return type.type() == types::logical_type::NA;
+        };
+        if (std::any_of(inputs.begin(), inputs.end(), is_null_type)) {
+            concrete.reserve(inputs.size());
+            std::copy_if(inputs.begin(), inputs.end(), std::back_inserter(concrete), std::not_fn(is_null_type));
+            if (concrete.empty()) {
+                // every input is NULL -> result is NULL
+                return std::nullopt;
+            }
+            inputs = std::span<const types::complex_logical_type>{concrete};
+        }
+
+        const bool all_decimal = std::all_of(inputs.begin(), inputs.end(), [](const auto& type) {
+            return type.type() == types::logical_type::DECIMAL;
+        });
+        if (all_decimal) {
+            types::complex_logical_type folded = inputs.front();
+            for (size_t index = 1; index < inputs.size(); ++index) {
+                std::optional<common_type> step = common_decimal_type(folded, inputs[index]);
+                if (!step.has_value()) {
+                    return std::nullopt;
+                }
+                folded = step->type;
+            }
+            return folded;
+        }
+
+        const bool all_container =
+            std::all_of(inputs.begin(), inputs.end(), [](const auto& type) { return is_list_or_array(type); });
+        if (all_container) {
+            std::pmr::vector<types::complex_logical_type> elements(resource_);
+            elements.reserve(inputs.size());
+            for (const auto& type : inputs) {
+                elements.push_back(type.child_type());
+            }
+            std::optional<common_type_n> element = find_best_common_type(std::span{elements});
+            if (!element.has_value()) {
+                return std::nullopt;
+            }
+            const bool same_array = std::all_of(inputs.begin(), inputs.end(), [&](const auto& type) {
+                return type.type() == types::logical_type::ARRAY && array_size(type) == array_size(inputs.front());
+            });
+            if (same_array) {
+                return types::complex_logical_type::create_array(element->type, array_size(inputs.front()));
+            }
+            return types::complex_logical_type::create_list(element->type);
+        }
+        return std::nullopt;
     }
 
     std::optional<cast_t> cast_registry_t::reach_implicitly(const types::complex_logical_type& source,

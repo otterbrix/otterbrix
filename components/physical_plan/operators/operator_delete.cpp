@@ -1,6 +1,6 @@
 #include "operator_delete.hpp"
 #include "dml_util.hpp"
-#include "predicates/predicate.hpp"
+#include "join_utils.hpp"
 #include <components/vector/vector_operations.hpp>
 
 #include <components/context/context.hpp>
@@ -20,6 +20,7 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(table_oid)
         , expression_(std::move(expr))
+        , condition_(expressions::classify_condition(expression_))
         , returning_(std::move(returning))
         , affected_bound_(affected_bound) {}
 
@@ -52,17 +53,33 @@ namespace components::operators {
         const bool collect_returning = !returning_.empty();
         auto types = chunk.types();
 
-        // Match each row. expression_ is null for the simple predicate-scan DELETE
-        // (the scan already pushed the WHERE), so create_all_true_predicate matches
-        // every scan row; a non-null expression_ (legacy callers) is honored too.
-        auto predicate = expression_ ? predicates::create_predicate(resource_,
-                                                                    pipeline_context->function_registry,
-                                                                    expression_,
-                                                                    types,
-                                                                    types,
-                                                                    &pipeline_context->parameters,
-                                                                    pipeline_context->session_tz)
-                                     : predicates::create_all_true_predicate(resource_);
+        // all_true/all_false can skip graph
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
+        }
+        std::optional<vector::data_chunk_t> produced;
+        if (condition_ == expressions::condition_kind::computed) {
+            // lazy ininialized graph (if consume() is never called, there is no point in building it)
+            if (!graph_) {
+                auto built = expressions::build_condition_graph(resource_,
+                                                                pipeline_context->parameters.parameters,
+                                                                expression_.get(),
+                                                                types);
+                if (built.has_error()) {
+                    return built.error();
+                }
+                graph_ = std::move(built.value());
+            }
+            auto decided = expressions::run_graph(graph_.get(),
+                                                  pipeline_context->parameters.parameters,
+                                                  chunk,
+                                                  pipeline_context->execution_context);
+            if (decided.has_error()) {
+                return decided.error();
+            }
+            produced = std::move(decided.value());
+        }
+        const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
 
         // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
         // pairs each staged old-row with its own id, regardless of batch order).
@@ -73,11 +90,7 @@ namespace components::operators {
 
         size_t index = 0;
         for (size_t i = 0; i < chunk.size(); i++) {
-            auto check_result = predicate->check(chunk, i);
-            if (check_result.has_error()) {
-                return check_result.error();
-            }
-            if (!check_result.value()) {
+            if (decisions != nullptr && (decisions->is_null(i) || !decisions->get_value<bool>(i))) {
                 continue;
             }
             int64_t abs_id;
@@ -125,7 +138,8 @@ namespace components::operators {
                                                 returning_,
                                                 &affected,
                                                 pipeline_context->parameters,
-                                                pipeline_context->session_tz);
+                                                pipeline_context->execution_context,
+                                                &returning_graph_);
                 if (proj.has_error()) {
                     return proj.error();
                 }
@@ -166,14 +180,31 @@ namespace components::operators {
             }
         }
 
-        auto predicate = expression_ ? predicates::create_predicate(resource_,
-                                                                    pipeline_context->function_registry,
-                                                                    expression_,
-                                                                    types_left,
-                                                                    types_right,
-                                                                    &pipeline_context->parameters,
-                                                                    pipeline_context->session_tz)
-                                     : predicates::create_all_true_predicate(resource_);
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
+        }
+        chunks_vector_t merged(resource_);
+        if (condition_ == expressions::condition_kind::computed) {
+            if (!graph_) {
+                std::pmr::vector<types::complex_logical_type> merged_types(resource_);
+                merged_types.reserve(types_left.size() + types_right.size());
+                merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
+                merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
+                auto built = expressions::build_condition_graph(resource_,
+                                                                pipeline_context->parameters.parameters,
+                                                                expression_.get(),
+                                                                merged_types,
+                                                                types_left.size());
+                if (built.has_error()) {
+                    return built.error();
+                }
+                graph_ = std::move(built.value());
+            }
+            merged.reserve(right_chunks.size());
+            for (const auto& chunk_right : right_chunks) {
+                merged.push_back(join_detail::merged_chunk(resource_, types_left, chunk_right));
+            }
+        }
 
         // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
         // pairs each staged old-row with its own id, regardless of batch order).
@@ -202,16 +233,26 @@ namespace components::operators {
                 break;
             }
             bool row_matched = false;
-            for (const auto& chunk_right : right_chunks) {
+            for (size_t ci = 0; ci < right_chunks.size(); ci++) {
+                const auto& chunk_right = right_chunks[ci];
                 if (chunk_right.size() == 0) {
                     continue;
                 }
-                for (size_t j = 0; j < chunk_right.size(); j++) {
-                    auto check_result = predicate->check(chunk_left, chunk_right, i, j);
-                    if (check_result.has_error()) {
-                        return check_result.error();
+                std::optional<vector::data_chunk_t> produced;
+                if (graph_) {
+                    join_detail::point_at_probe_row(resource_, merged[ci], chunk_left, i);
+                    auto decided = expressions::run_graph(graph_.get(),
+                                                          pipeline_context->parameters.parameters,
+                                                          merged[ci],
+                                                          pipeline_context->execution_context);
+                    if (decided.has_error()) {
+                        return decided.error();
                     }
-                    if (!check_result.value()) {
+                    produced = std::move(decided.value());
+                }
+                const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
+                for (size_t j = 0; j < chunk_right.size(); j++) {
+                    if (decisions != nullptr && (decisions->is_null(j) || !decisions->get_value<bool>(j))) {
                         continue;
                     }
                     // Storage / index delete keys on the ABSOLUTE table row id of the
@@ -286,7 +327,8 @@ namespace components::operators {
                                                 returning_,
                                                 &affected_left,
                                                 pipeline_context->parameters,
-                                                pipeline_context->session_tz,
+                                                pipeline_context->execution_context,
+                                                &returning_graph_,
                                                 &affected_right);
                 if (proj.has_error()) {
                     return proj.error();
@@ -328,7 +370,7 @@ namespace components::operators {
         // storage_delete_rows + WAL physical_delete + index path entirely. It buffers
         // nothing (buffered_rows()==0), so it is a single-shot sink — never mid-flushed.
         if (oid_col_idx_ >= 0) {
-            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset, table_oid_};
             auto [_c, cf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::delete_pg_catalog_rows,
                                              exec_ctx,
@@ -356,7 +398,7 @@ namespace components::operators {
 
             auto op = [this, ctx, mirror_index](
                           std::pmr::memory_resource* res) -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
-                components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+                components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset, table_oid_};
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 

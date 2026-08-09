@@ -122,12 +122,12 @@ namespace components::operators {
             std::string proargmatchers;
             std::string prorettype;
             if (!func_signatures.empty()) {
-                std::vector<components::compute::input_type> matchers;
-                matchers.reserve(func_signatures.front().input_types.size());
+                std::vector<components::compute::parameter_type> parameters;
+                parameters.reserve(func_signatures.front().input_types.size());
                 for (auto& it : func_signatures.front().input_types) {
-                    matchers.push_back(it);
+                    parameters.push_back(it);
                 }
-                proargmatchers = catalog::encode_proargmatchers(matchers);
+                proargmatchers = catalog::encode_proargmatchers(parameters);
                 std::vector<components::compute::output_type> outs;
                 outs.reserve(func_signatures.front().output_types.size());
                 for (auto& ot : func_signatures.front().output_types) {

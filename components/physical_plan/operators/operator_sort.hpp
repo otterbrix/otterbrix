@@ -1,21 +1,23 @@
 #pragma once
 
+#include <components/expressions/execution_graph_builder.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/sort/sort.hpp>
 
+#include <memory>
+
 namespace components::operators {
 
-    // A sort key that must be computed via an arithmetic expression.
+    // A sort key that must be computed rather than read from a column.
     // Used when ORDER BY references a SELECT alias like "ORDER BY a + b" or "ORDER BY c"
     // where c is defined as "a + b AS c" in the SELECT list.
     struct computed_sort_key_t {
-        explicit computed_sort_key_t(std::pmr::memory_resource* r)
-            : operands(r) {}
-        expressions::scalar_type op{expressions::scalar_type::invalid};
-        std::pmr::vector<expressions::param_storage> operands;
+        // The validated expression to sort on, carrying the types and casts validation stamped.
+        // It is evaluated by the sort's graph like every other computation in the engine.
+        expressions::expression_ptr expression;
         sort::order order_{sort::order::ascending};
     };
 
@@ -45,6 +47,10 @@ namespace components::operators {
     private:
         sort::columnar_sorter_t sorter_;
         std::pmr::vector<computed_sort_key_t> computed_keys_;
+        // ONE graph computing every computed key, in key order, over an input chunk. All the
+        // buffered chunks share a schema, so the first non-empty one builds it and the rest reuse
+        // it; null until then.
+        std::unique_ptr<execution_graph::execution_graph_t> computed_graph_;
         size_t expected_output_count_{0};
         logical_plan::limit_t limit_;
         chunks_vector_t buffered_input_{resource_};
@@ -55,6 +61,10 @@ namespace components::operators {
         // finalize (streaming sink).
         [[nodiscard]] core::error_t
         sort_merge(pipeline::context_t* pipeline_context, chunks_vector_t& source_chunks, chunks_vector_t& out);
+
+        // Types the input from `probe` and builds computed_graph_ over it. Idempotent.
+        [[nodiscard]] core::error_t build_computed_graph(pipeline::context_t* pipeline_context,
+                                                        const vector::data_chunk_t& probe);
     };
 
 } // namespace components::operators

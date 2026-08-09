@@ -2,6 +2,7 @@
 
 #include <components/casts/cast_registry.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -15,11 +16,15 @@ namespace components::casts {
             }
         }
 
+        void reserve_list_child(vector::vector_t* result, uint64_t child_count) {
+            static_cast<vector::list_vector_buffer_t*>(result->auxiliary().get())->reserve(child_count);
+        }
+
         [[nodiscard]] cast_t copy_leaf_closure() {
             return cast_t{[](cast_kind,
                              const vector::vector_t& source,
                              vector::vector_t* result,
-                             const cast_context&,
+                             const graph_execution_context&,
                              uint64_t count) -> core::error_t {
                 for (uint64_t row = 0; row < count; ++row) {
                     if (source.is_null(row)) {
@@ -48,7 +53,7 @@ namespace components::casts {
             return cast_t{[fields = std::move(fields)](cast_kind kind,
                                                        const vector::vector_t& source,
                                                        vector::vector_t* result,
-                                                       const cast_context& context,
+                                                       const graph_execution_context& context,
                                                        uint64_t count) -> core::error_t {
                 const auto& source_entries = source.entries();
                 auto& result_entries = result->entries();
@@ -67,16 +72,59 @@ namespace components::casts {
             }};
         }
 
+        void fill_array_row(const vector::vector_t& staged,
+                            vector::vector_t* target_child,
+                            const graph_execution_context& context,
+                            uint64_t row,
+                            types::list_entry_t source_span,
+                            uint64_t target_stride) {
+            const uint64_t copy_length = std::min<uint64_t>(source_span.length, target_stride);
+            for (uint64_t index = 0; index < copy_length; ++index) {
+                target_child->set_value(row * target_stride + index, staged.value(source_span.offset + index));
+            }
+            for (uint64_t index = copy_length; index < target_stride; ++index) {
+                if (context.fill_value != nullptr) {
+                    target_child->set_value(row * target_stride + index, *context.fill_value);
+                } else {
+                    target_child->set_null(row * target_stride + index, true);
+                }
+            }
+        }
+
         [[nodiscard]] cast_t array_cast(cast_t element) {
             return cast_t{[element = std::move(element)](cast_kind kind,
                                                          const vector::vector_t& source,
                                                          vector::vector_t* result,
-                                                         const cast_context& context,
+                                                         const graph_execution_context& context,
                                                          uint64_t count) -> core::error_t {
-                uint64_t stride = source.type().extension_as<types::array_logical_type_extension>()->size();
-                core::error_t error = element(kind, source.entry(), &result->entry(), context, count * stride);
+                uint64_t source_stride = source.type().extension_as<types::array_logical_type_extension>()->size();
+                uint64_t target_stride = result->type().extension_as<types::array_logical_type_extension>()->size();
+                if (source_stride == target_stride) {
+                    core::error_t error =
+                        element(kind, source.entry(), &result->entry(), context, count * source_stride);
+                    if (error.contains_error()) {
+                        return error;
+                    }
+                    propagate_row_validity(source, result, count);
+                    return core::error_t::no_error();
+                }
+
+                uint64_t staged_count = count * source_stride;
+                vector::vector_t staged{result->resource(),
+                                        result->type().child_type(),
+                                        staged_count == 0 ? uint64_t{1} : staged_count};
+                core::error_t error = element(kind, source.entry(), &staged, context, staged_count);
                 if (error.contains_error()) {
                     return error;
+                }
+                vector::vector_t& target_child = result->entry();
+                for (uint64_t row = 0; row < count; ++row) {
+                    fill_array_row(staged,
+                                   &target_child,
+                                   context,
+                                   row,
+                                   types::list_entry_t{row * source_stride, source_stride},
+                                   target_stride);
                 }
                 propagate_row_validity(source, result, count);
                 return core::error_t::no_error();
@@ -87,13 +135,14 @@ namespace components::casts {
             return cast_t{[element = std::move(element)](cast_kind kind,
                                                          const vector::vector_t& source,
                                                          vector::vector_t* result,
-                                                         const cast_context& context,
+                                                         const graph_execution_context& context,
                                                          uint64_t count) -> core::error_t {
                 uint64_t child_count =
                     static_cast<const vector::list_vector_buffer_t*>(source.auxiliary().get())->size();
                 std::memcpy(result->data<types::list_entry_t>(),
                             source.data<types::list_entry_t>(),
                             count * sizeof(types::list_entry_t));
+                reserve_list_child(result, child_count);
                 result->set_list_size(child_count);
                 core::error_t error = element(kind, source.entry(), &result->entry(), context, child_count);
                 if (error.contains_error()) {
@@ -108,7 +157,7 @@ namespace components::casts {
             return cast_t{[element = std::move(element)](cast_kind kind,
                                                          const vector::vector_t& source,
                                                          vector::vector_t* result,
-                                                         const cast_context& context,
+                                                         const graph_execution_context& context,
                                                          uint64_t count) -> core::error_t {
                 uint64_t stride = source.type().extension_as<types::array_logical_type_extension>()->size();
                 uint64_t child_count = count * stride;
@@ -116,6 +165,7 @@ namespace components::casts {
                 for (uint64_t row = 0; row < count; ++row) {
                     spans[row] = types::list_entry_t{row * stride, stride};
                 }
+                reserve_list_child(result, child_count);
                 result->set_list_size(child_count);
                 core::error_t error = element(kind, source.entry(), &result->entry(), context, child_count);
                 if (error.contains_error()) {
@@ -130,7 +180,7 @@ namespace components::casts {
             return cast_t{[element = std::move(element)](cast_kind kind,
                                                          const vector::vector_t& source,
                                                          vector::vector_t* result,
-                                                         const cast_context& context,
+                                                         const graph_execution_context& context,
                                                          uint64_t count) -> core::error_t {
                 uint64_t stride = result->type().extension_as<types::array_logical_type_extension>()->size();
                 const auto* spans = source.data<types::list_entry_t>();
@@ -143,11 +193,6 @@ namespace components::casts {
                     if (spans[row].offset != row * stride) {
                         contiguous = false;
                     }
-                }
-                // A row that does not fit is a hard failure for CAST
-                if (!all_fit && kind == cast_kind::cast) {
-                    return core::error_t{core::error_code_t::conversion_failure,
-                                         std::pmr::string{"length mismatch", result->resource()}};
                 }
                 if (all_fit && contiguous) {
                     core::error_t error = element(kind, source.entry(), &result->entry(), context, count * stride);
@@ -169,18 +214,7 @@ namespace components::casts {
                 }
                 vector::vector_t& target_child = result->entry();
                 for (uint64_t row = 0; row < count; ++row) {
-                    types::list_entry_t span = spans[row];
-                    uint64_t copy_length = span.length < stride ? span.length : stride;
-                    for (uint64_t index = 0; index < copy_length; ++index) {
-                        target_child.set_value(row * stride + index, staged.value(span.offset + index));
-                    }
-                    for (uint64_t index = copy_length; index < stride; ++index) {
-                        if (context.fill_value != nullptr) {
-                            target_child.set_value(row * stride + index, *context.fill_value);
-                        } else {
-                            target_child.set_null(row * stride + index, true);
-                        }
-                    }
+                    fill_array_row(staged, &target_child, context, row, spans[row], stride);
                 }
                 propagate_row_validity(source, result, count);
                 return core::error_t::no_error();
@@ -193,7 +227,7 @@ namespace components::casts {
         return cast_t{[fn](cast_kind kind,
                            const vector::vector_t& source,
                            vector::vector_t* result,
-                           const cast_context& context,
+                           const graph_execution_context& context,
                            uint64_t count) { return fn.invoke(kind, source, result, context, count); }};
     }
 

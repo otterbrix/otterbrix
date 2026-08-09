@@ -1,4 +1,5 @@
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -9,192 +10,22 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-    update_expr_ptr transformer::transform_update_expr(Node* node,
+
+    expressions::expression_ptr transformer::transform_update_expr(Node* node,
                                                        const name_collection_t& names,
                                                        logical_plan::parameter_node_t* params) {
-        switch (nodeTag(node)) {
-            case T_TypeCast: {
-                auto res = get_value(resource_, node);
-                if (res.has_error()) {
-                    error_ = res.error();
-                    return nullptr;
-                }
-                core::parameter_id_t id = params->add_parameter(std::move(res.value()));
-                return {new update_expr_get_const_value_t(id)};
-            }
-            case T_A_Const: {
-                auto value = &(pg_ptr_cast<A_Const>(node)->val);
-                core::parameter_id_t id;
-                switch (nodeTag(value)) {
-                    case T_String: {
-                        std::string str = strVal(value);
-                        id = params->add_parameter(types::logical_value_t(resource_, str));
-                        break;
-                    }
-                    case T_Integer: {
-                        int64_t int_value = intVal(value);
-                        id = params->add_parameter(types::logical_value_t(resource_, int_value));
-                        break;
-                    }
-                    case T_Float: {
-                        float float_value = floatVal(value);
-                        id = params->add_parameter(types::logical_value_t(resource_, float_value));
-                        break;
-                    }
-                    default: {
-                        // NULL and any other literal kind (get_value maps T_Null to an
-                        // NA value; the old assert left `id` uninitialized in Release).
-                        auto res = get_value(resource_, node);
-                        if (res.has_error()) {
-                            error_ = res.error();
-                            return nullptr;
-                        }
-                        id = params->add_parameter(std::move(res.value()));
-                        break;
-                    }
-                }
-                return {new update_expr_get_const_value_t(id)};
-            }
-            case T_A_ArrayExpr: {
-                auto array = pg_ptr_cast<A_ArrayExpr>(node);
-                if (auto res = get_array(resource_, array->elements); res.has_error()) {
-                    error_ = res.error();
-                    return nullptr;
-                } else {
-                    auto id = params->add_parameter(std::move(res.value()));
-                    return {new update_expr_get_const_value_t(id)};
-                }
-            }
-            case T_ParamRef: {
-                return {new update_expr_get_const_value_t(add_param_value(node, params))};
-            }
-            case T_A_Expr: {
-                auto expr = pg_ptr_cast<A_Expr>(node);
-                switch (expr->kind) {
-                    case AEXPR_OP: {
-                        auto t = pg_ptr_cast<ResTarget>(expr->name->lst.front().data);
-                        // Dispatch on the FULL operator name: a prefix match would
-                        // swallow multi-char operators that merely share a first
-                        // character with an arithmetic one (e.g. jsonb '->', '#>').
-                        const std::string op{t->name};
-                        update_expr_type type;
-                        if (op == "+") {
-                            type = update_expr_type::add;
-                        } else if (op == "-") {
-                            type = update_expr_type::sub;
-                        } else if (op == "*") {
-                            type = update_expr_type::mult;
-                        } else if (op == "/") {
-                            type = update_expr_type::div;
-                        } else if (op == "%") {
-                            type = update_expr_type::mod;
-                        } else if (op == "^") {
-                            type = update_expr_type::exp;
-                        } else if (op == "!") {
-                            type = update_expr_type::factorial;
-                        } else if (op == "@") {
-                            type = update_expr_type::abs;
-                        } else if (op == "<<") {
-                            type = update_expr_type::shift_left;
-                        } else if (op == ">>") {
-                            type = update_expr_type::shift_right;
-                        } else if (op == "~") {
-                            type = update_expr_type::NOT;
-                        } else if (op == "&") {
-                            type = update_expr_type::AND;
-                        } else if (op == "|") {
-                            type = update_expr_type::OR;
-                        } else if (op == "#") {
-                            type = update_expr_type::XOR;
-                        } else if (op == "|/") {
-                            type = update_expr_type::sqr_root;
-                        } else if (op == "||/") {
-                            type = update_expr_type::cube_root;
-                        } else {
-                            error_ = core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"unsupported operator '" + op + "' in UPDATE SET expression",
-                                                 resource_});
-                            return nullptr;
-                        }
-                        update_expr_ptr res{new update_expr_calculate_t(type)};
-                        if (expr->lexpr) {
-                            res->left() = transform_update_expr(expr->lexpr, names, params);
-                            if (has_error()) {
-                                return nullptr;
-                            }
-                        }
-                        if (expr->rexpr) {
-                            res->right() = transform_update_expr(expr->rexpr, names, params);
-                            if (has_error()) {
-                                return nullptr;
-                            }
-                        }
-                        // The calculate executor evaluates unary operators on its LEFT
-                        // operand, but a prefix operator parses with the operand on the
-                        // right; binary operators dereference both operands. Enforce
-                        // arity here — a missing operand used to reach the executor as
-                        // a null child and crash it.
-                        const bool is_unary = type == update_expr_type::sqr_root ||
-                                              type == update_expr_type::cube_root ||
-                                              type == update_expr_type::factorial ||
-                                              type == update_expr_type::abs || type == update_expr_type::NOT;
-                        if (is_unary) {
-                            if (!res->left() && res->right()) {
-                                res->left() = std::move(res->right());
-                                res->right() = nullptr;
-                            }
-                            if (!res->left() || res->right()) {
-                                error_ = core::error_t(
-                                    core::error_code_t::sql_parse_error,
-                                    std::pmr::string{"operator '" + op +
-                                                         "' takes exactly one operand in UPDATE SET expression",
-                                                     resource_});
-                                return nullptr;
-                            }
-                        } else if (!res->left() || !res->right()) {
-                            error_ = core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"operator '" + op +
-                                                     "' requires two operands in UPDATE SET expression",
-                                                 resource_});
-                            return nullptr;
-                        }
-                        return res;
-                    }
-                    default:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"unsupported expression kind in UPDATE SET expression", resource_});
-                        return nullptr;
-                }
-            }
-            case T_A_Indirection: {
-                auto indirection = pg_ptr_cast<A_Indirection>(node);
-                if (indirection->indirection->lst.empty()) {
-                    return transform_update_expr(indirection->arg, names, params);
-                } else {
-                    auto key = indirection_to_field(resource_, indirection, names);
-                    key.deduce_side(names);
-                    return {new update_expr_get_value_t(std::move(key.field))};
-                }
-            }
-            case T_ColumnRef: {
-                auto ref = pg_ptr_cast<ColumnRef>(node);
-                auto key = columnref_to_field(resource_, ref, names);
-                key.deduce_side(names);
-                return {new update_expr_get_value_t(std::move(key.field))};
-            }
-            default:
-                break;
+        auto operand = transform_a_expr_operand(node, names, params);
+        if (has_error()) {
+            return nullptr;
         }
-        // Returning a bare nullptr here would ship a null child in the update
-        // expression tree and crash (or silently no-op) at execution.
-        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                               std::pmr::string{"unsupported expression in UPDATE SET (function calls, "
-                                                "subqueries and CASE are not supported here)",
-                                                resource_});
-        return nullptr;
+        if (std::holds_alternative<expression_ptr>(operand)) {
+            return std::get<expression_ptr>(operand);
+        }
+        auto value = make_scalar_expression(resource_,
+                                            std::holds_alternative<expressions::key_t>(operand) ? scalar_type::get_field
+                                                                                   : scalar_type::constant);
+        value->append_param(std::move(operand));
+        return value;
     }
 
     logical_plan::node_ptr transformer::transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan) {
@@ -204,7 +35,7 @@ namespace components::sql::transform {
             return nullptr;
         }
         logical_plan::node_match_ptr match;
-        std::pmr::vector<update_expr_ptr> updates(resource_);
+        std::pmr::vector<expression_ptr> updates(resource_);
         name_collection_t names;
         names.left_name = rangevar_to_qualified_name(node.relation);
         names.left_alias = construct_alias(node.relation->alias);
@@ -230,11 +61,9 @@ namespace components::sql::transform {
         {
             for (auto target : node.targetList->lst) {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
-                if (res->indirection->lst.empty()) {
-                    updates.emplace_back(new update_expr_set_t(expressions::key_t{resource_, res->name, side_t::left}));
-                    updates.back()->left() = transform_update_expr(res->val, names, plan->parameters.get());
-                } else {
-                    // The set executor nulls whole columns for a NULL literal but has
+                expressions::key_t target_key{resource_, res->name, side_t::left};
+                if (!res->indirection->lst.empty()) {
+                    // The write path nulls whole columns for a NULL literal but has
                     // no NA cast kernel for element writes — reject those here.
                     if (nodeTag(res->val) == T_A_Const &&
                         nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
@@ -253,12 +82,14 @@ namespace components::sql::transform {
                             path.emplace_back(pmrStrVal(val.data, resource_));
                         }
                     }
-                    updates.emplace_back(new update_expr_set_t(expressions::key_t{std::move(path), side_t::left}));
-                    updates.back()->left() = transform_update_expr(res->val, names, plan->parameters.get());
+                    target_key = expressions::key_t{std::move(path), side_t::left};
                 }
+                auto value = transform_update_expr(res->val, names, plan->parameters.get());
                 if (has_error()) {
                     return nullptr;
                 }
+                value->key() = std::move(target_key);
+                updates.emplace_back(std::move(value));
             }
         }
 

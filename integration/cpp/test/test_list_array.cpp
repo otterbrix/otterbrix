@@ -208,6 +208,7 @@ TEST_CASE("integration::list_array::list_array_conversion") {
         auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 5);
+        REQUIRE(v.children()[1].value<int32_t>() == 6);
         REQUIRE(v.children()[2].value<int32_t>() == 7);
     }
 
@@ -334,7 +335,7 @@ TEST_CASE("integration::list_array::array_default_padding") {
         REQUIRE(v.children()[2].is_null());
     }
 
-    INFO("short ARRAY into a column with a DEFAULT pads from the default at that position");
+    INFO("a column DEFAULT does not pad a short ARRAY: the missing slots are NULL");
     {
         REQUIRE(
             exec(dispatcher, "CREATE TABLE TestDatabase.d (id bigint, v int[3] DEFAULT ARRAY[1,2,3]);")->is_success());
@@ -345,18 +346,19 @@ TEST_CASE("integration::list_array::array_default_padding") {
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 10); // provided
         REQUIRE(v.children()[1].value<int32_t>() == 20); // provided
-        REQUIRE(v.children()[2].value<int32_t>() == 3);  // from DEFAULT[2]
+        // A DEFAULT fills an ABSENT column, never the missing tail of a value that WAS supplied.
+        // The array reconciles to the declared length by padding NULL either way.
+        REQUIRE(v.children()[2].is_null());
     }
 
     INFO("NOT NULL column with no default: a too-short value is a clean error, not a silent drop");
     {
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.nn (id bigint, v int[3] NOT NULL);")->is_success());
-        // The short value cannot fill the fixed array and there is no column default to pad
-        // from. This is rejected with an error before the append (per-column validation in
-        // operator_check_constraint), not silently dropped.
+        // The short value would reconcile by padding NULL, which the column does not allow. This
+        // is rejected before the append (per-column validation in operator_check_constraint),
+        // not silently dropped.
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.nn (id, v) VALUES (1, ARRAY[10,20]);");
         REQUIRE_FALSE(cur->is_success());
-        REQUIRE(std::string(cur->get_error().what).find("array column 'v'") != std::string::npos);
         auto sel = exec(dispatcher, "SELECT v FROM TestDatabase.nn;");
         REQUIRE(sel->is_success());
         REQUIRE(sel->size() == 0); // nothing stored
@@ -373,13 +375,34 @@ TEST_CASE("integration::list_array::array_default_padding") {
         REQUIRE(v.children()[2].value<int32_t>() == 3); // 4 truncated
     }
 
+    INFO("a NOT NULL column is not exempted by having a DEFAULT: the pad would still be NULL");
+    {
+        REQUIRE(
+            exec(dispatcher, "CREATE TABLE TestDatabase.nnd (id bigint, v int[3] NOT NULL DEFAULT ARRAY[1,2,3]);")
+                ->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.nnd (id) VALUES (1);")->is_success());
+        {
+            auto sel = exec(dispatcher, "SELECT v FROM TestDatabase.nnd WHERE id = 1;");
+            REQUIRE(sel->is_success());
+            auto v = sel->value(0, 0);
+            REQUIRE(v.children().size() == 3);
+            REQUIRE(v.children()[2].value<int32_t>() == 3);
+        }
+        REQUIRE_FALSE(exec(dispatcher, "INSERT INTO TestDatabase.nnd (id, v) VALUES (2, ARRAY[10,20]);")->is_success());
+        auto sel = exec(dispatcher, "SELECT id FROM TestDatabase.nnd WHERE id = 2;");
+        REQUIRE(sel->is_success());
+        REQUIRE(sel->size() == 0); // nothing stored
+    }
+
     INFO("INSERT..SELECT of a too-short value into the NOT NULL column also errors (runtime path)");
     {
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.src2 (id bigint, v int[]);")->is_success());
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.src2 (id, v) VALUES (5, ARRAY[1,2]);")->is_success());
-        auto cur = exec(dispatcher, "INSERT INTO TestDatabase.nn (id, v) SELECT id, v FROM TestDatabase.src2;");
-        REQUIRE_FALSE(cur->is_success());
-        REQUIRE(std::string(cur->get_error().what).find("array column 'v'") != std::string::npos);
+        REQUIRE_FALSE(
+            exec(dispatcher, "INSERT INTO TestDatabase.nn (id, v) SELECT id, v FROM TestDatabase.src2;")->is_success());
+        auto sel = exec(dispatcher, "SELECT v FROM TestDatabase.nn WHERE id = 5;");
+        REQUIRE(sel->is_success());
+        REQUIRE(sel->size() == 0); // nothing stored
     }
 }
 
@@ -473,7 +496,7 @@ TEST_CASE("integration::list_array::unsupported_clean_failures") {
             auto cur = exec(dispatcher, fn);
             INFO("function call: " << fn);
             REQUIRE_FALSE(cur->is_success());
-            REQUIRE(std::string(cur->get_error().what).find("was not found") != std::string::npos);
+            REQUIRE(std::string(cur->get_error().what).find("unrecognized function") != std::string::npos);
         }
     }
 }

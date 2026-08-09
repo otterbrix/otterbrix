@@ -24,6 +24,8 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/dispatcher.cpp
        dispatcher/enrich_logical_plan.cpp
        dispatcher/resolve_type.cpp
+       dispatcher/resolve_arithmetic.cpp
+       dispatcher/resolve_function.cpp
        dispatcher/validate_logical_plan.cpp
 
     # index
@@ -57,6 +59,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         otterbrix::casts
+        otterbrix::operators
         otterbrix::date
         otterbrix::file
         otterbrix::table

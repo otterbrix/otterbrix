@@ -19,6 +19,10 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/cursor/cursor.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column.hpp>
@@ -118,9 +122,7 @@ namespace services::dispatcher { namespace {
         return defaults;
     }
 
-    void enrich_insert_sync(components::logical_plan::node_insert_t* node,
-                            const plan_resolve_index_t* idx,
-                            core::date::timezone_offset_t session_tz) {
+    void enrich_insert_sync(components::logical_plan::node_insert_t* node, const plan_resolve_index_t* idx) {
         // Insert node carries only its table_oid (stamped by
         // stamp_drop_oids_from_resolves from the sibling resolve_table);
         // look up table metadata by OID rather than (db, rel) strings.
@@ -133,11 +135,13 @@ namespace services::dispatcher { namespace {
         fill_not_null(*md, nn, /*include_with_defaults=*/false);
         node->set_not_null_cols(std::move(nn));
 
-        // A NOT NULL fixed-ARRAY column with no DEFAULT cannot pad a too-short value, so
-        // such values must error before the append (see node_insert_t::array_size_reqs).
+        // A too-short value for a fixed ARRAY reconciles by padding NULL, which a NOT NULL column
+        // cannot accept, so such values must error before the append (see
+        // node_insert_t::array_size_reqs). A DEFAULT does not exempt the column: a default fills an
+        // ABSENT column, never the missing tail of a value that was supplied.
         std::vector<std::pair<std::string, uint64_t>> array_reqs;
         for (const auto& col : md->columns) {
-            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull && !col.atthasdefault) {
+            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull) {
                 const auto size =
                     static_cast<const components::types::array_logical_type_extension*>(col.type.extension())->size();
                 array_reqs.emplace_back(col.attname, size);
@@ -195,22 +199,37 @@ namespace services::catalog_resolve {
         if (body_plan->type() != node_type::aggregate_t) {
             return out;
         }
-        // Find the node_select_t child holding the SELECT-list expressions.
+        // Find the node holding the SELECT-list expressions. The transformer routes the whole
+        // target list to the GROUP node and leaves the select EMPTY, so the group is where the
+        // output columns live; the select still carries them for shapes that never grow a group.
         const node_t* select_node = nullptr;
+        const node_t* group_node = nullptr;
         for (const auto& c : body_plan->children()) {
-            if (c && c->type() == node_type::select_t) {
+            if (!c) {
+                continue;
+            }
+            if (c->type() == node_type::select_t) {
                 select_node = c.get();
-                break;
+            } else if (c->type() == node_type::group_t) {
+                group_node = c.get();
             }
         }
-        if (!select_node) {
+        const node_t* target_list = select_node != nullptr && !select_node->expressions().empty() ? select_node
+                                                                                                 : group_node;
+        if (target_list == nullptr) {
             return out;
         }
-        const auto& exprs = select_node->expressions();
+        const auto& exprs = target_list->expressions();
         out.reserve(exprs.size());
         for (const auto& expr : exprs) {
             if (!expr) {
                 return {};
+            }
+            // A grouping key is not an output column of its own — the target list names it
+            // separately where it is projected.
+            if (auto* key_expr = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
+                key_expr != nullptr && key_expr->type() == components::expressions::scalar_type::group_field) {
+                continue;
             }
             auto* sc = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
             if (!sc) {
@@ -621,6 +640,12 @@ namespace services::catalog_resolve {
         return nullptr;
     }
 
+    // A cast SPELLED in the query carries only the NAME of its target type -- the transformer has
+    // no catalog, so `CAST(x AS oddness_t)` arrives as UNKNOWN("oddness_t"). Resolve it HERE, where
+    // the plan-tree index is at hand, so validation and the cast registry only ever see concrete
+    // types (the registry could never match an UNKNOWN against its ENUM family entry).
+    // A name that resolves to nothing is LEFT ALONE: validation reports the unknown type with the
+    // context to say which expression it came from.
     std::vector<std::string> build_type_search_path_str(std::string_view target_dbname) {
         std::vector<std::string> path;
         if (!target_dbname.empty() && target_dbname != "public" && target_dbname != "pg_catalog") {
@@ -711,7 +736,7 @@ namespace services::dispatcher { namespace {
         switch (root->type()) {
             case node_type::insert_t: {
                 auto* node = static_cast<node_insert_t*>(root.get());
-                enrich_insert_sync(node, idx, ctx.session_tz);
+                enrich_insert_sync(node, idx);
                 const auto tbl_oid = node->table_oid();
                 // FK + CHECK populated by operator_resolve_constraint_t
                 // (direction=outgoing) and gathered into idx. No catalog

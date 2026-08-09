@@ -2,7 +2,7 @@
 
 #include "join_utils.hpp"
 #include "operator_data.hpp"
-#include "predicates/predicate.hpp"
+#include <components/expressions/execution_graph_builder.hpp>
 
 #include <components/context/context.hpp>
 #include <components/context/subplan_runner.hpp>
@@ -158,23 +158,24 @@ namespace components::operators {
 
         chunks_vector_t result(res);
         eager_join_builder builder(res, out_types, indices_left, indices_right, result);
-        // The ON predicate spans (outer columns | inner columns); build it over the
-        // outer (left/probe) and inner (right/build) schemas. all_true for the comma /
-        // ON true forms passes every inner row. Correlation parameters are read live
-        // per row-check, so rebinding them per outer row re-uses this one predicate.
-        // Semi/anti never carry a real ON (EXISTS filters inside the inner sub-plan), so
-        // they use the schema-free all_true predicate — the inner side of an EXISTS body
-        // may project an alias-less constant, which the schema-bound predicate builder
-        // would reject.
-        predicates::predicate_ptr predicate =
-            (on_expression_ && !semi_anti) ? predicates::create_predicate(res,
-                                                                          ctx->function_registry,
-                                                                          on_expression_,
-                                                                          outer_schema_,
-                                                                          inner_schema_,
-                                                                          &ctx->parameters,
-                                                                          ctx->session_tz)
-                                           : predicates::create_all_true_predicate(res);
+        const auto condition =
+            semi_anti ? expressions::condition_kind::always : expressions::classify_condition(on_expression_);
+        std::unique_ptr<execution_graph::execution_graph_t> graph;
+        if (condition == expressions::condition_kind::computed) {
+            std::pmr::vector<types::complex_logical_type> merged_types(res);
+            merged_types.reserve(outer_count + inner_count);
+            merged_types.insert(merged_types.end(), outer_schema_.begin(), outer_schema_.end());
+            merged_types.insert(merged_types.end(), inner_schema_.begin(), inner_schema_.end());
+            auto built = expressions::build_condition_graph(res,
+                                                            ctx->parameters.parameters,
+                                                            on_expression_.get(),
+                                                            merged_types,
+                                                            outer_count);
+            if (built.has_error()) {
+                co_return built.error();
+            }
+            graph = std::move(built.value());
+        }
 
         auto outer_res = co_await ctx->runner->run_subplan(outer_, ctx);
         if (outer_res.has_error()) {
@@ -200,17 +201,25 @@ namespace components::operators {
 
                 bool matched = false;
                 for (const auto& inner_chunk : inner_res.value()) {
-                    if (inner_chunk.size() == 0) {
+                    if (inner_chunk.size() == 0 || condition == expressions::condition_kind::never) {
                         continue;
                     }
-                    auto mask_res =
-                        predicates::batch_check_1vN(predicate, outer_chunk, inner_chunk, row, inner_chunk.size());
-                    if (mask_res.has_error()) {
-                        co_return mask_res.error();
+                    std::optional<vector::data_chunk_t> produced;
+                    std::optional<vector::data_chunk_t> merged;
+                    if (graph) {
+                        merged = join_detail::merged_chunk(res, outer_schema_, inner_chunk);
+                        join_detail::point_at_probe_row(res, *merged, outer_chunk, row);
+                        auto decided =
+                            expressions::run_graph(graph.get(), ctx->parameters.parameters, *merged, ctx->execution_context);
+                        if (decided.has_error()) {
+                            co_return decided.error();
+                        }
+                        produced = std::move(decided.value());
                     }
-                    const auto& mask = mask_res.value();
+                    const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
                     for (uint64_t inner_row = 0; inner_row < inner_chunk.size(); ++inner_row) {
-                        if (mask[inner_row]) {
+                        if (decisions == nullptr ||
+                            (!decisions->is_null(inner_row) && decisions->get_value<bool>(inner_row))) {
                             matched = true;
                             // inner/left emit every matched (outer ++ inner) pair; semi/anti
                             // only need the EXISTENCE of a match, not the matched rows —

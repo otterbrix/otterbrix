@@ -194,6 +194,11 @@ namespace components::vector {
 
         types::logical_value_t value(uint64_t row_index) const;
 
+        // Walk a nested path
+        const vector_t* resolve_nested_location(const std::pmr::vector<uint64_t>& path,
+                                                uint64_t* leaf_index,
+                                                bool* contains_null) const;
+
         // Assert on a null value; undefined behaviour in release build mode.
         template<typename T>
         T get_value(uint64_t row_index) const;
@@ -202,12 +207,6 @@ namespace components::vector {
 
     private:
         const vector_t* resolve_value_location(uint64_t row_index, uint64_t* index) const;
-        // Walk a nested path to the leaf storage vector and its index. Resolves dictionary/constant
-        // layers at each level. Reports through contains_null (when non-null) whether the element or
-        // any enclosing container row is null. The returned vector is never null.
-        const vector_t* resolve_nested_location(const std::pmr::vector<uint64_t>& path,
-                                                uint64_t* leaf_index,
-                                                bool* contains_null) const;
         types::logical_value_t value_internal(uint64_t index) const;
 
         vector_type vector_type_;

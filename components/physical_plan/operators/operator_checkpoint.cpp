@@ -116,7 +116,7 @@ namespace components::operators {
                                                    table_oid,
                                                    std::move(scan_data),
                                                    total,
-                                                   ctx->session_tz);
+                                                   ctx->execution_context.timezone_offset);
                 co_await std::move(rpf);
             }
         }

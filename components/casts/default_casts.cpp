@@ -1,6 +1,7 @@
 #include <components/casts/default_casts.hpp>
 #include <components/casts/kernels/datetime_cast.hpp>
 #include <components/casts/kernels/decimal_cast.hpp>
+#include <components/casts/kernels/enum_cast.hpp>
 #include <components/casts/kernels/numeric_cast.hpp>
 #include <components/casts/kernels/string_cast.hpp>
 
@@ -87,6 +88,18 @@ namespace components::casts {
         }
 
         template<typename Source, typename Target>
+        void add_floating_narrowing(cast_registry_t& registry) {
+            complex_logical_type source{types::to_logical_type<Source>()};
+            complex_logical_type target{types::to_logical_type<Target>()};
+            cast_entry entry{cast_function_t{&kernels::floating_narrow_cast<Source, Target>,
+                                             &kernels::floating_narrow_try_cast<Source, Target>},
+                             cast_type::assignment,
+                             /*convertable_inplace*/ false};
+            [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
+            assert(!error.contains_error() && "duplicate default cast registration");
+        }
+
+        template<typename Source, typename Target>
         void add_integer_narrowing(cast_registry_t& registry) {
             if constexpr (!std::is_same_v<Source, Target> &&
                           !kernels::is_lossless_integer_conversion<Source, Target>()) {
@@ -120,6 +133,13 @@ namespace components::casts {
         // A placeholder DECIMAL used only as the registry key
         // Actual resolution will depend on a given width and scale
         [[nodiscard]] complex_logical_type decimal_key() { return complex_logical_type::create_decimal(18, 0); }
+
+        // Likewise a placeholder ENUM: identity collapses the labels, so this one key stands for
+        // every enum CREATE TYPE will ever make. The cast reads the labels off the TARGET vector's
+        // own type at run time, which is why one body serves them all.
+        [[nodiscard]] complex_logical_type enum_key() {
+            return complex_logical_type::create_enum("", std::vector<types::logical_value_t>{});
+        }
 
         template<typename Floating>
         constexpr uint32_t floating_decimal_digits() {
@@ -185,6 +205,17 @@ namespace components::casts {
         template<typename... Integers>
         void add_decimal_integers(cast_registry_t& registry) {
             (add_decimal_integer<Integers>(registry), ...);
+        }
+
+        // STRING -> ENUM. ASSIGNMENT, not implicit: a string becomes an enum where a column says so
+        // (INSERT/UPDATE), never on its own in an arbitrary expression. try_cast writes NULL for a
+        // string that names no label of the target enum; cast errors on it.
+        void add_string_enum(cast_registry_t& registry) {
+            cast_entry to_enum{cast_function_t{&kernels::string_to_enum_cast, &kernels::string_to_enum_try_cast},
+                               cast_type::assignment,
+                               /*convertable_inplace*/ false};
+            [[maybe_unused]] auto error = registry.add(string_type(), enum_key(), std::move(to_enum));
+            assert(!error.contains_error() && "duplicate default cast registration");
         }
 
         void add_bool_decimal(cast_registry_t& registry) {
@@ -386,6 +417,10 @@ namespace components::casts {
         // float -> double (lossless).
         add_numeric<float, double>(registry);
 
+        // double -> float. Narrowing, so assignment level: the target keeps far fewer mantissa
+        // bits, and a magnitude outside its range is a range error rather than a rounding.
+        add_floating_narrowing<double, float>(registry);
+
         // Every integer -> floating (infallible; precision_loss computed per pair).
         add_integers_to_floating<double,
                                  int8_t,
@@ -510,6 +545,7 @@ namespace components::casts {
                                      double>(registry);
         add_bool_decimal(registry);
         add_bool_string(registry);
+        add_string_enum(registry);
     }
 
 } // namespace components::casts

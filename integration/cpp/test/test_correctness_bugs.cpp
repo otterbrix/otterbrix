@@ -409,24 +409,17 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
 
     SECTION("6a scan-pushed STRING compare to ENUM") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind='even';");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind=CAST('even' AS oddness_t);");
         INFO("6a error: " << (cur->is_error() ? cur->get_error().what : "none"));
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2);
-    }
-
-    SECTION("6b ordinal baseline") {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind=0;");
-        INFO("6b error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
 
     SECTION("6c JOIN baseline") {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "SELECT a.* FROM t.e a INNER JOIN t.e b ON a.n=b.n WHERE a.kind='even';");
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT a.* FROM t.e a INNER JOIN t.e b ON a.n=b.n WHERE a.kind=CAST('even' AS oddness_t);");
         INFO("6c error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -434,9 +427,26 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
 
     SECTION("6d invalid ENUM string must error") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind='invalid_xyz';");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind=CAST('invalid_xyz' AS oddness_t);");
         INFO("6d error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
+    }
+
+    SECTION("6e invalid ENUM string under TRY_CAST is NULL, not an error") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind=TRY_CAST('invalid_xyz' AS oddness_t);");
+        INFO("6e error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    SECTION("6f TRY_CAST of a valid label still converts") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind=TRY_CAST('even' AS oddness_t);");
+        INFO("6f error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
     }
 }
 

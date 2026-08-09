@@ -489,6 +489,16 @@ namespace services::collection::executor {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
             const auto& mapping = plan.sub_query_results[i];
+
+            // set result type, so next query will be able to use it for it's validation
+            if (plan.sub_queries[i]->has_output_types()) {
+                const auto& column_type = plan.sub_queries[i]->output_types().front();
+                plan.parameters->set_parameter(
+                    mapping.id,
+                    mapping.compacter == &components::vector::compact_to_single_value
+                        ? components::types::logical_value_t{resource(), column_type}
+                        : components::types::logical_value_t::create_array(resource(), column_type, {}));
+            }
             // PostgreSQL: the argument of WHERE / HAVING must be type boolean. For a bare
             // boolean-context scalar sub-query (`WHERE (SELECT ...)` / `HAVING (SELECT ...)`)
             // reject a non-boolean STATIC output type here — otherwise a numeric scalar would
@@ -800,7 +810,7 @@ namespace services::collection::executor {
                 root->append_child(n);
             }
             auto params = components::logical_plan::make_parameter_node(resource());
-            services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
+            services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context.timezone_offset};
             co_return co_await this->execute_plan(session,
                                                   components::logical_plan::execution_plan_t{resource(), root, params},
                                                   std::move(cstor),
@@ -1134,6 +1144,16 @@ namespace services::collection::executor {
                             }
                         }
                     }
+                    if (!error) {
+                        if (auto default_err =
+                                services::dispatcher::convert_column_defaults(resource(),
+                                                                              &cast_registry_,
+                                                                              context_storage.execution_context,
+                                                                              n->column_definitions());
+                            default_err.contains_error()) {
+                            error = make_cursor(resource(), default_err);
+                        }
+                    }
                 }
                 break;
             }
@@ -1250,7 +1270,7 @@ namespace services::collection::executor {
                         auto vt_err = services::dispatcher::validate_types(resource(),
                                                                            &dispatcher_idx,
                                                                            plan.sub_queries.back().get(),
-                                                                           context_storage.session_timezone);
+                                                                           context_storage.execution_context);
                         if (vt_err.contains_error()) {
                             error = make_cursor(resource(), vt_err);
                         } else {
@@ -1329,10 +1349,11 @@ namespace services::collection::executor {
                 break;
             }
             default: {
+                services::dispatcher::resolve_expression_types(plan.sub_queries.back(), &dispatcher_idx);
                 auto vt_err = services::dispatcher::validate_types(resource(),
                                                                    &dispatcher_idx,
                                                                    plan.sub_queries.back().get(),
-                                                                   context_storage.session_timezone);
+                                                                   context_storage.execution_context);
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
@@ -1411,7 +1432,9 @@ namespace services::collection::executor {
             // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT,
             // CHECK exprs), reading exclusively from the plan-tree idx. ctx
             // carries resolve_txn so enrich sees the same MVCC snapshot.
-            components::execution_context_t enrich_ctx{session, resolve_txn, context_storage.session_timezone};
+            components::execution_context_t enrich_ctx{session,
+                                                       resolve_txn,
+                                                       context_storage.execution_context.timezone_offset};
             auto ef = services::dispatcher::enrich_plan(resource(),
                                                         plan.sub_queries.back(),
                                                         disk_address_,
@@ -1464,7 +1487,7 @@ namespace services::collection::executor {
                 -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
-                services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
+                services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context.timezone_offset};
                 auto op = services::planner::create_plan(cstor,
                                                          local_fn_registry,
                                                          node,
@@ -1654,7 +1677,7 @@ namespace services::collection::executor {
                     services::catalog_resolve::gather_plan_resolve_index(plan.sub_queries.back().get(), &reenrich_idx);
                     components::execution_context_t enriched_ctx{session,
                                                                  resolve_txn,
-                                                                 context_storage.session_timezone};
+                                                                 context_storage.execution_context.timezone_offset};
                     auto ef2 = services::dispatcher::enrich_plan(resource(),
                                                                  plan.sub_queries.back(),
                                                                  disk_address_,
@@ -2247,10 +2270,13 @@ namespace services::collection::executor {
         // for the sourceless_sink_root shape.
         bool pumpable_ancestors = false;
         if (sourceless_sink_root) {
+            pumpable_ancestors = chain.front()->produces_query_rows();
             for (ops::operator_t* op : chain) {
+                if (pumpable_ancestors) {
+                    break;
+                }
                 if (op->role() != ops::pipeline_role::sink) {
                     pumpable_ancestors = true; // a streaming op on the chain -> real pipeline
-                    break;
                 }
             }
         }
@@ -2622,7 +2648,7 @@ namespace services::collection::executor {
             pipeline_context.index_address = index_address_;
             pipeline_context.wal_address = wal_address_;
             pipeline_context.txn = txn;
-            pipeline_context.session_tz = plan_data.context_storage_.session_timezone;
+            pipeline_context.execution_context = plan_data.context_storage_.execution_context;
             // VACUUM/MVCC GC threshold. operator_vacuum_t reads this to gate
             // manager_disk_t::vacuum_all + manager_index_t::cleanup_all_versions.
             // The value arrives with the session context fetched at plan start.

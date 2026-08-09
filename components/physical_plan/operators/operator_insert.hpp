@@ -56,6 +56,7 @@ namespace components::operators {
     private:
         catalog::oid_t table_oid_;
         std::pmr::vector<select_column_t> returning_;
+        std::unique_ptr<execution_graph::execution_graph_t> returning_graph_;
         // Cross-flush accumulators for the incremental drive. RETURNING rows are
         // projected into returning_accum_ as each slice is read back; when the
         // statement has no RETURNING, affected_rows_ tallies the appended count.

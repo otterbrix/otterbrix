@@ -308,8 +308,11 @@ TEST_CASE("components::planner::update") {
                                                          key(&resource, "key", side_t::left),
                                                          core::parameter_id_t(1)));
 
-    update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{&resource, "count"});
-    update->left() = new update_expr_get_const_value_t(core::parameter_id_t(0));
+    // SET count = $0 — the value expression's own key names the target column.
+    expression_ptr update = make_scalar_expression(&resource,
+                                                   scalar_type::constant,
+                                                   components::expressions::key_t{&resource, "count"});
+    static_cast<scalar_expression_t*>(update.get())->append_param(core::parameter_id_t(0));
 
     components::logical_plan::storage_parameters parameters{&resource};
     {

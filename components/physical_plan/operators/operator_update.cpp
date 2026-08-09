@@ -1,6 +1,6 @@
 #include "operator_update.hpp"
 #include "dml_util.hpp"
-#include "predicates/predicate.hpp"
+#include "join_utils.hpp"
 #include <atomic>
 #include <cassert>
 #include <components/vector/vector_operations.hpp>
@@ -25,7 +25,7 @@ namespace components::operators {
     operator_update::operator_update(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
-                                     std::pmr::vector<expressions::update_expr_ptr> updates,
+                                     std::pmr::vector<expressions::expression_ptr> updates,
                                      bool upsert,
                                      std::pmr::vector<select_column_t> returning,
                                      expressions::expression_ptr expr,
@@ -34,45 +34,185 @@ namespace components::operators {
         , table_oid_(table_oid)
         , updates_(std::move(updates))
         , expr_(std::move(expr))
+        , condition_(expressions::classify_condition(expr_))
         , upsert_(upsert)
         , returning_(std::move(returning))
         , returning_from_chunks_(resource)
         , affected_bound_(affected_bound) {}
 
     namespace {
-        // Applies all update expressions to out_chunk[0..match_count) and
-        // records the modified rows in the modified_ list. Returns an error (and
-        // leaves the row data untouched) if an update expression cannot be
-        // evaluated — e.g. a bitwise/shift on a non-integer column.
-        [[nodiscard]] core::error_t apply_updates(std::pmr::memory_resource* resource,
-                                                  const std::pmr::vector<expressions::update_expr_ptr>& updates,
+        // Writes ONE computed SET value into its target column. The value arrives already
+        // in the target's type — validation spliced the cast into the value expression —
+        // so this only has to address the right slot and copy.
+        [[nodiscard]] core::error_t write_target(const expressions::key_t& target,
+                                                  const vector::vector_t& new_values,
                                                   vector::data_chunk_t& out_chunk,
-                                                  const vector::data_chunk_t& from_chunk,
-                                                  uint64_t match_count,
-                                                  const logical_plan::storage_parameters& parameters,
-                                                  core::date::timezone_offset_t session_tz,
-                                                  operators::operator_write_data_ptr& modified) {
-            std::pmr::vector<bool> any_modified(match_count, false, resource);
-            for (const auto& expr : updates) {
-                auto row_flags = expr->execute(resource, out_chunk, from_chunk, match_count, &parameters, session_tz);
-                if (row_flags.has_error()) {
-                    return row_flags.error();
+                                                  uint64_t count) {
+            assert(target.path().front() != size_t(-1));
+            auto* col_vec = out_chunk.at(target.path());
+
+            // A nested path addresses one element inside the column's flat child vector.
+            if (target.path().size() > 1) {
+                const vector::vector_t* parent = &out_chunk.data[target.path().front()];
+                for (size_t depth = 1; depth + 1 < target.path().size(); ++depth) {
+                    parent = parent->entries()[target.path()[depth]].get();
                 }
-                const auto& flags = row_flags.value();
-                for (uint64_t i = 0; i < match_count; i++) {
-                    if (i < flags.size() && flags[i]) {
-                        any_modified[i] = true;
+                const auto element_index = target.path().back();
+                if (parent->type().type() == types::logical_type::ARRAY) {
+                    auto stride =
+                        static_cast<const types::array_logical_type_extension*>(parent->type().extension())->size();
+                    vector::vector_ops::copy_strided_target(new_values, *col_vec, count, stride, element_index);
+                    return core::error_t::no_error();
+                }
+                if (parent->type().type() == types::logical_type::LIST) {
+                    const auto* offlen = parent->data<types::list_entry_t>();
+                    for (uint64_t row = 0; row < count; ++row) {
+                        if (element_index >= offlen[row].length) {
+                            continue;
+                        }
+                        vector::vector_ops::copy(new_values,
+                                                 *col_vec,
+                                                 row + 1,
+                                                 row,
+                                                 offlen[row].offset + element_index);
+                    }
+                    return core::error_t::no_error();
+                }
+            }
+
+            const bool array_like_target = col_vec->type().type() == types::logical_type::ARRAY ||
+                                           col_vec->type().type() == types::logical_type::LIST;
+            if (array_like_target) {
+                const vector::vector_t& elements = new_values.entry();
+                auto source_slice = [&](uint64_t row) -> types::list_entry_t {
+                    if (new_values.type().type() == types::logical_type::LIST) {
+                        return new_values.data<types::list_entry_t>()[row];
+                    }
+                    auto stride =
+                        static_cast<const types::array_logical_type_extension*>(new_values.type().extension())->size();
+                    return types::list_entry_t{row * stride, stride};
+                };
+
+                if (col_vec->type().type() == types::logical_type::LIST) {
+                    auto* row_entries = col_vec->data<types::list_entry_t>();
+                    col_vec->set_list_size(0);
+                    uint64_t target_offset = 0;
+                    for (uint64_t row = 0; row < count; ++row) {
+                        auto slice = source_slice(row);
+                        if (new_values.is_null(row)) {
+                            col_vec->set_null(row, true);
+                            row_entries[row] = types::list_entry_t{target_offset, 0};
+                            continue;
+                        }
+                        col_vec->append(elements, slice.offset + slice.length, slice.offset);
+                        row_entries[row] = types::list_entry_t{target_offset, slice.length};
+                        target_offset += slice.length;
+                    }
+                    col_vec->set_list_size(target_offset);
+                    return core::error_t::no_error();
+                }
+
+                auto target_stride =
+                    static_cast<const types::array_logical_type_extension*>(col_vec->type().extension())->size();
+                auto& target_child = col_vec->entry();
+                for (uint64_t row = 0; row < count; ++row) {
+                    auto slice = source_slice(row);
+                    if (new_values.is_null(row)) {
+                        col_vec->set_null(row, true);
+                        for (uint64_t j = 0; j < target_stride; ++j) {
+                            target_child.set_null(row * target_stride + j, true);
+                        }
+                        continue;
+                    }
+                    uint64_t copied = std::min<uint64_t>(slice.length, target_stride);
+                    if (copied > 0) {
+                        vector::vector_ops::copy(elements,
+                                                 target_child,
+                                                 slice.offset + copied,
+                                                 slice.offset,
+                                                 row * target_stride);
+                    }
+                    for (uint64_t j = copied; j < target_stride; ++j) {
+                        target_child.set_null(row * target_stride + j, true);
                     }
                 }
+                return core::error_t::no_error();
             }
-            for (uint64_t i = 0; i < match_count; i++) {
-                if (any_modified[i]) {
-                    modified->append(i);
-                }
-            }
+
+            vector::vector_ops::copy(new_values, *col_vec, count, 0, 0);
             return core::error_t::no_error();
         }
+
     } // anonymous namespace
+
+    core::error_t operator_update::apply_updates_(pipeline::context_t* pipeline_context,
+                                                   vector::data_chunk_t& out_chunk,
+                                                   const vector::data_chunk_t* from_chunk,
+                                                   uint64_t match_count) {
+        // Graph input: the matched rows, with the FROM side appended for UPDATE ... FROM so
+        // a right-side key resolves at right_offset. Both sides are already aligned
+        // row-for-row, so the merge only references them — no copy.
+        const size_t right_offset = out_chunk.column_count();
+        std::optional<vector::data_chunk_t> merged;
+        if (from_chunk != nullptr) {
+            merged.emplace(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, match_count);
+            merged->data.reserve(right_offset + from_chunk->column_count());
+            for (const auto& column : out_chunk.data) {
+                vector::vector_t vec(resource_, column.type(), match_count);
+                vec.reference(column);
+                merged->data.push_back(std::move(vec));
+            }
+            for (const auto& column : from_chunk->data) {
+                vector::vector_t vec(resource_, column.type(), match_count);
+                vec.reference(column);
+                merged->data.push_back(std::move(vec));
+            }
+            merged->set_cardinality(match_count);
+        }
+        const vector::data_chunk_t& input = merged.has_value() ? merged.value() : out_chunk;
+
+        if (!updates_graph_) {
+            std::pmr::vector<const expressions::expression_i*> values(resource_);
+            values.reserve(updates_.size());
+            for (const auto& update : updates_) {
+                values.push_back(update.get());
+            }
+            auto built = expressions::build_update_graph(resource_,
+                                                         pipeline_context->parameters.parameters,
+                                                         values,
+                                                         input.types(),
+                                                         right_offset);
+            if (built.has_error()) {
+                return built.error();
+            }
+            updates_graph_ = std::move(built.value());
+        }
+
+        auto computed = expressions::run_graph(updates_graph_.get(),
+                                               pipeline_context->parameters.parameters,
+                                               input,
+                                               pipeline_context->execution_context);
+        if (computed.has_error()) {
+            return computed.error();
+        }
+        auto& result = computed.value();
+
+        // Trailing column is is_modified. strict_equal is total, so it is never null.
+        const auto& flags = result.data.back();
+        for (uint64_t row = 0; row < match_count; row++) {
+            if (flags.get_value<bool>(row)) {
+                modified_->append(row);
+            }
+        }
+        // Read the flags before writing: the simple path's graph input IS out_chunk.
+        for (size_t i = 0; i < updates_.size(); i++) {
+            if (auto error = write_target(updates_[i]->key(), result.data[i], out_chunk, match_count);
+                error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
+    }
 
     void operator_update::ensure_simple_init_() {
         if (simple_init_done_) {
@@ -95,26 +235,36 @@ namespace components::operators {
         auto* resource = resource_;
         auto types = chunk.types();
 
-        // expr_ is null for the simple predicate-scan UPDATE (the scan pushed the
-        // WHERE), so create_all_true_predicate matches every scan row; a non-null
-        // expr_ is honored for completeness.
-        auto predicate = expr_ ? predicates::create_predicate(resource,
-                                                              pipeline_context->function_registry,
-                                                              expr_,
-                                                              types,
-                                                              types,
-                                                              &pipeline_context->parameters,
-                                                              pipeline_context->session_tz)
-                               : predicates::create_all_true_predicate(resource);
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
+        }
+        std::optional<vector::data_chunk_t> produced;
+        if (condition_ == expressions::condition_kind::computed) {
+            if (!graph_) {
+                auto built = expressions::build_condition_graph(resource,
+                                                                pipeline_context->parameters.parameters,
+                                                                expr_.get(),
+                                                                types);
+                if (built.has_error()) {
+                    return built.error();
+                }
+                graph_ = std::move(built.value());
+            }
+            auto decided = expressions::run_graph(graph_.get(),
+                                                  pipeline_context->parameters.parameters,
+                                                  chunk,
+                                                  pipeline_context->execution_context);
+            if (decided.has_error()) {
+                return decided.error();
+            }
+            produced = std::move(decided.value());
+        }
+        const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
 
         data_chunk_t out_chunk(resource, types, chunk.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk.size(); ++i) {
-            auto res = predicate->check(chunk, i);
-            if (res.has_error()) {
-                return res.error();
-            }
-            if (!res.value()) {
+            if (decisions != nullptr && (decisions->is_null(i) || !decisions->get_value<bool>(i))) {
                 continue;
             }
             if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
@@ -145,15 +295,7 @@ namespace components::operators {
         // apply_updates reports unsupported operations (e.g. bitwise/shift on a
         // non-integer column) through the pipeline error channel so the statement
         // fails cleanly and the row data stays untouched.
-        if (auto err = apply_updates(resource,
-                                     updates_,
-                                     out_chunk,
-                                     out_chunk,
-                                     index,
-                                     pipeline_context->parameters,
-                                     pipeline_context->session_tz,
-                                     modified_);
-            err.contains_error()) {
+        if (auto err = apply_updates_(pipeline_context, out_chunk, nullptr, index); err.contains_error()) {
             return err;
         }
         output_->append_chunk(std::move(out_chunk));
@@ -187,14 +329,31 @@ namespace components::operators {
             }
         }
 
-        auto predicate = expr_ ? predicates::create_predicate(resource,
-                                                              pipeline_context->function_registry,
-                                                              expr_,
-                                                              types_left,
-                                                              types_right,
-                                                              &pipeline_context->parameters,
-                                                              pipeline_context->session_tz)
-                               : predicates::create_all_true_predicate(resource);
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
+        }
+        chunks_vector_t merged(resource);
+        if (condition_ == expressions::condition_kind::computed) {
+            if (!graph_) {
+                std::pmr::vector<types::complex_logical_type> merged_types(resource);
+                merged_types.reserve(types_left.size() + types_right.size());
+                merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
+                merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
+                auto built = expressions::build_condition_graph(resource,
+                                                                pipeline_context->parameters.parameters,
+                                                                expr_.get(),
+                                                                merged_types,
+                                                                types_left.size());
+                if (built.has_error()) {
+                    return built.error();
+                }
+                graph_ = std::move(built.value());
+            }
+            merged.reserve(right_chunks.size());
+            for (const auto& chunk_right : right_chunks) {
+                merged.push_back(join_detail::merged_chunk(resource, types_left, chunk_right));
+            }
+        }
 
         data_chunk_t out_chunk(resource, types_left, chunk_left.size());
         data_chunk_t right_chunk(resource, types_right, chunk_left.size());
@@ -207,16 +366,26 @@ namespace components::operators {
                 break;
             }
             bool row_matched = false;
-            for (const auto& chunk_right : right_chunks) {
+            for (size_t ci = 0; ci < right_chunks.size(); ++ci) {
+                const auto& chunk_right = right_chunks[ci];
                 if (chunk_right.size() == 0) {
                     continue;
                 }
-                auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
-                if (results.has_error()) {
-                    return results.error();
+                std::optional<vector::data_chunk_t> produced;
+                if (graph_) {
+                    join_detail::point_at_probe_row(resource, merged[ci], chunk_left, i);
+                    auto decided = expressions::run_graph(graph_.get(),
+                                                          pipeline_context->parameters.parameters,
+                                                          merged[ci],
+                                                          pipeline_context->execution_context);
+                    if (decided.has_error()) {
+                        return decided.error();
+                    }
+                    produced = std::move(decided.value());
                 }
+                const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
                 for (size_t j = 0; j < chunk_right.size(); ++j) {
-                    if (!results.value()[j]) {
+                    if (decisions != nullptr && (decisions->is_null(j) || !decisions->get_value<bool>(j))) {
                         continue;
                     }
                     // Storage / index update keys on the ABSOLUTE table row id of the
@@ -262,15 +431,7 @@ namespace components::operators {
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
 
-        if (auto err = apply_updates(resource,
-                                     updates_,
-                                     out_chunk,
-                                     right_chunk,
-                                     index,
-                                     pipeline_context->parameters,
-                                     pipeline_context->session_tz,
-                                     modified_);
-            err.contains_error()) {
+        if (auto err = apply_updates_(pipeline_context, out_chunk, &right_chunk, index); err.contains_error()) {
             return err;
         }
         output_->append_chunk(std::move(out_chunk));
@@ -309,7 +470,10 @@ namespace components::operators {
         const bool is_final = ctx->dml_flush_is_final;
 
         if (output_ && output_->size() > 0) {
-            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+            components::execution_context_t exec_ctx{ctx->session,
+                                                     ctx->txn,
+                                                     ctx->execution_context.timezone_offset,
+                                                     table_oid_};
             // See operator_insert comment on db_oid temporary hardcode.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address();
@@ -394,7 +558,8 @@ namespace components::operators {
                                                         returning_,
                                                         &out_chunk,
                                                         ctx->parameters,
-                                                        ctx->session_tz,
+                                                        ctx->execution_context,
+                                                        &returning_graph_,
                                                         right_batch);
                         if (proj.has_error()) {
                             co_return dml_detail::flush_outcome_t{proj.error()};

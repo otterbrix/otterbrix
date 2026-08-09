@@ -46,16 +46,11 @@ namespace components::expressions {
     }
 
     scalar_expression_t::scalar_expression_t(std::pmr::memory_resource* resource, scalar_type type, const key_t& key)
-        : expression_i(expression_group::scalar)
+        : expression_i(expression_group::scalar, key)
         , type_(type)
-        , key_(key)
         , params_(resource) {}
 
     scalar_type scalar_expression_t::type() const { return type_; }
-
-    key_t& scalar_expression_t::key() { return key_; }
-
-    const key_t& scalar_expression_t::key() const { return key_; }
 
     std::pmr::vector<param_storage>& scalar_expression_t::params() { return params_; }
 
@@ -66,7 +61,7 @@ namespace components::expressions {
     hash_t scalar_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
-        boost::hash_combine(hash_, key_.hash());
+        boost::hash_combine(hash_, key().hash());
         for (const auto& param : params_) {
             auto param_hash = std::visit(
                 [](const auto& value) {
@@ -93,8 +88,14 @@ namespace components::expressions {
 
     bool scalar_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const scalar_expression_t*>(rhs);
-        return type_ == other->type_ && key_ == other->key_ && params_.size() == other->params_.size() &&
-               std::equal(params_.begin(), params_.end(), other->params_.begin());
+        auto same_param = [](const param_storage& lhs, const param_storage& rhs_param) {
+            if (std::holds_alternative<expression_ptr>(lhs) && std::holds_alternative<expression_ptr>(rhs_param)) {
+                return bool(expression_equal{}(std::get<expression_ptr>(lhs), std::get<expression_ptr>(rhs_param)));
+            }
+            return lhs == rhs_param;
+        };
+        return type_ == other->type_ && key() == other->key() && params_.size() == other->params_.size() &&
+               std::equal(params_.begin(), params_.end(), other->params_.begin(), same_param);
     }
 
     scalar_expression_ptr
@@ -130,20 +131,8 @@ namespace components::expressions {
             return scalar_type::multiply;
         } else if (key == "divide") {
             return scalar_type::divide;
-        } else if (key == "round") {
-            return scalar_type::round;
-        } else if (key == "ceil") {
-            return scalar_type::ceil;
-        } else if (key == "floor") {
-            return scalar_type::floor;
-        } else if (key == "abs") {
-            return scalar_type::abs;
         } else if (key == "mod") {
             return scalar_type::mod;
-        } else if (key == "pow") {
-            return scalar_type::pow;
-        } else if (key == "sqrt") {
-            return scalar_type::sqrt;
         } else if (key == "case_expr") {
             return scalar_type::case_expr;
         } else if (key == "coalesce") {

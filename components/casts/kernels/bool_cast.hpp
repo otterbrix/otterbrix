@@ -16,7 +16,7 @@ namespace components::casts::kernels {
     // vector's string buffer.)
     inline core::error_t bool_to_string_cast(const vector::vector_t& source,
                                              vector::vector_t* result,
-                                             const cast_context&,
+                                             const graph_execution_context&,
                                              uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -80,7 +80,7 @@ namespace components::casts::kernels {
     // This `cast` body errors on the first bad row; its `try_cast` companion NULLs it.
     inline core::error_t string_to_bool_cast(const vector::vector_t& source,
                                              vector::vector_t* result,
-                                             const cast_context&,
+                                             const graph_execution_context&,
                                              uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -100,7 +100,7 @@ namespace components::casts::kernels {
     // TRY_CAST companion for STRING_LITERAL -> BOOLEAN: a bad row becomes NULL.
     inline void string_to_bool_try_cast(const vector::vector_t& source,
                                         vector::vector_t* result,
-                                        const cast_context&,
+                                        const graph_execution_context&,
                                         uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {

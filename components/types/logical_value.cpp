@@ -511,9 +511,9 @@ namespace components::types {
             // A fixed ARRAY value or a variable-length LIST is cast to a fixed ARRAY, casting each element
             // to the target element type while KEEPING THE SOURCE LENGTH (no truncate/pad). Array equality
             // is length-aware, so a size mismatch must stay visible (a different-length array is simply
-            // unequal) rather than be silently reconciled to the target size. The INSERT/append path
-            // reconciles short values against the column DEFAULT via table::reconcile_to_fixed_array, not
-            // this cast — so this cast is used only by the comparison paths.
+            // unequal) rather than be silently reconciled to the target size. The assignment path
+            // reconciles a value to the column's declared length in casts::array_cast, not here — so
+            // this cast is used only by the comparison paths.
             const auto& target_elem_type = type.child_type();
             const auto& src = children();
             std::vector<logical_value_t> elems;

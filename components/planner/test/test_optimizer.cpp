@@ -2109,10 +2109,28 @@ namespace {
         return k;
     }
 
-    node_group_ptr drd_group(std::pmr::memory_resource* r, const std::vector<std::string>& keys, bool with_count) {
+    size_t drd_column(const std::string& name) {
+        if (name == "a") {
+            return 0;
+        }
+        if (name == "b") {
+            return 1;
+        }
+        return 2; // v
+    }
+
+    node_group_ptr drd_group(std::pmr::memory_resource* r,
+                             const std::vector<std::string>& keys,
+                             const std::vector<std::string>& projected,
+                             bool with_count) {
         std::vector<expression_ptr> exprs;
         for (const auto& k : keys) {
-            exprs.push_back(make_scalar_expression(r, scalar_type::group_field, key(r, k)));
+            auto se = make_scalar_expression(r, scalar_type::group_field, key(r, k));
+            se->key().path().push_back(drd_column(k));
+            exprs.push_back(se);
+        }
+        for (const auto& p : projected) {
+            exprs.push_back(drd_proj_col(r, p, drd_column(p)));
         }
         if (with_count) {
             auto cnt = make_aggregate_expression(r, "count", key(r, "c"));
@@ -2145,43 +2163,32 @@ namespace {
 // Positive: group keys == projection ({a,b} ⊆ {a,b}) -> cleared.
 TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_equal_projection") {
     auto resource = core::pmr::otterbrix_resource();
-    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
-    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
-    select->append_expression(drd_proj_col(&resource, "a", 0));
-    select->append_expression(drd_proj_col(&resource, "b", 1));
-    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+    auto group = drd_group(&resource, {"a", "b"}, {"a", "b"}, /*with_count=*/false);
+    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, node_select_ptr{})));
 }
 
 // Positive (subset direction — `SELECT DISTINCT a, b ... GROUP BY a`): group {a} ⊆
-// projection {a,b}. group keys are the leading output ordinal {0}; projection covers it.
+// projection {a,b}; the target list names the one grouping key.
 TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_subset_of_projection") {
     auto resource = core::pmr::otterbrix_resource();
-    auto group = drd_group(&resource, {"a"}, /*with_count=*/false);
-    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
-    select->append_expression(drd_proj_col(&resource, "a", 0));
-    select->append_expression(drd_proj_col(&resource, "b", 1));
-    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+    auto group = drd_group(&resource, {"a"}, {"a", "b"}, /*with_count=*/false);
+    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, node_select_ptr{})));
 }
 
 // Positive (executable subset form): group {a} ⊆ non-aggregate projection {a}; the
-// extra projected column is an aggregate (count) at output ordinal 1.
+// extra emitted column is an aggregate (count), which names no input column.
 TEST_CASE("optimizer::drop_redundant_distinct::plain_subset_with_aggregate_projection") {
     auto resource = core::pmr::otterbrix_resource();
-    auto group = drd_group(&resource, {"a"}, /*with_count=*/true);
-    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
-    select->append_expression(drd_proj_col(&resource, "a", 0));
-    select->append_expression(drd_proj_col(&resource, "count", 1)); // agg result column
-    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+    auto group = drd_group(&resource, {"a"}, {"a"}, /*with_count=*/true);
+    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, node_select_ptr{})));
 }
 
 // NEGATIVE (the trap): group {a,b} ⊄ projection {a}. Two groups (a,b1),(a,b2) both
 // project a -> DISTINCT a is NOT redundant and MUST be kept.
 TEST_CASE("optimizer::drop_redundant_distinct::plain_trap_group_not_subset") {
     auto resource = core::pmr::otterbrix_resource();
-    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
-    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
-    select->append_expression(drd_proj_col(&resource, "a", 0));
-    REQUIRE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+    auto group = drd_group(&resource, {"a", "b"}, {"a"}, /*with_count=*/false);
+    REQUIRE(drd_is_distinct_after(&resource, drd_agg(&resource, group, node_select_ptr{})));
 }
 
 // Negative: no GROUP BY (no group_t child) -> DISTINCT untouched.
@@ -2195,7 +2202,7 @@ TEST_CASE("optimizer::drop_redundant_distinct::no_group_by_untouched") {
 // DISTINCT ON positive: group keys ⊆ ON columns ({a,b} ⊆ {a,b}) -> cleared.
 TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_subset") {
     auto resource = core::pmr::otterbrix_resource();
-    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
+    auto group = drd_group(&resource, {"a", "b"}, {"a", "b"}, /*with_count=*/false);
     auto agg = drd_agg(&resource, group, node_select_ptr{});
     std::pmr::vector<key> on(&resource);
     on.push_back(drd_on_key(&resource, "a", 0));
@@ -2210,7 +2217,7 @@ TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_subset") {
 // DISTINCT ON trap: group keys ⊄ ON columns ({a,b} ⊄ {a}) -> kept.
 TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_not_subset") {
     auto resource = core::pmr::otterbrix_resource();
-    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
+    auto group = drd_group(&resource, {"a", "b"}, {"a", "b"}, /*with_count=*/false);
     auto agg = drd_agg(&resource, group, node_select_ptr{});
     std::pmr::vector<key> on(&resource);
     on.push_back(drd_on_key(&resource, "a", 0));
@@ -2281,6 +2288,9 @@ namespace {
             auto gexpr = make_scalar_expression(r, scalar_type::group_field, col(r, "g", key_path));
             auto aexpr = make_aggregate_expression(r, fn, key(r, "m"), col(r, "x", agg_arg_path));
             aexpr->set_mergeable(true);
+            // Stands in for what validation stamps: the rule runs after it, so the partial it
+            // builds has to carry this type over itself.
+            aexpr->set_result_type(components::types::complex_logical_type{components::types::logical_type::BIGINT});
             std::vector<expression_ptr> gxs;
             gxs.emplace_back(gexpr);
             gxs.emplace_back(expression_ptr(aexpr));
@@ -2312,15 +2322,32 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
 
     components::planner::optimizer::eager_aggregation(&resource, outer);
 
-    // After the rule: a partial group is spliced onto side a: [g, k(join key), min(x)].
+    // After the rule: a partial group is spliced onto side a, emitting [g, k(join key), min(x)].
     auto* partial = eag::pushed_partial(outer);
     REQUIRE(partial != nullptr);
-    REQUIRE(partial->expressions().size() == 3);
-    // key columns first: g@local0, k@local1 (join key added); then min(x)@local2.
-    CHECK(partial->expressions()[0]->group() == expression_group::scalar);
-    CHECK(partial->expressions()[1]->group() == expression_group::scalar);
-    CHECK(partial->expressions()[2]->group() == expression_group::aggregate);
-    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[2].get())->function_name() == "min");
+    // A key is both GROUPED ON and NAMED — a group emits its target list, and a key that no entry
+    // names is not emitted at all — so each key appears twice in the expression list: as the
+    // group_field that reduces and as the get_field that outputs it. Hence 5 expressions for a
+    // 3-column output: [group_field g, group_field k, get_field g, get_field k, min(x)].
+    REQUIRE(partial->expressions().size() == 5);
+    for (size_t i = 0; i < 2; i++) {
+        REQUIRE(partial->expressions()[i]->group() == expression_group::scalar);
+        CHECK(static_cast<scalar_expression_t*>(partial->expressions()[i].get())->type() ==
+              scalar_type::group_field);
+    }
+    for (size_t i = 2; i < 4; i++) {
+        REQUIRE(partial->expressions()[i]->group() == expression_group::scalar);
+        CHECK(static_cast<scalar_expression_t*>(partial->expressions()[i].get())->type() == scalar_type::get_field);
+    }
+    REQUIRE(partial->expressions()[4]->group() == expression_group::aggregate);
+    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[4].get())->function_name() == "min");
+    // The rule runs after validation, so it must stamp what it builds itself — an unstamped
+    // aggregate is rejected by the execution graph builder at run time. MIN(MIN)=MIN over the same
+    // column, so the partial reduces to the type the final one was resolved to.
+    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[4].get())->result_type().type() ==
+          components::types::logical_type::BIGINT);
+
+    // The OUTPUT layout is what every ordinal below addresses: g@0, k@1 (join key), min(x)@2.
 
     // Join equi re-stamped: a.k now sits at its partial-output position (1).
     auto* join = static_cast<node_join_t*>(outer->children()[0].get());
@@ -2348,7 +2375,9 @@ TEST_CASE("optimizer::eager_aggregation::max_is_pushed") {
     components::planner::optimizer::eager_aggregation(&resource, outer);
     auto* partial = eag::pushed_partial(outer);
     REQUIRE(partial != nullptr);
-    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[2].get())->function_name() == "max");
+    // [group_field g, group_field k, get_field g, get_field k, max(x)] — see min_is_pushed.
+    REQUIRE(partial->expressions().size() == 5);
+    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[4].get())->function_name() == "max");
 }
 
 TEST_CASE("optimizer::eager_aggregation::sum_is_not_pushed") {

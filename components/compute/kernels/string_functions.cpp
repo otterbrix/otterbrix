@@ -1,8 +1,11 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
 
+#include <core/regex/regex.hpp>
+
 #include <cassert>
 #include <cstddef>
+#include <optional>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -173,6 +176,53 @@ namespace {
         return core::error_t::no_error();
     }
 
+    // regexp_like(subject, pattern [, flags]) -> BOOL. PostgreSQL's spelling, and what SQL LIKE /
+    // ILIKE lower to: a match is a FUNCTION over two strings, not a comparison operator, so it
+    // builds a function node the execution graph can run like any other.
+    //
+    // Uses core::regex_t (RE2) rather than std::regex: it reports a bad pattern as an error instead
+    // of throwing, and takes case-insensitivity as a compile option, which is exactly what ILIKE
+    // needs. `flags` follows PostgreSQL: 'i' selects a case-insensitive match.
+    static core::error_t row_regexp_like(kernel_context& ctx,
+                                         const std::pmr::vector<logical_value_t>& inputs,
+                                         std::pmr::vector<logical_value_t>& output) {
+        auto* resource = ctx.exec_context().resource();
+        if (has_null_input(inputs)) {
+            output.emplace_back(resource, logical_type::NA);
+            return core::error_t::no_error();
+        }
+        if (inputs[0].type().type() == logical_type::BLOB) {
+            return core::error_t(core::error_code_t::kernel_error,
+                                 std::pmr::string{"string function on BLOB not yet implemented", resource});
+        }
+
+        const auto subject = inputs[0].value<std::string_view>();
+        const auto pattern = inputs[1].value<std::string_view>();
+        bool case_insensitive = false;
+        if (inputs.size() > 2) {
+            const auto flags = inputs[2].value<std::string_view>();
+            case_insensitive = flags.find('i') != std::string_view::npos;
+        }
+
+        // The pattern is the same constant for every row of a scan, so compiling it per row would
+        // dominate the match. One entry is enough: a query evaluates one pattern at a time.
+        // TODO: with coroutines it is still dangerous to have them cached here
+        thread_local std::string cached_pattern;
+        thread_local bool cached_icase = false;
+        thread_local std::optional<core::regex_t> cached_regex;
+        if (!cached_regex.has_value() || cached_icase != case_insensitive || cached_pattern != pattern) {
+            auto compiled = core::regex_t::compile(resource, pattern, case_insensitive);
+            if (compiled.has_error()) {
+                return compiled.error();
+            }
+            cached_regex.emplace(std::move(compiled.value()));
+            cached_pattern.assign(pattern.data(), pattern.size());
+            cached_icase = case_insensitive;
+        }
+        output.emplace_back(resource, cached_regex->match(subject));
+        return core::error_t::no_error();
+    }
+
     // ------------------------------------------------------------------
     // Makers (mirror make_sum_func style from aggregate.cpp).
     // ------------------------------------------------------------------
@@ -188,13 +238,13 @@ namespace {
         // NA-aware: NA is accepted at signature-match time by the string/integer
         // matchers (kernel_signature.cpp); kernel body propagates via has_null_input.
         kernel_signature_t sig2(function_type_t::row,
-                                {input_type::make_string(), input_type::make_integer()},
+                                {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k2(std::move(sig2), row_substring_2);
         (void) fn->add_kernel(resource, std::move(k2));
 
         kernel_signature_t sig3(function_type_t::row,
-                                {input_type::make_string(), input_type::make_integer(), input_type::make_integer()},
+                                {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT), parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k3(std::move(sig3), row_substring_3);
         (void) fn->add_kernel(resource, std::move(k3));
@@ -211,7 +261,7 @@ namespace {
         auto fn = std::make_unique<row_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
 
         kernel_signature_t sig(function_type_t::row,
-                               {input_type::make_string()},
+                               {parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::BIGINT)});
         row_kernel k(std::move(sig), row_length);
         (void) fn->add_kernel(resource, std::move(k));
@@ -228,10 +278,36 @@ namespace {
         auto fn = std::make_unique<row_function>(name, arity::ternary(), doc, /*available_kernel_slots=*/1);
 
         kernel_signature_t sig(function_type_t::row,
-                               {input_type::make_string(), input_type::make_string(), input_type::make_string()},
+                               {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k(std::move(sig), row_regexp_replace);
         (void) fn->add_kernel(resource, std::move(k));
+
+        return fn;
+    }
+
+    std::unique_ptr<row_function> make_regexp_like_func(std::pmr::memory_resource* resource,
+                                                        const std::string& name,
+                                                        const std::string& short_doc,
+                                                        const std::string& full_doc) {
+        function_doc doc{short_doc, full_doc, {"string", "pattern", "flags"}, false};
+
+        auto fn = std::make_unique<row_function>(name, arity::var_args(2), doc, /*available_kernel_slots=*/2);
+
+        kernel_signature_t sig2(function_type_t::row,
+                                {parameter_type::exact(logical_type::STRING_LITERAL),
+                                 parameter_type::exact(logical_type::STRING_LITERAL)},
+                                {output_type::fixed(logical_type::BOOLEAN)});
+        row_kernel k2(std::move(sig2), row_regexp_like);
+        (void) fn->add_kernel(resource, std::move(k2));
+
+        kernel_signature_t sig3(function_type_t::row,
+                                {parameter_type::exact(logical_type::STRING_LITERAL),
+                                 parameter_type::exact(logical_type::STRING_LITERAL),
+                                 parameter_type::exact(logical_type::STRING_LITERAL)},
+                                {output_type::fixed(logical_type::BOOLEAN)});
+        row_kernel k3(std::move(sig3), row_regexp_like);
+        (void) fn->add_kernel(resource, std::move(k3));
 
         return fn;
     }
@@ -240,7 +316,8 @@ namespace {
 
 namespace components::compute {
 
-    // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5,6,7 in function.hpp
+    // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..8 in function.hpp —
+    // a uid is the REGISTRATION ORDER, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
         (void) r.add_function(make_substring_func(r.resource(),
                                                   "substring",
@@ -252,6 +329,10 @@ namespace components::compute {
                                                        "regexp_replace",
                                                        "Regex substitution",
                                                        "REGEXP_REPLACE(s, pattern, replacement)"));
+        (void) r.add_function(make_regexp_like_func(r.resource(),
+                                                    "regexp_like",
+                                                    "Regex match test",
+                                                    "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
     }
 
 } // namespace components::compute

@@ -2,6 +2,7 @@
 
 #include "column_data.hpp"
 #include "column_segment.hpp"
+#include <components/expressions/execution_graph_builder.hpp>
 #include "storage/block_handle.hpp"
 #include "storage/block_manager.hpp"
 #include "storage/buffer_manager.hpp"
@@ -74,10 +75,8 @@ namespace components::table {
     }
 
     std::unique_ptr<table_filter_t> expression_filter_t::copy() const {
-        // Rebuild the pmr containers on this filter's own resource (pmr copy-construction would
-        // otherwise fall back to the default resource). The attached `evaluator` is intentionally
-        // NOT cloned: copy() is a setup-time operation and the agent rebuilds the evaluator after
-        // the (moved) filter arrives, so a copy is always re-attached before use.
+        // Rebuild the pmr containers on this filter's own resource
+        // pmr copy-construction would otherwise fall back to the default resource
         auto* res = column_paths.get_allocator().resource();
         std::pmr::vector<std::pmr::vector<size_t>> paths_copy{res};
         paths_copy.reserve(column_paths.size());
@@ -89,10 +88,22 @@ namespace components::table {
         for (const auto& [id, val] : parameters) {
             params_copy.emplace(id, val);
         }
+        // The graph is not copyable, so we rebuild it
+        std::unique_ptr<execution_graph::execution_graph_t> graph_copy;
+        if (condition == expressions::condition_kind::computed) {
+            auto built = expressions::build_condition_graph(res, params_copy, expression.get(), chunk_types);
+            if (!built.has_error()) {
+                graph_copy = std::move(built.value());
+            }
+        }
+        std::pmr::vector<types::complex_logical_type> types_copy{chunk_types.begin(), chunk_types.end(), res};
         return std::make_unique<expression_filter_t>(expression,
                                                      std::move(paths_copy),
                                                      std::move(params_copy),
-                                                     session_tz);
+                                                     context,
+                                                     std::move(types_copy),
+                                                     std::move(graph_copy),
+                                                     condition);
     }
 
     bool expression_filter_t::equals(const table_filter_t& other) const {

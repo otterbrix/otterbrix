@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
@@ -16,7 +17,7 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
-        core::date::timezone_offset_t session_timezone;
+        components::graph_execution_context execution_context;
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
@@ -46,7 +47,7 @@ namespace services {
                           core::date::timezone_offset_t session_timezone)
             : resource(resource)
             , log(std::move(log))
-            , session_timezone(session_timezone)
+            , execution_context{.timezone_offset = session_timezone}
             , indexed_keys(resource)
             , indexed_descriptions(resource)
             , cte_working_sets(resource)

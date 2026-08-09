@@ -71,7 +71,7 @@ namespace components::operators {
                                            services::index::index_name_t(index_name_),
                                            keys_,
                                            index_type_,
-                                           ctx->session_tz);
+                                           ctx->execution_context.timezone_offset);
         const auto id_index = co_await std::move(ixf);
 
         if (id_index == components::index::INDEX_ID_UNDEFINED) {
@@ -177,7 +177,10 @@ namespace components::operators {
                     auto [_ir, irf] = actor_zeta::send(
                         ctx->index_address,
                         &services::index::manager_index_t::insert_rows,
-                        services::index::execution_context_t{ctx->session, ctx->txn, ctx->session_tz, table_oid_},
+                        services::index::execution_context_t{ctx->session,
+                                                             ctx->txn,
+                                                             ctx->execution_context.timezone_offset,
+                                                             table_oid_},
                         table_oid_,
                         std::move(idx_chunks),
                         static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id

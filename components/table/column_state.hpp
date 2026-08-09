@@ -12,6 +12,8 @@
 
 #include <components/table/storage/buffer_handle.hpp>
 
+#include <components/execution_context/graph_execution_context.hpp>
+#include <components/execution_graph/execution_graph.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/types/logical_value.hpp>
@@ -72,6 +74,29 @@ namespace components::table {
         CONJUNCTION_OR = 3,
         CONJUNCTION_AND = 4
     };
+
+    // TODO: use tri-bool from main branch
+    enum class filter_decision_t : uint8_t
+    {
+        fails,
+        passes,
+        unknown
+    };
+
+    inline filter_decision_t negate(filter_decision_t decision) noexcept {
+        switch (decision) {
+            case filter_decision_t::passes:
+                return filter_decision_t::fails;
+            case filter_decision_t::fails:
+                return filter_decision_t::passes;
+            default:
+                return filter_decision_t::unknown;
+        }
+    }
+
+    inline filter_decision_t decision_of(bool value) noexcept {
+        return value ? filter_decision_t::passes : filter_decision_t::fails;
+    }
 
     // TODO: support function_expr in order to avoid full_scans
     class table_filter_t {
@@ -379,37 +404,28 @@ namespace components::table {
         core::date::timezone_offset_t session_tz;
     };
 
-    // Abstract per-row evaluator behind an expression_filter_t. The concrete implementation
-    // wraps a components::operators::predicates::predicate and lives in the physical_plan layer
-    // (which may depend on table, not the reverse). It is built AGENT-SIDE and attached after the
-    // filter crosses the mailbox: the predicate's value_getter closures capture the agent's memory
-    // resource + function registry, neither of which can travel through a message, so the filter
-    // ships evaluator-less and the owning agent attaches one before the first scan.
-    class expression_evaluator_t {
-    public:
-        virtual ~expression_evaluator_t() = default;
-        // Evaluate the whole compare over `row` at `index`; `row` presents each referenced column
-        // at its ORIGINAL storage column index (path[0]) so the value_getters resolve correctly.
-        virtual core::result_wrapper_t<bool> evaluate(const vector::data_chunk_t& row, size_t index) const = 0;
-    };
-
     // A comparison whose one operand is a function/arithmetic expression over column(s) and whose
     // other operand is a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. It is not
     // representable as a constant_filter_t (there is no single column/constant pair), so it is
     // dispatched by its OWN branch in row_group_t::check_predicate, which materializes the referenced
-    // columns of one row and runs `evaluator`. Discriminated by dynamic_cast: filter_type aliases the
-    // comparison op (eq/gt/...) and therefore collides with constant_filter_t.
+    // columns of one row and runs the compare on the execution graph the filter CARRIES.
     class expression_filter_t : public table_filter_t {
     public:
         expression_filter_t(expressions::compare_expression_ptr expression,
                             std::pmr::vector<std::pmr::vector<size_t>> column_paths,
                             std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters,
-                            core::date::timezone_offset_t session_tz)
+                            graph_execution_context context,
+                            std::pmr::vector<types::complex_logical_type> chunk_types,
+                            std::unique_ptr<execution_graph::execution_graph_t> graph,
+                            expressions::condition_kind condition)
             : table_filter_t(expression->type())
             , expression(std::move(expression))
             , column_paths(std::move(column_paths))
             , parameters(std::move(parameters))
-            , session_tz(session_tz) {}
+            , context(context)
+            , chunk_types(std::move(chunk_types))
+            , graph(std::move(graph))
+            , condition(condition) {}
 
         std::unique_ptr<table_filter_t> copy() const override;
         bool equals(const table_filter_t& other) const override;
@@ -420,10 +436,12 @@ namespace components::table {
         std::pmr::vector<std::pmr::vector<size_t>> column_paths;
         // Snapshot of the parameter values the expression references, resolved operator-side.
         std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters;
-        core::date::timezone_offset_t session_tz;
-        // Attached agent-side (see expression_evaluator_t). Null until then; check_predicate errors
-        // if it is reached without one.
-        std::unique_ptr<expression_evaluator_t> evaluator;
+        graph_execution_context context;
+        // Graph is build using absolute positions, not reduced set
+        // contains NA placeholders between them.
+        std::pmr::vector<types::complex_logical_type> chunk_types;
+        std::unique_ptr<execution_graph::execution_graph_t> graph;
+        expressions::condition_kind condition{expressions::condition_kind::always};
     };
 
     // Dispatch helper used by all storage filter sites. Replaces the

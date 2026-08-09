@@ -5,6 +5,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/pg_catalog_swap.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
@@ -38,7 +39,7 @@ namespace components::pipeline {
         actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
 
         table::transaction_data txn{0, 0};
-        core::date::timezone_offset_t session_tz{};
+        components::graph_execution_context execution_context{};
         // VACUUM/MVCC GC threshold: snapshots older than this start_time are
         // safe to drop. Populated by the executor from the session context
         // (txn_begin_session_msg) before each operator invocation; consumed by

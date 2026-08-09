@@ -2,9 +2,13 @@
 
 #include <components/physical_plan/operators/operator.hpp>
 
-#include "predicates/predicate.hpp"
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/execution_graph_builder.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
+
+#include <memory>
+#include <optional>
 
 namespace components::operators {
 
@@ -32,10 +36,9 @@ namespace components::operators {
         //   (a) row_ids: filter_batch_ only propagates the input row_id when it is real
         //       (row_ids_meaningful_(): left_ is a scan source); over a sink it leaves
         //       the zero sentinel so no bogus absolute id reaches a downstream consumer.
-        //   (b) predicate resource: build_predicate_ allocates the predicate + the types
-        //       working copy on the operator's STABLE resource_, not the (foreign /
-        //       transient) sink chunk's arena, so the cached predicate's value-getter
-        //       closures stay valid across the second finalize chunk.
+        //   (b) stable resource: build_schema_metadata_ allocates the types working copy on the
+        //       operator's STABLE resource_, not the (foreign / transient) sink chunk's arena, so
+        //       what is cached across batches does not dangle on the second finalize chunk.
         // The executor FLUSH/PUMP path itself already streams a filter above a sink
         // correctly (select-over-sink works), so with both defects fixed the filter
         // streams in every shape.
@@ -79,12 +82,15 @@ namespace components::operators {
         // capped, never skipped.) It feeds the shared filter core.
         int64_t stream_limit_total_{0};
 
+        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        expressions::condition_kind condition_{expressions::condition_kind::always};
+
         // Shared filter core (R6): filter ONE input chunk through the predicate +
         // projection, advancing the caller-owned LIMIT counter `limit_total`,
         // and append the surviving-rows chunk to `out` (nothing appended when zero
         // rows survive). Called by push() (per streamed batch, member counter).
-        // `predicate` and the populated-column projection are passed in so the
-        // predicate is built ONCE per execution, not per chunk.
+        // The populated-column projection is passed in so it is computed ONCE per
+        // execution, not per chunk.
         //
         // `row_ids_meaningful`: whether the input chunk carries REAL absolute row_ids
         // (true ONLY when left_ is a scan SOURCE, which stamps them). A SINK output
@@ -94,7 +100,7 @@ namespace components::operators {
         // zero-initialized sentinel (the same value the materialized path produced
         // over a sink), and NO foreign id is copied in.
         [[nodiscard]] core::error_t filter_batch_(std::pmr::memory_resource* resource,
-                                                  predicates::predicate_ptr& predicate,
+                                                  const vector::vector_t* decisions,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
                                                   bool row_ids_meaningful,
@@ -103,24 +109,10 @@ namespace components::operators {
                                                   int64_t& limit_total,
                                                   chunks_vector_t& out);
 
-        // Build the predicate + projection metadata (populated_cols / sparse / types)
-        // for an input chunk schema. Shared one-time setup for both entry points; the
-        // predicate depends only on the (stable) chunk schema, so push() rebuilds it
-        // only on the first batch it sees. `resource` is the STABLE resource to allocate
-        // the predicate (and the types working copy) on — the caller chooses it (the
-        // operator's resource_ for a scan-source match, the captured input-chunk
-        // resource for a sink match whose resource_ is null).
-        [[nodiscard]] core::error_t build_predicate_(pipeline::context_t* ctx,
-                                                     const vector::data_chunk_t& sample,
-                                                     std::pmr::memory_resource* resource,
-                                                     std::pmr::vector<types::complex_logical_type>& types,
-                                                     std::vector<size_t>& populated_cols,
-                                                     bool& sparse,
-                                                     predicates::predicate_ptr& predicate);
-
-        // Streaming-path predicate cache: built lazily on the first push() batch and
-        // reused for every subsequent batch (schema is stable across batches).
-        predicates::predicate_ptr stream_predicate_{nullptr};
+        void build_schema_metadata_(const vector::data_chunk_t& sample,
+                                    std::pmr::vector<types::complex_logical_type>& types,
+                                    std::vector<size_t>& populated_cols,
+                                    bool& sparse);
         // The stable resource the streaming run allocates on (resource_ when non-null,
         // else the first batch's resource — captured once). stream_types_ is rebound to
         // it in push() before first use, so it is never left bound to a null resource_.

@@ -21,6 +21,9 @@ namespace components::expressions {
                              const param_storage& right);
 
         compare_type type() const;
+        // The output alias when the comparison is projected as a column. Deliberately outside
+        // hash/equal: two comparisons differing only by alias are the same computation.
+        void set_key(const key_t& key);
         param_storage& left();
         const param_storage& left() const;
         param_storage& right();
@@ -100,5 +103,14 @@ namespace components::expressions {
     bool is_parameter(const param_storage& param) noexcept;
     const core::parameter_id_t& as_parameter(const param_storage& param);
     core::parameter_id_t& as_parameter(param_storage& param);
+
+    // usefull reduction from compare_type
+    enum class condition_kind
+    {
+        computed,
+        always,
+        never
+    };
+    condition_kind classify_condition(const expression_ptr& expression) noexcept;
 
 } // namespace components::expressions

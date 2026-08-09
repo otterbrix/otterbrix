@@ -5,54 +5,59 @@
 #include <algorithm>
 
 namespace components::compute {
-    input_type::input_type(type_matcher_fn m)
-        : matcher_(std::move(m)) {}
 
-    input_type input_type::make_exact(types::logical_type t) {
-        input_type r{exact_type_matcher(t)};
-        r.kind_ = kind_t::exact;
-        r.exact_type_ = t;
-        return r;
+    namespace {
+
+        bool is_null_argument(const types::complex_logical_type& type) noexcept {
+            return type.type() == types::logical_type::NA;
+        }
+
+        bool same_parameter(const parameter_type& lhs, const parameter_type& rhs) {
+            if (lhs.is_variable() != rhs.is_variable()) {
+                return false;
+            }
+            if (lhs.is_variable()) {
+                return lhs.id() == rhs.id() && lhs.admissible() == rhs.admissible();
+            }
+            return lhs.type() == rhs.type();
+        }
+
+    } // namespace
+
+    parameter_type parameter_type::exact(types::complex_logical_type type) {
+        parameter_type result;
+        result.type_ = std::move(type);
+        return result;
     }
 
-    input_type input_type::make_numeric() {
-        input_type r{numeric_types_matcher()};
-        r.kind_ = kind_t::numeric;
-        return r;
+    parameter_type parameter_type::variable(variable_id id, std::pmr::vector<types::complex_logical_type> admissible) {
+        parameter_type result;
+        result.is_variable_ = true;
+        result.id_ = id;
+        result.admissible_ = std::move(admissible);
+        return result;
     }
 
-    input_type input_type::make_integer() {
-        input_type r{integer_types_matcher()};
-        r.kind_ = kind_t::integer;
-        return r;
+    parameter_type parameter_type::variable(variable_id id) {
+        parameter_type result;
+        result.is_variable_ = true;
+        result.id_ = id;
+        return result;
     }
 
-    input_type input_type::make_floating() {
-        input_type r{floating_types_matcher()};
-        r.kind_ = kind_t::floating;
-        return r;
+    bool parameter_type::admits(const types::complex_logical_type& candidate) const {
+        // An entry with no extension stands for its whole family
+        auto admitted_by = [&candidate](const types::complex_logical_type& entry) {
+            return entry.extension() == nullptr ? entry.type() == candidate.type() : entry == candidate;
+        };
+        if (!is_variable_) {
+            return admitted_by(type_);
+        }
+        if (admissible_.empty()) {
+            return true;
+        }
+        return std::any_of(admissible_.begin(), admissible_.end(), admitted_by);
     }
-
-    input_type input_type::make_string() {
-        input_type r{string_types_matcher()};
-        r.kind_ = kind_t::string;
-        return r;
-    }
-
-    input_type input_type::make_any_of(std::pmr::vector<types::logical_type> types) {
-        input_type r{any_type_matcher(types)};
-        r.kind_ = kind_t::any_of;
-        r.any_of_list_ = std::move(types);
-        return r;
-    }
-
-    input_type input_type::make_always_true() {
-        input_type r{always_true_type_matcher()};
-        r.kind_ = kind_t::always_true;
-        return r;
-    }
-
-    bool input_type::matches(const types::complex_logical_type& type) const { return matcher_(type); }
 
     output_type output_type::fixed(fixed_t type) {
         output_type out;
@@ -88,7 +93,7 @@ namespace components::compute {
     }
 
     kernel_signature_t::kernel_signature_t(function_type_t function_type,
-                                           std::pmr::vector<input_type> input_types,
+                                           std::pmr::vector<parameter_type> input_types,
                                            std::pmr::vector<struct output_type> output_types)
         : function_type(function_type)
         , input_types(std::move(input_types))
@@ -99,56 +104,25 @@ namespace components::compute {
             return false;
         }
         for (size_t i = 0; i < types.size(); ++i) {
-            if (!input_types[i].matches(types[i])) {
+            if (is_null_argument(types[i])) {
+                continue;
+            }
+            const auto& parameter = input_types[i];
+            if (!parameter.admits(types[i])) {
                 return false;
+            }
+            if (!parameter.is_variable()) {
+                continue;
+            }
+            // One variable, one type: every other position naming it must agree.
+            for (size_t other = i + 1; other < types.size(); ++other) {
+                if (input_types[other].is_variable() && input_types[other].id() == parameter.id() &&
+                    !is_null_argument(types[other]) && types[other] != types[i]) {
+                    return false;
+                }
             }
         }
         return true;
-    }
-
-    type_matcher_fn exact_type_matcher(types::logical_type type) {
-        return [type](const types::complex_logical_type& t) { return t.type() == type; };
-    }
-
-    type_matcher_fn numeric_types_matcher() {
-        return [](const types::complex_logical_type& t) { return types::is_numeric(t.type()); };
-    }
-
-    type_matcher_fn integer_types_matcher() {
-        return [](const types::complex_logical_type& t) {
-            using lt = types::logical_type;
-            auto id = t.type();
-            return id == lt::NA || // NA propagation (SQL NULL)
-                   id == lt::TINYINT || id == lt::SMALLINT || id == lt::INTEGER || id == lt::BIGINT ||
-                   id == lt::HUGEINT || id == lt::UTINYINT || id == lt::USMALLINT || id == lt::UINTEGER ||
-                   id == lt::UBIGINT || id == lt::UHUGEINT;
-        };
-    }
-
-    type_matcher_fn floating_types_matcher() {
-        return [](const types::complex_logical_type& t) {
-            using lt = types::logical_type;
-            auto id = t.type();
-            return id == lt::FLOAT || id == lt::DOUBLE;
-        };
-    }
-
-    type_matcher_fn string_types_matcher() {
-        return [](const types::complex_logical_type& t) {
-            auto id = t.type();
-            // NA — SQL NULL may appear at any position; the kernel body propagates it.
-            return id == types::logical_type::NA || types::is_string(id);
-        };
-    }
-
-    type_matcher_fn any_type_matcher(std::pmr::vector<types::logical_type> type_list) {
-        return [list = std::move(type_list)](const types::complex_logical_type& t) {
-            return std::find(list.begin(), list.end(), t.type()) != list.end();
-        };
-    }
-
-    type_matcher_fn always_true_type_matcher() {
-        return [](const types::complex_logical_type&) { return true; };
     }
 
     type_resolver_fn same_type_resolver(size_t input_index) {
@@ -162,73 +136,23 @@ namespace components::compute {
         };
     }
 
-    /*
-    * Deducing conflicts and ambiguity
-    * In case we have a conflict, we move to the next check, which can resolve it
-    * Only explicit type matters, ignoring any possible implicit casts
-    * 1) if number of arguments is different - no conflicts
-    * 2) loop over corresponding arguments
-    *   2.1) if there is conflict over types, move to the next
-    *   2.2) if we have any pair of arguments that does not have any overlaps, than we can call signatures distinct
-    *   2.3) if all pairs have conflicts, than signatures have a conflict
-      3) include outputs?
-    */
-
-    bool check_signature_conflicts(
-        const std::pmr::vector<input_type>& lhs,
-        const std::pmr::vector<input_type>& rhs,
-        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types) {
-        if (lhs.size() != rhs.size()) {
+    bool check_signature_conflicts(const kernel_signature_t& lhs, const kernel_signature_t& rhs) {
+        if (lhs.input_types.size() != rhs.input_types.size()) {
             return true;
         }
-
-        bool result = true;
-
-        for (size_t i = 0; i < lhs.size(); i++) {
-            result = true;
-            // check default types
-            for (size_t j = 0; j < types::DEFAULT_LOGICAL_TYPES.size(); j++) {
-                if (lhs[i].matches(types::DEFAULT_LOGICAL_TYPES[j]) &&
-                    rhs[i].matches(types::DEFAULT_LOGICAL_TYPES[j])) {
-                    result = false;
-                    break;
-                }
-            }
-
-            // If there are any overlaps, then we have a conflict, and we have to check next set of arguments
-            if (!result) {
-                continue;
-            }
-
-            // check registered udt`s
-            for (const auto& pair : registered_types) {
-                if (lhs[i].matches(pair.second) && rhs[i].matches(pair.second)) {
-                    result = false;
-                    break;
-                }
-            }
-            if (result) {
-                break;
+        for (size_t i = 0; i < lhs.input_types.size(); i++) {
+            if (!same_parameter(lhs.input_types[i], rhs.input_types[i])) {
+                return true;
             }
         }
-
-        return result;
+        return false;
     }
 
-    bool check_signature_conflicts(
-        const kernel_signature_t& lhs,
-        const kernel_signature_t& rhs,
-        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types) {
-        return check_signature_conflicts(lhs.input_types, rhs.input_types, registered_types);
-    }
-
-    bool check_signature_conflicts(
-        const std::vector<kernel_signature_t>& lhs,
-        const std::vector<kernel_signature_t>& rhs,
-        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types) {
-        for (size_t i = 0; i < lhs.size(); i++) {
-            for (size_t j = 0; j < lhs.size(); j++) {
-                if (!check_signature_conflicts(lhs[i], rhs[i], registered_types)) {
+    bool check_signature_conflicts(const std::vector<kernel_signature_t>& lhs,
+                                   const std::vector<kernel_signature_t>& rhs) {
+        for (const auto& left : lhs) {
+            for (const auto& right : rhs) {
+                if (!check_signature_conflicts(left, right)) {
                     return false;
                 }
             }

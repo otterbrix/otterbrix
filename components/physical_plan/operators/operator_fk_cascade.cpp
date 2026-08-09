@@ -32,7 +32,7 @@ namespace components::operators {
             co_return;
         }
         const auto& in_chunks = output_->chunks();
-        execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz};
+        execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
 
         const auto& par_indices = fk_.parent_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();

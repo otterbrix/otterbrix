@@ -229,6 +229,9 @@ namespace components::operators {
         // (filter/projection) overrides this.
         [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::sink; }
 
+        // marker for executor to update sub-queries links
+        [[nodiscard]] virtual bool produces_query_rows() const noexcept { return false; }
+
         // SOURCE: fetch the next batch via an async storage round-trip
         // (storage_fetch_next_batch). A drained source returns an EMPTY chunk
         // (cardinality 0). Buffer-pool OOM / data_corruption ride the result_wrapper,

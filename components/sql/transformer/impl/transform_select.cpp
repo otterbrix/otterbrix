@@ -3,6 +3,7 @@
 
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
@@ -836,15 +837,12 @@ namespace components::sql::transform {
                             expr_name = funcname;
                         }
 
-                        auto expr = make_aggregate_expression(resource_,
-                                                              funcname,
-                                                              expressions::key_t{resource_, std::move(expr_name)});
-                        for (const auto& arg : args) {
-                            expr->append_param(arg);
-                        }
+                        auto expr = make_function_expression(resource_, std::move(funcname), std::move(args));
+                        expr->set_key(expressions::key_t{resource_, std::move(expr_name)});
                         if (func->agg_distinct) {
                             expr->set_distinct(true);
                         }
+                        expr->set_star_argument(func->agg_star);
                         select_node->append_expression(expr);
                         has_non_star = true;
                         break;
@@ -924,16 +922,16 @@ namespace components::sql::transform {
                             }
                             auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
-                            col_ref.field.set_cast_type(target_type_res.value());
-                            if (cast->variant_select) {
-                                col_ref.field.set_variant_select(true);
-                            }
+                            col_ref.deduce_side(names);
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
-                            select_node->append_expression(make_scalar_expression(resource_,
-                                                                                  scalar_type::get_field,
-                                                                                  expressions::key_t{resource_, alias},
-                                                                                  std::move(col_ref.field)));
+                            auto conversion = make_cast_expression(resource_,
+                                                                   param_storage{std::move(col_ref.field)},
+                                                                   target_type_res.value(),
+                                                                   casts::cast_t{},
+                                                                   cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast);
+                            conversion->key() = expressions::key_t{resource_, alias};
+                            select_node->append_expression(conversion);
                             break;
                         }
                         // '<jsonb nav chain> ::? type' — e.g. `m -> 'a' ->> 'b' ::? string`.
@@ -1033,6 +1031,25 @@ namespace components::sql::transform {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
                                 transform_select_a_expr(a_expr, res->name, names, plan, sel_node);
+                                break;
+                            }
+                            if (auto compare_op = get_compare_type(op_str);
+                                compare_op != compare_type::invalid && compare_op != compare_type::regex &&
+                                a_expr->lexpr) {
+                                has_non_star = true;
+                                logical_plan::node_ptr sel_node = select_node;
+                                auto compare = make_compare_expression(
+                                    resource_,
+                                    compare_op,
+                                    resolve_select_operand(a_expr->lexpr, names, plan, sel_node),
+                                    resolve_select_operand(a_expr->rexpr, names, plan, sel_node));
+                                if (has_error()) {
+                                    return nullptr;
+                                }
+                                compare->set_key(expressions::key_t{
+                                    resource_,
+                                    res->name ? std::string{res->name} : std::string{op_str}});
+                                select_node->append_expression(compare);
                                 break;
                             }
                             if (is_jsonb_nav_operator(op_str)) {
@@ -1151,15 +1168,10 @@ namespace components::sql::transform {
                         auto expr = make_scalar_expression(resource_,
                                                            scalar_type::coalesce,
                                                            expressions::key_t{resource_, std::move(expr_name)});
+                        logical_plan::node_ptr coalesce_node = select_node;
                         for (auto& arg_item : coalesce->args->lst) {
                             auto arg_node = pg_ptr_cast<Node>(arg_item.data);
-                            if (nodeTag(arg_node) == T_ColumnRef) {
-                                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
-                                key.deduce_side(names);
-                                expr->append_param(std::move(key.field));
-                            } else {
-                                expr->append_param(add_param_value(arg_node, plan->parameters.get()));
-                            }
+                            expr->append_param(resolve_select_operand(arg_node, names, plan, coalesce_node));
                         }
                         select_node->append_expression(expr);
                         break;
@@ -1382,41 +1394,36 @@ namespace components::sql::transform {
             }
         }
 
-        // Route SELECT expressions and pending internal aggregates:
-        // Built-in aggregates (count/sum/avg/min/max) move to group_node and are replaced by
-        // get_field refs in select_node. Scalar UDFs stay in select_node as-is.
-        // This applies both with and without an explicit GROUP BY — operator_group_t treats the
-        // entire chunk as one group when its keys_ is empty.
+        // Parser/Transformer can not distinguish regular function from aggregate one
+        // So we have to pick: place all in select and create group node later, or
+        // place all in group, and disassemble it, if there is no actual grouping to be done
+        // If we add arena allocator for the plan it will be safer to allocate upfront
+        // (so everything is placed in group noe)
         if (has_non_star) {
-            std::vector<expression_ptr> new_sel_exprs;
             for (auto& expr : select_node->expressions()) {
-                if (expr->group() == expression_group::aggregate) {
-                    // Every aggregate_expression_t represents an aggregate function — always route
-                    // to group_node so that operator_group_t handles it. validate_schema verifies
-                    // the function exists. This covers both built-in (count/sum/avg/min/max) and
-                    // user-registered aggregate functions.
-                    auto* agg_expr = static_cast<const aggregate_expression_t*>(expr.get());
-                    std::string alias = agg_expr->key().as_string();
-                    group->append_expression(expr);
-                    new_sel_exprs.push_back(make_scalar_expression(resource_,
-                                                                   scalar_type::get_field,
-                                                                   expressions::key_t{resource_, alias}));
-                } else {
-                    new_sel_exprs.push_back(expr);
-                }
+                group->append_expression(expr);
             }
             select_node->expressions().clear();
-            for (auto& expr : new_sel_exprs) {
-                select_node->append_expression(expr);
-            }
-
-            // Flush pending internal aggregates to group (sub-aggregates of arithmetic in select).
-            // Do NOT set group->internal_aggregate_count: operator_select_t needs these columns
-            // for post-aggregate arithmetic, so they must not be erased by operator_group_t.
-            for (auto& internal_agg : pending_internal_aggs_) {
-                group->append_expression(internal_agg);
-            }
             group->internal_aggregate_count = 0;
+        } else if (has_group_by) {
+            // SELECT * over a grouped query projects the GROUPING KEYS: they are the only columns
+            // with one value per group. The group emits its target list and a group_field is a
+            // reduction key rather than an output column, so the keys have to be NAMED in that
+            // target list like any other projected column. Snapshot the size first -- the loop
+            // appends to the very vector it reads.
+            const size_t key_count = group->expressions().size();
+            for (size_t i = 0; i < key_count; i++) {
+                const auto& key_expr = group->expressions()[i];
+                if (key_expr->group() != expression_group::scalar) {
+                    continue;
+                }
+                const auto* key_scalar = static_cast<const scalar_expression_t*>(key_expr.get());
+                if (key_scalar->type() != scalar_type::group_field) {
+                    continue;
+                }
+                group->append_expression(
+                    make_scalar_expression(resource_, scalar_type::get_field, key_scalar->key()));
+            }
         }
         pending_internal_aggs_.clear();
 
@@ -1572,60 +1579,50 @@ namespace components::sql::transform {
                                                            sort_exprs));
         }
 
-        // Append select_node as a child of agg (only if there are actual SELECT columns — not pure star)
-        if (has_non_star) {
-            // A HAVING clause forced a scalar (0-key) group above. A bare non-aggregated,
-            // non-constant SELECT column then has no value in that single collapsed group —
-            // PostgreSQL rejects it. This fires ONLY when the group is genuinely EMPTY (no keys,
-            // no aggregate anywhere); a real scalar aggregate (SELECT count(*) ... HAVING ...)
-            // leaves the group non-empty and is allowed. A constant (SELECT 1) is always allowed.
-            if (having_expr && !has_group_by && group->expressions().empty()) {
-                for (const auto& sel : select_node->expressions()) {
-                    if (sel->group() == expression_group::scalar &&
-                        static_cast<const scalar_expression_t*>(sel.get())->type() == scalar_type::get_field) {
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"column must appear in a GROUP BY clause or be "
-                                                                "used in an aggregate function",
-                                                                resource_});
-                        return nullptr;
-                    }
+        if (having_expr && !has_group_by) {
+            for (const auto& ge : group->expressions()) {
+                if (ge->group() == expression_group::scalar &&
+                    static_cast<const scalar_expression_t*>(ge.get())->type() == scalar_type::get_field) {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"column must appear in a GROUP BY clause or be "
+                                                            "used in an aggregate function",
+                                                            resource_});
+                    return nullptr;
                 }
             }
-            agg->append_child(select_node);
-        } else if (hidden_having_count > 0) {
-            // SELECT * with an aggregate in HAVING but no explicit projection: resolve_having_operand
-            // appended hidden __having_<fn>_<n> aggregate(s) to the group that must NOT leak as output
-            // columns (PostgreSQL omits them).
-            if (visible_group_count == 0) {
-                // Pure SELECT * with an aggregate-only HAVING and no GROUP BY (SELECT * FROM t HAVING
-                // count(*) > 5): the star's base columns are not routed to the group, so the visible
-                // set is empty and there is nothing well-defined to project. PostgreSQL and
-                // default-mode MySQL error here (no engine returns the base rows).
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"column must appear in a GROUP BY clause or be used in "
-                                                        "an aggregate function",
-                                                        resource_});
-                return nullptr;
-            }
-            // Covering GROUP keys exist: synthesize a projection over ONLY the visible group-output
-            // columns (the first visible_group_count group expressions), dropping the trailing hidden
-            // aggregates. operator_select emits one column per select_column_t, so the hidden columns
-            // are stripped WITHOUT touching internal_aggregate_count (setting it >0 is a BLOCKER: the
+        }
+        if (!has_non_star && hidden_having_count > 0 && visible_group_count == 0) {
+            // Pure SELECT * with an aggregate-only HAVING and no GROUP BY (SELECT * FROM t HAVING
+            // count(*) > 5): with no GROUP BY the star routes nothing to the group, so the visible
+            // set is empty and there is nothing well-defined to project. PostgreSQL and
+            // default-mode MySQL error here (no engine returns the base rows).
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"column must appear in a GROUP BY clause or be used in "
+                                                    "an aggregate function",
+                                                    resource_});
+            return nullptr;
+        }
+        if (hidden_having_count > 0) {
+            // ONLY the visible group-output columns — the first visible_group_count
+            // expressions. This sits ABOVE the sort, which is why the group cannot strip them
+            // itself: an ORDER BY key hidden in the group output has to survive that far.
+            // internal_aggregate_count stays 0 on purpose (setting it >0 is a BLOCKER: the
             // validator would drop the __having_* column the HAVING match resolves against).
-            auto strip_select = logical_plan::make_node_select(resource_,
-                                                               core::dbname_t{agg->dbname()},
-                                                               core::relname_t{agg->relname()});
+            select_node->expressions().clear();
             for (size_t i = 0; i < visible_group_count; ++i) {
                 const auto& ge = group->expressions()[i];
-                // Visible group-output columns are GROUP keys (scalar group_field) or visible
-                // aggregates; key() lives on the concrete subclass, not expression_i.
-                auto col_key = ge->group() == expression_group::aggregate
-                                   ? static_cast<const aggregate_expression_t*>(ge.get())->key()
-                                   : static_cast<const scalar_expression_t*>(ge.get())->key();
-                strip_select->append_expression(
-                    make_scalar_expression(resource_, scalar_type::get_field, std::move(col_key)));
+                // A group_field is a reduction key, not an output column — the target list names
+                // the key separately (as a get_field), and that entry is what projects it.
+                if (ge->group() == expression_group::scalar &&
+                    static_cast<const scalar_expression_t*>(ge.get())->type() == scalar_type::group_field) {
+                    continue;
+                }
+                select_node->append_expression(make_scalar_expression(resource_, scalar_type::get_field, ge->key()));
             }
-            agg->append_child(strip_select);
+        }
+        // TODO: do we even need it anymore?
+        if (has_non_star || hidden_having_count > 0) {
+            agg->append_child(select_node);
         }
 
         // limit / offset

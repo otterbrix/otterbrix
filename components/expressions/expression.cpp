@@ -23,7 +23,8 @@ namespace components::expressions {
 
     void expression_i::set_result_alias(const std::string& alias) { result_alias_ = alias; }
 
-    expression_i::expression_i(expression_group group)
-        : group_(group) {}
+    expression_i::expression_i(expression_group group, key_t key)
+        : group_(group)
+        , key_(std::move(key)) {}
 
 } // namespace components::expressions

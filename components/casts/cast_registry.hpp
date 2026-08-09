@@ -7,6 +7,7 @@
 
 #include <memory_resource>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -179,6 +180,15 @@ namespace components::casts {
         [[nodiscard]] std::optional<common_type> find_best_common_type(const types::complex_logical_type& left,
                                                                        const types::complex_logical_type& right) const;
 
+        struct common_type_n {
+            types::complex_logical_type type;
+            std::pmr::vector<cast_t> casts;
+        };
+
+        // The one type every input reaches implicitly
+        [[nodiscard]] std::optional<common_type_n>
+        find_best_common_type(std::span<const types::complex_logical_type> inputs) const;
+
     private:
         [[nodiscard]] std::optional<cast_info> derive(const types::complex_logical_type& source,
                                                       const types::complex_logical_type& target) const;
@@ -195,6 +205,14 @@ namespace components::casts {
 
         [[nodiscard]] std::optional<common_type> common_decimal_type(const types::complex_logical_type& left,
                                                                      const types::complex_logical_type& right) const;
+
+        // The common type of a parameterized family (decimal, list/array)
+        [[nodiscard]] std::optional<types::complex_logical_type>
+        constructed_common_candidate(std::span<const types::complex_logical_type> inputs) const;
+
+        // The N-input counterpart of common_via
+        [[nodiscard]] std::optional<common_type_n> common_n_via(std::span<const types::complex_logical_type> inputs,
+                                                                const types::complex_logical_type& candidate) const;
 
         [[nodiscard]] std::optional<common_type> common_container_type(const types::complex_logical_type& left,
                                                                        const types::complex_logical_type& right) const;

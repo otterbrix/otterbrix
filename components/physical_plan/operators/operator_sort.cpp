@@ -1,7 +1,5 @@
 #include "operator_sort.hpp"
 
-#include "arithmetic_eval.hpp"
-
 #include <algorithm>
 #include <components/vector/vector_operations.hpp>
 #include <numeric>
@@ -18,6 +16,28 @@ namespace components::operators {
     void operator_sort_t::add(const std::pmr::vector<size_t>& col_path, order order_) { sorter_.add(col_path, order_); }
 
     void operator_sort_t::add_computed(computed_sort_key_t&& key) { computed_keys_.push_back(std::move(key)); }
+
+    core::error_t operator_sort_t::build_computed_graph(pipeline::context_t* pipeline_context,
+                                                        const vector::data_chunk_t& probe) {
+        if (computed_graph_) {
+            return core::error_t::no_error();
+        }
+        std::pmr::vector<const expressions::expression_i*> key_expressions(resource_);
+        key_expressions.reserve(computed_keys_.size());
+        for (const auto& key : computed_keys_) {
+            key_expressions.push_back(key.expression.get());
+        }
+
+        auto built = expressions::build_graph(resource_,
+                                              pipeline_context->parameters.parameters,
+                                              key_expressions,
+                                              probe.types());
+        if (built.has_error()) {
+            return built.error();
+        }
+        computed_graph_ = std::move(built.value());
+        return core::error_t::no_error();
+    }
 
     core::error_t
     operator_sort_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
@@ -55,22 +75,30 @@ namespace components::operators {
                 sorted_indices.emplace_back();
                 continue;
             }
-            for (const auto& ck : computed_keys_) {
-                auto result_vec = evaluate_arithmetic(resource_,
-                                                      ck.op,
-                                                      ck.operands,
-                                                      chunk,
-                                                      pipeline_context->parameters,
-                                                      pipeline_context->session_tz);
-                if (result_vec.has_error()) {
-                    return result_vec.error();
+            if (!computed_keys_.empty()) {
+                if (auto error = build_computed_graph(pipeline_context, chunk); error.contains_error()) {
+                    return error;
                 }
-                if (!computed_added) {
-                    sorter_.add(chunk.data.size(), ck.order_);
+                auto computed = expressions::run_graph(computed_graph_.get(),
+                                                       pipeline_context->parameters.parameters,
+                                                       chunk,
+                                                       pipeline_context->execution_context);
+                if (computed.has_error()) {
+                    return computed.error();
                 }
-                chunk.data.emplace_back(std::move(result_vec.value()));
+                // The graph's columns reference its slots, which the next chunk overwrites, and
+                // every chunk stays live until the merge below — so each key is copied out.
+                for (size_t key = 0; key < computed_keys_.size(); key++) {
+                    const vector::vector_t& source_vec = computed.value().data[key];
+                    vector::vector_t vec(resource_, source_vec.type(), chunk.size());
+                    vector::vector_ops::copy(source_vec, vec, chunk.size(), 0, 0);
+                    if (!computed_added) {
+                        sorter_.add(chunk.data.size(), computed_keys_[key].order_);
+                    }
+                    chunk.data.emplace_back(std::move(vec));
+                }
+                computed_added = true;
             }
-            computed_added = true;
 
             std::vector<uint32_t> idx(chunk.size());
             std::iota(idx.begin(), idx.end(), uint32_t{0});

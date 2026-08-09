@@ -12,6 +12,7 @@
 #include "collection.hpp"
 #include "row_version_manager.hpp"
 #include "struct_column_data.hpp"
+#include <components/expressions/execution_graph_builder.hpp>
 #include <components/vector/vector_operations.hpp>
 
 namespace components::table {
@@ -212,7 +213,6 @@ namespace components::table {
     public:
         struct layout_t {
             std::vector<size_t> referenced;
-            std::pmr::vector<types::complex_logical_type> chunk_types;
             vector::data_chunk_t row;
         };
 
@@ -236,51 +236,43 @@ namespace components::table {
     // addresses an element, not a STRUCT sub-column. Materialize the row's list
     // value and compare the addressed (0-based) element against the filter. A
     // NULL list, an out-of-range index, or a NULL element does not match.
-    static bool check_array_element_predicate(column_data_t& column,
-                                              int64_t row_id,
-                                              uint64_t element_index,
-                                              const table_filter_t* filter,
-                                              core::error_t& error) {
+    static filter_decision_t check_array_element_predicate(column_data_t& column,
+                                                           int64_t row_id,
+                                                           uint64_t element_index,
+                                                           const table_filter_t* filter,
+                                                           core::error_t& error) {
         column_fetch_state fetch_state;
         vector::vector_t result(column.resource(), column.type(), 1);
         column.fetch_row(fetch_state, row_id, result, 0);
         if (fetch_state.fetch_error.contains_error()) {
             error = fetch_state.fetch_error;
-            return false;
+            return filter_decision_t::fails;
         }
         if (!result.validity().row_is_valid(0)) {
-            return false;
+            return filter_decision_t::unknown;
         }
         auto list_value = result.value(0);
         const auto& elements = list_value.children();
         if (element_index >= elements.size()) {
-            return false;
+            return filter_decision_t::unknown;
         }
         const auto& element_value = elements[element_index];
         if (element_value.is_null()) {
-            return false;
+            return filter_decision_t::unknown;
         }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(element_value);
+            return decision_of(set->contains(element_value));
         }
         if (filter->filter_type == expressions::compare_type::regex) {
-            return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>());
+            return decision_of(filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>()));
         }
-        return filter->cast<constant_filter_t>().compare(element_value);
+        return decision_of(filter->cast<constant_filter_t>().compare(element_value));
     }
 
-    bool row_group_t::check_expression_predicate(int64_t row_id,
-                                                 const expression_filter_t& filter,
-                                                 expression_filter_layout_cache_t& expression_layouts,
-                                                 core::error_t& error) {
-        if (!filter.evaluator) {
-            // Reached the per-row check without an agent-attached evaluator (see
-            // expression_evaluator_t). Fail cleanly with an error instead of dereferencing null.
-            error = core::error_t{core::error_code_t::physical_plan_error,
-                                  std::pmr::string{"expression_filter_t reached check_predicate without an evaluator",
-                                                   collection_->resource()}};
-            return false;
-        }
+    filter_decision_t row_group_t::check_expression_predicate(int64_t row_id,
+                                                              const expression_filter_t& filter,
+                                                              expression_filter_layout_cache_t& expression_layouts,
+                                                              core::error_t& error) {
         auto* res = collection_->resource();
         auto* layout = expression_layouts.find(&filter);
         if (!layout) {
@@ -299,51 +291,49 @@ namespace components::table {
                     referenced.push_back(top);
                 }
             }
-            // Build a chunk `width` columns wide so data[top] exists for every referenced column, but
-            // (via the projected ctor) allocate real buffers ONLY for the referenced columns — the
-            // padding columns keep index positions stable and are never read. A placeholder type is used
-            // for padding so unreferenced columns are not force-loaded just to learn their type.
-            std::pmr::vector<types::complex_logical_type> chunk_types{res};
-            chunk_types.reserve(width);
-            for (size_t i = 0; i < width; i++) {
-                if (std::find(referenced.begin(), referenced.end(), i) != referenced.end()) {
-                    chunk_types.push_back(get_column(i).type());
-                } else {
-                    chunk_types.emplace_back(types::logical_type::BOOLEAN);
-                }
-            }
-            vector::data_chunk_t row{res, chunk_types, referenced, 1};
-            layout = &expression_layouts.insert(&filter,
-                                                {std::move(referenced), std::move(chunk_types), std::move(row)});
+            // The chunk is `width` columns wide so data[top] exists for every referenced column,
+            // but (via the projected ctor) real buffers are allocated ONLY for the referenced ones —
+            // the padding columns keep index positions stable and are never read. The layout comes
+            // from the FILTER: it is the same list the graph's slots were bound against
+            // operator-side, so the two cannot drift.
+            vector::data_chunk_t row{res, filter.chunk_types, referenced, 1};
+            layout = &expression_layouts.insert(&filter, {std::move(referenced), std::move(row)});
         }
         // fetch_row only flips validity valid->invalid (a reused slot would keep a previous row's
         // NULL sticky) and a LIST fetch appends to the child vector, so the referenced column
         // vectors are re-created fresh per row; the chunk skeleton, padding columns and layout
         // are reused across the scan.
         for (size_t top : layout->referenced) {
-            layout->row.data[top] = vector::vector_t{res, layout->chunk_types[top], 1};
+            layout->row.data[top] = vector::vector_t{res, filter.chunk_types[top], 1};
         }
         column_fetch_state fetch_state;
         for (size_t top : layout->referenced) {
             get_column(top).fetch_row(fetch_state, row_id, layout->row.data[top], 0);
             if (fetch_state.fetch_error.contains_error()) {
                 error = fetch_state.fetch_error;
-                return false;
+                return filter_decision_t::fails;
             }
         }
         layout->row.set_cardinality(1);
-        auto checked = filter.evaluator->evaluate(layout->row, 0);
-        if (checked.has_error()) {
-            error = checked.error();
-            return false;
+        if (!filter.graph) {
+            return decision_of(filter.condition == expressions::condition_kind::always);
         }
-        return checked.value();
+        auto decided = expressions::run_graph(filter.graph.get(), filter.parameters, layout->row, filter.context);
+        if (decided.has_error()) {
+            error = decided.error();
+            return filter_decision_t::fails;
+        }
+        const auto& decisions = decided.value().data.front();
+        if (decisions.is_null(0)) {
+            return filter_decision_t::unknown;
+        }
+        return decision_of(decisions.get_value<bool>(0));
     }
 
-    bool row_group_t::check_predicate(int64_t row_id,
-                                      const table_filter_t* filter,
-                                      expression_filter_layout_cache_t& expression_layouts,
-                                      core::error_t& error) {
+    filter_decision_t row_group_t::check_predicate(int64_t row_id,
+                                                   const table_filter_t* filter,
+                                                   expression_filter_layout_cache_t& expression_layouts,
+                                                   core::error_t& error) {
         // An expression_filter_t (WHERE f(col) OP const) aliases a constant comparison filter_type
         // but has a different layout and its own multi-column evaluation, so intercept it BEFORE the
         // filter_type switch (which would mis-cast it to constant_filter_t in the default arm).
@@ -351,41 +341,51 @@ namespace components::table {
             return check_expression_predicate(row_id, *expr_filter, expression_layouts, error);
         }
         switch (filter->filter_type) {
+            // TODO: that will be handled by tri-bool from main branch
             case expressions::compare_type::union_or: {
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
+                bool saw_unknown = false;
                 for (auto& child_filter : conjunction_or.child_filters) {
-                    if (check_predicate(row_id, child_filter.get(), expression_layouts, error)) {
-                        return true;
-                    }
+                    auto decision = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_decision_t::fails;
                     }
+                    if (decision == filter_decision_t::passes) {
+                        return filter_decision_t::passes;
+                    }
+                    saw_unknown = saw_unknown || decision == filter_decision_t::unknown;
                 }
-                return false;
+                return saw_unknown ? filter_decision_t::unknown : filter_decision_t::fails;
             }
             case expressions::compare_type::union_and: {
                 auto& conjunction_and = filter->cast<conjunction_and_filter_t>();
+                bool saw_unknown = false;
                 for (auto& child_filter : conjunction_and.child_filters) {
-                    if (!check_predicate(row_id, child_filter.get(), expression_layouts, error)) {
-                        return false;
-                    }
+                    auto decision = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_decision_t::fails;
                     }
+                    if (decision == filter_decision_t::fails) {
+                        return filter_decision_t::fails;
+                    }
+                    saw_unknown = saw_unknown || decision == filter_decision_t::unknown;
                 }
-                return true;
+                return saw_unknown ? filter_decision_t::unknown : filter_decision_t::passes;
             }
             case expressions::compare_type::union_not: {
                 auto& conjunction_not = filter->cast<conjunction_not_filter_t>();
+                bool saw_unknown = false;
                 for (auto& child_filter : conjunction_not.child_filters) {
-                    if (check_predicate(row_id, child_filter.get(), expression_layouts, error)) {
-                        return false;
-                    }
+                    auto decision = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_decision_t::fails;
                     }
+                    if (decision == filter_decision_t::fails) {
+                        return filter_decision_t::passes;
+                    }
+                    saw_unknown = saw_unknown || decision == filter_decision_t::unknown;
                 }
-                return true;
+                return saw_unknown ? filter_decision_t::unknown : filter_decision_t::fails;
             }
             case expressions::compare_type::invalid: {
                 assert(false && "invalid type for filter selection");
@@ -400,7 +400,7 @@ namespace components::table {
                         static_cast<struct_column_data_t*>(column)->sub_columns[null_filter.table_indices[i]].get();
                 }
                 bool is_valid = column->check_validity(row_id);
-                return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
+                return decision_of(filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid);
             }
             default: {
                 // Column-vs-column (`a.x OP a.y`): fetch both column values for this row and compare. A NULL
@@ -422,15 +422,15 @@ namespace components::table {
                     lcol->fetch_row(lstate, row_id, lvec, 0);
                     if (lstate.fetch_error.contains_error()) {
                         error = lstate.fetch_error;
-                        return false;
+                        return filter_decision_t::fails;
                     }
                     rcol->fetch_row(rstate, row_id, rvec, 0);
                     if (rstate.fetch_error.contains_error()) {
                         error = rstate.fetch_error;
-                        return false;
+                        return filter_decision_t::fails;
                     }
                     if (!lvec.validity().row_is_valid(0) || !rvec.validity().row_is_valid(0)) {
-                        return false;
+                        return filter_decision_t::unknown;
                     }
                     auto lval = lvec.value(0);
                     auto rval = rvec.value(0);
@@ -441,9 +441,9 @@ namespace components::table {
                     auto matched = compare_values_promoting(lval, rval, cc->filter_type, cc->session_tz);
                     if (matched.has_error()) {
                         error = matched.error();
-                        return false;
+                        return filter_decision_t::fails;
                     }
-                    return matched.value();
+                    return decision_of(matched.value());
                 }
                 // Works for both constant_filter_t and set_membership_filter_t.
                 const auto& indices = table_filter_table_indices(filter);
@@ -455,7 +455,10 @@ namespace components::table {
                     }
                     column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
-                return column->check_predicate(row_id, filter, error);
+                if (!column->check_validity(row_id)) {
+                    return filter_decision_t::unknown;
+                }
+                return decision_of(column->check_predicate(row_id, filter, error));
             }
         }
     }
@@ -508,7 +511,7 @@ namespace components::table {
             result_count += check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY),
                                             filter,
                                             expression_layouts,
-                                            error);
+                                            error) == filter_decision_t::passes;
             if (error.contains_error()) {
                 // OOM during predicate evaluation: stop; caller copies to scan_error.
                 return;

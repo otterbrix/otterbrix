@@ -214,7 +214,7 @@ namespace components::casts::kernels {
     template<typename Source>
     core::error_t number_to_string_cast(const vector::vector_t& source,
                                         vector::vector_t* result,
-                                        const cast_context&,
+                                        const graph_execution_context&,
                                         uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -239,7 +239,7 @@ namespace components::casts::kernels {
     template<typename Target>
     core::error_t string_to_number_cast(const vector::vector_t& source,
                                         vector::vector_t* result,
-                                        const cast_context&,
+                                        const graph_execution_context&,
                                         uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -259,7 +259,7 @@ namespace components::casts::kernels {
     template<typename Target>
     void string_to_number_try_cast(const vector::vector_t& source,
                                    vector::vector_t* result,
-                                   const cast_context&,
+                                   const graph_execution_context&,
                                    uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -277,7 +277,7 @@ namespace components::casts::kernels {
 
     inline core::error_t decimal_to_string_cast(const vector::vector_t& source,
                                                 vector::vector_t* result,
-                                                const cast_context&,
+                                                const graph_execution_context&,
                                                 uint64_t count) noexcept {
         types::physical_type physical = source.type().to_physical_type();
         const auto* extension = source.type().extension_as<types::decimal_logical_type_extension>();
@@ -304,7 +304,7 @@ namespace components::casts::kernels {
 
     inline core::error_t string_to_decimal_cast(const vector::vector_t& source,
                                                 vector::vector_t* result,
-                                                const cast_context&,
+                                                const graph_execution_context&,
                                                 uint64_t count) noexcept {
         types::physical_type physical = result->type().to_physical_type();
         const auto* extension = result->type().extension_as<types::decimal_logical_type_extension>();
@@ -341,7 +341,7 @@ namespace components::casts::kernels {
 
     inline void string_to_decimal_try_cast(const vector::vector_t& source,
                                            vector::vector_t* result,
-                                           const cast_context&,
+                                           const graph_execution_context&,
                                            uint64_t count) noexcept {
         types::physical_type physical = result->type().to_physical_type();
         const auto* extension = result->type().extension_as<types::decimal_logical_type_extension>();
@@ -378,7 +378,7 @@ namespace components::casts::kernels {
     template<typename From>
     core::error_t datetime_to_string_cast(const vector::vector_t& source,
                                           vector::vector_t* result,
-                                          const cast_context&,
+                                          const graph_execution_context&,
                                           uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -394,7 +394,7 @@ namespace components::casts::kernels {
     template<typename To>
     core::error_t string_to_datetime_cast(const vector::vector_t& source,
                                           vector::vector_t* result,
-                                          const cast_context&,
+                                          const graph_execution_context&,
                                           uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -414,7 +414,7 @@ namespace components::casts::kernels {
     template<typename To>
     void string_to_datetime_try_cast(const vector::vector_t& source,
                                      vector::vector_t* result,
-                                     const cast_context&,
+                                     const graph_execution_context&,
                                      uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -432,7 +432,7 @@ namespace components::casts::kernels {
 
     inline core::error_t bool_to_string_cast(const vector::vector_t& source,
                                              vector::vector_t* result,
-                                             const cast_context&,
+                                             const graph_execution_context&,
                                              uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -446,7 +446,7 @@ namespace components::casts::kernels {
 
     inline core::error_t string_to_bool_cast(const vector::vector_t& source,
                                              vector::vector_t* result,
-                                             const cast_context&,
+                                             const graph_execution_context&,
                                              uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -465,7 +465,7 @@ namespace components::casts::kernels {
 
     inline void string_to_bool_try_cast(const vector::vector_t& source,
                                         vector::vector_t* result,
-                                        const cast_context&,
+                                        const graph_execution_context&,
                                         uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {

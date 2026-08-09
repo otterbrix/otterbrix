@@ -35,7 +35,7 @@ std::unique_ptr<row_function> make_double_val_func(std::pmr::memory_resource* re
     function_doc doc{"double_val", "multiplies by 2", {"arg"}, false};
     auto fn = std::make_unique<row_function>("double_val", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::row,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), double_val_exec};
     fn->add_kernel(resource, std::move(k));
@@ -54,7 +54,7 @@ std::unique_ptr<row_function> make_gt_threshold_func(std::pmr::memory_resource* 
     auto fn = std::make_unique<row_function>("gt_threshold", arity::binary(), doc, 1);
     kernel_signature_t sig(
         function_type_t::row,
-        {exact_type_matcher(types::logical_type::BIGINT), exact_type_matcher(types::logical_type::BIGINT)},
+        {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), gt_threshold_exec};
     fn->add_kernel(resource, std::move(k));
@@ -74,7 +74,7 @@ std::unique_ptr<vector_function> make_vec_negate_func(std::pmr::memory_resource*
     function_doc doc{"vec_negate", "negates column", {"arg"}, false};
     auto fn = std::make_unique<vector_function>("vec_negate", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::vector,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     vector_kernel k{std::move(sig), vec_negate_exec};
     fn->add_kernel(resource, std::move(k));
@@ -112,7 +112,7 @@ std::unique_ptr<aggregate_function> make_sum_squares_func(std::pmr::memory_resou
     function_doc doc{"sum_squares", "sum of squares", {"arg"}, false};
     auto fn = std::make_unique<aggregate_function>("sum_squares", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::aggregate,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), sum_squares_init, sum_squares_consume, sum_squares_merge, sum_squares_finalize};
     fn->add_kernel(resource, std::move(k));
@@ -153,7 +153,7 @@ std::unique_ptr<aggregate_function> make_call_counter_func(std::pmr::memory_reso
                      false};
     auto fn = std::make_unique<aggregate_function>("call_counter", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::aggregate,
-                           {always_true_type_matcher()},
+                           {parameter_type::variable(0)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     aggregate_kernel k{std::move(sig),
                        call_counter_init,

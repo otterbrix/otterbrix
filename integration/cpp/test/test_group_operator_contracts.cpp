@@ -2,7 +2,8 @@
 
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
-#include <components/physical_plan/operators/aggregate/operator_func.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_empty.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
@@ -120,6 +121,14 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     key.full_path.push_back(0); // struct column
     key.full_path.push_back(0); // field "f"
     group->add_key(std::move(key));
+    // A grouping key is not an output on its own — a group emits its TARGET LIST — so the column
+    // under test has to be named, exactly as create_plan_group does for `SELECT s.f ... GROUP BY s.f`.
+    expressions::key_t output_key{&resource, std::string("kf")};
+    std::pmr::vector<size_t> output_path{&resource};
+    output_path.push_back(0); // struct column
+    output_path.push_back(0); // field "f"
+    output_key.set_path(std::move(output_path));
+    group->add_output(expressions::make_scalar_expression(&resource, expressions::scalar_type::get_field, output_key));
     group->set_children(make_child(&resource, std::move(chunk)));
 
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
@@ -149,21 +158,27 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
 
     auto* registry = compute::function_registry_t::get_default();
     REQUIRE(registry != nullptr);
-    compute::function* avg_fn = nullptr;
+    compute::function_uid avg_uid = compute::invalid_function_uid;
     for (const auto& [name, uid] : registry->get_functions()) {
         if (name == "avg") {
-            avg_fn = registry->get_function(uid);
+            avg_uid = uid;
             break;
         }
     }
-    REQUIRE(avg_fn != nullptr);
+    REQUIRE(avg_uid != compute::invalid_function_uid);
 
     boost::intrusive_ptr<operators::operator_group_t> group(new operators::operator_group_t(&resource, log_t{}));
-    std::pmr::vector<expressions::param_storage> args(&resource);
-    args.emplace_back(core::parameter_id_t(1)); // AVG($1), $1 bound to a string below
-    group->add_value(std::pmr::string("a", &resource),
-                     operators::aggregate::operator_aggregate_ptr(
-                         new operators::aggregate::operator_func_t(&resource, log_t{}, avg_fn, std::move(args))));
+    // The reduce IS an aggregate node in the group's graph, so the OUTPUT carries the aggregate
+    // expression; add_value only records that a reduction exists. Both stamps the builder demands
+    // of validation (uid + result type) are applied here by hand.
+    const components::types::complex_logical_type double_type{components::types::logical_type::DOUBLE};
+    expressions::key_t agg_key{&resource, "a"};
+    auto aggregate = expressions::make_aggregate_expression(&resource, "avg", agg_key);
+    aggregate->add_function_uid(avg_uid);
+    aggregate->set_result_type(double_type);
+    aggregate->append_param(core::parameter_id_t(1)); // AVG($1), $1 bound to a string below
+    group->add_value(std::pmr::string("a", &resource), double_type);
+    group->add_output(expressions::expression_ptr(aggregate));
     // No children on purpose: left output is absent.
 
     logical_plan::storage_parameters params{&resource};

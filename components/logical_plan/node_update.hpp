@@ -5,7 +5,8 @@
 #include "node_match.hpp"
 
 #include <components/catalog/fk_info.hpp>
-#include <components/expressions/update_expression.hpp>
+#include <components/expressions/expression.hpp>
+#include <components/expressions/key.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <utility>
@@ -17,10 +18,11 @@ namespace components::logical_plan {
         explicit node_update_t(std::pmr::memory_resource* resource,
                                const node_match_ptr& match,
                                const node_limit_ptr& limit,
-                               const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                               const std::pmr::vector<expressions::expression_ptr>& updates,
                                bool upsert = false);
 
-        const std::pmr::vector<expressions::update_expr_ptr>& updates() const;
+        const std::pmr::vector<expressions::expression_ptr>& updates() const;
+        std::pmr::vector<expressions::expression_ptr>& updates();
         bool upsert() const;
 
         std::pmr::vector<expressions::expression_ptr>& returning();
@@ -51,7 +53,7 @@ namespace components::logical_plan {
         }
 
     private:
-        std::pmr::vector<expressions::update_expr_ptr> update_expressions_;
+        std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         bool upsert_;
 
@@ -69,7 +71,7 @@ namespace components::logical_plan {
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
-                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     const std::pmr::vector<expressions::expression_ptr>& updates,
                                      bool upsert = false);
 
 } // namespace components::logical_plan

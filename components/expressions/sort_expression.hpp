@@ -16,12 +16,9 @@ namespace components::expressions {
         sort_expression_t(const key_t& key, sort_order order);
 
         sort_order order() const;
-        key_t& key();
-        const key_t& key() const;
 
     private:
         sort_order order_;
-        key_t key_;
 
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;

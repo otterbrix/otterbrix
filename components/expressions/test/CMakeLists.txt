@@ -5,6 +5,7 @@ set(${PROJECT_NAME}_SOURCES
         test_aggregate_expression.cpp
         test_scalar_expression.cpp
         test_sort_expression.cpp
+        test_execution_graph_builder.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

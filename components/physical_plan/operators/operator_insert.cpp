@@ -47,7 +47,7 @@ namespace components::operators {
                 auto error = binding.cast(casts::cast_kind::cast,
                                           input.data[i],
                                           &casted,
-                                          casts::cast_context{ctx->session_tz},
+                                          ctx->execution_context,
                                           input.size());
                 if (error.contains_error()) {
                     return error;
@@ -69,7 +69,10 @@ namespace components::operators {
         // With threshold==0 the executor makes a single is_final==true call, so
         // this collapses to one flush + finalize.
         const bool is_final = ctx->dml_flush_is_final;
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+        components::execution_context_t exec_ctx{ctx->session,
+                                                 ctx->txn,
+                                                 ctx->execution_context.timezone_offset,
+                                                 table_oid_};
 
         // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first
         // append_pg_catalog_row instead of the user append-first path. The row is
@@ -198,8 +201,12 @@ namespace components::operators {
                         if (seg.size() == 0) {
                             continue;
                         }
-                        auto proj =
-                            evaluate_projection(resource_, returning_, &seg, ctx->parameters, ctx->session_tz);
+                        auto proj = evaluate_projection(resource_,
+                                                        returning_,
+                                                        &seg,
+                                                        ctx->parameters,
+                                                        ctx->execution_context,
+                                                        &returning_graph_);
                         if (proj.has_error()) {
                             // The rows ARE already appended (WAL-first): carry the range
                             // with the error so record_flush registers it and the failed-

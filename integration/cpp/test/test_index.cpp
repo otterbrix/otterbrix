@@ -449,9 +449,12 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1}));
-            components::expressions::update_expr_ptr update_expr = new components::expressions::update_expr_set_t(
+            // SET count = $2 — the value expression's own key names the target column.
+            auto update_expr = components::expressions::make_scalar_expression(
+                dispatcher->resource(),
+                components::expressions::scalar_type::constant,
                 components::expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->left() = new components::expressions::update_expr_get_const_value_t(id_par{2});
+            update_expr->append_param(id_par{2});
             auto upd = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 database_name,

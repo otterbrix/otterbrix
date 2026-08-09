@@ -243,6 +243,24 @@ namespace components::types {
         }
     }
 
+    constexpr bool is_integer(logical_type type) {
+        switch (type) {
+            case logical_type::TINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::BIGINT:
+            case logical_type::HUGEINT:
+            case logical_type::UTINYINT:
+            case logical_type::USMALLINT:
+            case logical_type::UINTEGER:
+            case logical_type::UBIGINT:
+            case logical_type::UHUGEINT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     constexpr bool is_duration(logical_type type) {
         switch (type) {
             case logical_type::DATE:

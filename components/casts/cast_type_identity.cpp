@@ -65,7 +65,6 @@ namespace components::casts {
                 }
                 return true;
             }
-            case ENUM:
             case UNKNOWN:
             case USER:
                 return a.type_name() == b.type_name();
@@ -113,8 +112,6 @@ namespace components::casts {
                 }
                 break;
             }
-            case ENUM:
-            case UNKNOWN:
             case USER:
                 boost::hash_combine(seed, std::hash<std::string_view>{}(std::string_view{type.type_name()}));
                 break;

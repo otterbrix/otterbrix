@@ -6,84 +6,82 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_select.hpp>
 
+#include <algorithm>
+#include <limits>
+
 namespace components::planner::optimizer {
 
     namespace {
         namespace lp = components::logical_plan;
         namespace ce = components::expressions;
 
-        // Number of leading GROUP BY key columns of `group`, and 0 when the group is
-        // not a clean all-group_field grouping. Aggregate expressions occupy no slot in
-        // the group KEY schema (the frame the projection resolves get_field columns
-        // against), so they are skipped. A get_field / arithmetic scalar group entry
-        // would break the "keys are the contiguous {0..G-1} output ordinals" invariant,
-        // so its presence forces a conservative bail (return 0 => caller keeps DISTINCT).
-        // G==0 (a scalar aggregate with no explicit GROUP BY keys) also returns 0: such
-        // a DISTINCT is left untouched, matching "never touch a DISTINCT with no GROUP BY".
-        size_t clean_group_key_count(const lp::node_group_t* group) {
-            size_t keys = 0;
+        constexpr size_t not_a_column = std::numeric_limits<size_t>::max();
+
+        // The resolved key a scalar entry reads, or nullptr when it reads no plain column.
+        // The key lives in the first param when present (get_field(name, key)), else in the
+        // expression key — mirroring validate_schema's own read.
+        const ce::key_t* column_of(const ce::scalar_expression_t* scalar) {
+            if (scalar->params().empty()) {
+                return &scalar->key();
+            }
+            if (ce::is_key(scalar->params().front())) {
+                return &ce::as_key(scalar->params().front());
+            }
+            return nullptr; // parameter_id / nested expression — not a base column
+        }
+
+        // A group's expression list holds BOTH its reductions and its target list: a key is
+        // grouped ON as a group_field and, where the target list names it, emitted AGAIN as a
+        // get_field. So the two are read out separately.
+        //   `keys`    — one input-column ordinal per grouping key.
+        //   `outputs` — one entry per emitted column IN OUTPUT ORDER (which is the target list's
+        //               order, NOT keys-then-aggregates): the input ordinal it names, or
+        //               not_a_column for an aggregate / computed column that names none.
+        // False means the grouping is not plain columns (a computed or unresolved key), and the
+        // caller keeps the DISTINCT rather than reasoning about a frame it cannot address.
+        bool read_group_shape(const lp::node_group_t* group,
+                              std::pmr::vector<size_t>& keys,
+                              std::pmr::vector<size_t>& outputs) {
+            // Aggregates the validator appended for a HAVING sit at the TAIL and are reduced but
+            // never emitted, so they are not part of the projection (create_plan_group draws the
+            // same line) — counting one as an emitted column could credit it with naming a key.
+            const size_t emitted_end = group->expressions().size() - group->internal_aggregate_count;
+            size_t index = 0;
             for (const auto& expr : group->expressions()) {
-                if (expr->group() == ce::expression_group::aggregate) {
-                    continue; // no key-schema slot
-                }
-                if (expr->group() != ce::expression_group::scalar) {
-                    return 0; // unexpected group entry — bail
-                }
-                const auto* scalar = static_cast<const ce::scalar_expression_t*>(expr.get());
-                if (scalar->type() != ce::scalar_type::group_field) {
-                    return 0; // get_field / arithmetic key — output frame not clean, bail
-                }
-                ++keys;
-            }
-            return keys;
-        }
-
-        // Collect the group-output column ordinals a projection references through plain
-        // get_field columns with a single-element resolved path. validate_schema resolved
-        // these keys against the group-output frame (group KEY columns first, then the
-        // aggregate columns), so a projected group key resolves to exactly its group-key
-        // ordinal. Non-column / multi-path / unresolved projection entries are skipped:
-        // they cannot cover a group key, so skipping them only makes the rule MORE
-        // conservative (never falsely clears).
-        void collect_projected_positions(const lp::node_t* select, std::pmr::vector<size_t>& out) {
-            for (const auto& expr : select->expressions()) {
-                if (expr->group() != ce::expression_group::scalar) {
-                    continue;
-                }
-                const auto* scalar = static_cast<const ce::scalar_expression_t*>(expr.get());
-                if (scalar->type() != ce::scalar_type::get_field) {
-                    continue;
-                }
-                // The resolved key lives in the first param when present (get_field(name, key)),
-                // else in the expression key — mirroring validate_schema's own read.
-                const ce::key_t* key = nullptr;
-                if (scalar->params().empty()) {
-                    key = &scalar->key();
-                } else if (ce::is_key(scalar->params().front())) {
-                    key = &ce::as_key(scalar->params().front());
-                } else {
-                    continue; // parameter_id / nested expression — not a base column
-                }
-                if (key->path().size() == 1) {
-                    out.push_back(key->path().front());
-                }
-            }
-        }
-
-        bool covers_all_keys(size_t key_count, const std::pmr::vector<size_t>& positions) {
-            for (size_t k = 0; k < key_count; ++k) {
-                bool found = false;
-                for (size_t pos : positions) {
-                    if (pos == k) {
-                        found = true;
-                        break;
+                const bool emitted = index++ < emitted_end;
+                const bool is_scalar = expr->group() == ce::expression_group::scalar;
+                const auto* scalar =
+                    is_scalar ? static_cast<const ce::scalar_expression_t*>(expr.get()) : nullptr;
+                if (scalar != nullptr && scalar->type() == ce::scalar_type::group_field) {
+                    if (scalar->key().path().size() != 1) {
+                        return false; // nested / computed grouping key
                     }
+                    keys.push_back(scalar->key().path().front());
+                    continue;
                 }
-                if (!found) {
-                    return false;
+                if (!emitted) {
+                    continue; // a HAVING helper — reduced, never projected
+                }
+                // Everything else is an emitted column.
+                const ce::key_t* column = nullptr;
+                if (scalar != nullptr && scalar->type() == ce::scalar_type::get_field) {
+                    column = column_of(scalar);
+                }
+                outputs.push_back(column != nullptr && column->path().size() == 1 ? column->path().front()
+                                                                                 : not_a_column);
+            }
+            return !keys.empty();
+        }
+
+        // The output position that emits grouping key `key_column`, or not_a_column when the
+        // target list never names it.
+        size_t output_position_of(size_t key_column, const std::pmr::vector<size_t>& outputs) {
+            for (size_t position = 0; position < outputs.size(); ++position) {
+                if (outputs[position] == key_column) {
+                    return position;
                 }
             }
-            return true;
+            return not_a_column;
         }
 
         // Clear a redundant DISTINCT on `node` when it is a DISTINCT aggregate whose
@@ -98,42 +96,52 @@ namespace components::planner::optimizer {
             }
 
             const lp::node_group_t* group = nullptr;
-            const lp::node_t* select = nullptr;
             for (const auto& child : node->children()) {
                 if (child->type() == lp::node_type::group_t) {
                     group = static_cast<const lp::node_group_t*>(child.get());
-                } else if (child->type() == lp::node_type::select_t) {
-                    select = child.get();
                 }
             }
             if (group == nullptr) {
                 return; // no GROUP BY -> never touch DISTINCT
             }
 
-            const size_t key_count = clean_group_key_count(group);
-            if (key_count == 0) {
+            std::pmr::vector<size_t> keys{node->resource()};
+            std::pmr::vector<size_t> outputs{node->resource()};
+            if (!read_group_shape(group, keys, outputs)) {
                 return; // scalar aggregate (implicit group) or unclean group shape
             }
 
-            std::pmr::vector<size_t> positions{node->resource()};
-            if (aggregate->distinct_on_keys().empty()) {
-                // Plain DISTINCT: the projection must cover every group key.
-                if (select == nullptr) {
-                    return;
-                }
-                collect_projected_positions(select, positions);
-            } else {
-                // DISTINCT ON (cols): the ON columns must cover every group key. Their
-                // paths were resolved against the same group-output frame as the keys.
-                positions.reserve(aggregate->distinct_on_keys().size());
+            // One row per group is emitted, so a DISTINCT can only ever remove a row when two
+            // groups collapse to the same output — which cannot happen once every grouping key is
+            // emitted. Plain DISTINCT therefore asks whether the target list NAMES every key;
+            // DISTINCT ON asks whether its own columns do, so each key's output position (the
+            // frame validate_schema resolved the ON keys against) has to appear among them.
+            std::pmr::vector<size_t> on_positions{node->resource()};
+            const bool distinct_on = !aggregate->distinct_on_keys().empty();
+            if (distinct_on) {
+                on_positions.reserve(aggregate->distinct_on_keys().size());
                 for (const auto& on_key : aggregate->distinct_on_keys()) {
                     if (!on_key.path().empty()) {
-                        positions.push_back(on_key.path().front());
+                        on_positions.push_back(on_key.path().front());
                     }
                 }
             }
 
-            if (covers_all_keys(key_count, positions)) {
+            bool covered = true;
+            for (size_t key_column : keys) {
+                const size_t position = output_position_of(key_column, outputs);
+                if (position == not_a_column) {
+                    covered = false;
+                    break;
+                }
+                if (distinct_on &&
+                    std::find(on_positions.begin(), on_positions.end(), position) == on_positions.end()) {
+                    covered = false;
+                    break;
+                }
+            }
+
+            if (covered) {
                 aggregate->set_distinct(false);
                 // Drop the now-dead ON key list so the plan renders / lowers as a plain
                 // grouped aggregate with no DISTINCT layer.

@@ -144,17 +144,17 @@ TEST_CASE("components::sql::select_from_where") {
         vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
-                       R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
                        vec({v(&resource, "^pattern$")}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
-                       R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $select: {column_name/field}})_",
+                       R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}, $select: {}})_",
                        vec({v(&resource, 9.99)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT ((column_name).sub_type).* FROM TestCollection WHERE ((column_name).sub_type).field1 > ((column_name).sub_type).field2;)_",
         R"_($aggregate: {$match: {"column_name/sub_type/field1": )_"
-        R"_({$gt: "column_name/sub_type/field2"}}, $select: {column_name/sub_type/*}})_",
+        R"_({$gt: "column_name/sub_type/field2"}}, $group: {column_name/sub_type/*}, $select: {}})_",
         vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection WHERE array_field[1] = 10;)_",
@@ -180,18 +180,18 @@ TEST_CASE("components::sql::select_from_where") {
                        vec({v(&resource, 1l), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE '%test%';)_",
-                       R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
                        vec({v(&resource, "^.*test.*$")}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pre_fix';)_",
-                       R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
                        vec({v(&resource, "^pre.fix$")}));
 
     // NULL NOT LIKE p is UNKNOWN, so the scalar negated LIKE carries the same
     // is_not_null guard the negated ANY/ALL forms get (three-valued semantics).
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
-        R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #1}, $not: ["name": {$regex: #0}]]}})_",
+        R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #1}, $not: [$function: {name: {"regexp_like"}, args: {"name", #0}}]]}})_",
         vec({v(&resource, "^.*test.*$"),
              v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
 
@@ -256,12 +256,12 @@ TEST_CASE("components::sql::group_by") {
     transform::transformer transformer(&resource);
 
     TEST_SIMPLE_SELECT(R"_(SELECT field FROM TestCollection GROUP BY field;)_",
-                       R"_($aggregate: {$group: {group_by: field}, $select: {field}})_",
+                       R"_($aggregate: {$group: {group_by: field, field}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
-        R"_($aggregate: {$group: {group_by: name, group_by: name1}, $select: {name, name1, {$constant: #0}}})_",
+        R"_($aggregate: {$group: {group_by: name, group_by: name1, name, name1, {$constant: #0}}, $select: {}})_",
         vec({v(&resource, 9.99)}));
 }
 
@@ -271,37 +271,37 @@ TEST_CASE("components::sql::select_from_fields") {
     transform::transformer transformer(&resource);
 
     TEST_SIMPLE_SELECT(R"_(SELECT number, name, "count" FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$select: {number, name, count}})_",
+                       R"_($aggregate: {$group: {number, name, count}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT struct_type.* FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$select: {struct_type/*}})_",
+                       R"_($aggregate: {$group: {struct_type/*}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT struct_type.field_3 FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$select: {struct_type/field_3}})_",
+                       R"_($aggregate: {$group: {struct_type/field_3}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT array_field[3] FROM TestCollection;)_",
-                       R"_($aggregate: {$select: {array_field/3}})_",
+                       R"_($aggregate: {$group: {array_field/3}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT matrix_field[3][2] FROM TestCollection;)_",
-                       R"_($aggregate: {$select: {matrix_field/3/2}})_",
+                       R"_($aggregate: {$group: {matrix_field/3/2}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT number, name as title FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$select: {number, title: "name"}})_",
+                       R"_($aggregate: {$group: {number, title: "name"}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT number, name title FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$select: {number, title: "name"}})_",
+                       R"_($aggregate: {$group: {number, title: "name"}, $select: {}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
-        R"_($aggregate: {$select: {number, size: {$constant: #0}, title: {$constant: #1}, )_"
-        R"_(on: {$constant: #2}, off: {$constant: #3}}})_",
+        R"_($aggregate: {$group: {number, size: {$constant: #0}, title: {$constant: #1}, )_"
+        R"_(on: {$constant: #2}, off: {$constant: #3}}, $select: {}})_",
         vec({v(&resource, 10l), v(&resource, "title"), v(&resource, true), v(&resource, false)}));
 }
 

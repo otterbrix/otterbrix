@@ -1,8 +1,7 @@
 #pragma once
 
-#include <core/strong_typedef.hpp>
-
-STRONG_TYPEDEF(uint16_t, parameter_id_t);
+#include <components/operators/operator_code.hpp>
+#include <core/parameter_id.hpp>
 
 namespace components::expressions {
 
@@ -15,7 +14,17 @@ namespace components::expressions {
         aggregate,
         scalar,
         sort,
-        function
+        function,
+        cast
+    };
+
+    // How many values an expression yields per group of input rows
+    enum class cardinality_t : uint8_t
+    {
+        unknown,
+        constant,
+        row,
+        group
     };
 
     enum class compare_type : uint8_t
@@ -49,17 +58,17 @@ namespace components::expressions {
         subtract,
         multiply,
         divide,
-        round,
-        ceil,
-        floor,
-        abs,
         mod,
-        pow,
-        sqrt,
         case_expr,
         coalesce,
         case_when,
         unary_minus,
+        bit_and,
+        bit_or,
+        bit_xor,
+        bit_not,
+        shift_left,
+        shift_right,
         star_expand,
         // JSONB table-valued operators on computing tables. Both carry a path
         // prefix in the expression key; validate_logical_plan expands them into
@@ -86,6 +95,9 @@ namespace components::expressions {
     std::string to_string(compare_type type);
 
     std::string to_string(scalar_type type);
+
+    operators::operator_code to_operator_code(scalar_type type) noexcept;
+    operators::operator_code to_operator_code(compare_type type) noexcept;
 
     template<class OStream>
     OStream& operator<<(OStream& stream, const compare_type& type) {

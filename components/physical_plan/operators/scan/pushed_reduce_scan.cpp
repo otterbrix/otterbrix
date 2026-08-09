@@ -35,9 +35,12 @@ namespace components::operators {
             c.func_uid = a.func_uid;
             c.distinct = a.distinct;
             c.alias = a.alias;
+            c.result_type = a.result_type;
             ship.aggregates.push_back(std::move(c));
         }
+        ship.outputs = spec_.outputs;
         ship.output_types = spec_.output_types;
+        ship.input_types = spec_.input_types;
         return ship;
     }
 
@@ -67,7 +70,11 @@ namespace components::operators {
                     types_cached_ = true;
                 }
                 auto filter_result =
-                    transform_predicate(resource_, expression_, cached_types_, &ctx->parameters, ctx->session_tz);
+                    transform_predicate(resource_,
+                                        expression_,
+                                        cached_types_,
+                                        &ctx->parameters,
+                                        ctx->execution_context);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();

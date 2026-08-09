@@ -11,7 +11,7 @@ namespace components::casts::kernels {
     template<typename Source, typename Target>
     core::error_t numeric_cast(const vector::vector_t& source,
                                vector::vector_t* result,
-                               const cast_context&,
+                               const graph_execution_context&,
                                uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -59,7 +59,7 @@ namespace components::casts::kernels {
     template<typename Source, typename Target>
     core::error_t floating_to_integer_cast(const vector::vector_t& source,
                                            vector::vector_t* result,
-                                           const cast_context&,
+                                           const graph_execution_context&,
                                            uint64_t count) noexcept {
         const Source lower = detail::integer_lower_bound<Source, Target>();
         const Source upper = detail::integer_upper_bound_exclusive<Source, Target>();
@@ -81,7 +81,7 @@ namespace components::casts::kernels {
     template<typename Source, typename Target>
     void floating_to_integer_try_cast(const vector::vector_t& source,
                                       vector::vector_t* result,
-                                      const cast_context&,
+                                      const graph_execution_context&,
                                       uint64_t count) noexcept {
         const Source lower = detail::integer_lower_bound<Source, Target>();
         const Source upper = detail::integer_upper_bound_exclusive<Source, Target>();
@@ -92,6 +92,76 @@ namespace components::casts::kernels {
             }
             Target value;
             if (!detail::round_to_integer<Source, Target>(source.get_value<Source>(row), lower, upper, &value)) {
+                result->set_null(row, true);
+                continue;
+            }
+            result->set_value(row, value);
+        }
+    }
+
+    namespace detail {
+
+        template<typename Source, typename Target>
+        [[nodiscard]] inline Source floating_overflow_threshold() noexcept {
+            constexpr int max_exponent = std::numeric_limits<Target>::max_exponent;
+            constexpr int digits = std::numeric_limits<Target>::digits;
+            return std::ldexp(Source(1), max_exponent) - std::ldexp(Source(1), max_exponent - digits - 1);
+        }
+
+        template<typename Source, typename Target>
+        [[nodiscard]] inline Source floating_underflow_threshold() noexcept {
+            return std::ldexp(static_cast<Source>(std::numeric_limits<Target>::denorm_min()), -1);
+        }
+
+        template<typename Source, typename Target>
+        [[nodiscard]] inline bool floating_fits(Source value, Target* out) noexcept {
+            if (std::isfinite(value)) {
+                const Source magnitude = std::fabs(value);
+                if (magnitude >= floating_overflow_threshold<Source, Target>()) {
+                    return false;
+                }
+                if (magnitude > Source(0) && magnitude <= floating_underflow_threshold<Source, Target>()) {
+                    return false;
+                }
+            }
+            *out = static_cast<Target>(value);
+            return true;
+        }
+
+    } // namespace detail
+
+    template<typename Source, typename Target>
+    core::error_t floating_narrow_cast(const vector::vector_t& source,
+                                       vector::vector_t* result,
+                                       const graph_execution_context&,
+                                       uint64_t count) noexcept {
+        for (uint64_t row = 0; row < count; ++row) {
+            if (source.is_null(row)) {
+                result->set_null(row, true);
+                continue;
+            }
+            Target value;
+            if (!detail::floating_fits<Source, Target>(source.get_value<Source>(row), &value)) {
+                return core::error_t{core::error_code_t::conversion_failure,
+                                     std::pmr::string{"out of range", result->resource()}};
+            }
+            result->set_value(row, value);
+        }
+        return core::error_t::no_error();
+    }
+
+    template<typename Source, typename Target>
+    void floating_narrow_try_cast(const vector::vector_t& source,
+                                  vector::vector_t* result,
+                                  const graph_execution_context&,
+                                  uint64_t count) noexcept {
+        for (uint64_t row = 0; row < count; ++row) {
+            if (source.is_null(row)) {
+                result->set_null(row, true);
+                continue;
+            }
+            Target value;
+            if (!detail::floating_fits<Source, Target>(source.get_value<Source>(row), &value)) {
                 result->set_null(row, true);
                 continue;
             }
@@ -136,7 +206,7 @@ namespace components::casts::kernels {
     template<typename Source, typename Target>
     core::error_t integer_narrow_cast(const vector::vector_t& source,
                                       vector::vector_t* result,
-                                      const cast_context&,
+                                      const graph_execution_context&,
                                       uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
@@ -156,7 +226,7 @@ namespace components::casts::kernels {
     template<typename Source, typename Target>
     void integer_narrow_try_cast(const vector::vector_t& source,
                                  vector::vector_t* result,
-                                 const cast_context&,
+                                 const graph_execution_context&,
                                  uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {

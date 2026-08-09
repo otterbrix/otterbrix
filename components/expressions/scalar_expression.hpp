@@ -2,6 +2,7 @@
 
 #include "expression.hpp"
 #include "key.hpp"
+#include <components/casts/cast_function.hpp>
 #include <memory_resource>
 
 namespace components::expressions {
@@ -17,8 +18,6 @@ namespace components::expressions {
         scalar_expression_t(std::pmr::memory_resource* resource, scalar_type type, const key_t& key);
 
         scalar_type type() const;
-        key_t& key();
-        const key_t& key() const;
         std::pmr::vector<param_storage>& params();
         const std::pmr::vector<param_storage>& params() const;
 
@@ -26,7 +25,6 @@ namespace components::expressions {
 
     private:
         scalar_type type_;
-        key_t key_;
         std::pmr::vector<param_storage> params_;
 
         hash_t hash_impl() const final;

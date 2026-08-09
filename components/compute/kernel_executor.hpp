@@ -19,6 +19,9 @@ namespace components::compute::detail {
         [[nodiscard]] virtual core::result_wrapper_t<datum_t>
         execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
 
+        [[nodiscard]] virtual core::error_t consume(const vector::data_chunk_t& inputs) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<datum_t> finalize() = 0;
+
         static std::unique_ptr<kernel_executor_t> make_vector();
         static std::unique_ptr<kernel_executor_t> make_aggregate();
         static std::unique_ptr<kernel_executor_t> make_row();

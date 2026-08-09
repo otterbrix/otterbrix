@@ -599,6 +599,27 @@ namespace {
         return core::error_t::no_error();
     }
 
+    std::pmr::vector<complex_logical_type> numeric_parameters(std::pmr::memory_resource* resource) {
+        std::pmr::vector<complex_logical_type> types(resource);
+        for (auto type : {logical_type::TINYINT,
+                          logical_type::SMALLINT,
+                          logical_type::INTEGER,
+                          logical_type::BIGINT,
+                          logical_type::HUGEINT,
+                          logical_type::UTINYINT,
+                          logical_type::USMALLINT,
+                          logical_type::UINTEGER,
+                          logical_type::UBIGINT,
+                          logical_type::UHUGEINT,
+                          logical_type::FLOAT,
+                          logical_type::DOUBLE,
+                          // Any (width, scale):
+                          logical_type::DECIMAL}) {
+            types.emplace_back(type);
+        }
+        return types;
+    }
+
     std::unique_ptr<aggregate_function> make_sum_func(std::pmr::memory_resource* resource,
                                                       const std::string& name,
                                                       const std::string& short_doc,
@@ -609,7 +630,7 @@ namespace {
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {numeric_types_matcher()},
+                               {parameter_type::variable(0, numeric_parameters(resource))},
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), sum_init, sum_consume, sum_merge, sum_finalize};
 
@@ -627,7 +648,7 @@ namespace {
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {always_true_type_matcher()},
+                               {parameter_type::variable(0)},
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_init, min_consume, min_merge, min_finalize};
 
@@ -645,7 +666,7 @@ namespace {
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {always_true_type_matcher()},
+                               {parameter_type::variable(0)},
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), max_init, max_consume, max_merge, max_finalize};
 
@@ -667,7 +688,7 @@ namespace {
                                                        /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {always_true_type_matcher()},
+                               {parameter_type::variable(0)},
                                {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
         fn->add_kernel(resource, std::move(k));
@@ -690,7 +711,7 @@ namespace {
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {numeric_types_matcher()},
+                               {parameter_type::variable(0, numeric_parameters(resource))},
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};
 
@@ -724,6 +745,7 @@ namespace components::compute {
                                             "Results in a single number of the same type as input"));
         register_string_functions(r);
         register_expand_functions(r);
+        register_math_functions(r);
     }
 
 } // namespace components::compute

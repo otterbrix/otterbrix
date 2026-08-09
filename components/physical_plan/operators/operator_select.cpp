@@ -1,123 +1,58 @@
 #include "operator_select.hpp"
 
-#include "arithmetic_eval.hpp"
 #include <components/expressions/compare_expression.hpp>
+#include <components/vector/vector_operations.hpp>
+
+#include <algorithm>
 
 namespace components::operators {
 
     namespace {
 
-        // Resolve the source chunk a key reads from. A right-side column reads
-        // from the right chunk. Validation only stamps a key right when its data
-        // physically lives there, so the caller must supply right_chunk — a joined
-        // DELETE/UPDATE RETURNING passes the gathered USING/FROM rows, a SELECT
-        // over a JOIN passes its merged chunk. A missing right_chunk here is a
-        // validation/wiring bug.
-        const vector::data_chunk_t& key_source_chunk(const group_key_t& key,
-                                                     const vector::data_chunk_t& chunk,
-                                                     const vector::data_chunk_t* right_chunk) {
-            const bool from_right = key.side == expressions::side_t::right;
-            assert((!from_right || right_chunk != nullptr) && "right-side column requires a right chunk");
-            return from_right ? *right_chunk : chunk;
-        }
-
-        // Extract the value of a key column (coalesce / case_when, or a deep-path
-        // field_ref) for a single row. Mirrors extract_key_value in
-        // operator_group.cpp. A top-level field_ref (full_path.size() == 1) is NOT
-        // routed here — evaluate_projection references the source column whole, with
-        // no per-row logical_value_t round-trip.
-        types::logical_value_t extract_select_value(std::pmr::memory_resource* resource,
-                                                    const group_key_t& key,
-                                                    const vector::data_chunk_t& chunk,
-                                                    size_t row_idx,
-                                                    const vector::data_chunk_t* right_chunk) {
-            const vector::data_chunk_t& src = key_source_chunk(key, chunk, right_chunk);
-            switch (key.type) {
-                case group_key_t::kind::column: {
-                    assert(!key.full_path.empty() && "field_ref path must be resolved before execution");
-                    auto val = src.value(key.full_path, row_idx);
-                    val.set_alias(std::string{key.name});
-                    return val;
-                }
-                case group_key_t::kind::coalesce: {
-                    for (const auto& entry : key.coalesce_entries) {
-                        if (entry.type == group_key_t::coalesce_entry::source::constant) {
-                            if (!entry.constant.is_null()) {
-                                auto val = entry.constant;
-                                val.set_alias(std::string{key.name});
-                                return val;
-                            }
-                        } else {
-                            if (!src.data[entry.col_index].is_null(row_idx)) {
-                                auto val = src.value(entry.col_index, row_idx);
-                                val.set_alias(std::string{key.name});
-                                return val;
-                            }
-                        }
-                    }
-                    auto null_val =
-                        types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
-                    null_val.set_alias(std::string{key.name});
-                    return null_val;
-                }
-                case group_key_t::kind::case_when: {
-                    for (const auto& clause : key.case_clauses) {
-                        const auto cond_val = src.value(clause.condition_col, row_idx);
-                        auto cmp_result = cond_val.compare(clause.condition_value);
-                        bool matches = false;
-                        switch (clause.cmp) {
-                            case expressions::compare_type::eq:
-                                matches = cmp_result == types::compare_t::equals;
-                                break;
-                            case expressions::compare_type::ne:
-                                matches = cmp_result != types::compare_t::equals;
-                                break;
-                            case expressions::compare_type::gt:
-                                matches = cmp_result == types::compare_t::more;
-                                break;
-                            case expressions::compare_type::gte:
-                                matches = cmp_result >= types::compare_t::equals;
-                                break;
-                            case expressions::compare_type::lt:
-                                matches = cmp_result == types::compare_t::less;
-                                break;
-                            case expressions::compare_type::lte:
-                                matches = cmp_result <= types::compare_t::equals;
-                                break;
-                            default:
-                                matches = true;
-                                break;
-                        }
-                        if (matches) {
-                            types::logical_value_t result_val =
-                                (clause.res_type == group_key_t::case_clause::result_source::constant)
-                                    ? clause.res_constant
-                                    : src.value(clause.res_col, row_idx);
-                            result_val.set_alias(std::string{key.name});
-                            return result_val;
-                        }
-                    }
-                    // else branch
-                    types::logical_value_t else_val = [&]() -> types::logical_value_t {
-                        switch (key.else_type) {
-                            case group_key_t::else_source::column:
-                                return src.value(key.else_col, row_idx);
-                            case group_key_t::else_source::constant:
-                                return key.else_constant;
-                            case group_key_t::else_source::null_value:
-                            default:
-                                return types::logical_value_t(resource,
-                                                              types::complex_logical_type{types::logical_type::NA});
-                        }
-                    }();
-                    else_val.set_alias(std::string{key.name});
-                    return else_val;
+        vector::data_chunk_t side_by_side(std::pmr::memory_resource* resource,
+                                          const vector::data_chunk_t& left,
+                                          const vector::data_chunk_t& right) {
+            const uint64_t capacity = left.size() > 0 ? left.size() : 1;
+            vector::data_chunk_t merged(resource, {}, capacity);
+            merged.data.reserve(left.column_count() + right.column_count());
+            for (const auto* side : {&left, &right}) {
+                for (const auto& column : side->data) {
+                    vector::vector_t vec(resource, column.type(), capacity);
+                    vec.reference(column);
+                    merged.data.push_back(std::move(vec));
                 }
             }
-            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+            merged.set_cardinality(left.size());
+            return merged;
         }
 
     } // anonymous namespace
+
+    core::error_t build_projection_graph(std::pmr::memory_resource* resource,
+                                         const std::pmr::vector<select_column_t>& columns,
+                                         const logical_plan::storage_parameters& parameters,
+                                         const vector::data_chunk_t& input,
+                                         size_t right_offset,
+                                         std::unique_ptr<execution_graph::execution_graph_t>* graph) {
+        // star_expand copies its columns straight from the input chunk, so it contributes
+        // no output slot and the graph's slots line up with the projected columns only.
+        std::pmr::vector<const expressions::expression_i*> projected(resource);
+        projected.reserve(columns.size());
+        for (const auto& column : columns) {
+            if (column.type == select_column_t::kind::star_expand) {
+                continue;
+            }
+            assert(column.expression && "a projected column reached the graph without its expression");
+            projected.push_back(column.expression.get());
+        }
+
+        auto built = expressions::build_graph(resource, parameters.parameters, projected, input.types(), right_offset);
+        if (built.has_error()) {
+            return built.error();
+        }
+        *graph = std::move(built.value());
+        return core::error_t::no_error();
+    }
 
     operator_select_t::operator_select_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, log, operator_type::select)
@@ -135,10 +70,11 @@ namespace components::operators {
     operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Streaming projection: apply the per-chunk transform to the single
         // batch handed in via `input`. No accumulation, no read of left_->output().
-        // A SELECT over a JOIN receives one merged chunk holding both sides'
-        // columns, so the chunk doubles as right_input: its full_path indexes the
-        // merged chunk regardless of a key's resolved side.
-        auto result = evaluate_projection(resource_, columns_, &input, ctx->parameters, ctx->session_tz, &input);
+        // A SELECT over a JOIN already receives ONE merged chunk holding both sides' columns,
+        // whose ordinals a key indexes directly whatever side it resolved to — so there is no
+        // second chunk to pair and no offset to apply.
+        auto result =
+            evaluate_projection(resource_, columns_, &input, ctx->parameters, ctx->execution_context, &graph_);
         if (result.has_error()) {
             return result.error();
         }
@@ -146,120 +82,75 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<vector::data_chunk_t> evaluate_projection(std::pmr::memory_resource* resource,
-                                                                     const std::pmr::vector<select_column_t>& columns,
-                                                                     vector::data_chunk_t* input,
-                                                                     const logical_plan::storage_parameters& parameters,
-                                                                     core::date::timezone_offset_t session_tz,
-                                                                     vector::data_chunk_t* right_input) {
+    core::result_wrapper_t<vector::data_chunk_t>
+    evaluate_projection(std::pmr::memory_resource* resource,
+                        const std::pmr::vector<select_column_t>& columns,
+                        vector::data_chunk_t* input,
+                        const logical_plan::storage_parameters& parameters,
+                        const components::graph_execution_context& context,
+                        std::unique_ptr<execution_graph::execution_graph_t>* graph,
+                        const vector::data_chunk_t* right_input) {
         const auto num_rows = input->size();
         const uint64_t cap = num_rows > 0 ? num_rows : 1;
 
-        // Assemble the output chunk directly: one column per projection entry
-        // (star_expand fans out to one per input column). Columns are pushed
-        // into result.data as they are built; the chunk derives its types from
-        // those columns.
-        vector::data_chunk_t result(resource, {}, cap);
+        std::optional<vector::data_chunk_t> merged;
+        if (right_input != nullptr) {
+            merged = side_by_side(resource, *input, *right_input);
+        }
+        const vector::data_chunk_t& source = merged.has_value() ? *merged : *input;
 
-        for (const auto& col : columns) {
-            switch (col.type) {
-                case select_column_t::kind::field_ref: {
-                    // A top-level column reference (full_path.size() == 1) is a pure
-                    // 1:1 column passthrough: zero-copy reference the source vector
-                    // whole instead of round-tripping every cell through
-                    // logical_value_t. A deeper path (struct field / array or list
-                    // element) addresses sub-elements that at()+reference() cannot
-                    // reproduce, so it falls through to the per-row extractor.
-                    if (num_rows > 0 && col.key.full_path.size() == 1) {
-                        const vector::data_chunk_t& src = key_source_chunk(col.key, *input, right_input);
-                        const vector::vector_t& source_vec = src.data[col.key.full_path.front()];
-                        vector::vector_t vec(resource, source_vec.type(), cap);
-                        vec.reference(source_vec);
-                        vec.set_type_alias(std::string{col.key.name});
-                        result.data.push_back(std::move(vec));
-                        break;
-                    }
-                    [[fallthrough]];
-                }
-                case select_column_t::kind::coalesce:
-                case select_column_t::kind::case_when: {
-                    // Genuinely per-row key extraction (conditional COALESCE / CASE,
-                    // or a deep-path field_ref). The column type follows the first
-                    // value, so values are materialised before the vector. Each cell
-                    // is bound to a named local to keep logical_value_t round-trips
-                    // to the unavoidable minimum (R1).
-                    // The column type IS the plan-resolved type, authoritatively, so the
-                    // column is correctly typed even over zero rows (the per-row seed cannot
-                    // run then). Values are materialised; NULLs land as NULLs of this type.
-                    const types::complex_logical_type col_type = col.result_type;
-                    std::pmr::vector<types::logical_value_t> values(resource);
-                    values.reserve(num_rows);
-                    for (uint64_t row = 0; row < num_rows; ++row) {
-                        values.push_back(extract_select_value(resource, col.key, *input, row, right_input));
-                    }
-                    vector::vector_t vec(resource, col_type, cap);
-                    for (uint64_t row = 0; row < num_rows; ++row) {
-                        vec.set_value(row, values[row]);
-                    }
-                    vec.set_type_alias(std::string{col.key.name});
-                    result.data.push_back(std::move(vec));
-                    break;
-                }
-                case select_column_t::kind::arithmetic: {
-                    auto result_vec =
-                        evaluate_arithmetic(resource, col.arith_op, col.operands, *input, parameters, session_tz);
-                    if (result_vec.has_error()) {
-                        return result_vec.error();
-                    }
-                    result_vec.value().set_type_alias(std::string{col.key.name});
-                    result.data.push_back(std::move(result_vec.value()));
-                    break;
-                }
-                case select_column_t::kind::constant: {
-                    // Build the literal as a CONSTANT vector (one stored value) and
-                    // flatten it across the chunk, instead of a per-row set_value
-                    // loop that copies the same logical_value_t num_rows times.
-                    // Read the value live from the parameter map when the column carries
-                    // a parameter id (a LATERAL correlation rebound per outer row);
-                    // otherwise use the baked literal.
-                    const types::logical_value_t* value = &col.constant_value;
-                    if (col.constant_param_id.has_value()) {
-                        auto it = parameters.parameters.find(*col.constant_param_id);
-                        if (it != parameters.parameters.end()) {
-                            value = &it->second;
-                        }
-                    }
-                    if (value->is_null()) {
-                        // A NULL constant (a 0-row/NULL scalar sub-query, a bare NULL literal, or NULL::T)
-                        // is projected as a typed column: the type is the plan-resolved col.result_type
-                        // (authoritative even over zero rows), and the null lives in the vector's validity
-                        // mask — never a typed-NULL logical_value_t. Built like the case_when path.
-                        vector::vector_t vec(resource, col.result_type, cap);
-                        for (uint64_t row = 0; row < num_rows; ++row) {
-                            vec.set_value(row, *value);
-                        }
-                        vec.set_type_alias(std::string{col.key.name});
-                        result.data.push_back(std::move(vec));
-                        break;
-                    }
-                    vector::vector_t vec(resource, *value, cap);
-                    if (num_rows > 0) {
-                        vec.flatten(num_rows);
-                    }
-                    vec.set_type_alias(std::string{col.key.name});
-                    result.data.push_back(std::move(vec));
-                    break;
-                }
-                case select_column_t::kind::star_expand: {
-                    // Bare '*' — expand all columns of the input chunk. Qualified
-                    // 'table.*' is pre-expanded to get_field columns at validation,
-                    // so it never reaches here.
-                    for (size_t ci = 0; ci < input->column_count(); ++ci) {
-                        result.data.push_back(input->data[ci]);
-                    }
-                    break;
+        const bool computes = std::any_of(columns.begin(), columns.end(), [](const select_column_t& column) {
+            return column.type != select_column_t::kind::star_expand;
+        });
+        std::optional<vector::data_chunk_t> computed;
+        if (computes) {
+            if (*graph == nullptr) {
+                if (auto error = build_projection_graph(resource,
+                                                        columns,
+                                                        parameters,
+                                                        source,
+                                                        right_input != nullptr ? input->column_count() : 0,
+                                                        graph);
+                    error.contains_error()) {
+                    return error;
                 }
             }
+            auto produced = expressions::run_graph(graph->get(), parameters.parameters, source, context);
+            if (produced.has_error()) {
+                return produced.error();
+            }
+            computed = std::move(produced.value());
+        }
+
+        // One column per projection entry, in projection order (a star fans out to one per input
+        // column). The graph carries every other kind and emits them in that same relative order,
+        // so pairing the two lists needs only a cursor into its outputs.
+        vector::data_chunk_t result(resource, {}, cap);
+        size_t output_index = 0;
+        for (const auto& col : columns) {
+            if (col.type == select_column_t::kind::star_expand) {
+                // Bare '*' — hand through the columns of the projected side. Qualified 'table.*'
+                // is pre-expanded to get_field columns at validation, so it never reaches here.
+                for (size_t column = 0; column < input->column_count(); ++column) {
+                    result.data.push_back(input->data[column]);
+                }
+                continue;
+            }
+            // Reaching here means the column is not a star, so `computes` was true and both the
+            // graph and its output exist.
+            const vector::vector_t& source_vec = computed->data[output_index];
+            vector::vector_t vec(resource, source_vec.type(), cap);
+            if ((*graph)->slot_is_bound_input((*graph)->output_slots()[output_index])) {
+                // A column the query merely names IS the input column — the slot shares its
+                // buffer and no node writes it, so this stays the zero-copy passthrough it was.
+                vec.reference(source_vec);
+            } else {
+                // A computed slot is overwritten by the next chunk, so its value is copied out.
+                vector::vector_ops::copy(source_vec, vec, num_rows, 0, 0);
+            }
+            vec.set_type_alias(std::string{col.key.name});
+            result.data.push_back(std::move(vec));
+            ++output_index;
         }
 
         result.set_cardinality(num_rows);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
 #include <core/result_wrapper.hpp>
@@ -19,25 +20,18 @@ namespace components::casts {
         types::complex_logical_type target;
     };
 
-    // Every external parameter casts may need
-    struct cast_context {
-        core::date::timezone_offset_t timezone_offset;
-        // Cast may fill values with that, instead of simply leaving a null
-        const types::logical_value_t* fill_value = nullptr;
-    };
-
     // CAST: fails hard on a failed cast -> returns error_t
     //! noexcept by design -> every error should be processed and returned explicitly
     using cast_fn = core::error_t (*)(const vector::vector_t& source,
                                       vector::vector_t* result,
-                                      const cast_context& params,
+                                      const graph_execution_context& params,
                                       uint64_t count) noexcept;
 
     // TRY_CAST: never fails -> writes NULL for failed cast
     //! noexcept by design -> every error should be processed and turned into NULL result
     using try_cast_fn = void (*)(const vector::vector_t& source,
                                  vector::vector_t* result,
-                                 const cast_context& params,
+                                 const graph_execution_context& params,
                                  uint64_t count) noexcept;
 
     class cast_function_t {
@@ -58,7 +52,7 @@ namespace components::casts {
         [[nodiscard]] core::error_t invoke(cast_kind kind,
                                            const vector::vector_t& source,
                                            vector::vector_t* result,
-                                           const cast_context& params,
+                                           const graph_execution_context& params,
                                            uint64_t count) const {
             // If there is no try_cast, assumes that regular one is safe
             if (kind == cast_kind::try_cast && has_try_cast()) {
@@ -79,6 +73,6 @@ namespace components::casts {
     // Composite types require children's casts to be captured
     // And plain function pointers can't handle that
     using cast_t = std::function<
-        core::error_t(cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t)>;
+        core::error_t(cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t)>;
 
 } // namespace components::casts

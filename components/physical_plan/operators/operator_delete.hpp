@@ -3,7 +3,6 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
-#include <components/physical_plan/operators/predicates/predicate.hpp>
 
 namespace components::operators {
 
@@ -91,7 +90,11 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid_;
         expressions::expression_ptr expression_;
+        expressions::condition_kind condition_{expressions::condition_kind::always};
+        std::unique_ptr<execution_graph::execution_graph_t> graph_;
         std::pmr::vector<select_column_t> returning_;
+        // separate from evaluation graph
+        std::unique_ptr<execution_graph::execution_graph_t> returning_graph_;
         // SIMPLE-path staging (filled by consume_batch_, drained in
         // await_async_and_resume). returning_staged_ holds the projected RETURNING
         // chunks; index_old_chunks_ + index_old_row_ids_ hold the matched OLD scan

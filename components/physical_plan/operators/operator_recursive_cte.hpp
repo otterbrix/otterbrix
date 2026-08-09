@@ -59,6 +59,8 @@ namespace components::operators {
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+        [[nodiscard]] bool produces_query_rows() const noexcept override { return true; }
+
     private:
         // EXPLAIN: anchor_/recursive_ are PRIVATE sub-plan roots (left()==nullptr) — recurse into them
         // here, else the walk would render this as a childless leaf.

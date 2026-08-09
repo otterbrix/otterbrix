@@ -28,13 +28,15 @@ namespace components::expressions {
                                                compare_type type,
                                                const param_storage& left,
                                                const param_storage& right)
-        : expression_i(expression_group::compare)
+        : expression_i(expression_group::compare, key_t{resource})
         , type_(type)
         , left_(left)
         , right_(right)
         , children_(resource) {}
 
     compare_type compare_expression_t::type() const { return type_; }
+
+    void compare_expression_t::set_key(const key_t& new_key) { key() = new_key; }
 
     param_storage& compare_expression_t::left() { return left_; }
 
@@ -219,6 +221,23 @@ namespace components::expressions {
         }
         result += '$';
         return result;
+    }
+
+    condition_kind classify_condition(const expression_ptr& expression) noexcept {
+        if (!expression) {
+            return condition_kind::always;
+        }
+        if (expression->group() != expression_group::compare) {
+            return condition_kind::computed;
+        }
+        switch (static_cast<const compare_expression_t*>(expression.get())->type()) {
+            case compare_type::all_true:
+                return condition_kind::always;
+            case compare_type::all_false:
+                return condition_kind::never;
+            default:
+                return condition_kind::computed;
+        }
     }
 
 } // namespace components::expressions

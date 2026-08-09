@@ -212,7 +212,7 @@ namespace components::operators {
                 auto [_ic, icf] =
                     actor_zeta::send(ctx->index_address,
                                      &services::index::manager_index_t::commit_inserts,
-                                     components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
+                                     components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
                                      std::move(append_oids),
                                      commit_id_);
                 core::error_t result = co_await std::move(icf);
@@ -232,7 +232,7 @@ namespace components::operators {
                 auto [_dc, dcf] =
                     actor_zeta::send(ctx->index_address,
                                      &services::index::manager_index_t::commit_deletes,
-                                     components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
+                                     components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
                                      std::move(delete_oids),
                                      commit_id_);
                 core::error_t result = co_await std::move(dcf);
@@ -431,7 +431,7 @@ namespace components::operators {
                                                    &services::disk::manager_disk_t::maybe_cleanup_many,
                                                    components::execution_context_t{ctx->session,
                                                                                    txn_data,
-                                                                                   ctx->session_tz,
+                                                                                   ctx->execution_context.timezone_offset,
                                                                                    components::catalog::INVALID_OID},
                                                    std::move(safe_oids),
                                                    compact_watermark);

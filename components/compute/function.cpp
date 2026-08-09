@@ -125,6 +125,23 @@ namespace components::compute {
             return executor_->execute(inputs);
         }
 
+        core::error_t consume(const data_chunk_t& args) override {
+            if (auto st = check_init(); st.contains_error()) {
+                return st;
+            }
+            if (auto st = check_args(kernel_ctx_.value().exec_context().resource(), args); st.contains_error()) {
+                return st;
+            }
+            return executor_->consume(args);
+        }
+
+        core::result_wrapper_t<datum_t> finalize() override {
+            if (auto st = check_init(); st.contains_error()) {
+                return st;
+            }
+            return executor_->finalize();
+        }
+
         static core::result_wrapper_t<function_executor_impl_t>
         get_best_function_executor(std::pmr::memory_resource* resource,
                                    std::pmr::vector<complex_logical_type> in_types,
@@ -188,6 +205,22 @@ namespace components::compute {
         const function& func_;
         kernel_state_ptr state_;
     };
+
+    core::result_wrapper_t<std::unique_ptr<function_executor>>
+    function::make_executor(std::pmr::memory_resource* resource,
+                            std::pmr::vector<complex_logical_type> in_types,
+                            const function_options* options,
+                            exec_context_t& ctx) const {
+        auto resolved = function_executor_impl_t::get_best_function_executor(resource, std::move(in_types), *this);
+        if (resolved.has_error()) {
+            return resolved.convert_error<std::unique_ptr<function_executor>>();
+        }
+        auto owned = std::make_unique<function_executor_impl_t>(std::move(resolved.value()));
+        if (auto error = owned->init(options, ctx); error.contains_error()) {
+            return error;
+        }
+        return std::unique_ptr<function_executor>(std::move(owned));
+    }
 
     core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
     function::get_best_executor(std::pmr::memory_resource* resource, std::pmr::vector<complex_logical_type>) const {

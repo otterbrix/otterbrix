@@ -7,6 +7,7 @@
 #include <core/date/date_parse.hpp>
 #include <core/date/date_to_string.hpp>
 
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -142,7 +143,7 @@ TEST_CASE("default casts: DOUBLE -> INTEGER is fallible and assignment, so it ne
     REQUIRE(promoted->type.type() == logical_type::DOUBLE);
     REQUIRE(entry->fn.has_try_cast());
 
-    cast_context params{};
+    graph_execution_context params{};
 
     // In-range finite values round to nearest (ties to even, like PostgreSQL).
     {
@@ -207,7 +208,7 @@ TEST_CASE("default casts: integer narrowing errors on overflow (PostgreSQL rule)
     REQUIRE(promoted.has_value());
     REQUIRE(promoted->type.type() == logical_type::INTEGER);
 
-    cast_context params{};
+    graph_execution_context params{};
 
     // Signed->unsigned: negatives and out-of-range magnitudes fail; in range converts.
     {
@@ -247,6 +248,58 @@ TEST_CASE("default casts: integer narrowing errors on overflow (PostgreSQL rule)
     }
 }
 
+TEST_CASE("default casts: double -> float narrows at assignment level") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+
+    // The widening direction promotes; the narrowing one only reaches assignment, so a
+    // double-typed value still lands in a float column (an INSERT, or a ROW literal against a
+    // composite field) without float ever winning a common-type search.
+    const cast_entry* narrow = registry.find(double_type, float_type);
+    REQUIRE(narrow != nullptr);
+    REQUIRE(narrow->level == cast_type::assignment);
+    REQUIRE(narrow->fn.has_try_cast());
+    REQUIRE_FALSE(narrow->promotes());
+
+    auto promoted = common(registry, float_type, double_type);
+    REQUIRE(promoted.has_value());
+    REQUIRE(promoted->type.type() == logical_type::DOUBLE);
+
+    graph_execution_context params{};
+
+    // In range: narrows, keeping the value to float precision.
+    {
+        vector::vector_t source{resource, double_type};
+        source.set_value(0, 0.5);
+        source.set_value(1, -1.0e30);
+        source.set_value(2, std::numeric_limits<double>::infinity());
+
+        vector::vector_t result{resource, float_type};
+        REQUIRE_FALSE(narrow->fn.invoke(cast_kind::cast, source, &result, params, 3).contains_error());
+        REQUIRE(result.get_value<float>(0) == Catch::Approx(0.5f));
+        REQUIRE(result.get_value<float>(1) == Catch::Approx(-1.0e30f));
+        REQUIRE(std::isinf(result.get_value<float>(2))); // an infinity in stays an infinity out
+    }
+
+    // Out of range in either direction is a failure, not a silent inf/zero.
+    {
+        vector::vector_t source{resource, double_type};
+        source.set_value(0, 1.0e300);  // overflows float
+        source.set_value(1, 1.0e-300); // underflows float to zero
+
+        vector::vector_t cast_result{resource, float_type};
+        core::error_t error = narrow->fn.invoke(cast_kind::cast, source, &cast_result, params, 2);
+        REQUIRE(error.contains_error());
+        REQUIRE(error.type == core::error_code_t::conversion_failure);
+
+        vector::vector_t try_result{resource, float_type};
+        REQUIRE_FALSE(narrow->fn.invoke(cast_kind::try_cast, source, &try_result, params, 2).contains_error());
+        REQUIRE(try_result.is_null(0));
+        REQUIRE(try_result.is_null(1));
+    }
+}
+
 TEST_CASE("default casts: DECIMAL <-> double round-trips, passes inf/nan, errors on overflow") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
@@ -277,7 +330,7 @@ TEST_CASE("default casts: DECIMAL <-> double round-trips, passes inf/nan, errors
         REQUIRE(swapped->type.type() == logical_type::DOUBLE);
     }
 
-    cast_context context{};
+    graph_execution_context context{};
 
     // double -> DECIMAL(10,2): rounds to scale; overflow errors; inf/nan pass through.
     {
@@ -342,7 +395,7 @@ TEST_CASE("default casts: DECIMAL <-> integer rounds, fails on overflow and spec
         REQUIRE(integers->type.type() == logical_type::HUGEINT);
     }
 
-    cast_context context{};
+    graph_execution_context context{};
 
     // BIGINT -> DECIMAL(10,2): exact scale-up; a value needing >= 8 integral digits
     // overflows (10^(10-2) = 10^8).
@@ -422,7 +475,7 @@ TEST_CASE("default casts: DECIMAL -> DECIMAL rescales, rounds half away, overflo
         REQUIRE(swapped->type.extension_as<types::decimal_logical_type_extension>()->width() == 12);
     }
 
-    cast_context context{};
+    graph_execution_context context{};
 
     // Scale up (lossless): DECIMAL(10,2) -> DECIMAL(12,4).
     {
@@ -539,7 +592,7 @@ TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specia
     REQUIRE_FALSE(to_string->fn.has_try_cast());
     REQUIRE(from_string->fn.has_try_cast());
 
-    cast_context context{};
+    graph_execution_context context{};
 
     // DECIMAL(10,2) -> STRING, including the special sentinels.
     {
@@ -616,7 +669,7 @@ TEST_CASE("default casts: string conversions are explicit-only and non-throwing"
     REQUIRE_FALSE(to_string->fn.has_try_cast());
     REQUIRE(from_string->fn.has_try_cast());
 
-    cast_context params{};
+    graph_execution_context params{};
 
     // INTEGER -> STRING.
     {
@@ -700,7 +753,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
         REQUIRE(meet->type.type() == logical_type::TIMESTAMP);
     }
 
-    cast_context context{}; // session tz = UTC
+    graph_execution_context context{}; // session tz = UTC
 
     // STRING -> TIMESTAMP -> STRING round-trips; garbage fails (NULL under try_cast).
     {
@@ -748,7 +801,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
 
     // TIMESTAMP -> TIMESTAMP_TZ applies the session offset: utc = local - offset.
     {
-        cast_context offset_context{cd::timezone_offset_t{3600}}; // UTC+1
+        graph_execution_context offset_context{cd::timezone_offset_t{3600}}; // UTC+1
         vector::vector_t local{resource, timestamp_type};
         local.set_value(0, *cd::parse_timestamp("2024-03-15 12:30:00"));
         vector::vector_t utc{resource, timestamptz_type};
@@ -795,7 +848,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
     }
     // TIME -> TIME_TZ attaches the session zone.
     {
-        cast_context zone_context{cd::timezone_offset_t{19800}}; // +05:30
+        graph_execution_context zone_context{cd::timezone_offset_t{19800}}; // +05:30
         vector::vector_t times{resource, time_type};
         times.set_value(0, *cd::parse_time("13:45:06"));
         vector::vector_t tz{resource, timetz_type};
@@ -819,7 +872,7 @@ TEST_CASE("composite_cast: build_cast composes STRUCT and ARRAY towers over regi
         result.set_alias(name);
         return result;
     };
-    cast_context context{};
+    graph_execution_context context{};
 
     // STRUCT: build_cast auto-derives an ANONYMOUS (float,float) row -> (int,int) from the field
     // types (no macros) and uses the REGISTERED float->int (rounds, ties to even). The source is
@@ -1129,7 +1182,7 @@ TEST_CASE("composite_cast: null container rows propagate validity") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     auto field = [](logical_type type, const char* name) {
         complex_logical_type result{type};
@@ -1253,7 +1306,7 @@ TEST_CASE("composite_cast: cross-kind LIST/ARRAY towers deeper than two levels")
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     using ints3 = std::pmr::vector<std::pmr::vector<std::pmr::vector<int32_t>>>;
     using longs3 = std::pmr::vector<std::pmr::vector<std::pmr::vector<int64_t>>>;
@@ -1349,9 +1402,9 @@ TEST_CASE("composite_cast: cross-kind LIST/ARRAY towers deeper than two levels")
     }
 
     // Ragged inner list -> fixed array, three deep: one innermost list has length 3, which no
-    // fixed 2-array can hold. Under cast that is an error; under try_cast it is reconciled per
-    // row (the length-3 list truncates to 2). Per-row reconcile semantics are pinned down in
-    // the dedicated "ragged LIST -> fixed ARRAY" test below.
+    // fixed 2-array can hold, so it truncates to 2. The reconcile is a property of the types, so
+    // it runs the same under either kind. Per-row semantics are pinned down in the dedicated
+    // "ragged LIST -> fixed ARRAY" test below.
     {
         auto composite = registry.resolve(list3_i32, array3_i64, cast_type::explicit_only);
         REQUIRE(composite.has_value());
@@ -1369,7 +1422,7 @@ TEST_CASE("composite_cast: cross-kind LIST/ARRAY towers deeper than two levels")
         vector::vector_t source{resource, list3_i32};
         source.set_value(0, row0);
         vector::vector_t result_cast{resource, array3_i64};
-        REQUIRE((*composite)(cast_kind::cast, source, &result_cast, context, 1).contains_error());
+        REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result_cast, context, 1).contains_error());
 
         vector::vector_t result_try{resource, array3_i64};
         REQUIRE_FALSE((*composite)(cast_kind::try_cast, source, &result_try, context, 1).contains_error());
@@ -1383,7 +1436,7 @@ TEST_CASE("cast_registry: resolve() is one uniform entry point for leaf and comp
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     // A scalar leaf cast resolves and runs through the same handle a composite would.
     {
@@ -1435,7 +1488,7 @@ TEST_CASE("cast_registry: a composite cast can be registered and resolve() retur
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     auto field = [](logical_type type, const char* name) {
         complex_logical_type result{type};
@@ -1453,7 +1506,7 @@ TEST_CASE("cast_registry: a composite cast can be registered and resolve() retur
     cast_t custom = [](cast_kind,
                        const vector::vector_t& source,
                        vector::vector_t* result,
-                       const cast_context&,
+                       const graph_execution_context&,
                        uint64_t count) -> core::error_t {
         for (uint64_t row = 0; row < count; ++row) {
             result->entries()[0]->set_value(row, source.entries()[0]->get_value<int32_t>(row));
@@ -1518,7 +1571,7 @@ TEST_CASE("cast_registry: add(complex_cast_entry) stores a struct cast at its de
     std::pmr::vector<complex_logical_type> fields{{complex_logical_type{logical_type::INTEGER}}, resource};
     const complex_logical_type pair_type = complex_logical_type::create_struct("pair", fields);
 
-    cast_t custom = [](cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) {
+    cast_t custom = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
         return core::error_t::no_error();
     };
 
@@ -1620,7 +1673,7 @@ TEST_CASE("cast_registry: cost_of reports the element cost for containers, nothi
         std::pmr::vector<complex_logical_type> fields{{complex_logical_type{logical_type::INTEGER}}, resource};
         const complex_logical_type pair_type = complex_logical_type::create_struct("pair", fields);
         const complex_logical_type other_type = complex_logical_type::create_struct("other", fields);
-        cast_t custom = [](cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) {
+        cast_t custom = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
             return core::error_t::no_error();
         };
         const cast_cost declared_cost{.precision_loss = 3, .footprint = 42}; // distinctive, not field-derived
@@ -1696,7 +1749,7 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
         const complex_logical_type struct_i64 = make_struct("s", logical_type::BIGINT);
         REQUIRE_FALSE(registry.level_of(struct_i32, struct_i64).has_value());
 
-        cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) {
+        cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
             return core::error_t::no_error();
         };
         // Declared implicit (with the cost it is ranked by) -> implicit; a container over it
@@ -1715,7 +1768,7 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
     {
         const complex_logical_type struct_a = make_struct("t", logical_type::INTEGER);
         const complex_logical_type struct_b = make_struct("t", logical_type::BIGINT);
-        cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) {
+        cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
             return core::error_t::no_error();
         };
         REQUIRE_FALSE(
@@ -1743,11 +1796,11 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
 // A cross-kind LIST -> fixed ARRAY reconciles each list row to the array length: a row that
 // fits is copied, a short row is copied and null-padded, a long row is truncated. Under CAST a
 // non-fitting row is an error; under try_cast it is salvaged per the rules above.
-TEST_CASE("composite_cast: ragged LIST -> fixed ARRAY reconciles per row under try_cast") {
+TEST_CASE("composite_cast: ragged LIST -> fixed ARRAY reconciles per row") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     const complex_logical_type list_i32 =
         complex_logical_type::create_list(complex_logical_type{logical_type::INTEGER});
@@ -1767,18 +1820,14 @@ TEST_CASE("composite_cast: ragged LIST -> fixed ARRAY reconciles per row under t
         return source;
     };
 
-    // Under CAST, a non-fitting row (rows 1 and 2) is a hard error.
-    {
+    // A LIST does not constrain its length but an ARRAY does, so a row of a different length is
+    // reconciled to the target's -- padded when short, truncated when long. That follows from the
+    // two TYPES, so the cast KIND does not change the answer: try_cast differs from cast only in
+    // how a failing ELEMENT conversion is reported, and a length is not an element failure.
+    auto reconciles_per_row = [&](cast_kind kind) {
         vector::vector_t source = build_source();
         vector::vector_t result{resource, array2_i64};
-        REQUIRE((*composite)(cast_kind::cast, source, &result, context, 3).contains_error());
-    }
-
-    // Under try_cast, each row is reconciled.
-    {
-        vector::vector_t source = build_source();
-        vector::vector_t result{resource, array2_i64};
-        REQUIRE_FALSE((*composite)(cast_kind::try_cast, source, &result, context, 3).contains_error());
+        REQUIRE_FALSE((*composite)(kind, source, &result, context, 3).contains_error());
 
         const vector::vector_t& child = result.entry(); // flat int64 buffer, 3 rows * stride 2
         // row 0 [10,20] fits verbatim.
@@ -1793,7 +1842,101 @@ TEST_CASE("composite_cast: ragged LIST -> fixed ARRAY reconciles per row under t
         REQUIRE_FALSE(result.is_null(2));
         REQUIRE(child.get_value<int64_t>(4) == 40);
         REQUIRE(child.get_value<int64_t>(5) == 50);
+    };
+
+    reconciles_per_row(cast_kind::cast);
+    reconciles_per_row(cast_kind::try_cast);
+}
+
+// The same reconcile between two FIXED lengths. Both sides declare their length, so every row
+// pads or truncates identically -- and the source's elements sit at row * source_stride while the
+// target's sit at row * target_stride, which is why they cannot be converted in place.
+TEST_CASE("composite_cast: fixed ARRAY -> a different fixed ARRAY reconciles the length") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    const complex_logical_type array2_i32 =
+        complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 2);
+    const complex_logical_type array3_i64 =
+        complex_logical_type::create_array(complex_logical_type{logical_type::BIGINT}, 3);
+
+    // Short -> long: two rows of 2 pad a third slot each. The element widens too, so the gather
+    // crosses differing element sizes as well as differing strides.
+    {
+        auto composite = registry.resolve(array2_i32, array3_i64, cast_type::assignment);
+        REQUIRE(composite.has_value());
+
+        vector::vector_t source{resource, array2_i32}; // 2 rows * stride 2 = 4 flat int32
+        vector::vector_t& source_child = source.entry();
+        const int32_t inputs[4] = {10, 20, 30, 40};
+        for (uint64_t index = 0; index < 4; ++index) {
+            source_child.set_value(index, inputs[index]);
+        }
+
+        vector::vector_t result{resource, array3_i64};
+        REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result, context, 2).contains_error());
+
+        const vector::vector_t& child = result.entry(); // 2 rows * stride 3
+        REQUIRE(child.get_value<int64_t>(0) == 10);
+        REQUIRE(child.get_value<int64_t>(1) == 20);
+        REQUIRE(child.is_null(2)); // padded
+        REQUIRE(child.get_value<int64_t>(3) == 30);
+        REQUIRE(child.get_value<int64_t>(4) == 40);
+        REQUIRE(child.is_null(5)); // padded
     }
+
+    // Long -> short: the tail is dropped rather than spilling into the next row.
+    {
+        auto composite = registry.resolve(array3_i64, array2_i32, cast_type::assignment);
+        REQUIRE(composite.has_value());
+
+        vector::vector_t source{resource, array3_i64}; // 2 rows * stride 3
+        vector::vector_t& source_child = source.entry();
+        const int64_t inputs[6] = {1, 2, 3, 4, 5, 6};
+        for (uint64_t index = 0; index < 6; ++index) {
+            source_child.set_value(index, inputs[index]);
+        }
+
+        vector::vector_t result{resource, array2_i32};
+        REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result, context, 2).contains_error());
+
+        const vector::vector_t& child = result.entry(); // 2 rows * stride 2
+        REQUIRE(child.get_value<int32_t>(0) == 1);
+        REQUIRE(child.get_value<int32_t>(1) == 2); // 3 dropped
+        REQUIRE(child.get_value<int32_t>(2) == 4);
+        REQUIRE(child.get_value<int32_t>(3) == 5); // 6 dropped
+    }
+}
+
+// The empty array literal is the stride-0 end of that reconcile: ARRAY[] carries no element to
+// place and no element TYPE either (its element is NA, which reaches every type by the registry's
+// null rule), so it fills the target's declared length with nulls rather than leaving the slots
+// untouched -- untouched slots read back as NOT NULL, since a fresh validity mask is all-valid.
+TEST_CASE("composite_cast: an empty array literal fills a fixed ARRAY with nulls") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    const complex_logical_type empty_literal =
+        complex_logical_type::create_array(complex_logical_type{logical_type::NA}, 0);
+    const complex_logical_type array3_i32 =
+        complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 3);
+
+    auto composite = registry.resolve(empty_literal, array3_i32, cast_type::assignment);
+    REQUIRE(composite.has_value());
+
+    vector::vector_t source{resource, empty_literal};
+    vector::vector_t result{resource, array3_i32};
+    REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result, context, 1).contains_error());
+
+    REQUIRE_FALSE(result.is_null(0)); // an empty array is a value, not a null row
+    const vector::vector_t& child = result.entry();
+    REQUIRE(child.is_null(0));
+    REQUIRE(child.is_null(1));
+    REQUIRE(child.is_null(2));
 }
 
 // A leaf whose source and target type are identical has no registered cast (the registry
@@ -1804,7 +1947,7 @@ TEST_CASE("composite_cast: identity/copy leaf builds partially-changed composite
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     auto field = [](logical_type type, const char* name) {
         complex_logical_type result{type};
@@ -1915,7 +2058,7 @@ TEST_CASE("default casts: BOOLEAN <-> numeric and string") {
     REQUIRE_FALSE(common(registry, bool_type, integer_type).has_value());
     REQUIRE_FALSE(registry.resolve(bool_type, integer_type, cast_type::assignment).has_value());
 
-    cast_context context{};
+    graph_execution_context context{};
 
     // bool -> INTEGER (0/1) and INTEGER -> bool (x != 0).
     {
@@ -1988,7 +2131,7 @@ TEST_CASE("default casts: INTEGER -> BIGINT executes over a vector, preserving n
     }
     source.set_null(2, true); // one null row
 
-    cast_context params{};
+    graph_execution_context params{};
     core::error_t error = entry->fn.invoke(cast_kind::cast, source, &result, params, count);
     REQUIRE_FALSE(error.contains_error());
 
@@ -2060,8 +2203,9 @@ TEST_CASE("cast_registry: containers promote through their element") {
 }
 
 // Container transparency stops at a SHAPE CHANGE. Filling a fixed-length array from a different
-// shape can fail per row -- a length mismatch errors under CAST -- and that failure is invisible
-// to the element cast, so it is capped at assignment however cheap the element is.
+// shape reconciles the length per row -- padding or truncating, so the value does not survive
+// unchanged -- and that is invisible to the element cast, so it is capped at assignment however
+// cheap the element is.
 TEST_CASE("cast_registry: a shape-changing container cast is capped at assignment") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
@@ -2152,7 +2296,7 @@ TEST_CASE("cast_registry: registration order does not affect which common type w
     auto* resource = std::pmr::get_default_resource();
 
     struct helper {
-        static core::error_t noop(const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) noexcept {
+        static core::error_t noop(const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) noexcept {
             return core::error_t::no_error();
         }
     };
@@ -2212,7 +2356,7 @@ TEST_CASE("cast_registry: a declared implicit struct cast takes part in promotio
         std::pmr::vector<complex_logical_type> fields{{field(type, "x")}, resource};
         return complex_logical_type::create_struct(name, fields);
     };
-    cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) {
+    cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
         return core::error_t::no_error();
     };
 
@@ -2278,7 +2422,7 @@ TEST_CASE("cast_registry: declared UDT <-> built-in casts take part in promotion
     std::pmr::vector<complex_logical_type> fields{{field(logical_type::INTEGER, "v")}, resource};
     const complex_logical_type udt = complex_logical_type::create_struct("money", fields);
 
-    cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const cast_context&, uint64_t) {
+    cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
         return core::error_t::no_error();
     };
 
@@ -2393,7 +2537,7 @@ TEST_CASE("default casts: DECIMAL -> BOOLEAN is (x != 0), not a truncation") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
-    cast_context context{};
+    graph_execution_context context{};
 
     const complex_logical_type boolean{logical_type::BOOLEAN};
     const complex_logical_type decimal = complex_logical_type::create_decimal(10, 2);
@@ -2421,4 +2565,200 @@ TEST_CASE("default casts: DECIMAL -> BOOLEAN is (x != 0), not a truncation") {
     REQUIRE(result.get_value<bool>(1)); // 0.50 is not zero -- truncating would make this false
     REQUIRE(result.get_value<bool>(2));
     REQUIRE(result.get_value<bool>(3));
+}
+
+TEST_CASE("default casts: find_best_common_type over N inputs") {
+    cast_registry_t registry{std::pmr::get_default_resource()};
+    register_default_casts(registry);
+
+    auto common_of = [&](std::vector<complex_logical_type> types) {
+        return registry.find_best_common_type(std::span<const complex_logical_type>{types});
+    };
+
+    SECTION("one input is its own common type") {
+        auto single = common_of({integer_type});
+        REQUIRE(single.has_value());
+        REQUIRE(single->type.type() == logical_type::INTEGER);
+        REQUIRE(single->casts.size() == 1);
+        REQUIRE_FALSE(single->casts[0]);
+    }
+
+    SECTION("the widest of the tower wins and only the narrower sides cast") {
+        auto widened = common_of({integer_type, bigint_type, hugeint_type});
+        REQUIRE(widened.has_value());
+        REQUIRE(widened->type.type() == logical_type::HUGEINT);
+        REQUIRE(widened->casts.size() == 3);
+        REQUIRE(widened->casts[0]);
+        REQUIRE(widened->casts[1]);
+        REQUIRE_FALSE(widened->casts[2]); // already the common type
+    }
+
+    SECTION("the answer does not depend on argument order") {
+        // The property a pairwise fold loses: whichever order they arrive in, the winner is the
+        // one type all three reach.
+        auto forward = common_of({integer_type, bigint_type, double_type});
+        auto shuffled = common_of({double_type, integer_type, bigint_type});
+        auto reversed = common_of({double_type, bigint_type, integer_type});
+        REQUIRE(forward.has_value());
+        REQUIRE(shuffled.has_value());
+        REQUIRE(reversed.has_value());
+        REQUIRE(forward->type.type() == logical_type::DOUBLE);
+        REQUIRE(shuffled->type.type() == forward->type.type());
+        REQUIRE(reversed->type.type() == forward->type.type());
+    }
+
+    SECTION("one unreachable input makes the whole thing an error") {
+        // Every input must reach the result implicitly, so a string among numerics has no answer
+        // even though the numeric part of the list does.
+        REQUIRE_FALSE(common_of({integer_type, bigint_type, string_type}).has_value());
+    }
+
+    SECTION("no inputs has no common type") { REQUIRE_FALSE(common_of({}).has_value()); }
+
+    SECTION("decimals widen to a constructed supertype that is no input") {
+        const auto narrow = complex_logical_type::create_decimal(6, 2);
+        const auto scaled = complex_logical_type::create_decimal(6, 4);
+        auto widened = common_of({narrow, scaled});
+        REQUIRE(widened.has_value());
+        REQUIRE(widened->type.type() == logical_type::DECIMAL);
+        // Needs the integer digits of one and the fraction digits of the other, so it is neither.
+        const auto* extension = widened->type.extension_as<components::types::decimal_logical_type_extension>();
+        REQUIRE(extension->scale() == 4);
+        REQUIRE(extension->width() >= 8);
+        REQUIRE(widened->casts.size() == 2);
+    }
+}
+
+// NULL is not a type that converts INTO others -- it is the absence of a value, and every type
+// already carries that in its validity mask. So one cast body serves every target, it is implicit
+// and lossless, and the target's own type never enters into it.
+TEST_CASE("default casts: NULL reaches every type by one lossless implicit cast") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+
+    const complex_logical_type null_type{logical_type::NA};
+
+    SECTION("it reaches concrete, parameterized and constructed targets alike") {
+        // The point of resolving this by rule rather than by table: none of these could be
+        // enumerated as registry entries (every decimal width, every array length, every struct).
+        const auto decimal = complex_logical_type::create_decimal(9, 3);
+        std::pmr::vector<complex_logical_type> fields{resource};
+        fields.emplace_back(logical_type::INTEGER);
+        fields.back().set_alias("f");
+        const auto structure = complex_logical_type::create_struct("s", fields, "s");
+        for (const auto& target :
+             {integer_type, double_type, string_type, decimal, structure, complex_logical_type{logical_type::DATE}}) {
+            REQUIRE(registry.level_of(null_type, target) == cast_type::implicit);
+            const auto cost = registry.cost_of(null_type, target);
+            REQUIRE(cost.has_value());
+            REQUIRE(cost->precision_loss == 0); // a null loses nothing whatever it lands in
+            REQUIRE(registry.resolve(null_type, target, cast_type::implicit).has_value());
+            // Assignment is what INSERT asks for, and an implicit cast is allowed there too.
+            REQUIRE(registry.resolve(null_type, target, cast_type::assignment).has_value());
+        }
+    }
+
+    SECTION("the reverse edge does not exist") {
+        // A concrete type ALREADY represents its nulls, so T -> NULL would buy nothing — and it
+        // would let NA win as a common supertype and collapse a whole expression to null.
+        REQUIRE_FALSE(registry.level_of(integer_type, null_type).has_value());
+        REQUIRE_FALSE(registry.resolve(integer_type, null_type, cast_type::explicit_only).has_value());
+    }
+
+    SECTION("executing it invalidates every row and reads nothing from the source") {
+        vector::vector_t source{resource, complex_logical_type{logical_type::NA}};
+        vector::vector_t result{resource, bigint_type};
+        constexpr uint64_t count = 4;
+        for (uint64_t row = 0; row < count; ++row) {
+            result.set_value(row, static_cast<int64_t>(row + 1)); // pre-fill: the cast must override
+        }
+
+        auto cast = registry.resolve(null_type, bigint_type, cast_type::implicit);
+        REQUIRE(cast.has_value());
+        graph_execution_context params{};
+        REQUIRE_FALSE((*cast)(cast_kind::cast, source, &result, params, count).contains_error());
+
+        for (uint64_t row = 0; row < count; ++row) {
+            REQUIRE(result.is_null(row));
+        }
+    }
+}
+
+// NULL carries no type of its own, so it must never DECIDE a common type — only ever be carried
+// to whatever the concrete inputs settle on.
+TEST_CASE("default casts: NULL is transparent to common-type resolution") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+
+    const complex_logical_type null_type{logical_type::NA};
+
+    SECTION("pairwise: the other side wins, and the null side gets a real cast") {
+        auto with_null = common(registry, null_type, integer_type);
+        REQUIRE(with_null.has_value());
+        REQUIRE(with_null->type.type() == logical_type::INTEGER);
+        REQUIRE(with_null->left_cast);         // NULL -> INTEGER
+        REQUIRE_FALSE(with_null->right_cast);  // already the common type
+
+        // and the same whichever side it arrives on
+        auto mirrored = common(registry, integer_type, null_type);
+        REQUIRE(mirrored.has_value());
+        REQUIRE(mirrored->type.type() == logical_type::INTEGER);
+        REQUIRE(mirrored->right_cast);
+        REQUIRE_FALSE(mirrored->left_cast);
+    }
+
+    SECTION("pairwise: two nulls stay NULL") {
+        auto both = common(registry, null_type, null_type);
+        REQUIRE(both.has_value());
+        REQUIRE(both->type.type() == logical_type::NA);
+    }
+
+    SECTION("pairwise: a null does not rescue an otherwise unreachable pair") {
+        // NULL reaching both sides must not make it a common type for them.
+        REQUIRE_FALSE(common(registry, integer_type, string_type).has_value());
+    }
+
+    auto common_of = [&](std::vector<complex_logical_type> types) {
+        return registry.find_best_common_type(std::span<const complex_logical_type>{types});
+    };
+
+    SECTION("n-ary: the concrete inputs decide and the null follows") {
+        auto widened = common_of({null_type, integer_type, bigint_type});
+        REQUIRE(widened.has_value());
+        REQUIRE(widened->type.type() == logical_type::BIGINT);
+        REQUIRE(widened->casts.size() == 3);
+        REQUIRE(widened->casts[0]);           // NULL -> BIGINT
+        REQUIRE(widened->casts[1]);           // INTEGER -> BIGINT
+        REQUIRE_FALSE(widened->casts[2]);     // already the common type
+    }
+
+    SECTION("n-ary: a null does not knock decimals off their own supertype rule") {
+        // The parameterized families settle by folding width/scale, which a null cannot take part
+        // in — so it has to be dropped rather than folded, or the search falls back to picking the
+        // wider INPUT instead of the constructed supertype that is neither.
+        const auto narrow = complex_logical_type::create_decimal(6, 2);
+        const auto scaled = complex_logical_type::create_decimal(6, 4);
+        auto without_null = common_of({narrow, scaled});
+        auto with_null = common_of({null_type, narrow, scaled});
+        REQUIRE(without_null.has_value());
+        REQUIRE(with_null.has_value());
+        REQUIRE(with_null->type.type() == logical_type::DECIMAL);
+        const auto* expected = without_null->type.extension_as<types::decimal_logical_type_extension>();
+        const auto* actual = with_null->type.extension_as<types::decimal_logical_type_extension>();
+        REQUIRE(actual->width() == expected->width());
+        REQUIRE(actual->scale() == expected->scale());
+        REQUIRE(with_null->casts.size() == 3);
+    }
+
+    SECTION("n-ary: all-null inputs stay NULL") {
+        auto all_null = common_of({null_type, null_type});
+        REQUIRE(all_null.has_value());
+        REQUIRE(all_null->type.type() == logical_type::NA);
+    }
+
+    SECTION("n-ary: a null does not rescue an otherwise unreachable list") {
+        REQUIRE_FALSE(common_of({null_type, integer_type, string_type}).has_value());
+    }
 }

@@ -1,5 +1,7 @@
 #include "full_scan.hpp"
 
+#include <components/expressions/cast_expression.hpp>
+#include <components/expressions/execution_graph_builder.hpp>
 #include <components/expressions/clone_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -33,15 +35,33 @@ namespace components::operators {
                 return;
             }
             const auto& e = expr::as_expr(p);
-            if (e->group() == expr::expression_group::scalar) {
-                const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(e);
-                for (const auto& sub : s->params()) {
-                    collect_refs(sub, paths, param_ids);
+            switch (e->group()) {
+                case expr::expression_group::scalar: {
+                    const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(e);
+                    for (const auto& sub : s->params()) {
+                        collect_refs(sub, paths, param_ids);
+                    }
+                    break;
                 }
-            } else {
-                const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(e);
-                for (const auto& sub : f->args()) {
-                    collect_refs(sub, paths, param_ids);
+                case expr::expression_group::cast: {
+                    collect_refs(static_cast<const expr::cast_expression_t*>(e.get())->child(), paths, param_ids);
+                    break;
+                }
+                case expr::expression_group::compare: {
+                    const auto* cmp = static_cast<const expr::compare_expression_t*>(e.get());
+                    collect_refs(cmp->left(), paths, param_ids);
+                    collect_refs(cmp->right(), paths, param_ids);
+                    for (const auto& child : cmp->children()) {
+                        collect_refs(expr::param_storage{child}, paths, param_ids);
+                    }
+                    break;
+                }
+                default: {
+                    const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(e);
+                    for (const auto& sub : f->args()) {
+                        collect_refs(sub, paths, param_ids);
+                    }
+                    break;
                 }
             }
         }
@@ -52,7 +72,7 @@ namespace components::operators {
                         const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters,
-                        core::date::timezone_offset_t session_tz) {
+                        const components::graph_execution_context& context) {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
             return std::unique_ptr<table::table_filter_t>{};
         }
@@ -73,7 +93,7 @@ namespace components::operators {
                                             reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
                                             parameters,
-                                            session_tz);
+                                            context);
                     if (child_result.has_error()) {
                         return child_result;
                     }
@@ -96,7 +116,7 @@ namespace components::operators {
                                             reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
                                             parameters,
-                                            session_tz);
+                                            context);
                     if (child_result.has_error()) {
                         return child_result;
                     }
@@ -120,7 +140,7 @@ namespace components::operators {
                                             reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
                                             parameters,
-                                            session_tz);
+                                            context);
                     if (child_result.has_error()) {
                         return child_result;
                     }
@@ -198,7 +218,7 @@ namespace components::operators {
                             if (types::is_string(val.type().type())) {
                                 raw = val.value<std::string_view>();
                             } else {
-                                auto casted = val.cast_as(col_type, session_tz);
+                                auto casted = val.cast_as(col_type, context.timezone_offset);
                                 if (casted.has_error()) {
                                     return casted.convert_error<std::unique_ptr<table::table_filter_t>>();
                                 }
@@ -239,7 +259,7 @@ namespace components::operators {
                                     std::make_unique<table::constant_filter_t>(inner_op, val, indices));
                                 continue;
                             }
-                            auto coerced = val.cast_as(col_type, session_tz);
+                            auto coerced = val.cast_as(col_type, context.timezone_offset);
                             if (coerced.has_error()) {
                                 return coerced.convert_error<std::unique_ptr<table::table_filter_t>>();
                             }
@@ -353,11 +373,48 @@ namespace components::operators {
                     // of the smart-pointer object itself is a strict-aliasing violation gcc rejects).
                     expressions::compare_expression_ptr compare_clone{
                         static_cast<expressions::compare_expression_t*>(clone.get())};
+
+                    size_t width = 0;
+                    for (const auto& path : column_paths) {
+                        if (!path.empty()) {
+                            width = std::max(width, path.front() + 1);
+                        }
+                    }
+                    std::pmr::vector<types::complex_logical_type> chunk_types{resource};
+                    chunk_types.reserve(width);
+                    for (size_t i = 0; i < width; i++) {
+                        const bool referenced =
+                            std::any_of(column_paths.begin(), column_paths.end(), [i](const auto& path) {
+                                return !path.empty() && path.front() == i;
+                            });
+                        if (referenced) {
+                            chunk_types.push_back(types[i]);
+                        } else {
+                            // NA marks a padding slot and does not result in additional allocations
+                            chunk_types.emplace_back(types::logical_type::NA);
+                        }
+                    }
+
+                    const auto condition = expressions::classify_condition(clone);
+                    std::unique_ptr<execution_graph::execution_graph_t> graph;
+                    if (condition == expressions::condition_kind::computed) {
+                        auto built = expressions::build_condition_graph(resource,
+                                                                        param_snapshot,
+                                                                        compare_clone.get(),
+                                                                        chunk_types);
+                        if (built.has_error()) {
+                            return built.error();
+                        }
+                        graph = std::move(built.value());
+                    }
                     return std::unique_ptr<table::table_filter_t>(std::make_unique<table::expression_filter_t>(
                         std::move(compare_clone),
                         std::move(column_paths),
                         std::move(param_snapshot),
-                        session_tz));
+                        context,
+                        std::move(chunk_types),
+                        std::move(graph),
+                        condition));
                 }
                 // Column-vs-column `a.x OP a.y`: both operands are columns -> a column_column_filter_t that
                 // fetches both values per row and compares (is_pure_compare only accepts a plain comparison).
@@ -383,7 +440,7 @@ namespace components::operators {
                         std::make_unique<table::column_column_filter_t>(expression->type(),
                                                                         std::move(li),
                                                                         std::move(ri),
-                                                                        session_tz));
+                                                                        context.timezone_offset));
                 }
                 // Otherwise a disk table_filter_t is `column OP constant` only: the LEFT operand must
                 // be a key and the RIGHT a bound parameter (the param_storage alternative that is
@@ -468,7 +525,7 @@ namespace components::operators {
                                                                    std::move(indices)));
                 }
                 if (!param_value.is_null() && param_value.type() != col_type) {
-                    auto coerced = param_value.cast_as(col_type, session_tz);
+                    auto coerced = param_value.cast_as(col_type, context.timezone_offset);
                     if (coerced.has_error()) {
                         return coerced.convert_error<std::unique_ptr<table::table_filter_t>>();
                     }
@@ -576,7 +633,11 @@ namespace components::operators {
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {
                 auto filter_result =
-                    transform_predicate(resource_, expression_, guard_types_, &ctx->parameters, ctx->session_tz);
+                    transform_predicate(resource_,
+                                        expression_,
+                                        guard_types_,
+                                        &ctx->parameters,
+                                        ctx->execution_context);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();

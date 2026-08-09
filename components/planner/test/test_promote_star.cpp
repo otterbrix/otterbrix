@@ -285,10 +285,12 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     where->append_child(p_or);
     auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
 
-    // GROUP BY d_year, c_nation ; SUM(lo_revenue - lo_supplycost) AS profit
+    // GROUP BY d_year, c_nation ; SELECT d_year, c_nation, SUM(lo_revenue - lo_supplycost) AS profit
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "d_year")));
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "c_nation")));
+    group_exprs.emplace_back(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "d_year")));
+    group_exprs.emplace_back(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "c_nation")));
     auto sum_profit = make_aggregate_expression(res, "sum", bare_key(res, "profit"));
     auto profit_arith = make_scalar_expression(res, scalar_type::subtract);
     profit_arith->append_param(bare_key(res, "lo_revenue"));
@@ -303,18 +305,11 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     sort_exprs.emplace_back(make_sort_expression(bare_key(res, "c_nation"), sort_order::asc));
     auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
 
-    // SELECT d_year, c_nation, profit  (resolved against the GROUP OUTPUT schema)
-    auto select = make_node_select(res, core::dbname_t{}, core::relname_t{});
-    select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "d_year")));
-    select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "c_nation")));
-    select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "profit")));
-
     auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
     agg->append_child(source);
     agg->append_child(match);
     agg->append_child(group);
     agg->append_child(sort);
-    agg->append_child(select);
 
     auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
@@ -324,7 +319,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     // is derived from). ---
     auto* g_dyear = static_cast<scalar_expression_t*>(group->expressions()[0].get());
     auto* g_cnat = static_cast<scalar_expression_t*>(group->expressions()[1].get());
-    auto* g_sum = static_cast<aggregate_expression_t*>(group->expressions()[2].get());
+    auto* g_sum = static_cast<aggregate_expression_t*>(group->expressions()[4].get());
     REQUIRE(g_dyear->key().path()[0] == 4);  // d_year   (dim_date @0 + 4)
     REQUIRE(g_cnat->key().path()[0] == 21);  // c_nation (customer @17 + 4)
     REQUIRE(g_sum->params().size() == 1);
@@ -340,10 +335,6 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     auto* srt_cnat = static_cast<sort_expression_t*>(sort->expressions()[1].get());
     const size_t sort_dyear_before = srt_dyear->key().path()[0];
     const size_t sort_cnat_before = srt_cnat->key().path()[0];
-    std::vector<size_t> select_before;
-    for (auto& e : select->expressions()) {
-        select_before.push_back(static_cast<scalar_expression_t*>(e.get())->key().path()[0]);
-    }
     // Group output schema is [d_year(0), c_nation(1), profit(2)]; the sort keys
     // index THAT, not the merged join schema (merged d_year/c_nation would be 4/21).
     REQUIRE(sort_dyear_before == 0);
@@ -412,24 +403,22 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     REQUIRE(group_after);
     auto* g_dyear_a = static_cast<scalar_expression_t*>(group_after->expressions()[0].get());
     auto* g_cnat_a = static_cast<scalar_expression_t*>(group_after->expressions()[1].get());
-    auto* g_sum_a = static_cast<aggregate_expression_t*>(group_after->expressions()[2].get());
+    auto* g_proj_dyear_a = static_cast<scalar_expression_t*>(group_after->expressions()[2].get());
+    auto* g_proj_cnat_a = static_cast<scalar_expression_t*>(group_after->expressions()[3].get());
+    auto* g_sum_a = static_cast<aggregate_expression_t*>(group_after->expressions()[4].get());
     auto* g_sub_a = static_cast<scalar_expression_t*>(as_expr(g_sum_a->params()[0]).get());
     CHECK(g_dyear_a->key().path()[0] == 21);            // d_year        4  -> 21
     CHECK(g_cnat_a->key().path()[0] == 38);             // c_nation      21 -> 38
+    CHECK(g_proj_dyear_a->key().path()[0] == 21);
+    CHECK(g_proj_cnat_a->key().path()[0] == 38);
     CHECK(as_key(g_sub_a->params()[0]).path()[0] == 12); // lo_revenue    53 -> 12
     CHECK(as_key(g_sub_a->params()[1]).path()[0] == 13); // lo_supplycost 54 -> 13
 
     // --- GROUP-OUTPUT loci UNCHANGED --------------------------------------------
     auto sort_after = find_child_by_type(agg_after, node_type::sort_t);
-    auto select_after = find_child_by_type(agg_after, node_type::select_t);
     REQUIRE(sort_after);
-    REQUIRE(select_after);
     CHECK(static_cast<sort_expression_t*>(sort_after->expressions()[0].get())->key().path()[0] == sort_dyear_before);
     CHECK(static_cast<sort_expression_t*>(sort_after->expressions()[1].get())->key().path()[0] == sort_cnat_before);
-    for (size_t i = 0; i < select_after->expressions().size(); ++i) {
-        CHECK(static_cast<scalar_expression_t*>(select_after->expressions()[i].get())->key().path()[0] ==
-              select_before[i]);
-    }
 }
 
 // ----------------------------------------------------------------------------

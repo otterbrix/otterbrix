@@ -100,7 +100,7 @@ namespace components::casts::kernels {
     template<typename Target>
     core::error_t decimal_to_floating_cast(const vector::vector_t& source,
                                            vector::vector_t* result,
-                                           const cast_context&,
+                                           const graph_execution_context&,
                                            uint64_t count) noexcept {
         types::physical_type physical = source.type().to_physical_type();
         uint8_t scale = source.type().extension_as<types::decimal_logical_type_extension>()->scale();
@@ -130,7 +130,7 @@ namespace components::casts::kernels {
     template<typename Source>
     core::error_t floating_to_decimal_cast(const vector::vector_t& source,
                                            vector::vector_t* result,
-                                           const cast_context&,
+                                           const graph_execution_context&,
                                            uint64_t count) noexcept {
         types::physical_type physical = result->type().to_physical_type();
         const auto* extension = result->type().extension_as<types::decimal_logical_type_extension>();
@@ -166,7 +166,7 @@ namespace components::casts::kernels {
     template<typename Source>
     void floating_to_decimal_try_cast(const vector::vector_t& source,
                                       vector::vector_t* result,
-                                      const cast_context&,
+                                      const graph_execution_context&,
                                       uint64_t count) noexcept {
         types::physical_type physical = result->type().to_physical_type();
         const auto* extension = result->type().extension_as<types::decimal_logical_type_extension>();
@@ -201,7 +201,7 @@ namespace components::casts::kernels {
     template<typename Target>
     core::error_t decimal_to_integer_cast(const vector::vector_t& source,
                                           vector::vector_t* result,
-                                          const cast_context&,
+                                          const graph_execution_context&,
                                           uint64_t count) noexcept {
         types::physical_type physical = source.type().to_physical_type();
         uint8_t scale = source.type().extension_as<types::decimal_logical_type_extension>()->scale();
@@ -228,7 +228,7 @@ namespace components::casts::kernels {
     template<typename Target>
     void decimal_to_integer_try_cast(const vector::vector_t& source,
                                      vector::vector_t* result,
-                                     const cast_context&,
+                                     const graph_execution_context&,
                                      uint64_t count) noexcept {
         types::physical_type physical = source.type().to_physical_type();
         uint8_t scale = source.type().extension_as<types::decimal_logical_type_extension>()->scale();
@@ -254,7 +254,7 @@ namespace components::casts::kernels {
     // Scale-independent: a decimal is zero iff its raw value is, so nothing is divided out.
     inline core::error_t decimal_to_bool_cast(const vector::vector_t& source,
                                               vector::vector_t* result,
-                                              const cast_context&,
+                                              const graph_execution_context&,
                                               uint64_t count) noexcept {
         types::physical_type physical = source.type().to_physical_type();
         for (uint64_t row = 0; row < count; ++row) {
@@ -274,7 +274,7 @@ namespace components::casts::kernels {
 
     inline void decimal_to_bool_try_cast(const vector::vector_t& source,
                                          vector::vector_t* result,
-                                         const cast_context&,
+                                         const graph_execution_context&,
                                          uint64_t count) noexcept {
         types::physical_type physical = source.type().to_physical_type();
         for (uint64_t row = 0; row < count; ++row) {
@@ -294,7 +294,7 @@ namespace components::casts::kernels {
     template<typename Source>
     core::error_t integer_to_decimal_cast(const vector::vector_t& source,
                                           vector::vector_t* result,
-                                          const cast_context&,
+                                          const graph_execution_context&,
                                           uint64_t count) noexcept {
         const auto* extension = result->type().extension_as<types::decimal_logical_type_extension>();
         uint8_t scale = extension->scale();
@@ -320,7 +320,7 @@ namespace components::casts::kernels {
     template<typename Source>
     void integer_to_decimal_try_cast(const vector::vector_t& source,
                                      vector::vector_t* result,
-                                     const cast_context&,
+                                     const graph_execution_context&,
                                      uint64_t count) noexcept {
         const auto* extension = result->type().extension_as<types::decimal_logical_type_extension>();
         uint8_t scale = extension->scale();
@@ -344,7 +344,7 @@ namespace components::casts::kernels {
 
     inline core::error_t decimal_to_decimal_cast(const vector::vector_t& source,
                                                  vector::vector_t* result,
-                                                 const cast_context&,
+                                                 const graph_execution_context&,
                                                  uint64_t count) noexcept {
         types::physical_type source_physical = source.type().to_physical_type();
         types::physical_type result_physical = result->type().to_physical_type();
@@ -376,7 +376,7 @@ namespace components::casts::kernels {
 
     inline void decimal_to_decimal_try_cast(const vector::vector_t& source,
                                             vector::vector_t* result,
-                                            const cast_context&,
+                                            const graph_execution_context&,
                                             uint64_t count) noexcept {
         types::physical_type source_physical = source.type().to_physical_type();
         types::physical_type result_physical = result->type().to_physical_type();

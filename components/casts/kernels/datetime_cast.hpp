@@ -10,7 +10,7 @@ namespace components::casts::kernels {
     template<typename From, typename To>
     core::error_t datetime_convert_cast(const vector::vector_t& source,
                                         vector::vector_t* result,
-                                        const cast_context& context,
+                                        const graph_execution_context& context,
                                         uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {

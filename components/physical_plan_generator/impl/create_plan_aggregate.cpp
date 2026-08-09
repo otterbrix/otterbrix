@@ -59,35 +59,71 @@ namespace services::planner::impl {
             if (has_having_child || group->internal_aggregate_count != 0) {
                 return false;
             }
-            for (const auto& expr : group->expressions()) {
-                if (expr->group() == ce::expression_group::scalar) {
-                    const auto* s = static_cast<const ce::scalar_expression_t*>(expr.get());
-                    const ce::key_t* field = nullptr;
-                    switch (s->type()) {
-                        case ce::scalar_type::group_field:
-                            field = &s->key();
-                            break;
-                        case ce::scalar_type::get_field:
-                            // Guard the variant access (R2): a non-key_t first param
-                            // (parameter_id / nested expression) is not POD-representable.
-                            if (!s->params().empty() && !std::holds_alternative<ce::key_t>(s->params().front())) {
-                                return false;
-                            }
-                            field = s->params().empty() ? &s->key()
-                                                        : &std::get<ce::key_t>(s->params().front());
-                            break;
-                        default:
-                            return false; // coalesce / case_when / arithmetic — not POD-representable
-                    }
-                    if (s->key().storage().empty()) {
+            // Pass 1 — the GROUP BY keys, so the reduced row's layout is fixed before any output
+            // position is computed. output_key_of[i] is the key ordinal expression i emits, or
+            // SIZE_MAX where it emits none: a GROUP BY key the target list never names.
+            std::pmr::vector<size_t> output_key_of(group->expressions().size(), SIZE_MAX, resource);
+            for (size_t i = 0; i < group->expressions().size(); i++) {
+                const auto& expr = group->expressions()[i];
+                if (expr->group() != ce::expression_group::scalar) {
+                    continue;
+                }
+                const auto* s = static_cast<const ce::scalar_expression_t*>(expr.get());
+                const ce::key_t* field = nullptr;
+                bool emits_output = true;
+                switch (s->type()) {
+                    case ce::scalar_type::group_field:
+                        field = &s->key();
+                        emits_output = false;
+                        break;
+                    case ce::scalar_type::get_field:
+                        if (!s->params().empty() && !std::holds_alternative<ce::key_t>(s->params().front())) {
+                            return false;
+                        }
+                        field = s->params().empty() ? &s->key() : &std::get<ce::key_t>(s->params().front());
+                        break;
+                    default:
                         return false;
+                }
+                if (s->key().storage().empty()) {
+                    return false;
+                }
+                // A target-list reference to a column already grouped on reads that key rather
+                // than adding a second, identical one.
+                const auto& path = field->path();
+                bool reused = false;
+                for (size_t k = 0; emits_output && !path.empty() && k < out.group_keys.size(); k++) {
+                    const auto& existing = out.group_keys[k].path;
+                    if (existing.size() == path.size() && std::equal(existing.begin(), existing.end(), path.begin())) {
+                        output_key_of[i] = k;
+                        reused = true;
+                        break;
                     }
-                    ops::pushed_group_key_t gk{resource};
-                    const auto& name = s->key().storage().back();
-                    gk.name.assign(name.data(), name.size());
-                    gk.path.assign(field->path().begin(), field->path().end());
-                    out.group_keys.push_back(std::move(gk));
-                } else if (expr->group() == ce::expression_group::aggregate) {
+                }
+                if (reused) {
+                    continue;
+                }
+                if (emits_output) {
+                    output_key_of[i] = out.group_keys.size();
+                }
+                ops::pushed_group_key_t gk{resource};
+                const auto& name = s->key().storage().back();
+                gk.name.assign(name.data(), name.size());
+                gk.path.assign(path.begin(), path.end());
+                out.group_keys.push_back(std::move(gk));
+            }
+
+            // Pass 2 — the aggregates, and the output list in target-list order. An aggregate sits
+            // at group_keys.size() + its index in the reduced row, which pass 1 has now settled.
+            for (size_t i = 0; i < group->expressions().size(); i++) {
+                const auto& expr = group->expressions()[i];
+                if (expr->group() == ce::expression_group::scalar) {
+                    if (output_key_of[i] != SIZE_MAX) {
+                        out.outputs.push_back(expr); // the target list naming this key
+                    }
+                    continue; // the key itself was added in pass 1
+                }
+                if (expr->group() == ce::expression_group::aggregate) {
                     const auto* a = static_cast<const ce::aggregate_expression_t*>(expr.get());
                     // The owning agent rebuilds its registry with register_default_functions ONLY,
                     // so only a RESOLVED builtin uid (< DEFAULT_FUNCTIONS.size()) resolves there.
@@ -104,6 +140,7 @@ namespace services::planner::impl {
                     pa.function_name.assign(a->function_name().data(), a->function_name().size());
                     pa.func_uid = a->function_uid();
                     pa.distinct = false;
+                    pa.result_type = a->result_type();
                     const auto alias = a->key().as_pmr_string();
                     pa.alias.assign(alias.data(), alias.size());
                     // Argument: empty params => COUNT(*); exactly ONE key_t column otherwise. A
@@ -117,6 +154,7 @@ namespace services::planner::impl {
                     } else {
                         return false;
                     }
+                    out.outputs.push_back(expr);
                     out.aggregates.push_back(std::move(pa));
                 } else {
                     return false; // unexpected expression group in a group node
@@ -125,11 +163,11 @@ namespace services::planner::impl {
             if (!out.active()) {
                 return false; // neither keys nor aggregates — not a pushable aggregate
             }
-            // FINAL output types (keys first, then aggregate values) forwarded from the
-            // aggregate node, so the reduce types an empty-slice scalar result instead of NA.
+            // FINAL output types forwarded from the aggregate node
             if (agg_node->has_output_types()) {
                 out.output_types.assign(agg_node->output_types().begin(), agg_node->output_types().end());
             }
+            out.input_types.assign(group->input_types().begin(), group->input_types().end());
             return true;
         }
     }

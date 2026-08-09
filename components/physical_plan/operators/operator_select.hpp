@@ -1,8 +1,10 @@
 #pragma once
 
+#include <components/expressions/execution_graph_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
+#include <memory>
 #include <optional>
 
 namespace components::operators {
@@ -16,7 +18,10 @@ namespace components::operators {
             case_when,  // CASE WHEN ... END                   — uses group_key_t::kind::case_when
             arithmetic, // add/subtract/multiply/divide/...    — uses arith_op + operands
             constant,   // literal constant                    — uses constant_value
-            star_expand // SELECT * — copy all columns from input chunk as-is
+            star_expand, // SELECT * — copy all columns from input chunk as-is
+            function,   // a call — only the graph computes it, there is no per-row form
+            comparison, // a projected comparison — a boolean column, likewise graph-only
+            conversion  // a cast spelled in the query — likewise graph-only
         };
 
         kind type{kind::field_ref};
@@ -36,6 +41,10 @@ namespace components::operators {
         types::logical_value_t constant_value;
         std::optional<core::parameter_id_t> constant_param_id{};
 
+        // The expression this column was flattened from, carrying the types and casts
+        // validation stamped. Only set where a graph can execute the column; null otherwise.
+        expressions::expression_ptr expression;
+
         // Plan-time resolved output type (variant 1). The column type IS this type,
         // authoritatively — the validator resolved it data-independently and physgen
         // forwarded it, so a projection over zero rows still produces a correctly-typed
@@ -48,18 +57,27 @@ namespace components::operators {
             , constant_value(r, nullptr) {}
     };
 
+    core::error_t build_projection_graph(std::pmr::memory_resource* resource,
+                                         const std::pmr::vector<select_column_t>& columns,
+                                         const logical_plan::storage_parameters& parameters,
+                                         const vector::data_chunk_t& input,
+                                         size_t right_offset,
+                                         std::unique_ptr<execution_graph::execution_graph_t>* graph);
+
     // Evaluate a projection column list against ONE input chunk, producing an
     // output chunk with one column per select_column_t (row count == input row
     // count). Because the projection is a 1:1 row mapping, a <=1024-row input
     // yields a <=1024-row output, so callers stay within DEFAULT_VECTOR_CAPACITY
     // by feeding one chunk at a time and accumulating a chunks_vector_t.
-    // Shared by operator_select_t and the DML operators' RETURNING path.
-    core::result_wrapper_t<vector::data_chunk_t> evaluate_projection(std::pmr::memory_resource* resource,
-                                                                     const std::pmr::vector<select_column_t>& columns,
-                                                                     vector::data_chunk_t* left_input,
-                                                                     const logical_plan::storage_parameters& parameters,
-                                                                     core::date::timezone_offset_t session_tz,
-                                                                     vector::data_chunk_t* right_input = nullptr);
+    // Shared by operator_select_t and the DML operators' RETURNING path
+    core::result_wrapper_t<vector::data_chunk_t>
+    evaluate_projection(std::pmr::memory_resource* resource,
+                        const std::pmr::vector<select_column_t>& columns,
+                        vector::data_chunk_t* left_input,
+                        const logical_plan::storage_parameters& parameters,
+                        const components::graph_execution_context& context,
+                        std::unique_ptr<execution_graph::execution_graph_t>* graph,
+                        const vector::data_chunk_t* right_input = nullptr);
 
     // operator_select_t — always the last operator before DISTINCT.
     // Processes rows one-by-one (evaluation mode): output row count equals input row count.
@@ -86,6 +104,7 @@ namespace components::operators {
 
     private:
         std::pmr::vector<select_column_t> columns_;
+        std::unique_ptr<execution_graph::execution_graph_t> graph_;
     };
 
 } // namespace components::operators

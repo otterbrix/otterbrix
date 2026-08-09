@@ -111,13 +111,13 @@ namespace {
         auto fn = std::make_unique<expand_function>(name, arity::var_args(2), doc, /*available_kernel_slots=*/2);
 
         kernel_signature_t sig2(function_type_t::expand,
-                                {input_type::make_integer(), input_type::make_integer()},
+                                {parameter_type::exact(logical_type::BIGINT), parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::BIGINT)});
         expand_kernel k2(std::move(sig2), expand_generate_series);
         (void) fn->add_kernel(resource, std::move(k2));
 
         kernel_signature_t sig3(function_type_t::expand,
-                                {input_type::make_integer(), input_type::make_integer(), input_type::make_integer()},
+                                {parameter_type::exact(logical_type::BIGINT), parameter_type::exact(logical_type::BIGINT), parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::BIGINT)});
         expand_kernel k3(std::move(sig3), expand_generate_series);
         (void) fn->add_kernel(resource, std::move(k3));

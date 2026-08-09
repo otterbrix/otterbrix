@@ -8,7 +8,7 @@ namespace components::logical_plan {
     node_update_t::node_update_t(std::pmr::memory_resource* resource,
                                  const node_match_ptr& match,
                                  const node_limit_ptr& limit,
-                                 const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                 const std::pmr::vector<expressions::expression_ptr>& updates,
                                  bool upsert)
         : node_t(resource, node_type::update_t)
         , update_expressions_(updates)
@@ -18,7 +18,11 @@ namespace components::logical_plan {
         append_child(limit);
     }
 
-    const std::pmr::vector<expressions::update_expr_ptr>& node_update_t::updates() const { return update_expressions_; }
+    const std::pmr::vector<expressions::expression_ptr>& node_update_t::updates() const {
+        return update_expressions_;
+    }
+
+    std::pmr::vector<expressions::expression_ptr>& node_update_t::updates() { return update_expressions_; }
 
     bool node_update_t::upsert() const { return upsert_; }
 
@@ -41,7 +45,7 @@ namespace components::logical_plan {
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
-                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     const std::pmr::vector<expressions::expression_ptr>& updates,
                                      bool upsert) {
         return {new node_update_t{resource, match, limit, updates, upsert}};
     }

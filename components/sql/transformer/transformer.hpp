@@ -3,6 +3,7 @@
 #include "transform_result.hpp"
 #include "utils.hpp"
 
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -272,7 +273,7 @@ namespace components::sql::transform {
         logical_plan::node_aggregate_ptr
         transform_from_source(List* from_items, name_collection_t& names, logical_plan::execution_plan_t* plan);
 
-        expressions::update_expr_ptr
+        expressions::expression_ptr
         transform_update_expr(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
         std::string get_str_value(Node* node);
@@ -308,6 +309,11 @@ namespace components::sql::transform {
         std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
         std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
         bool transforming_recursive_member_{false};
+
+        // TODO: wrapp expressions in resolve node, and it won't be needed
+        std::vector<std::string> cast_type_names_;
+
+        void note_cast_type(const types::complex_logical_type& target);
 
         // LATERAL subquery correlation scope. Non-null only while transforming a
         // LATERAL subquery body. lateral_outer_names_ is the outer relation scope the

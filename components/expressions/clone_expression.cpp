@@ -1,6 +1,7 @@
 #include "clone_expression.hpp"
 
 #include "aggregate_expression.hpp"
+#include "cast_expression.hpp"
 #include "compare_expression.hpp"
 #include "function_expression.hpp"
 #include "scalar_expression.hpp"
@@ -36,6 +37,7 @@ namespace components::expressions {
                                                    src->type(),
                                                    clone_param(resource, src->left()),
                                                    clone_param(resource, src->right()));
+                dst->set_key(src->key());
                 dst->set_inner_op(src->inner_op());
                 if (src->do_not_fold()) {
                     dst->make_unfoldable();
@@ -81,8 +83,18 @@ namespace components::expressions {
                     args.push_back(clone_param(resource, arg));
                 }
                 auto dst = make_function_expression(resource, std::string{src->name()}, std::move(args));
+                dst->set_key(src->key());
                 dst->add_function_uid(src->function_uid());
                 copy = std::move(dst);
+                break;
+            }
+            case expression_group::cast: {
+                const auto* src = static_cast<const cast_expression_t*>(expr.get());
+                copy = make_cast_expression(resource,
+                                            clone_param(resource, src->child()),
+                                            src->result_type(),
+                                            src->cast(),
+                                            src->kind());
                 break;
             }
             case expression_group::invalid: {
@@ -92,6 +104,7 @@ namespace components::expressions {
             }
         }
         copy->set_result_alias(expr->result_alias());
+        copy->set_result_type(expr->result_type());
         return copy;
     }
 

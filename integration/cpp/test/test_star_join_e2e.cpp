@@ -282,6 +282,8 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "d_year")));
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "c_nation")));
+    group_exprs.emplace_back(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "d_year")));
+    group_exprs.emplace_back(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "c_nation")));
     auto sum_profit = make_aggregate_expression(res, "sum", bare_key(res, "profit"));
     auto profit_arith = make_scalar_expression(res, scalar_type::subtract);
     profit_arith->append_param(bare_key(res, "f_rev"));

@@ -4,11 +4,12 @@
 #include <cstdio>
 
 #include "expressions/function_expression.hpp"
-#include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
 #include "logical_plan/node_insert.hpp"
 #include "logical_plan/node_update.hpp"
 #include "plan_resolve_index.hpp"
+#include "resolve_arithmetic.hpp"
+#include "resolve_function.hpp"
 
 #include <atomic>
 #include <components/casts/cast_registry.hpp>
@@ -17,6 +18,7 @@
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -62,69 +64,58 @@ namespace services::dispatcher {
     using namespace components::cursor;
     using namespace components::catalog;
 
+    // Defined below, used by impl's operand diagnostics.
+    static std::string describe_type(const components::types::complex_logical_type& type);
+
     namespace impl {
 
-        components::vector::arithmetic_op scalar_to_arith_op(components::expressions::scalar_type t) {
-            switch (t) {
-                case components::expressions::scalar_type::add:
-                    return components::vector::arithmetic_op::add;
-                case components::expressions::scalar_type::subtract:
-                    return components::vector::arithmetic_op::subtract;
-                case components::expressions::scalar_type::multiply:
-                    return components::vector::arithmetic_op::multiply;
-                case components::expressions::scalar_type::divide:
-                    return components::vector::arithmetic_op::divide;
-                case components::expressions::scalar_type::mod:
-                    return components::vector::arithmetic_op::mod;
-                default:
-                    return components::vector::arithmetic_op::add;
+        components::operators::operator_code scalar_to_operator_code(components::expressions::scalar_type type) {
+            return components::expressions::to_operator_code(type);
+        }
+
+        core::error_t no_operator_error(std::pmr::memory_resource* resource,
+                                        components::expressions::scalar_type type,
+                                        const components::types::complex_logical_type& lhs,
+                                        const components::types::complex_logical_type& rhs) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"operator " + to_string(type) + " is not defined for types " +
+                                                      describe_type(lhs) + " and " + describe_type(rhs),
+                                                  resource});
+        }
+
+        core::error_t no_operator_error(std::pmr::memory_resource* resource,
+                                        components::expressions::scalar_type type,
+                                        const components::types::complex_logical_type& operand) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"operator " + to_string(type) + " is not defined for type " +
+                                                      describe_type(operand),
+                                                  resource});
+        }
+
+        // Records a conversion an operator needs by SPLICING a cast expression over the operand.
+        // The tree states every conversion, so a parent carries only its own result type -- no
+        // per-operand cast stamps, and a chain of conversions nests naturally.
+        // An empty cast means the operand already has the target type.
+        void splice_operand_cast(std::pmr::memory_resource* resource,
+                                 components::expressions::scalar_expression_t* expression,
+                                 size_t position,
+                                 const components::types::complex_logical_type& target,
+                                 const components::casts::cast_t& cast) {
+            if (!cast || position >= expression->params().size()) {
+                return;
             }
+            auto& param = expression->params()[position];
+            param = components::expressions::param_storage{components::expressions::expression_ptr{
+                components::expressions::make_cast_expression(resource,
+                                                             param,
+                                                             target,
+                                                             cast,
+                                                             components::casts::cast_kind::cast)}};
         }
         // plan_resolve_index_t + helpers live in
         // services/dispatcher/plan_resolve_index.hpp so
         // enrich_logical_plan.cpp can use the same probe-then-fallback
         // pattern.
-
-        // V4 function lookup helper. Returns (uid, signature) for the matching overload, or
-        // {invalid_function_uid, {{}, {}}} if no match found. name_exists set if any function
-        // with this name was registered (for "unrecognized function" vs "wrong args" errors).
-        struct function_lookup_t {
-            components::compute::function_uid uid{components::compute::invalid_function_uid};
-            components::compute::kernel_signature_t signature{components::compute::function_type_t::invalid, {}, {}};
-            bool name_exists{false};
-            bool match_found{false};
-            // Resolved fragment-merge capability of the matched overload (function::
-            // is_mergeable()); stamped onto the aggregate_expression so the optimizer
-            // reads a capability rather than a hardcoded name list.
-            bool mergeable{false};
-        };
-
-        inline function_lookup_t
-        lookup_function(const std::string& name,
-                        const std::pmr::vector<components::types::complex_logical_type>& args) {
-            function_lookup_t out;
-            auto* reg = components::compute::function_registry_t::get_default();
-            if (!reg)
-                return out;
-            for (auto& [n, uid] : reg->get_functions()) {
-                if (n != name)
-                    continue;
-                out.name_exists = true;
-                auto* fn = reg->get_function(uid);
-                if (!fn)
-                    continue;
-                for (auto& sig : fn->get_signatures()) {
-                    if (sig.matches_inputs(args)) {
-                        out.uid = uid;
-                        out.signature = sig;
-                        out.match_found = true;
-                        out.mergeable = fn->is_mergeable();
-                        return out;
-                    }
-                }
-            }
-            return out;
-        }
 
         struct type_match_t {
             column_path path;
@@ -473,6 +464,7 @@ namespace services::dispatcher {
 
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(std::pmr::memory_resource* resource,
+                        const components::casts::cast_registry_t* cast_registry,
                         function_expression_t* expr,
                         const storage_parameters& parameters,
                         const named_schema& schema_left,
@@ -505,6 +497,7 @@ namespace services::dispatcher {
                     auto& sub_expr = reinterpret_cast<components::expressions::function_expression_ptr&>(
                         std::get<components::expressions::expression_ptr>(field));
                     auto sub_expr_res = validate_schema(resource,
+                                                        cast_registry,
                                                         sub_expr.get(),
                                                         parameters,
                                                         schema_left,
@@ -529,110 +522,21 @@ namespace services::dispatcher {
                     function_input_types.emplace_back(param_it->second.type());
                 }
             }
-            auto fn_lk = lookup_function(expr->name(), function_input_types);
-            if (!fn_lk.name_exists) {
-                return core::error_t(
-                    core::error_code_t::unrecognized_function,
-                    std::pmr::string{"function: \'" + expr->name() + "(...)\' was not found by the name", resource});
-            } else if (fn_lk.match_found) {
-                std::pmr::vector<complex_logical_type> function_output_types(resource);
-                function_output_types.reserve(fn_lk.signature.output_types.size());
-                for (const auto& output_type : fn_lk.signature.output_types) {
-                    auto res = output_type.resolve(resource, function_input_types);
-                    if (res.has_error()) {
-                        return res.convert_error<named_schema>();
-                    }
-                    function_output_types.emplace_back(res.value());
-                }
-                if (function_output_types.size() == 1) {
-                    result.emplace_back(type_from_t{expr->result_alias(), function_output_types.front()});
-                } else {
-                    result.emplace_back(type_from_t{expr->result_alias(),
-                                                    complex_logical_type::create_struct("", function_output_types)});
-                }
-                expr->add_function_uid(fn_lk.uid);
-            } else {
-                // function does exist, but can not take this set of arguments
-                // TODO: given arg number and types to error
-                return core::error_t(core::error_code_t::incorrect_function_argument,
-                                     std::pmr::string{"function: \'" + expr->name() +
-                                                          "(...)\' was found but do not except given set of arguments",
-                                                      resource});
+            auto resolved = resolve_function(resource,
+                                             *cast_registry,
+                                             components::graph_execution_context{},
+                                             *components::compute::function_registry_t::get_default(),
+                                             expr->name(),
+                                             function_input_types,
+                                             allowed_function_types);
+            if (resolved.has_error()) {
+                return resolved.convert_error<named_schema>();
             }
+            result.emplace_back(type_from_t{expr->result_alias(), resolved.value().result});
+            expr->add_function_uid(resolved.value().uid);
+            expr->set_result_type(resolved.value().result);
 
             return result;
-        }
-
-        // TODO: validate parameters
-        // TODO: validate algebra
-        [[nodiscard]] core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                           update_expr_t* expr,
-                                                                           const named_schema& schema_left,
-                                                                           const named_schema& schema_right,
-                                                                           bool same_schema) {
-            // Defensive: a set/arithmetic child may be null (e.g. an unsupported SET value the transformer
-            // already rejected). Guard the recursion so validation never dereferences a null child.
-            if (!expr) {
-                return named_schema(resource);
-            }
-            switch (expr->type()) {
-                case update_expr_type::set: {
-                    auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr);
-                    auto type_res = find_types(resource, set_expr->key(), schema_left);
-                    if (type_res.has_error()) {
-                        return type_res.convert_error<named_schema>();
-                    }
-                    set_expr->key().set_side(side_t::left);
-                    return validate_schema(resource, set_expr->left().get(), schema_left, schema_right, same_schema);
-                }
-                case update_expr_type::add:
-                case update_expr_type::sub:
-                case update_expr_type::mult:
-                case update_expr_type::div:
-                case update_expr_type::mod:
-                case update_expr_type::exp:
-                case update_expr_type::AND:
-                case update_expr_type::OR:
-                case update_expr_type::XOR:
-                case update_expr_type::NOT:
-                case update_expr_type::shift_left:
-                case update_expr_type::shift_right: {
-                    auto left_res =
-                        validate_schema(resource, expr->left().get(), schema_left, schema_right, same_schema);
-                    if (left_res.has_error()) {
-                        return left_res;
-                    }
-                    auto right_res =
-                        validate_schema(resource, expr->right().get(), schema_left, schema_right, same_schema);
-                    if (right_res.has_error()) {
-                        return right_res;
-                    }
-                    break;
-                }
-                case update_expr_type::sqr_root:
-                case update_expr_type::cube_root:
-                case update_expr_type::factorial:
-                case update_expr_type::abs: {
-                    auto left_res =
-                        validate_schema(resource, expr->left().get(), schema_left, schema_right, same_schema);
-                    if (left_res.has_error()) {
-                        return left_res;
-                    }
-                    break;
-                }
-                case update_expr_type::get_value: {
-                    auto* get_expr = reinterpret_cast<update_expr_get_value_t*>(expr);
-                    auto key_res = validate_key(resource, get_expr->key(), schema_left, schema_right, same_schema);
-                    if (key_res.has_error()) {
-                        return key_res.convert_error<named_schema>();
-                    }
-                    break;
-                }
-                case update_expr_type::get_value_params:
-                default:
-                    break;
-            }
-            return named_schema(resource);
         }
 
         // Recursively validate keys inside scalar expression params
@@ -742,95 +646,585 @@ namespace services::dispatcher {
             return type_paths{resource};
         }
 
-        // Resolve the output type of a CASE / arithmetic / COALESCE / unary_minus
-        // scalar expression against `schema`. Used by the projection branch so a
-        // computed column never gets the non-storable UNKNOWN/NA sentinel: every
-        // path either yields a concrete type or returns a bind error (rule 6 — no
-        // sentinel fallback). Key paths in `params` are expected to be resolved
-        // already (the caller runs resolve_key_paths_in_group first); the type is
-        // pulled through find_types so nested/struct paths resolve correctly.
-        [[nodiscard]] core::result_wrapper_t<components::types::complex_logical_type>
-        resolve_scalar_output_type(std::pmr::memory_resource* resource,
-                                   components::expressions::scalar_expression_t* scalar_expr,
-                                   const named_schema& schema,
-                                   const components::logical_plan::storage_parameters& parameters) {
-            // Local recursive resolver for a single param (rule 14: no std::function —
-            // a functor struct that recurses through operator()). resolve_error carries
-            // the first failure out of the recursion.
-            core::error_t resolve_error = core::error_t::no_error();
-            struct param_type_resolver {
-                std::pmr::memory_resource* resource;
-                const named_schema& schema;
-                const components::logical_plan::storage_parameters& parameters;
-                core::error_t& resolve_error;
+        bool is_untyped(const components::types::complex_logical_type& type) noexcept {
+            return type.type() == logical_type::NA || type.type() == logical_type::UNKNOWN;
+        }
 
-                components::types::complex_logical_type operator()(param_storage& p) const {
-                    if (std::holds_alternative<components::expressions::key_t>(p)) {
-                        auto& k = std::get<components::expressions::key_t>(p);
-                        auto f = find_types(resource, k, schema);
-                        if (f.has_error()) {
-                            resolve_error = f.error();
-                            return components::types::complex_logical_type(logical_type::INVALID);
-                        }
-                        return f.value().front().type;
-                    } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                        auto it = parameters.parameters.find(std::get<core::parameter_id_t>(p));
-                        if (it == parameters.parameters.end()) {
-                            resolve_error =
-                                core::error_t(core::error_code_t::invalid_parameter,
-                                              std::pmr::string{"unbound parameter in scalar expression", resource});
-                            return components::types::complex_logical_type(logical_type::INVALID);
-                        }
-                        return it->second.type();
-                    } else {
-                        auto& inner = std::get<expression_ptr>(p);
-                        if (inner->group() == expression_group::scalar) {
-                            auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
-                            if (s->type() == scalar_type::case_expr) {
-                                if (s->params().size() < 2) {
-                                    resolve_error = core::error_t(
-                                        core::error_code_t::invalid_parameter,
-                                        std::pmr::string{"CASE expression with no THEN branch", resource});
-                                    return components::types::complex_logical_type(logical_type::INVALID);
-                                }
-                                return (*this)(s->params()[1]);
-                            }
-                            if (s->type() == scalar_type::coalesce) {
-                                if (s->params().empty()) {
-                                    resolve_error =
-                                        core::error_t(core::error_code_t::invalid_parameter,
-                                                      std::pmr::string{"COALESCE with no operands", resource});
-                                    return components::types::complex_logical_type(logical_type::INVALID);
-                                }
-                                return (*this)(s->params()[0]);
-                            }
-                            if (s->type() == scalar_type::unary_minus) {
-                                if (s->params().empty()) {
-                                    resolve_error =
-                                        core::error_t(core::error_code_t::invalid_parameter,
-                                                      std::pmr::string{"unary minus with no operand", resource});
-                                    return components::types::complex_logical_type(logical_type::INVALID);
-                                }
-                                return (*this)(s->params()[0]);
-                            }
-                            if (!s->params().empty()) {
-                                auto lt = (*this)(s->params()[0]);
-                                auto rt = s->params().size() > 1 ? (*this)(s->params()[1]) : lt;
-                                return components::types::complex_logical_type(
-                                    arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(s->type())));
-                            }
-                        }
-                        resolve_error =
-                            core::error_t(core::error_code_t::invalid_parameter,
-                                          std::pmr::string{"non-scalar expression operand is not supported", resource});
-                        return components::types::complex_logical_type(logical_type::INVALID);
+        bool is_stamped(const components::types::complex_logical_type& type) noexcept {
+            return type.type() != logical_type::INVALID;
+        }
+
+        // An untyped NULL literal has no type of its own: it adopts the type of whatever it meets
+        void adopt_untyped_literals(std::pmr::memory_resource* resource,
+                                    const storage_parameters& parameters,
+                                    std::span<param_storage* const> operands,
+                                    std::span<components::types::complex_logical_type> types) {
+            const components::types::complex_logical_type* adopted = nullptr;
+            for (const auto& type : types) {
+                if (!is_untyped(type)) {
+                    adopted = &type;
+                    break;
+                }
+            }
+            if (adopted == nullptr) {
+                return;
+            }
+            for (size_t index = 0; index < operands.size(); index++) {
+                if (!is_untyped(types[index]) || !components::expressions::is_parameter(*operands[index])) {
+                    continue;
+                }
+                auto bound = parameters.parameters.find(components::expressions::as_parameter(*operands[index]));
+                if (bound == parameters.parameters.end() || !bound->second.is_null()) {
+                    continue;
+                }
+                auto literal = make_scalar_expression(resource, scalar_type::constant);
+                literal->append_param(*operands[index]);
+                literal->set_result_type(*adopted);
+                types[index] = *adopted;
+                *operands[index] = param_storage{expression_ptr{literal}};
+            }
+        }
+
+        core::error_t resolve_cast_body(std::pmr::memory_resource* resource,
+                                        const components::casts::cast_registry_t* cast_registry,
+                                        components::expressions::cast_expression_t* conversion,
+                                        const components::types::complex_logical_type& source) {
+            conversion->set_result_type(conversion->result_type());
+            if (conversion->cast()) {
+                return core::error_t::no_error();
+            }
+            auto resolved =
+                cast_registry->resolve(source, conversion->result_type(), components::casts::cast_type::explicit_only);
+            if (!resolved.has_value()) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"no cast from " + describe_type(source) + " to " +
+                                                          describe_type(conversion->result_type()),
+                                                      resource});
+            }
+            conversion->set_cast(std::move(*resolved));
+            return core::error_t::no_error();
+        }
+
+        void adopt_untyped_binary_operands(std::pmr::memory_resource* resource,
+                                           const storage_parameters& parameters,
+                                           scalar_expression_t* expression,
+                                           components::types::complex_logical_type* left,
+                                           components::types::complex_logical_type* right) {
+            if (expression->params().size() < 2 || (!is_untyped(*left) && !is_untyped(*right))) {
+                return;
+            }
+            param_storage* operands[] = {&expression->params()[0], &expression->params()[1]};
+            components::types::complex_logical_type types[] = {*left, *right};
+            adopt_untyped_literals(resource, parameters, operands, types);
+            *left = types[0];
+            *right = types[1];
+        }
+
+        [[nodiscard]] std::optional<components::types::complex_logical_type>
+        unify_operands(std::pmr::memory_resource* resource,
+                       const components::casts::cast_registry_t* cast_registry,
+                       const storage_parameters& parameters,
+                       std::span<param_storage* const> operands,
+                       std::span<components::types::complex_logical_type> types,
+                       core::error_t* error,
+                       std::string_view what) {
+            adopt_untyped_literals(resource, parameters, operands, types);
+            auto common = cast_registry->find_best_common_type(types);
+            if (!common.has_value()) {
+                *error = core::error_t(core::error_code_t::invalid_parameter,
+                                       std::pmr::string{"no type is common to every " + std::string{what}, resource});
+                return std::nullopt;
+            }
+            for (size_t index = 0; index < operands.size(); index++) {
+                if (!common->casts[index]) {
+                    continue;
+                }
+                *operands[index] = param_storage{
+                    expression_ptr{components::expressions::make_cast_expression(resource,
+                                                                                *operands[index],
+                                                                                common->type,
+                                                                                common->casts[index],
+                                                                                components::casts::cast_kind::cast)}};
+            }
+            return common->type;
+        }
+
+        struct param_type_resolver {
+            std::pmr::memory_resource* resource;
+            const components::casts::cast_registry_t* cast_registry;
+            const named_schema& schema;
+            const components::logical_plan::storage_parameters& parameters;
+            core::error_t& resolve_error;
+            const named_schema* schema_right = nullptr;
+            bool same_schema = true;
+            // Set when a call resolves to a reducing signature. That is the only thing that makes
+            // a query grouped without an explicit GROUP BY, and it cannot be known before the
+            // signature is picked.
+            bool* saw_reduction = nullptr;
+
+            components::compute::function_type_t resolve_call_type(function_expression_t* call) const {
+                std::pmr::vector<components::types::complex_logical_type> argument_types(resource);
+                argument_types.reserve(call->args().size());
+                for (auto& argument : call->args()) {
+                    argument_types.push_back((*this)(argument));
+                    if (resolve_error.contains_error()) {
+                        return components::compute::function_type_t::invalid;
                     }
                 }
+                auto resolved =
+                    resolve_function(resource,
+                                     *cast_registry,
+                                     components::graph_execution_context{},
+                                     *components::compute::function_registry_t::get_default(),
+                                     call->name(),
+                                     argument_types,
+                                     components::compute::create_mask(components::compute::function_type_t::row,
+                                                                      components::compute::function_type_t::vector,
+                                                                      components::compute::function_type_t::aggregate,
+                                                                      components::compute::function_type_t::expand));
+                if (resolved.has_error()) {
+                    resolve_error = resolved.error();
+                    return components::compute::function_type_t::invalid;
+                }
+                if (call->args().empty() && !call->has_star_argument() &&
+                    resolved.value().function_type == components::compute::function_type_t::aggregate) {
+                    resolve_error =
+                        core::error_t(core::error_code_t::invalid_parameter,
+                                      std::pmr::string{"(*) must be used to call the parameterless aggregate '" +
+                                                           call->name() + "'",
+                                                       resource});
+                    return components::compute::function_type_t::invalid;
+                }
+                call->add_function_uid(resolved.value().uid);
+                call->set_result_type(resolved.value().result);
+                if (saw_reduction != nullptr &&
+                    resolved.value().function_type == components::compute::function_type_t::aggregate) {
+                    *saw_reduction = true;
+                }
+                return resolved.value().function_type;
+            }
+
+            components::types::complex_logical_type resolve_call(function_expression_t* call) const {
+                if (resolve_call_type(call) == components::compute::function_type_t::invalid) {
+                    return components::types::complex_logical_type(logical_type::INVALID);
+                }
+                return call->result_type();
+            }
+
+            [[nodiscard]] core::result_wrapper_t<type_paths> lookup(components::expressions::key_t& key) const {
+                if (schema_right == nullptr) {
+                    return find_types(resource, key, schema);
+                }
+                return validate_key(resource, key, schema, *schema_right, same_schema);
+            }
+
+            components::types::complex_logical_type operator()(param_storage& p) const {
+                if (std::holds_alternative<components::expressions::key_t>(p)) {
+                    auto& k = std::get<components::expressions::key_t>(p);
+                    auto f = lookup(k);
+                    if (f.has_error()) {
+                        resolve_error = f.error();
+                        return components::types::complex_logical_type(logical_type::INVALID);
+                    }
+                    return f.value().front().type;
+                } else if (std::holds_alternative<core::parameter_id_t>(p)) {
+                    auto it = parameters.parameters.find(std::get<core::parameter_id_t>(p));
+                    if (it == parameters.parameters.end()) {
+                        resolve_error =
+                            core::error_t(core::error_code_t::invalid_parameter,
+                                          std::pmr::string{"unbound parameter in scalar expression", resource});
+                        return components::types::complex_logical_type(logical_type::INVALID);
+                    }
+                    return it->second.type();
+                } else {
+                    auto& inner = std::get<expression_ptr>(p);
+                    if (inner->group() == expression_group::compare) {
+                        auto* cmp = static_cast<compare_expression_t*>(inner.get());
+                        switch (cmp->type()) {
+                            case compare_type::eq:
+                            case compare_type::ne:
+                            case compare_type::gt:
+                            case compare_type::gte:
+                            case compare_type::lt:
+                            case compare_type::lte: {
+                                auto lt = (*this)(cmp->left());
+                                auto rt = (*this)(cmp->right());
+                                if (resolve_error.contains_error()) {
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                if (lt != rt) {
+                                    std::pmr::vector<param_storage*> sides(resource);
+                                    sides.push_back(&cmp->left());
+                                    sides.push_back(&cmp->right());
+                                    std::pmr::vector<components::types::complex_logical_type> side_types(resource);
+                                    side_types.push_back(lt);
+                                    side_types.push_back(rt);
+                                    auto common = unify_operands(
+                                        resource,
+                                        cast_registry,
+                                        parameters,
+                                        std::span<param_storage* const>{sides},
+                                        std::span<components::types::complex_logical_type>{side_types},
+                                        &resolve_error,
+                                        "side of " + to_string(cmp->type()));
+                                    if (!common.has_value()) {
+                                        return components::types::complex_logical_type(logical_type::INVALID);
+                                    }
+                                }
+                                break;
+                            }
+                            default:
+                                break;
+                        }
+                        return components::types::complex_logical_type(logical_type::BOOLEAN);
+                    }
+                    if (inner->group() == expression_group::aggregate) {
+                        return inner->result_type();
+                    }
+                    if (inner->group() == expression_group::function) {
+                        return resolve_call(static_cast<function_expression_t*>(inner.get()));
+                    }
+                    if (inner->group() == expression_group::cast) {
+                        auto* conversion = static_cast<components::expressions::cast_expression_t*>(inner.get());
+                        if (conversion->cast()) {
+                            conversion->set_result_type(conversion->result_type());
+                            return conversion->result_type();
+                        }
+                        auto source = (*this)(conversion->child());
+                        if (resolve_error.contains_error()) {
+                            return components::types::complex_logical_type(logical_type::INVALID);
+                        }
+                        if (auto error = resolve_cast_body(resource, cast_registry, conversion, source);
+                            error.contains_error()) {
+                            resolve_error = error;
+                            return components::types::complex_logical_type(logical_type::INVALID);
+                        }
+                        return conversion->result_type();
+                    }
+                    if (inner->group() == expression_group::scalar) {
+                        auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
+                        if (s->type() == scalar_type::constant) {
+                            if (is_stamped(s->result_type())) {
+                                return s->result_type();
+                            }
+                            if (s->params().empty()) {
+                                resolve_error =
+                                    core::error_t(core::error_code_t::invalid_parameter,
+                                                  std::pmr::string{"constant expression with no value", resource});
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            return (*this)(s->params()[0]);
+                        }
+                        if (s->type() == scalar_type::case_expr || s->type() == scalar_type::coalesce) {
+                            const size_t type_from = s->type() == scalar_type::case_expr ? 1 : 0;
+                            if (s->params().size() <= type_from) {
+                                resolve_error = core::error_t(
+                                    core::error_code_t::invalid_parameter,
+                                    std::pmr::string{s->type() == scalar_type::case_expr
+                                                         ? "CASE expression with no THEN branch"
+                                                         : "COALESCE with no operands",
+                                                     resource});
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            // Every ARM must reach ONE type
+                            std::pmr::vector<param_storage*> arms(resource);
+                            std::pmr::vector<components::types::complex_logical_type> arm_types(resource);
+                            const bool is_case = s->type() == scalar_type::case_expr;
+                            for (size_t position = 0; position < s->params().size(); position++) {
+                                auto param_type = (*this)(s->params()[position]);
+                                if (resolve_error.contains_error()) {
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                const bool trailing_else = is_case && s->params().size() % 2 == 1 &&
+                                                           position == s->params().size() - 1;
+                                if (!is_case || position % 2 == 1 || trailing_else) {
+                                    arms.push_back(&s->params()[position]);
+                                    arm_types.push_back(std::move(param_type));
+                                }
+                            }
+                            auto blend_type =
+                                unify_operands(resource,
+                                               cast_registry,
+                                               parameters,
+                                               std::span<param_storage* const>{arms},
+                                               std::span<components::types::complex_logical_type>{arm_types},
+                                               &resolve_error,
+                                               "branch of " + to_string(s->type()));
+                            if (!blend_type.has_value()) {
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            s->set_result_type(*blend_type);
+                            return *blend_type;
+                        }
+                        if (s->type() == scalar_type::unary_minus) {
+                            if (s->params().empty()) {
+                                resolve_error =
+                                    core::error_t(core::error_code_t::invalid_parameter,
+                                                  std::pmr::string{"unary minus with no operand", resource});
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            auto operand = (*this)(s->params()[0]);
+                            if (resolve_error.contains_error()) {
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            auto resolved =
+                                resolve_arithmetic(*cast_registry, scalar_to_operator_code(s->type()), operand);
+                            if (!resolved.has_value()) {
+                                resolve_error = no_operator_error(resource, s->type(), operand);
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            s->set_result_type(resolved->op.result);
+                            splice_operand_cast(resource, s, 0, resolved->lhs_target, resolved->lhs_cast);
+                            return resolved->op.result;
+                        }
+                        if (!s->params().empty()) {
+                            auto lt = (*this)(s->params()[0]);
+                            auto rt = s->params().size() > 1 ? (*this)(s->params()[1]) : lt;
+                            if (resolve_error.contains_error()) {
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            adopt_untyped_binary_operands(resource, parameters, s, &lt, &rt);
+                            auto resolved =
+                                resolve_arithmetic(*cast_registry, scalar_to_operator_code(s->type()), lt, rt);
+                            if (!resolved.has_value()) {
+                                resolve_error = no_operator_error(resource, s->type(), lt, rt);
+                                return components::types::complex_logical_type(logical_type::INVALID);
+                            }
+                            s->set_result_type(resolved->op.result);
+                            splice_operand_cast(resource, s, 0, resolved->lhs_target, resolved->lhs_cast);
+                            splice_operand_cast(resource, s, 1, resolved->rhs_target, resolved->rhs_cast);
+                            return resolved->op.result;
+                        }
+                    }
+                    resolve_error =
+                        core::error_t(core::error_code_t::invalid_parameter,
+                                      std::pmr::string{"non-scalar expression operand is not supported", resource});
+                    return components::types::complex_logical_type(logical_type::INVALID);
+                }
+            }
+        };
+
+        struct cardinality_resolver {
+            std::pmr::memory_resource* resource;
+            const components::casts::cast_registry_t* cast_registry;
+            const named_schema& schema;
+            const components::logical_plan::storage_parameters& parameters;
+            const std::pmr::vector<std::pmr::vector<size_t>>& key_paths;
+            core::error_t& error;
+
+            bool is_key(const components::expressions::key_t& key) const {
+                const auto& path = key.path();
+                if (path.empty()) {
+                    return false;
+                }
+                for (const auto& candidate : key_paths) {
+                    if (candidate.size() == path.size() &&
+                        std::equal(candidate.begin(), candidate.end(), path.begin())) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            cardinality_t combine(cardinality_t left, cardinality_t right) const {
+                if (left == cardinality_t::constant || left == cardinality_t::unknown) {
+                    return right;
+                }
+                if (right == cardinality_t::constant || right == cardinality_t::unknown) {
+                    return left;
+                }
+                if (left != right) {
+                    error = core::error_t(core::error_code_t::sql_parse_error,
+                                          std::pmr::string{"column must appear in a GROUP BY clause or be used in "
+                                                           "an aggregate function",
+                                                           resource});
+                    return cardinality_t::group;
+                }
+                return left;
+            }
+
+            cardinality_t of_param(param_storage& param, bool inside_aggregate) const {
+                if (std::holds_alternative<core::parameter_id_t>(param)) {
+                    return cardinality_t::constant;
+                }
+                if (std::holds_alternative<components::expressions::key_t>(param)) {
+                    auto& key = std::get<components::expressions::key_t>(param);
+                    if (key.path().empty()) {
+                        auto resolved = impl::validate_key(resource, key, schema, schema, true);
+                        if (resolved.has_error()) {
+                            error = resolved.error();
+                            return cardinality_t::row;
+                        }
+                    }
+                    return is_key(key) ? cardinality_t::group : cardinality_t::row;
+                }
+                return of_expression(std::get<expression_ptr>(param), inside_aggregate);
+            }
+
+            cardinality_t of_expression(expression_ptr& expr, bool inside_aggregate) const {
+                if (!expr || error.contains_error()) {
+                    return cardinality_t::constant;
+                }
+                cardinality_t result = cardinality_t::constant;
+                switch (expr->group()) {
+                    case expression_group::function: {
+                        auto* call = static_cast<function_expression_t*>(expr.get());
+                        param_type_resolver resolve_call_only{resource, cast_registry, schema, parameters, error};
+                        const bool reduces = resolve_call_only.resolve_call_type(call) ==
+                                             components::compute::function_type_t::aggregate;
+                        if (error.contains_error()) {
+                            return cardinality_t::row;
+                        }
+                        if (reduces && inside_aggregate) {
+                            error = core::error_t(core::error_code_t::sql_parse_error,
+                                                  std::pmr::string{"aggregate function calls cannot be nested",
+                                                                   resource});
+                            return cardinality_t::group;
+                        }
+                        for (auto& argument : call->args()) {
+                            auto argument_cardinality = of_param(argument, inside_aggregate || reduces);
+                            if (!reduces) {
+                                result = combine(result, argument_cardinality);
+                            }
+                        }
+                        if (error.contains_error()) {
+                            return cardinality_t::row;
+                        }
+                        if (reduces) {
+                            auto marker = make_aggregate_over(expr, call->key());
+                            marker->set_result_type(call->result_type());
+                            marker->set_cardinality(cardinality_t::group);
+                            expr = marker;
+                            return cardinality_t::group;
+                        }
+                        break;
+                    }
+                    case expression_group::aggregate: {
+                        auto* aggregate = static_cast<aggregate_expression_t*>(expr.get());
+                        if (inside_aggregate) {
+                            error = core::error_t(core::error_code_t::sql_parse_error,
+                                                  std::pmr::string{"aggregate function calls cannot be nested",
+                                                                   resource});
+                            return cardinality_t::group;
+                        }
+                        for (auto& argument : aggregate->params()) {
+                            of_param(argument, true);
+                        }
+                        result = cardinality_t::group;
+                        break;
+                    }
+                    case expression_group::cast: {
+                        auto* conversion = static_cast<cast_expression_t*>(expr.get());
+                        result = of_param(conversion->child(), inside_aggregate);
+                        break;
+                    }
+                    case expression_group::compare: {
+                        auto* comparison = static_cast<compare_expression_t*>(expr.get());
+                        auto operand_is_set = [](const param_storage& operand) {
+                            return !components::expressions::is_expr(operand) ||
+                                   components::expressions::as_expr(operand) != nullptr;
+                        };
+                        if (operand_is_set(comparison->left())) {
+                            result = combine(result, of_param(comparison->left(), inside_aggregate));
+                        }
+                        if (operand_is_set(comparison->right())) {
+                            result = combine(result, of_param(comparison->right(), inside_aggregate));
+                        }
+                        for (auto& child : comparison->children()) {
+                            result = combine(result, of_expression(child, inside_aggregate));
+                        }
+                        break;
+                    }
+                    case expression_group::scalar: {
+                        auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
+                        if (scalar_expr->type() == scalar_type::get_field ||
+                            scalar_expr->type() == scalar_type::group_field) {
+                            auto& key = scalar_expr->params().empty()
+                                            ? scalar_expr->key()
+                                            : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                            if (key.path().empty()) {
+                                auto resolved = impl::validate_key(resource, key, schema, schema, true);
+                                if (resolved.has_error()) {
+                                    error = resolved.error();
+                                    return cardinality_t::row;
+                                }
+                            }
+                            result = is_key(key) ? cardinality_t::group : cardinality_t::row;
+                            break;
+                        }
+                        if (scalar_expr->type() == scalar_type::constant) {
+                            result = cardinality_t::constant;
+                            break;
+                        }
+                        for (auto& param : scalar_expr->params()) {
+                            result = combine(result, of_param(param, inside_aggregate));
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                if (error.contains_error()) {
+                    return cardinality_t::row;
+                }
+                expr->set_cardinality(result);
+                return result;
+            }
+        };
+
+        [[nodiscard]] core::error_t
+        resolve_scalar_output_type(std::pmr::memory_resource* resource,
+                                   const components::casts::cast_registry_t* cast_registry,
+                                   components::expressions::scalar_expression_t* scalar_expr,
+                                   const named_schema& schema,
+                                   const components::logical_plan::storage_parameters& parameters,
+                                   const named_schema* schema_right,
+                                   bool same_schema,
+                                   bool* saw_reduction) {
+            core::error_t resolve_error = core::error_t::no_error();
+            param_type_resolver resolve{resource,      cast_registry, schema,      parameters,
+                                        resolve_error, schema_right,  same_schema, saw_reduction};
+
+            auto unify_arms = [&](scalar_expression_t* expression,
+                                  const std::pmr::vector<size_t>& positions)
+                -> std::optional<components::types::complex_logical_type> {
+                std::pmr::vector<param_storage*> arms(resource);
+                std::pmr::vector<components::types::complex_logical_type> arm_types(resource);
+                arms.reserve(positions.size());
+                arm_types.reserve(positions.size());
+                size_t next_arm = 0;
+                for (size_t position = 0; position < expression->params().size(); position++) {
+                    auto param_type = resolve(expression->params()[position]);
+                    if (resolve_error.contains_error()) {
+                        return std::nullopt;
+                    }
+                    if (next_arm < positions.size() && positions[next_arm] == position) {
+                        arms.push_back(&expression->params()[position]);
+                        arm_types.push_back(std::move(param_type));
+                        next_arm++;
+                    }
+                }
+                return unify_operands(resource,
+                                      cast_registry,
+                                      parameters,
+                                      std::span<param_storage* const>{arms},
+                                      std::span<components::types::complex_logical_type>{arm_types},
+                                      &resolve_error,
+                                      "branch of " + to_string(expression->type()));
             };
-            param_type_resolver resolve{resource, schema, parameters, resolve_error};
 
             components::types::complex_logical_type result_type;
             switch (scalar_expr->type()) {
+                case scalar_type::get_field: {
+                    // A plain column reference (e.g. UPDATE ... SET x = src.value) carries the
+                    // key as its only param; its type is that column's type in the schema.
+                    if (scalar_expr->params().empty()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"field reference with no key", resource});
+                    }
+                    result_type = resolve(scalar_expr->params()[0]);
+                    break;
+                }
                 case scalar_type::constant: {
                     // A constant projection (e.g. SELECT 1) carries its value as a
                     // bound parameter; its type is the parameter's type.
@@ -851,52 +1245,77 @@ namespace services::dispatcher {
                 }
                 case scalar_type::case_expr: {
                     // case_expr params layout (transform_select_case_expr): pairs of
-                    // [cond, result, ...]; the CASE return type is the first THEN
-                    // result (params[1]). Mirrors compute_type_entry's CASE branch.
+                    // [cond, result, ...] with an optional trailing ELSE, so the arms are the odd
+                    // positions plus that ELSE. The result is the type ALL of them share -- taking
+                    // the first THEN alone silently dropped every other branch's type.
                     if (scalar_expr->params().size() < 2) {
                         return core::error_t(core::error_code_t::invalid_parameter,
                                              std::pmr::string{"CASE expression with no THEN branch", resource});
                     }
-                    result_type = resolve(scalar_expr->params()[1]);
+                    std::pmr::vector<size_t> arms(resource);
+                    for (size_t position = 1; position < scalar_expr->params().size(); position += 2) {
+                        arms.push_back(position);
+                    }
+                    if (scalar_expr->params().size() % 2 == 1) {
+                        arms.push_back(scalar_expr->params().size() - 1);
+                    }
+                    auto common = unify_arms(scalar_expr, arms);
+                    if (!common.has_value()) {
+                        return resolve_error;
+                    }
+                    result_type = *common;
                     break;
                 }
                 case scalar_type::coalesce: {
-                    // COALESCE(a, b, ...): take the first operand's resolved type; for
-                    // numeric operands widen to the common (promoted) type so a mixed
-                    // INT/BIGINT coalesce keeps the wider column. Nested/decimal types
-                    // are preserved as-is (no numeric promotion path).
+                    // COALESCE(a, b, ...) is the type every operand reaches implicitly. The previous
+                    // rule promoted only when BOTH sides were numeric and left everything else at the
+                    // first operand's type, so a decimal/nested mix kept a type later operands could
+                    // not actually produce.
                     if (scalar_expr->params().empty()) {
                         return core::error_t(core::error_code_t::invalid_parameter,
                                              std::pmr::string{"COALESCE with no operands", resource});
                     }
-                    result_type = resolve(scalar_expr->params()[0]);
-                    if (!resolve_error.contains_error() && is_numeric(result_type.type())) {
-                        for (size_t i = 1; i < scalar_expr->params().size(); i++) {
-                            auto operand_type = resolve(scalar_expr->params()[i]);
-                            if (resolve_error.contains_error()) {
-                                break;
-                            }
-                            if (is_numeric(operand_type.type())) {
-                                result_type = components::types::complex_logical_type(
-                                    promote_type(result_type.type(), operand_type.type()));
-                            }
-                        }
+                    std::pmr::vector<size_t> operands(resource);
+                    operands.reserve(scalar_expr->params().size());
+                    for (size_t position = 0; position < scalar_expr->params().size(); position++) {
+                        operands.push_back(position);
                     }
+                    auto common = unify_arms(scalar_expr, operands);
+                    if (!common.has_value()) {
+                        return resolve_error;
+                    }
+                    result_type = *common;
                     break;
                 }
-                case scalar_type::unary_minus: {
+                case scalar_type::unary_minus:
+                case scalar_type::bit_not: {
                     if (scalar_expr->params().empty()) {
                         return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"unary minus with no operand", resource});
+                                             std::pmr::string{"unary operator with no operand", resource});
                     }
-                    result_type = resolve(scalar_expr->params()[0]);
+                    auto operand = resolve(scalar_expr->params()[0]);
+                    if (!resolve_error.contains_error()) {
+                        auto resolved = resolve_arithmetic(*cast_registry,
+                                                           scalar_to_operator_code(scalar_expr->type()),
+                                                           operand);
+                        if (!resolved.has_value()) {
+                            return no_operator_error(resource, scalar_expr->type(), operand);
+                        }
+                        impl::splice_operand_cast(resource, scalar_expr, 0, resolved->lhs_target, resolved->lhs_cast);
+                        result_type = resolved->op.result;
+                    }
                     break;
                 }
                 case scalar_type::add:
                 case scalar_type::subtract:
                 case scalar_type::multiply:
                 case scalar_type::divide:
-                case scalar_type::mod: {
+                case scalar_type::mod:
+                case scalar_type::bit_and:
+                case scalar_type::bit_or:
+                case scalar_type::bit_xor:
+                case scalar_type::shift_left:
+                case scalar_type::shift_right: {
                     if (scalar_expr->params().empty()) {
                         return core::error_t(core::error_code_t::invalid_parameter,
                                              std::pmr::string{"arithmetic expression with no operand", resource});
@@ -904,8 +1323,15 @@ namespace services::dispatcher {
                     auto lt = resolve(scalar_expr->params()[0]);
                     auto rt = scalar_expr->params().size() > 1 ? resolve(scalar_expr->params()[1]) : lt;
                     if (!resolve_error.contains_error()) {
-                        result_type = components::types::complex_logical_type(
-                            arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(scalar_expr->type())));
+                        adopt_untyped_binary_operands(resource, parameters, scalar_expr, &lt, &rt);
+                        auto resolved =
+                            resolve_arithmetic(*cast_registry, scalar_to_operator_code(scalar_expr->type()), lt, rt);
+                        if (!resolved.has_value()) {
+                            return no_operator_error(resource, scalar_expr->type(), lt, rt);
+                        }
+                        impl::splice_operand_cast(resource, scalar_expr, 0, resolved->lhs_target, resolved->lhs_cast);
+                        impl::splice_operand_cast(resource, scalar_expr, 1, resolved->rhs_target, resolved->rhs_cast);
+                        result_type = resolved->op.result;
                     }
                     break;
                 }
@@ -926,10 +1352,57 @@ namespace services::dispatcher {
                     core::error_code_t::schema_error,
                     std::pmr::string{"could not resolve a concrete type for projected scalar expression", resource});
             }
-            return result_type;
+            scalar_expr->set_result_type(result_type);
+            return core::error_t::no_error();
+        }
+
+        core::error_t resolve_compare_output_type(std::pmr::memory_resource* resource,
+                                                  const components::casts::cast_registry_t* cast_registry,
+                                                  compare_expression_t* compare_expr,
+                                                  const named_schema& schema,
+                                                  const storage_parameters& parameters) {
+            const auto code = components::expressions::to_operator_code(compare_expr->type());
+            if (code == components::operators::operator_code::invalid) {
+               return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{to_string(compare_expr->type()) +
+                                                          " cannot be projected as a column",
+                                                      resource});
+            }
+            core::error_t resolve_error = core::error_t::no_error();
+            param_type_resolver resolve{resource, cast_registry, schema, parameters, resolve_error};
+
+            const bool binary =
+                components::operators::arity_of(code) == components::operators::operator_arity::binary;
+            std::pmr::vector<param_storage*> operands(resource);
+            std::pmr::vector<components::types::complex_logical_type> operand_types(resource);
+            operands.push_back(&compare_expr->left());
+            operand_types.push_back(resolve(compare_expr->left()));
+            if (resolve_error.contains_error()) {
+                return resolve_error;
+            }
+            if (binary) {
+                operands.push_back(&compare_expr->right());
+                operand_types.push_back(resolve(compare_expr->right()));
+                if (resolve_error.contains_error()) {
+                    return resolve_error;
+                }
+            }
+            if (binary && !unify_operands(resource,
+                                          cast_registry,
+                                          parameters,
+                                          std::span<param_storage* const>{operands},
+                                          std::span<components::types::complex_logical_type>{operand_types},
+                                          &resolve_error,
+                                          "operand of " + to_string(compare_expr->type()))
+                               .has_value()) {
+                return resolve_error;
+            }
+            compare_expr->set_result_type(components::types::complex_logical_type{logical_type::BOOLEAN});
+            return core::error_t::no_error();
         }
 
         [[nodiscard]] core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                                           const components::casts::cast_registry_t* cast_registry,
                                                                            compare_expression_t* expr,
                                                                            const storage_parameters& parameters,
                                                                            const named_schema& schema_left,
@@ -954,6 +1427,7 @@ namespace services::dispatcher {
                             case expression_group::function:
                                 expr_error =
                                     validate_schema(resource,
+                                                    cast_registry,
                                                     reinterpret_cast<function_expression_t*>(nested_expr.get()),
                                                     parameters,
                                                     schema_left,
@@ -964,6 +1438,7 @@ namespace services::dispatcher {
                                 break;
                             case expression_group::compare:
                                 expr_error = validate_schema(resource,
+                                                             cast_registry,
                                                              reinterpret_cast<compare_expression_t*>(nested_expr.get()),
                                                              parameters,
                                                              schema_left,
@@ -989,22 +1464,33 @@ namespace services::dispatcher {
                 case compare_type::lte:
                     // TODO: check type for regex
                 case compare_type::regex: {
-                    // Validate left operand
-                    if (std::holds_alternative<components::expressions::key_t>(expr->left())) {
-                        auto key_res = validate_key(resource,
-                                                    std::get<components::expressions::key_t>(expr->left()),
-                                                    schema_left,
-                                                    schema_right,
-                                                    same_schema);
-                        if (key_res.has_error()) {
-                            return key_res.error();
+                    auto operand_type = [&](param_storage& operand)
+                        -> core::result_wrapper_t<components::types::complex_logical_type> {
+                        if (std::holds_alternative<components::expressions::key_t>(operand)) {
+                            auto key_res = validate_key(resource,
+                                                        std::get<components::expressions::key_t>(operand),
+                                                        schema_left,
+                                                        schema_right,
+                                                        same_schema);
+                            if (key_res.has_error()) {
+                                return key_res.error();
+                            }
+                            return key_res.value().front().type;
                         }
-                    } else if (std::holds_alternative<components::expressions::expression_ptr>(expr->left())) {
-                        auto& sub_expr = std::get<components::expressions::expression_ptr>(expr->left());
+                        if (std::holds_alternative<core::parameter_id_t>(operand)) {
+                            auto bound = parameters.parameters.find(std::get<core::parameter_id_t>(operand));
+                            if (bound == parameters.parameters.end()) {
+                                return core::error_t(core::error_code_t::invalid_parameter,
+                                                     std::pmr::string{"unbound parameter in comparison", resource});
+                            }
+                            return bound->second.type();
+                        }
+                        auto& sub_expr = std::get<components::expressions::expression_ptr>(operand);
                         if (sub_expr->group() == expression_group::function) {
                             auto& func_expr =
                                 reinterpret_cast<components::expressions::function_expression_ptr&>(sub_expr);
                             auto expr_res = validate_schema(resource,
+                                                            cast_registry,
                                                             func_expr.get(),
                                                             parameters,
                                                             schema_left,
@@ -1012,57 +1498,69 @@ namespace services::dispatcher {
                                                             same_schema,
                                                             allowed_function_types);
                             if (expr_res.has_error()) {
-                                return expr_res;
+                                return expr_res.error();
                             }
-                        } else if (sub_expr->group() == expression_group::scalar) {
-                            auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
-                            auto val_res = validate_scalar_params(resource,
-                                                                  scalar->params(),
-                                                                  schema_left,
-                                                                  schema_right,
-                                                                  same_schema,
-                                                                  &parameters);
-                            if (val_res.has_error()) {
-                                return val_res;
-                            }
+                            return expr_res.value().front().type;
                         }
+                        if (sub_expr->group() == expression_group::cast) {
+                            core::error_t cast_error = core::error_t::no_error();
+                            impl::param_type_resolver resolve_cast{resource,
+                                                                   cast_registry,
+                                                                   schema_left,
+                                                                   parameters,
+                                                                   cast_error,
+                                                                   &schema_right,
+                                                                   same_schema};
+                            auto resolved = resolve_cast(operand);
+                            if (cast_error.contains_error()) {
+                                return cast_error;
+                            }
+                            return resolved;
+                        }
+                        if (sub_expr->group() == expression_group::scalar) {
+                            auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
+                            auto scalar_error = resolve_scalar_output_type(resource,
+                                                                           cast_registry,
+                                                                           scalar,
+                                                                           schema_left,
+                                                                           parameters,
+                                                                           &schema_right,
+                                                                           same_schema);
+                            if (scalar_error.contains_error()) {
+                                return scalar_error;
+                            }
+                            return scalar->result_type();
+                        }
+                        return core::error_t(core::error_code_t::schema_error,
+                                             std::pmr::string{"unsupported comparison operand", resource});
+                    };
+
+                    auto left_type = operand_type(expr->left());
+                    if (left_type.has_error()) {
+                        return left_type.error();
                     }
-                    // Validate right operand
-                    if (std::holds_alternative<components::expressions::key_t>(expr->right())) {
-                        auto key_res = validate_key(resource,
-                                                    std::get<components::expressions::key_t>(expr->right()),
-                                                    schema_left,
-                                                    schema_right,
-                                                    same_schema);
-                        if (key_res.has_error()) {
-                            return key_res.convert_error<named_schema>();
-                        }
-                    } else if (std::holds_alternative<components::expressions::expression_ptr>(expr->right())) {
-                        auto& sub_expr = std::get<components::expressions::expression_ptr>(expr->right());
-                        if (sub_expr->group() == expression_group::function) {
-                            auto& func_expr =
-                                reinterpret_cast<components::expressions::function_expression_ptr&>(sub_expr);
-                            auto expr_res = validate_schema(resource,
-                                                            func_expr.get(),
-                                                            parameters,
-                                                            schema_left,
-                                                            schema_right,
-                                                            same_schema,
-                                                            allowed_function_types);
-                            if (expr_res.has_error()) {
-                                return expr_res;
-                            }
-                        } else if (sub_expr->group() == expression_group::scalar) {
-                            auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
-                            auto val_res = validate_scalar_params(resource,
-                                                                  scalar->params(),
-                                                                  schema_left,
-                                                                  schema_right,
-                                                                  same_schema,
-                                                                  &parameters);
-                            if (val_res.has_error()) {
-                                return val_res;
-                            }
+                    auto right_type = operand_type(expr->right());
+                    if (right_type.has_error()) {
+                        return right_type.error();
+                    }
+                    if (expr->type() != compare_type::regex && left_type.value() != right_type.value()) {
+                        std::pmr::vector<param_storage*> sides(resource);
+                        sides.push_back(&expr->left());
+                        sides.push_back(&expr->right());
+                        std::pmr::vector<components::types::complex_logical_type> side_types(resource);
+                        side_types.push_back(left_type.value());
+                        side_types.push_back(right_type.value());
+                        core::error_t unify_error = core::error_t::no_error();
+                        auto common =
+                            unify_operands(resource,
+                                           cast_registry,
+                                           parameters,
+                                           std::span<param_storage* const>{sides},
+                                           std::span<components::types::complex_logical_type>{side_types},
+                                           &unify_error,
+                                           "side of " + to_string(expr->type()));
+                        if (!common.has_value()) {
+                            return unify_error;
                         }
                     }
                     break;
@@ -1091,6 +1589,7 @@ namespace services::dispatcher {
 
         [[nodiscard]] core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
                                                                            const impl::plan_resolve_index_t* idx,
+                                                                           const components::casts::cast_registry_t* cast_registry,
                                                                            node_match_t* node,
                                                                            const storage_parameters& parameters,
                                                                            const named_schema& schema_left,
@@ -1126,13 +1625,14 @@ namespace services::dispatcher {
                 assert(node->expressions().size() == 1);
                 if (node->expressions()[0]->group() == expression_group::compare) {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
-                    return validate_schema(resource, expr, parameters, schema_left, schema_right, same_schema);
+                    return validate_schema(resource, cast_registry, expr, parameters, schema_left, schema_right, same_schema);
                 } else if (node->expressions()[0]->group() == expression_group::function) {
                     auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
                     auto allowed_function_types =
                         components::compute::create_mask(components::compute::function_type_t::row,
                                                          components::compute::function_type_t::vector);
                     auto expr_res = validate_schema(resource,
+                                                    cast_registry,
                                                     expr,
                                                     parameters,
                                                     schema_left,
@@ -1161,7 +1661,11 @@ namespace services::dispatcher {
         }
 
         core::result_wrapper_t<named_schema>
-        validate_schema(std::pmr::memory_resource* resource, node_sort_t* node, const named_schema& schema) {
+        validate_schema(std::pmr::memory_resource* resource,
+                        const components::casts::cast_registry_t* cast_registry,
+                        node_sort_t* node,
+                        const named_schema& schema,
+                        const components::logical_plan::storage_parameters& parameters) {
             for (auto& expr : node->expressions()) {
                 if (expr->group() == expression_group::sort) {
                     auto* sort_expr = static_cast<sort_expression_t*>(expr.get());
@@ -1170,11 +1674,11 @@ namespace services::dispatcher {
                         return res.convert_error<named_schema>();
                     }
                 } else if (expr->group() == expression_group::scalar) {
-                    // Computed arithmetic sort key: resolve column params against schema.
                     auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
-                    auto res = resolve_key_paths_in_group(resource, scalar_expr->params(), schema);
-                    if (res.has_error()) {
-                        return res.convert_error<named_schema>();
+                    auto resolve_error =
+                        resolve_scalar_output_type(resource, cast_registry, scalar_expr, schema, parameters);
+                    if (resolve_error.contains_error()) {
+                        return resolve_error;
                     }
                 }
             }
@@ -1186,11 +1690,14 @@ namespace services::dispatcher {
         // Mirrors the node_select resolution: get_field keys and arithmetic
         // operands get their column paths stamped; star_expand with a table
         // qualifier is validated to expand; bare '*' and constants need nothing.
-        [[nodiscard]] core::error_t resolve_returning_columns(std::pmr::memory_resource* resource,
-                                                              std::pmr::vector<expression_ptr>* returning,
-                                                              const named_schema& schema_left,
-                                                              const named_schema& schema_right,
-                                                              bool same_schema) {
+        [[nodiscard]] core::error_t
+        resolve_returning_columns(std::pmr::memory_resource* resource,
+                                  const components::casts::cast_registry_t* cast_registry,
+                                  std::pmr::vector<expression_ptr>* returning,
+                                  const named_schema& schema_left,
+                                  const named_schema& schema_right,
+                                  bool same_schema,
+                                  const components::logical_plan::storage_parameters& parameters) {
             auto& exprs = *returning;
             for (size_t idx = 0; idx < exprs.size();) {
                 if (!exprs[idx] || exprs[idx]->group() != expression_group::scalar) {
@@ -1259,9 +1766,16 @@ namespace services::dispatcher {
                         idx++;
                         break;
                     default: {
-                        auto res = resolve_key_paths_in_group(resource, scalar_expr->params(), schema_left);
-                        if (res.has_error()) {
-                            return res.error();
+                        auto resolve_error = resolve_scalar_output_type(resource,
+                                                                        cast_registry,
+                                                                        scalar_expr,
+                                                                        schema_left,
+                                                                        parameters,
+                                                                        &schema_right,
+                                                                        same_schema,
+                                                                        nullptr);
+                        if (resolve_error.contains_error()) {
+                            return resolve_error;
                         }
                         idx++;
                         break;
@@ -1346,10 +1860,39 @@ namespace services::dispatcher {
         }
     } // namespace
 
+    core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
+                                          const components::casts::cast_registry_t* cast_registry,
+                                          const components::graph_execution_context& execution_context,
+                                          std::vector<components::table::column_definition_t>& columns) {
+        for (auto& column : columns) {
+            if (!column.has_default_value() || column.default_value().type() == column.type()) {
+                continue;
+            }
+            const auto& written = column.default_value();
+            auto conversion =
+                cast_registry->resolve(written.type(), column.type(), components::casts::cast_type::assignment);
+            if (!conversion.has_value()) {
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string{"DEFAULT for column '" + column.name() +
+                                                          "' may not be converted to the column's type on assignment",
+                                                      resource});
+            }
+            components::vector::vector_t source{resource, written, 1};
+            components::vector::vector_t converted{resource, column.type(), 1};
+            auto error = (*conversion)(components::casts::cast_kind::cast, source, &converted, execution_context, 1);
+            if (error.contains_error()) {
+                return error;
+            }
+            column.set_default_value(converted.value(0));
+        }
+        return core::error_t::no_error();
+    }
+
     core::error_t validate_types(std::pmr::memory_resource* resource,
                                  const impl::plan_resolve_index_t* idx,
                                  node_t* logical_plan,
-                                 core::date::timezone_offset_t session_tz) {
+                                 const components::graph_execution_context& execution_context) {
+        const auto session_tz = execution_context.timezone_offset;
         impl::plan_resolve_index_t local_idx;
         if (idx == nullptr) {
             impl::gather_plan_resolve_index(logical_plan, &local_idx);
@@ -1588,7 +2131,7 @@ namespace services::dispatcher {
             case components::types::logical_type::ENUM:
             case components::types::logical_type::STRUCT:
             case components::types::logical_type::UNKNOWN:
-                if (!type.type_name().empty()) {
+                if (type.extension() != nullptr && !type.type_name().empty()) {
                     return type.type_name();
                 }
                 break;
@@ -1738,6 +2281,113 @@ namespace services::dispatcher {
                     table_schema = incoming_schema;
                     same_schema = true;
                 }
+                if (node_group != nullptr) {
+                    std::pmr::vector<complex_logical_type> group_input_types{node_group->resource()};
+                    group_input_types.reserve(incoming_schema.size());
+                    for (const auto& column : incoming_schema) {
+                        group_input_types.push_back(column.type);
+                    }
+                    node_group->set_input_types(std::move(group_input_types));
+                }
+                if (node_group != nullptr && node_select != nullptr) {
+                    bool grouped = node_having != nullptr;
+                    for (const auto& expr : node_group->expressions()) {
+                        if (grouped) {
+                            break;
+                        }
+                        if (expr->group() == expression_group::scalar &&
+                            static_cast<scalar_expression_t*>(expr.get())->type() == scalar_type::group_field) {
+                            grouped = true;
+                        }
+                    }
+                    if (!grouped) {
+                        bool reduces = false;
+                        for (auto& expr : node_group->expressions()) {
+                            if (expr->group() == expression_group::aggregate) {
+                                reduces = true;
+                                continue;
+                            }
+                            if (expr->group() == expression_group::function) {
+                                core::error_t call_error = core::error_t::no_error();
+                                impl::param_type_resolver resolve_call_only{resource,
+                                                                            cast_registry,
+                                                                            incoming_schema,
+                                                                            parameters,
+                                                                            call_error,
+                                                                            nullptr,
+                                                                            true,
+                                                                            &reduces};
+                                resolve_call_only.resolve_call(static_cast<function_expression_t*>(expr.get()));
+                                if (call_error.contains_error()) {
+                                    return call_error;
+                                }
+                                continue;
+                            }
+                            if (expr->group() == expression_group::cast) {
+                                core::error_t cast_error = core::error_t::no_error();
+                                impl::param_type_resolver resolve_cast{resource,
+                                                                       cast_registry,
+                                                                       incoming_schema,
+                                                                       parameters,
+                                                                       cast_error};
+                                param_storage as_param{expr};
+                                resolve_cast(as_param);
+                                if (cast_error.contains_error()) {
+                                    return cast_error;
+                                }
+                                continue;
+                            }
+                            if (expr->group() == expression_group::compare) {
+                                auto compare_error =
+                                    impl::resolve_compare_output_type(resource,
+                                                                      cast_registry,
+                                                                      static_cast<compare_expression_t*>(expr.get()),
+                                                                      incoming_schema,
+                                                                      parameters);
+                                if (compare_error.contains_error()) {
+                                    return compare_error;
+                                }
+                                continue;
+                            }
+                            if (expr->group() != expression_group::scalar) {
+                                continue;
+                            }
+                            auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
+                            if (scalar_expr->type() == scalar_type::group_field ||
+                                scalar_expr->type() == scalar_type::get_field ||
+                                scalar_expr->type() == scalar_type::star_expand) {
+                                continue;
+                            }
+                            auto resolve_error = impl::resolve_scalar_output_type(resource,
+                                                                                  cast_registry,
+                                                                                  scalar_expr,
+                                                                                  incoming_schema,
+                                                                                  parameters,
+                                                                                  nullptr,
+                                                                                  true,
+                                                                                  &reduces);
+                            if (resolve_error.contains_error()) {
+                                return resolve_error;
+                            }
+                        }
+                        grouped = reduces;
+                    }
+                    if (!grouped) {
+                        for (auto& expr : node_group->expressions()) {
+                            node_select->append_expression(expr);
+                        }
+                        node_group->expressions().clear();
+                        auto& children = node->children();
+                        children.erase(std::remove_if(children.begin(),
+                                                      children.end(),
+                                                      [node_group](const components::logical_plan::node_ptr& child) {
+                                                          return child.get() == node_group;
+                                                      }),
+                                       children.end());
+                        node_group = nullptr;
+                    }
+                }
+
                 if (node_match) {
                     // Expand is_not_null/is_null on multi-type fields into OR/AND
                     // over their variants (jsonb '?'/'?|'/'?&' over multi-type).
@@ -1746,6 +2396,7 @@ namespace services::dispatcher {
                     }
                     auto res = impl::validate_schema(resource,
                                                      idx,
+                                                     cast_registry,
                                                      node_match,
                                                      parameters,
                                                      table_schema,
@@ -1758,7 +2409,8 @@ namespace services::dispatcher {
 
                 if (!node_group) {
                     if (node_sort) {
-                        auto res = impl::validate_schema(resource, node_sort, incoming_schema);
+                        auto res =
+                            impl::validate_schema(resource, cast_registry, node_sort, incoming_schema, parameters);
                         if (res.has_error()) {
                             return res;
                         }
@@ -1822,6 +2474,14 @@ namespace services::dispatcher {
                                                      make_scalar_expression(resource, scalar_type::get_field, new_key));
                                     }
                                     expr_index += matched.size();
+                                    continue;
+                                }
+                                if (scalar_expr->type() == scalar_type::star_expand &&
+                                    scalar_expr->key().storage().empty()) {
+                                    components::expressions::key_t star_key(resource);
+                                    star_key.storage().push_back(std::pmr::string("*", resource));
+                                    exprs[expr_index] =
+                                        make_scalar_expression(resource, scalar_type::get_field, star_key);
                                     continue;
                                 }
                                 if (scalar_expr->type() != scalar_type::get_field) {
@@ -1973,6 +2633,12 @@ namespace services::dispatcher {
 
                         bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
+                            if (expr->group() == expression_group::function ||
+                                expr->group() == expression_group::compare ||
+                                expr->group() == expression_group::cast) {
+                                has_computed_column = true;
+                                continue;
+                            }
                             if (expr->group() != expression_group::scalar) {
                                 continue;
                             }
@@ -1983,10 +2649,10 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (key.path().empty()) {
-                                    auto res =
+                                    auto validated_key =
                                         impl::validate_key(resource, key, incoming_schema, incoming_schema, true);
-                                    if (res.has_error()) {
-                                        return res.convert_error<named_schema>();
+                                    if (validated_key.has_error()) {
+                                        return validated_key.convert_error<named_schema>();
                                     }
                                 }
                                 const auto& col_type = incoming_schema[key.path()[0]].type;
@@ -2061,6 +2727,25 @@ namespace services::dispatcher {
                     if (node_select) {
                         named_schema result_schema(resource);
                         for (auto& expr : node_select->expressions()) {
+                            if (expr->group() == expression_group::function ||
+                                expr->group() == expression_group::compare ||
+                                expr->group() == expression_group::cast) {
+                                complex_logical_type out_type = expr->result_type();
+                                const components::expressions::key_t* out_key = nullptr;
+                                if (expr->group() == expression_group::function) {
+                                    out_key = &static_cast<function_expression_t*>(expr.get())->key();
+                                } else if (expr->group() == expression_group::compare) {
+                                    out_key = &static_cast<compare_expression_t*>(expr.get())->key();
+                                } else {
+                                    out_key =
+                                        &static_cast<components::expressions::cast_expression_t*>(expr.get())->key();
+                                }
+                                if (!out_key->is_null()) {
+                                    out_type.set_alias(out_key->as_string());
+                                }
+                                result_schema.push_back(type_from_t{node->result_alias(), std::move(out_type)});
+                                continue;
+                            }
                             if (expr->group() != expression_group::scalar) {
                                 continue;
                             }
@@ -2082,14 +2767,15 @@ namespace services::dispatcher {
                                 // unary_minus / constant): resolve the real output type
                                 // against incoming_schema. Rule 6 — never the UNKNOWN/NA
                                 // sentinel; an unresolvable type is a bind error.
-                                auto resolved = impl::resolve_scalar_output_type(resource,
-                                                                                 scalar_expr,
-                                                                                 incoming_schema,
-                                                                                 parameters);
-                                if (resolved.has_error()) {
-                                    return resolved.convert_error<named_schema>();
+                                auto resolve_error = impl::resolve_scalar_output_type(resource,
+                                                                                      cast_registry,
+                                                                                      scalar_expr,
+                                                                                      incoming_schema,
+                                                                                      parameters);
+                                if (resolve_error.contains_error()) {
+                                    return resolve_error;
                                 }
-                                complex_logical_type out_type = std::move(resolved.value());
+                                complex_logical_type out_type = scalar_expr->result_type();
                                 if (!scalar_expr->key().is_null()) {
                                     out_type.set_alias(scalar_expr->key().as_string());
                                 }
@@ -2162,9 +2848,24 @@ namespace services::dispatcher {
 
                     // --- Helpers ---
                     auto is_case_or_arithmetic = [](scalar_type t) -> bool {
-                        return t == scalar_type::case_expr || t == scalar_type::add || t == scalar_type::subtract ||
-                               t == scalar_type::multiply || t == scalar_type::divide || t == scalar_type::mod ||
-                               t == scalar_type::unary_minus;
+                        switch (t) {
+                            case scalar_type::case_expr:
+                            case scalar_type::add:
+                            case scalar_type::subtract:
+                            case scalar_type::multiply:
+                            case scalar_type::divide:
+                            case scalar_type::mod:
+                            case scalar_type::unary_minus:
+                            case scalar_type::bit_and:
+                            case scalar_type::bit_or:
+                            case scalar_type::bit_xor:
+                            case scalar_type::bit_not:
+                            case scalar_type::shift_left:
+                            case scalar_type::shift_right:
+                                return true;
+                            default:
+                                return false;
+                        }
                     };
 
                     // resolve_type/compute_type_entry have no return-channel for
@@ -2173,7 +2874,7 @@ namespace services::dispatcher {
                     core::error_t compute_type_error = core::error_t::no_error();
                     auto compute_type_entry = [&](scalar_expression_t* scalar_expr,
                                                   const named_schema& schema) -> type_from_t {
-                        auto resolve_type = [&](param_storage& param, auto& self) -> complex_logical_type {
+                        auto resolve_type = [&](param_storage& param) -> complex_logical_type {
                             if (std::holds_alternative<components::expressions::key_t>(param)) {
                                 auto& key = std::get<components::expressions::key_t>(param);
                                 assert(!key.path().empty());
@@ -2188,36 +2889,48 @@ namespace services::dispatcher {
                                 }
                                 return ct_it->second.type();
                             } else {
-                                auto& sub = std::get<expression_ptr>(param);
-                                if (sub->group() == expression_group::scalar) {
-                                    auto* sub_s = static_cast<scalar_expression_t*>(sub.get());
-                                    if (!sub_s->params().empty()) {
-                                        auto lt = self(sub_s->params()[0], self);
-                                        auto rt = sub_s->params().size() > 1 ? self(sub_s->params()[1], self) : lt;
-                                        return complex_logical_type(
-                                            arithmetic_result_type(lt.type(),
-                                                                   rt.type(),
-                                                                   impl::scalar_to_arith_op(sub_s->type())));
-                                    }
-                                }
-                                assert(false);
-                                return complex_logical_type(logical_type::BIGINT);
+                                impl::param_type_resolver resolve_operand{resource,
+                                                                          cast_registry,
+                                                                          schema,
+                                                                          parameters,
+                                                                          compute_type_error};
+                                return resolve_operand(param);
                             }
                         };
                         complex_logical_type result_type;
                         if (scalar_expr->type() == scalar_type::case_expr) {
-                            result_type = (scalar_expr->params().size() >= 2)
-                                              ? resolve_type(scalar_expr->params()[1], resolve_type)
-                                              : complex_logical_type(logical_type::BIGINT);
+                            if (scalar_expr->params().size() < 2) {
+                                compute_type_error = core::error_t(
+                                    core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"CASE expression with no THEN branch", resource});
+                                return type_from_t{node->result_alias(), complex_logical_type(logical_type::INVALID)};
+                            }
+                            for (size_t position = 0; position < scalar_expr->params().size(); position++) {
+                                auto param_type = resolve_type(scalar_expr->params()[position]);
+                                if (compute_type_error.contains_error()) {
+                                    return type_from_t{node->result_alias(),
+                                                       complex_logical_type(logical_type::INVALID)};
+                                }
+                                if (position == 1) {
+                                    result_type = std::move(param_type);
+                                }
+                            }
                         } else {
-                            auto lt = resolve_type(scalar_expr->params()[0], resolve_type);
-                            auto rt = scalar_expr->params().size() > 1
-                                          ? resolve_type(scalar_expr->params()[1], resolve_type)
-                                          : lt;
-                            result_type = complex_logical_type(
-                                arithmetic_result_type(lt.type(),
-                                                       rt.type(),
-                                                       impl::scalar_to_arith_op(scalar_expr->type())));
+                            auto lt = resolve_type(scalar_expr->params()[0]);
+                            auto rt = scalar_expr->params().size() > 1 ? resolve_type(scalar_expr->params()[1]) : lt;
+                            impl::adopt_untyped_binary_operands(resource, parameters, scalar_expr, &lt, &rt);
+                            auto resolved = resolve_arithmetic(*cast_registry,
+                                                               impl::scalar_to_operator_code(scalar_expr->type()),
+                                                               lt,
+                                                               rt);
+                            if (resolved.has_value()) {
+                                scalar_expr->set_result_type(resolved->op.result);
+                                impl::splice_operand_cast(resource, scalar_expr, 0, resolved->lhs_target, resolved->lhs_cast);
+                                impl::splice_operand_cast(resource, scalar_expr, 1, resolved->rhs_target, resolved->rhs_cast);
+                                result_type = resolved->op.result;
+                            } else if (!compute_type_error.contains_error()) {
+                                compute_type_error = impl::no_operator_error(resource, scalar_expr->type(), lt, rt);
+                            }
                         }
                         if (!scalar_expr->key().is_null()) {
                             result_type.set_alias(scalar_expr->key().as_string());
@@ -2225,10 +2938,48 @@ namespace services::dispatcher {
                         return type_from_t{node->result_alias(), std::move(result_type)};
                     };
 
+                    // --- Mark the reductions and classify cardinality ---
+                    {
+                        std::pmr::vector<std::pmr::vector<size_t>> key_paths(resource);
+                        for (const auto& expr : node_group->expressions()) {
+                            if (expr->group() != expression_group::scalar) {
+                                continue;
+                            }
+                            auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
+                            if (scalar_expr->type() != scalar_type::group_field) {
+                                continue;
+                            }
+                            auto res =
+                                impl::validate_key(resource, scalar_expr->key(), incoming_schema, incoming_schema, true);
+                            if (res.has_error()) {
+                                return res.convert_error<named_schema>();
+                            }
+                            key_paths.emplace_back(scalar_expr->key().path().begin(),
+                                                   scalar_expr->key().path().end());
+                        }
+
+                        core::error_t walk_error = core::error_t::no_error();
+                        impl::cardinality_resolver resolve_cardinality{resource,
+                                                                       cast_registry,
+                                                                       incoming_schema,
+                                                                       parameters,
+                                                                       key_paths,
+                                                                       walk_error};
+                        for (auto& expr : node_group->expressions()) {
+                            if (expr->group() == expression_group::scalar &&
+                                static_cast<scalar_expression_t*>(expr.get())->type() == scalar_type::group_field) {
+                                continue; // the key list itself, not a projected column
+                            }
+                            resolve_cardinality.of_expression(expr, false);
+                            if (walk_error.contains_error()) {
+                                return walk_error;
+                            }
+                        }
+                    }
+
                     // --- Pass 1: classify + resolve + collect schemas ---
                     size_t select_end = node_group->expressions().size() - node_group->internal_aggregate_count;
                     named_schema key_schema(resource);
-                    named_schema agg_schema(resource);
                     std::vector<size_t> post_agg_indices;
                     std::vector<size_t> agg_result_positions;
 
@@ -2264,18 +3015,31 @@ namespace services::dispatcher {
                                 result.emplace_back(type_from_t{node->result_alias(), *res_type});
                                 key_schema.emplace_back(result.back());
                             } else if (scalar_expr->type() == scalar_type::group_field) {
-                                // GROUP BY field: resolve key path and expose in output schema
                                 auto& key = scalar_expr->key();
                                 auto res = impl::validate_key(resource, key, incoming_schema, incoming_schema, true);
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
-                                const auto& col_type = incoming_schema[key.path()[0]].type;
-                                complex_logical_type out_type = col_type;
-                                if (!key.storage().empty()) {
-                                    out_type.set_alias(std::string(key.storage().back()));
+                            } else if (scalar_expr->type() == scalar_type::constant) {
+                                if (scalar_expr->params().empty() ||
+                                    !components::expressions::is_parameter(scalar_expr->params().front())) {
+                                    return core::error_t(
+                                        core::error_code_t::invalid_parameter,
+                                        std::pmr::string{"constant in a grouped projection carries no parameter",
+                                                         resource});
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), out_type});
+                                auto constant_it = parameters.parameters.find(
+                                    components::expressions::as_parameter(scalar_expr->params().front()));
+                                if (constant_it == parameters.parameters.end()) {
+                                    return core::error_t(
+                                        core::error_code_t::invalid_parameter,
+                                        std::pmr::string{"unbound parameter in a grouped projection", resource});
+                                }
+                                complex_logical_type constant_type = constant_it->second.type();
+                                if (!scalar_expr->key().is_null()) {
+                                    constant_type.set_alias(scalar_expr->key().as_string());
+                                }
+                                result.emplace_back(type_from_t{node->result_alias(), constant_type});
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
                                 // Try resolve against incoming_schema
@@ -2326,153 +3090,42 @@ namespace services::dispatcher {
                                     }
                                     function_input_types.emplace_back(agg_param_it->second.type());
                                 } else {
-                                    auto& sub_expr = std::get<expression_ptr>(param);
-                                    if (sub_expr->group() == expression_group::scalar) {
-                                        auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
-                                        core::error_t resolve_error = core::error_t::no_error();
-                                        // Recursive arithmetic-type resolver. A plain lambda cannot name
-                                        // itself for the recursion, so this is a local functor struct
-                                        // (rule 14 forbids std::function): operator() recurses via (*this).
-                                        // References to the surrounding context are held as members.
-                                        struct arith_type_resolver {
-                                            std::pmr::memory_resource* resource;
-                                            const named_schema& incoming_schema;
-                                            // Named params (not `parameters`): reusing the enclosing
-                                            // function parameter's name inside the class changes its
-                                            // meaning mid-scope — ill-formed under GCC.
-                                            const components::logical_plan::storage_parameters& params;
-                                            core::error_t& resolve_error;
-
-                                            complex_logical_type operator()(param_storage& p) const {
-                                                if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                                    auto& k = std::get<components::expressions::key_t>(p);
-                                                    auto f = impl::find_types(resource, k, incoming_schema);
-                                                    if (!f.has_error()) {
-                                                        return f.value().front().type;
-                                                    }
-                                                    if (f.has_error()) {
-                                                        resolve_error = f.error();
-                                                    }
-                                                    assert(false);
-                                                    return complex_logical_type(logical_type::INVALID);
-                                                } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                                                    auto p_it =
-                                                        params.parameters.find(std::get<core::parameter_id_t>(p));
-                                                    if (p_it == params.parameters.end()) {
-                                                        resolve_error = core::error_t(
-                                                            core::error_code_t::invalid_parameter,
-                                                            std::pmr::string{"unbound parameter in arithmetic operand",
-                                                                             resource});
-                                                        return complex_logical_type(logical_type::INVALID);
-                                                    }
-                                                    return p_it->second.type();
-                                                } else {
-                                                    auto& inner = std::get<expression_ptr>(p);
-                                                    if (inner->group() == expression_group::scalar) {
-                                                        auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
-                                                        if (s->params().size() >= 2) {
-                                                            auto lt = (*this)(s->params()[0]);
-                                                            auto rt = (*this)(s->params()[1]);
-                                                            return complex_logical_type(
-                                                                promote_type(lt.type(), rt.type()));
-                                                        }
-                                                    }
-                                                    assert(false);
-                                                    return complex_logical_type(logical_type::INVALID);
-                                                }
-                                            }
-                                        };
-                                        arith_type_resolver resolve_arith_type{resource,
-                                                                               incoming_schema,
-                                                                               parameters,
-                                                                               resolve_error};
-                                        // CASE WHEN inside an aggregate (e.g. SUM(CASE WHEN cond THEN a ELSE b END)).
-                                        // case_expr params layout (per transform_select_case_expr): pairs of
-                                        // [cond, result, cond, result, ..., default]. We take the type of the
-                                        // first THEN result (params[1]) as the CASE return type. Mixed branch
-                                        // result types would need a wider promote — deferred.
-                                        if (sub_scalar->type() == scalar_type::case_expr) {
-                                            if (sub_scalar->params().size() < 2) {
-                                                return core::error_t{
-                                                    core::error_code_t::invalid_parameter,
-                                                    std::pmr::string{"CASE expression with no THEN branch", resource}};
-                                            }
-                                            auto rt = resolve_arith_type(sub_scalar->params()[1]);
-                                            if (resolve_error.type != core::error_code_t::none) {
-                                                return resolve_error;
-                                            }
-                                            function_input_types.emplace_back(rt);
-                                        } else if (sub_scalar->params().size() >= 2) {
-                                            auto lt = resolve_arith_type(sub_scalar->params()[0]);
-                                            auto rt = resolve_arith_type(sub_scalar->params()[1]);
-                                            if (resolve_error.type != core::error_code_t::none) {
-                                                return resolve_error;
-                                            }
-                                            function_input_types.emplace_back(
-                                                arithmetic_result_type(lt.type(),
-                                                                       rt.type(),
-                                                                       impl::scalar_to_arith_op(sub_scalar->type())));
-                                        } else {
-                                            return core::error_t(
-                                                core::error_code_t::invalid_parameter,
-                                                std::pmr::string{"single-operand scalar is not supported", resource});
-                                        }
-                                    } else {
-                                        return core::error_t(
-                                            core::error_code_t::invalid_parameter,
-                                            std::pmr::string{"non-scalar expression param is not supported", resource});
+                                    core::error_t resolve_error = core::error_t::no_error();
+                                    impl::param_type_resolver resolve_operand{resource,
+                                                                              cast_registry,
+                                                                              incoming_schema,
+                                                                              parameters,
+                                                                              resolve_error};
+                                    auto operand_type = resolve_operand(param);
+                                    if (resolve_error.contains_error()) {
+                                        return resolve_error;
                                     }
+                                    function_input_types.emplace_back(operand_type);
                                 }
                             }
-                            auto agg_lk = impl::lookup_function(agg_expr->function_name(), function_input_types);
-                            if (!agg_lk.name_exists) {
-                                return core::error_t(core::error_code_t::unrecognized_function,
-                                                     std::pmr::string{"function: \'" + agg_expr->function_name() +
-                                                                          "(...)\' was not found by the name",
-                                                                      resource});
-                            } else if (agg_lk.match_found) {
-                                std::pmr::vector<complex_logical_type> function_output_types(resource);
-                                function_output_types.reserve(agg_lk.signature.output_types.size());
-                                for (const auto& output_type : agg_lk.signature.output_types) {
-                                    auto res = output_type.resolve(resource, function_input_types);
-                                    if (res.has_error()) {
-                                        return res.convert_error<named_schema>();
-                                    }
-                                    function_output_types.emplace_back(res.value());
-                                }
-                                auto agg_alias = agg_expr->key().as_string();
+                            auto agg_resolved =
+                                resolve_function(resource,
+                                                 *cast_registry,
+                                                 components::graph_execution_context{},
+                                                 *components::compute::function_registry_t::get_default(),
+                                                 agg_expr->function_name(),
+                                                 function_input_types,
+                                                 components::compute::create_mask(
+                                                     components::compute::function_type_t::aggregate));
+                            if (agg_resolved.has_error()) {
+                                return agg_resolved.convert_error<named_schema>();
+                            }
+                            {
                                 if (!is_internal) {
-                                    if (function_output_types.size() == 1) {
-                                        result.emplace_back(
-                                            type_from_t{node->result_alias(), function_output_types.front()});
-                                        if (!agg_expr->key().is_null()) {
-                                            result.back().type.set_alias(agg_alias);
-                                        }
-                                    } else {
-                                        result.emplace_back(type_from_t{
-                                            node->result_alias(),
-                                            complex_logical_type::create_struct("", function_output_types, agg_alias)});
-                                    }
-                                }
-                                agg_expr->add_function_uid(agg_lk.uid);
-                                agg_expr->set_mergeable(agg_lk.mergeable);
-                                // Collect for post_agg_schema
-                                if (!is_internal && !function_output_types.empty()) {
-                                    agg_result_positions.push_back(result.size() - 1);
-                                    agg_schema.emplace_back(result.back());
-                                } else if (is_internal && !function_output_types.empty()) {
-                                    type_from_t entry{node->result_alias(), function_output_types.front()};
+                                    result.emplace_back(type_from_t{node->result_alias(), agg_resolved.value().result});
                                     if (!agg_expr->key().is_null()) {
-                                        entry.type.set_alias(agg_alias);
+                                        result.back().type.set_alias(agg_expr->key().as_string());
                                     }
-                                    agg_schema.emplace_back(std::move(entry));
+                                    agg_result_positions.push_back(result.size() - 1);
                                 }
-                            } else {
-                                return core::error_t(
-                                    core::error_code_t::incorrect_function_argument,
-                                    std::pmr::string{"function: \'" + agg_expr->function_name() +
-                                                         "(...)\' was found but do not except given set of arguments",
-                                                     resource});
+                                agg_expr->add_function_uid(agg_resolved.value().uid);
+                                agg_expr->set_mergeable(agg_resolved.value().mergeable);
+                                agg_expr->set_result_type(agg_resolved.value().result);
                             }
                         } else {
                             // TODO: add check to validate schema, if assert is triggered
@@ -2484,9 +3137,7 @@ namespace services::dispatcher {
 
                     // --- Pass 2: build post_agg_schema + resolve deferred expressions ---
                     {
-                        named_schema post_agg_schema(resource);
-                        post_agg_schema.insert(post_agg_schema.end(), key_schema.begin(), key_schema.end());
-                        post_agg_schema.insert(post_agg_schema.end(), agg_schema.begin(), agg_schema.end());
+                        named_schema post_agg_schema(result);
 
                         for (size_t pa_idx : post_agg_indices) {
                             auto& expr = node_group->expressions()[pa_idx];
@@ -2537,8 +3188,27 @@ namespace services::dispatcher {
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
+                                auto resolve_error = impl::resolve_scalar_output_type(resource,
+                                                                                      cast_registry,
+                                                                                      scalar_expr,
+                                                                                      result,
+                                                                                      parameters);
+                                if (resolve_error.contains_error()) {
+                                    return resolve_error;
+                                }
                             }
                         }
+                    }
+
+                    if (node_select && node_select->expressions().empty()) {
+                        auto& children = node->children();
+                        children.erase(std::remove_if(children.begin(),
+                                                      children.end(),
+                                                      [node_select](const components::logical_plan::node_ptr& child) {
+                                                          return child.get() == node_select;
+                                                      }),
+                                       children.end());
+                        node_select = nullptr;
                     }
                 }
                 if (node_sort) {
@@ -2559,7 +3229,7 @@ namespace services::dispatcher {
                             result.emplace_back(type_from_t{node->result_alias(), field.value().front().type});
                         }
                     }
-                    auto res = impl::validate_schema(resource, node_sort, result);
+                    auto res = impl::validate_schema(resource, cast_registry, node_sort, result, parameters);
                     if (res.has_error()) {
                         return res;
                     }
@@ -2582,7 +3252,7 @@ namespace services::dispatcher {
                     auto& having = node_having->expressions()[0];
                     if (having->group() == expression_group::compare) {
                         auto* cmp_expr = reinterpret_cast<compare_expression_t*>(having.get());
-                        auto res = impl::validate_schema(resource, cmp_expr, parameters, result, result, true);
+                        auto res = impl::validate_schema(resource, cast_registry, cmp_expr, parameters, result, result, true);
                         if (res.has_error()) {
                             return res;
                         }
@@ -2625,36 +3295,26 @@ namespace services::dispatcher {
                     function_input.emplace_back(param_it->second.type());
                 }
 
-                auto fn_lk = impl::lookup_function(function_node->name(), function_input);
-                if (!fn_lk.name_exists) {
-                    return core::error_t(
-                        core::error_code_t::unrecognized_function,
-                        std::pmr::string{
-                            ("function: \'" + function_node->name() + "(...)\' was not found by the name").c_str(),
-                            resource});
-                } else if (fn_lk.match_found) {
+                auto fn_resolved = resolve_function(resource,
+                                                   *cast_registry,
+                                                   components::graph_execution_context{},
+                                                   *components::compute::function_registry_t::get_default(),
+                                                   function_node->name(),
+                                                   function_input,
+                                                   components::compute::create_mask(
+                                                       components::compute::function_type_t::row,
+                                                       components::compute::function_type_t::vector,
+                                                       components::compute::function_type_t::expand));
+                if (fn_resolved.has_error()) {
+                    return fn_resolved.convert_error<named_schema>();
+                }
+                {
                     const std::string& alias =
                         function_node->result_alias().empty() ? function_node->name() : function_node->result_alias();
-                    function_node->add_function_uid(fn_lk.uid);
-                    result.reserve(fn_lk.signature.output_types.size());
-                    for (const auto& output_type : fn_lk.signature.output_types) {
-                        auto res = output_type.resolve(resource, function_input);
-                        if (res.has_error()) {
-                            return res.convert_error<named_schema>();
-                        }
-                        // Carry the column name on the type itself (not just in
-                        // type_from_t.result_alias): downstream schema consumers read
-                        // complex_logical_type::alias() and assert an alias is present.
-                        complex_logical_type out_type = res.value();
-                        out_type.set_alias(alias);
-                        result.emplace_back(type_from_t{alias, std::move(out_type)});
-                    }
-                } else {
-                    return core::error_t(
-                        core::error_code_t::incorrect_function_argument,
-                        std::pmr::string{"function: \'" + function_node->name() +
-                                             "(...)\' was found but do not except given set of arguments",
-                                         resource});
+                    function_node->add_function_uid(fn_resolved.value().uid);
+                    complex_logical_type out_type = fn_resolved.value().result;
+                    out_type.set_alias(alias);
+                    result.emplace_back(type_from_t{alias, std::move(out_type)});
                 }
                 break;
             }
@@ -2713,6 +3373,7 @@ namespace services::dispatcher {
                 }
                 auto expr_res =
                     impl::validate_schema(resource,
+                                          cast_registry,
                                           reinterpret_cast<compare_expression_t*>(node->expressions()[0].get()),
                                           parameters,
                                           left_schema.value(),
@@ -2769,10 +3430,12 @@ namespace services::dispatcher {
                     // table-ordered schema), so resolve the projection keys here.
                     if (!insert_node->returning().empty() && !table_schema.empty()) {
                         auto ret_err = impl::resolve_returning_columns(resource,
+                                                                       cast_registry,
                                                                        &insert_node->returning(),
                                                                        table_schema,
                                                                        table_schema,
-                                                                       true);
+                                                                       true,
+                                                                       parameters);
                         if (ret_err.contains_error()) {
                             return ret_err;
                         }
@@ -2978,14 +3641,11 @@ namespace services::dispatcher {
                         }
                         auto* node_update = reinterpret_cast<node_update_t*>(node);
                         for (const auto& expr : node_update->updates()) {
-                            if (!expr || expr->type() != update_expr_type::set) {
+                            // The SET value's own key names the column it is assigned to.
+                            if (!expr || expr->key().is_null()) {
                                 continue;
                             }
-                            auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr.get());
-                            if (set_expr->key().is_null()) {
-                                continue;
-                            }
-                            const auto& storage = set_expr->key().storage();
+                            const auto& storage = expr->key().storage();
                             // Top-level field is the column name; nested paths (a.b.c) still
                             // require the head 'a' to be a registered column.
                             // storage.at(0) is safe: key_t::is_null() == storage().empty(),
@@ -3040,6 +3700,7 @@ namespace services::dispatcher {
                 if (node_match) {
                     auto node_match_res = impl::validate_schema(resource,
                                                                 idx,
+                                                                cast_registry,
                                                                 node_match,
                                                                 parameters,
                                                                 table_schema,
@@ -3055,11 +3716,82 @@ namespace services::dispatcher {
                 }
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
+                    auto allowed_function_types =
+                        components::compute::create_mask(components::compute::function_type_t::row,
+                                                         components::compute::function_type_t::vector);
                     for (auto& expr : node_update->updates()) {
-                        auto expr_res =
-                            impl::validate_schema(resource, expr.get(), table_schema, incoming_schema, same_schema);
-                        if (expr_res.has_error()) {
-                            return expr_res;
+                        auto target_res = impl::find_types(resource, expr->key(), table_schema);
+                        if (target_res.has_error()) {
+                            return target_res.convert_error<named_schema>();
+                        }
+                        expr->key().set_side(side_t::left);
+                        expr->key().set_path(target_res.value().front().path);
+
+                        if (expr->group() == expression_group::scalar) {
+                            auto* scalar = static_cast<scalar_expression_t*>(expr.get());
+                            auto resolve_error = impl::resolve_scalar_output_type(resource,
+                                                                                  cast_registry,
+                                                                                  scalar,
+                                                                                  table_schema,
+                                                                                  parameters,
+                                                                                  &incoming_schema,
+                                                                                  same_schema);
+                            if (resolve_error.contains_error()) {
+                                return resolve_error;
+                            }
+                        } else if (expr->group() == expression_group::function) {
+                            auto function_res =
+                                impl::validate_schema(resource,
+                                                      cast_registry,
+                                                      static_cast<function_expression_t*>(expr.get()),
+                                                      parameters,
+                                                      table_schema,
+                                                      incoming_schema,
+                                                      same_schema,
+                                                      allowed_function_types);
+                            if (function_res.has_error()) {
+                                return function_res;
+                            }
+                        }
+
+                        // get type of where expression value will be placed
+                        // Walk the remaining path steps into the column type. A STRUCT field is
+                        // indexed; a LIST/ARRAY element has a single child type, so it must NOT be
+                        // indexed (child_types() asserts on a type with no extension).
+                        const components::types::complex_logical_type* narrowed = &target_res.value().front().type;
+                        const auto& target_path = expr->key().path();
+                        for (size_t step = 1; step < target_path.size(); ++step) {
+                            if (narrowed->type() == logical_type::STRUCT) {
+                                narrowed = &narrowed->child_types()[target_path[step]];
+                            } else {
+                                narrowed = &narrowed->child_type();
+                            }
+                        }
+                        const auto& target_type = *narrowed;
+
+                        // Storing can call assignment cast
+                        const auto& value_type = expr->result_type();
+                        if (value_type.type() != logical_type::INVALID && value_type != target_type) {
+                            auto cast = cast_registry->resolve(value_type,
+                                                               target_type,
+                                                               components::casts::cast_type::assignment);
+                            if (!cast.has_value()) {
+                                return core::error_t(
+                                    core::error_code_t::conversion_failure,
+                                    std::pmr::string{("update_node: column '" + expr->key().as_string() +
+                                                      "' is of type " + describe_type(target_type) +
+                                                      " but the assigned value is of type " +
+                                                      describe_type(value_type) +
+                                                      "; no cast between them may be applied on assignment")
+                                                         .c_str(),
+                                                     resource});
+                            }
+                            expr = components::expressions::expression_ptr{
+                                components::expressions::make_cast_expression(resource,
+                                                                              param_storage{expr},
+                                                                              target_type,
+                                                                              cast.value(),
+                                                                              components::casts::cast_kind::cast)};
                         }
                     }
                 }
@@ -3077,10 +3809,12 @@ namespace services::dispatcher {
                         // table_schema. No source child -> resolve against the target only.
                         const bool has_join = node_data != nullptr && !incoming_schema.empty();
                         auto ret_err = impl::resolve_returning_columns(resource,
+                                                                       cast_registry,
                                                                        returning,
                                                                        table_schema,
                                                                        has_join ? incoming_schema : table_schema,
-                                                                       /*same_schema=*/!has_join);
+                                                                       !has_join,
+                                                                       parameters);
                         if (ret_err.contains_error()) {
                             return ret_err;
                         }

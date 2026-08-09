@@ -525,24 +525,27 @@ namespace components::planner::optimizer {
                 n += w;
             }
 
-            // An explicit, non-star projection is required: a SELECT * / absent node_select
-            // leaks the merged order upward (validate_logical_plan star_expand path).
+            // An explicit, non-star projection is required: a SELECT * leaks the merged order
+            // upward (validate_logical_plan star_expand path). A GROUP node counts as one — a
+            // grouped query emits one row per group over exactly its own expression list, which
+            // IS the projection, and it therefore carries no node_select at all.
             {
-                node_ptr select_node = nullptr;
+                bool has_projection = false;
                 for (size_t i = 1; i < siblings.size(); ++i) {
-                    if (siblings[i] && siblings[i]->type() == node_type::select_t) {
-                        select_node = siblings[i];
-                        break;
+                    if (!siblings[i] ||
+                        (siblings[i]->type() != node_type::select_t && siblings[i]->type() != node_type::group_t)) {
+                        continue;
+                    }
+                    has_projection = true;
+                    for (const auto& expr : siblings[i]->expressions()) {
+                        if (expr && expr->group() == expression_group::scalar &&
+                            static_cast<scalar_expression_t*>(expr.get())->type() == scalar_type::star_expand) {
+                            return source;
+                        }
                     }
                 }
-                if (!select_node) {
+                if (!has_projection) {
                     return source; // SELECT * (no projection node) -> leaks merged order
-                }
-                for (const auto& expr : select_node->expressions()) {
-                    if (expr && expr->group() == expression_group::scalar &&
-                        static_cast<scalar_expression_t*>(expr.get())->type() == scalar_type::star_expand) {
-                        return source;
-                    }
                 }
             }
 

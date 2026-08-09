@@ -8,8 +8,9 @@ set(SOURCE_${PROJECT_NAME}
         aggregate_expression.cpp
         scalar_expression.cpp
         sort_expression.cpp
-        update_expression.cpp
         function_expression.cpp
+        cast_expression.cpp
+        execution_graph_builder.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -21,8 +22,12 @@ add_library(otterbrix::${PROJECT_NAME} ALIAS otterbrix_${PROJECT_NAME})
 set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAME})
 
 target_link_libraries(
-        otterbrix_${PROJECT_NAME} PRIVATE
+        otterbrix_${PROJECT_NAME} PUBLIC
+        otterbrix::casts
         otterbrix::compute
+        otterbrix::execution_context
+        otterbrix::execution_graph
+        otterbrix::operators
         otterbrix::vector
 
         absl::int128

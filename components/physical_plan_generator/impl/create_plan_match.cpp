@@ -111,16 +111,19 @@ namespace services::planner::impl {
                                        t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
                 const bool col_op_col =
                     no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
-                // (C) f(column...) OP constant: one operand a function/arithmetic expression over column(s),
-                // the other a bound parameter -> an expression_filter_t evaluated per row on the agent. Only
-                // when UDF-free (the disk agent cannot resolve a UDF, see
+                // (C) f(column...) OP constant-or-column: one operand a function / arithmetic / cast
+                // expression over column(s), the other a bound parameter OR another column -> an
+                // expression_filter_t carrying the compare and a graph, evaluated per row on the agent.
+                // The other side may be a column because that filter ships the WHOLE comparison and
+                // collects the referenced paths from BOTH sides — `WHERE CAST(ts AS TIME) = tm` is this
+                // shape. Only when UDF-free (the disk agent cannot resolve a UDF, see
                 // components/expressions/udf_references.hpp).
-                const bool expr_op_const =
-                    ((is_expr(comp_expr->left()) && is_parameter(comp_expr->right())) ||
-                     (is_expr(comp_expr->right()) && is_parameter(comp_expr->left()))) &&
+                const bool expr_op_other =
+                    ((is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
+                     (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()))) &&
                     !expr::param_references_udf(comp_expr->left()) &&
                     !expr::param_references_udf(comp_expr->right());
-                if (!col_op_const && !col_op_col && !expr_op_const) {
+                if (!col_op_const && !col_op_col && !expr_op_other) {
                     return false;
                 }
             }

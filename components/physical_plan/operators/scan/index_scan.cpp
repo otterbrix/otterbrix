@@ -45,7 +45,7 @@ namespace components::operators {
                                                compare_type_,
                                                ctx->txn.start_time,
                                                ctx->txn.transaction_id,
-                                               ctx->session_tz)
+                                               ctx->execution_context.timezone_offset)
                             : actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::search_with_preferred_type,
                                                ctx->session,
@@ -56,7 +56,7 @@ namespace components::operators {
                                                preferred_index_type_,
                                                ctx->txn.start_time,
                                                ctx->txn.transaction_id,
-                                               ctx->session_tz);
+                                               ctx->execution_context.timezone_offset);
         row_ids_vec_ = co_await std::move(sf);
 
         // Apply the read-cap (offset+limit head cap) count to compute the [0, count) window over the

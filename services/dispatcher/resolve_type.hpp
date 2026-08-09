@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/node.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 
@@ -34,5 +35,8 @@ namespace services::dispatcher {
     // ARRAY element types) using the plan-tree idx.
     void resolve_column_definitions(std::vector<components::table::column_definition_t>& cols,
                                     const impl::plan_resolve_index_t* idx);
+
+    void resolve_expression_types(const components::logical_plan::node_ptr& node,
+                                  const impl::plan_resolve_index_t* idx);
 
 } // namespace services::dispatcher

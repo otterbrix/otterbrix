@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/compute/function.hpp>          // compute::function_uid / invalid_function_uid
+#include <components/expressions/expression.hpp>     // expressions::expression_ptr (shipped outputs)
 #include <components/types/types.hpp>                // types::complex_logical_type
 
 #include <cstdint>
@@ -40,6 +41,7 @@ namespace components::operators {
         components::compute::function_uid func_uid{components::compute::invalid_function_uid};
         bool distinct{false};                    // always false in scope (optimizer skips DISTINCT)
         std::pmr::string alias;                  // group->add_value output name
+        types::complex_logical_type result_type;
 
         explicit pushed_aggregate_t(std::pmr::memory_resource* resource)
             : function_name(resource)
@@ -63,14 +65,15 @@ namespace components::operators {
     struct pushed_aggregate_spec_t {
         std::pmr::vector<pushed_group_key_t> group_keys;
         std::pmr::vector<pushed_aggregate_t> aggregates;
-        // FINAL output column types (keys first, then aggregate values), forwarded from the
-        // aggregate node's output_types(). MANDATORY: operator_group::set_output_types uses it
-        // to type an empty-slice scalar result instead of the 0-byte NA sentinel (gcc -O3 crash).
+        std::pmr::vector<expressions::expression_ptr> outputs;
         std::pmr::vector<types::complex_logical_type> output_types;
+        std::pmr::vector<types::complex_logical_type> input_types;
         explicit pushed_aggregate_spec_t(std::pmr::memory_resource* resource)
             : group_keys(resource)
             , aggregates(resource)
-            , output_types(resource) {}
+            , outputs(resource)
+            , output_types(resource)
+            , input_types(resource) {}
 
         // "A reduce is armed": an all-empty spec (no keys, no aggregates) describes no
         // reduce at all — build_pushed_spec rejects it.

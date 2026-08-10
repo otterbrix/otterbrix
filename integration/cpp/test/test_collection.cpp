@@ -13,7 +13,10 @@ namespace {
     components::expressions::expression_ptr
     regexp_like_call(std::pmr::memory_resource* resource, const std::string& column, core::parameter_id_t pattern) {
         std::pmr::vector<components::expressions::param_storage> args{resource};
-        args.emplace_back(components::expressions::key_t{resource, column, components::expressions::side_t::left});
+        args.emplace_back(std::in_place_type<components::expressions::key_t>,
+                          resource,
+                          column,
+                          components::expressions::side_t::left);
         args.emplace_back(pattern);
         return components::expressions::expression_ptr{
             components::expressions::make_function_expression(resource, "regexp_like", std::move(args))};

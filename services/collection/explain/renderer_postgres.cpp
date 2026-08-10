@@ -120,6 +120,8 @@ namespace services::collection {
                 case ops::operator_type::vacuum:
                 case ops::operator_type::register_udf:
                 case ops::operator_type::unregister_udf:
+                case ops::operator_type::register_cast:
+                case ops::operator_type::unregister_cast:
                 case ops::operator_type::commit_transaction:
                 case ops::operator_type::abort_transaction:
                 case ops::operator_type::begin_transaction:

@@ -75,11 +75,10 @@ namespace services::planner::impl {
 
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_group(const context_storage_t& context,
-                      const components::compute::function_registry_t& function_registry,
-                      const components::logical_plan::node_ptr& node,
-                      const components::logical_plan::storage_parameters* params) {
+    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
+                                                          const components::compute::function_registry_t&,
+                                                          const components::logical_plan::node_ptr& node,
+                                                          const components::logical_plan::storage_parameters*) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);

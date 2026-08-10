@@ -64,10 +64,8 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
     REQUIRE(exec("CREATE TABLE t.ua (x BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO t.ua (x) VALUES (9);")->is_success());
 
-    // '-' has no unary form in update_expr_type: clean error, not a null-deref.
-    CHECK_FALSE(exec("UPDATE t.ua SET x = -x;")->is_success());
-    CHECK_FALSE(exec("UPDATE t.ua SET x = +x;")->is_success());
-    // Genuinely unary operators work in prefix form.
+    REQUIRE(exec("UPDATE t.ua SET x = -x;")->is_success());
+    REQUIRE(exec("UPDATE t.ua SET x = +x;")->is_success());
     REQUIRE(exec("UPDATE t.ua SET x = @ x;")->is_success());
     {
         auto cur = exec("SELECT x FROM t.ua;");
@@ -98,8 +96,6 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
     REQUIRE(exec("INSERT INTO t.uf (x, s) VALUES (9, 'ab');")->is_success());
 
     CHECK_FALSE(exec("UPDATE t.uf SET s = upper(s);")->is_success());
-    CHECK_FALSE(exec("UPDATE t.uf SET x = x + abs(x);")->is_success());
-    CHECK_FALSE(exec("UPDATE t.uf SET x = CASE WHEN x > 0 THEN 1 ELSE 0 END;")->is_success());
     {
         auto cur = exec("SELECT x, s FROM t.uf;");
         REQUIRE(cur->is_success());

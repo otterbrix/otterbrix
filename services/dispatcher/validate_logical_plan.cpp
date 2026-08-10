@@ -112,6 +112,31 @@ namespace services::dispatcher {
                                                               cast,
                                                               components::casts::cast_kind::cast)}};
         }
+
+        [[nodiscard]] core::error_t request_projection_type(std::pmr::memory_resource* resource,
+                                                            const components::casts::cast_registry_t* cast_registry,
+                                                            components::expressions::expression_ptr* expression) {
+            const auto& source = (*expression)->result_type();
+            if (source.type() != logical_type::NA) {
+                return core::error_t::no_error();
+            }
+            const components::types::complex_logical_type text{logical_type::STRING_LITERAL};
+            auto cast = cast_registry->resolve(source, text, components::casts::cast_type::implicit);
+            if (!cast.has_value()) {
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string{"no cast from a NULL literal to text", resource});
+            }
+            auto conversion = components::expressions::make_cast_expression(resource,
+                                                                            param_storage{*expression},
+                                                                            text,
+                                                                            cast.value(),
+                                                                            components::casts::cast_kind::cast);
+            // The projected column is addressed by its key, so the wrapper takes it over.
+            conversion->key() = (*expression)->key();
+            conversion->set_result_alias((*expression)->result_alias());
+            *expression = components::expressions::expression_ptr{conversion.get()};
+            return core::error_t::no_error();
+        }
         // plan_resolve_index_t + helpers live in
         // services/dispatcher/plan_resolve_index.hpp so
         // enrich_logical_plan.cpp can use the same probe-then-fallback
@@ -1237,14 +1262,6 @@ namespace services::dispatcher {
                                              std::pmr::string{"constant expression with no value", resource});
                     }
                     result_type = resolve(scalar_expr->params()[0]);
-                    // A bare NULL literal projects an untyped NA constant. PostgreSQL types an unknown NULL
-                    // as text — resolve it to STRING_LITERAL so the projection has a concrete column type.
-                    // The value stays NULL via the vector validity mask (operator_select projects a typed
-                    // NULL from this resolved type). Scalar-subquery NULLs are already re-typed from their
-                    // own output types upstream, so they never reach here as NA.
-                    if (result_type.type() == logical_type::NA || result_type.type() == logical_type::UNKNOWN) {
-                        result_type = components::types::complex_logical_type(logical_type::STRING_LITERAL);
-                    }
                     break;
                 }
                 case scalar_type::case_expr: {
@@ -1346,11 +1363,11 @@ namespace services::dispatcher {
             if (resolve_error.contains_error()) {
                 return resolve_error;
             }
-            // Rule 6: a resolved type must be concrete and storable — never the
-            // UNKNOWN/NA sentinel. If resolution collapsed to one, surface a bind
-            // error rather than emitting a 0-size column downstream.
-            if (result_type.type() == logical_type::UNKNOWN || result_type.type() == logical_type::NA ||
-                result_type.type() == logical_type::INVALID) {
+            // Rule 6: a resolved type must be one the expression really has — never the
+            // UNKNOWN/INVALID sentinel. NA is not a sentinel: it is the type of a bare NULL
+            // literal, and whoever consumes the value (an assignment, an operator) casts it
+            // from NA the same way it casts any other type.
+            if (result_type.type() == logical_type::UNKNOWN || result_type.type() == logical_type::INVALID) {
                 return core::error_t(
                     core::error_code_t::schema_error,
                     std::pmr::string{"could not resolve a concrete type for projected scalar expression", resource});
@@ -2771,7 +2788,7 @@ namespace services::dispatcher {
                             } else {
                                 // Computed projection (CASE / COALESCE / arithmetic /
                                 // unary_minus / constant): resolve the real output type
-                                // against incoming_schema. Rule 6 — never the UNKNOWN/NA
+                                // against incoming_schema. Rule 6 — never the UNKNOWN
                                 // sentinel; an unresolvable type is a bind error.
                                 auto resolve_error = impl::resolve_scalar_output_type(resource,
                                                                                       cast_registry,
@@ -2781,19 +2798,22 @@ namespace services::dispatcher {
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
                                 }
-                                complex_logical_type out_type = scalar_expr->result_type();
-                                if (!scalar_expr->key().is_null()) {
-                                    out_type.set_alias(scalar_expr->key().as_string());
-                                }
-                                // A bare NULL literal is a scalar constant whose bound value is NULL (its type
-                                // was defaulted to text). Mark the column so a UNION can reconcile it to the
-                                // other branch's type.
+                                // A bare NULL literal is a scalar constant whose bound value is NULL.
+                                // Mark the column so a UNION can reconcile it to the other branch's type.
                                 bool from_null = false;
                                 if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
                                     components::expressions::is_parameter(scalar_expr->params().front())) {
                                     auto pit = parameters.parameters.find(
                                         components::expressions::as_parameter(scalar_expr->params().front()));
                                     from_null = (pit != parameters.parameters.end() && pit->second.is_null());
+                                }
+                                auto projected_error = impl::request_projection_type(resource, cast_registry, &expr);
+                                if (projected_error.contains_error()) {
+                                    return projected_error;
+                                }
+                                complex_logical_type out_type = expr->result_type();
+                                if (!expr->key().is_null()) {
+                                    out_type.set_alias(expr->key().as_string());
                                 }
                                 type_from_t entry{node->result_alias(), std::move(out_type)};
                                 entry.from_null_literal = from_null;
@@ -3772,19 +3792,7 @@ namespace services::dispatcher {
                         }
 
                         // get type of where expression value will be placed
-                        // Walk the remaining path steps into the column type. A STRUCT field is
-                        // indexed; a LIST/ARRAY element has a single child type, so it must NOT be
-                        // indexed (child_types() asserts on a type with no extension).
-                        const components::types::complex_logical_type* narrowed = &target_res.value().front().type;
-                        const auto& target_path = expr->key().path();
-                        for (size_t step = 1; step < target_path.size(); ++step) {
-                            if (narrowed->type() == logical_type::STRUCT) {
-                                narrowed = &narrowed->child_types()[target_path[step]];
-                            } else {
-                                narrowed = &narrowed->child_type();
-                            }
-                        }
-                        const auto& target_type = *narrowed;
+                        const auto& target_type = target_res.value().front().type;
 
                         // Storing can call assignment cast
                         const auto& value_type = expr->result_type();
@@ -3803,12 +3811,15 @@ namespace services::dispatcher {
                                                          .c_str(),
                                                      resource});
                             }
-                            expr = components::expressions::expression_ptr{
+                            auto conversion =
                                 components::expressions::make_cast_expression(resource,
                                                                               param_storage{expr},
                                                                               target_type,
                                                                               cast.value(),
-                                                                              components::casts::cast_kind::cast)};
+                                                                              components::casts::cast_kind::cast);
+                            // An expression is addressed by the key, so propagating it to the top is important
+                            conversion->key() = expr->key();
+                            expr = components::expressions::expression_ptr{conversion.get()};
                         }
                     }
                 }

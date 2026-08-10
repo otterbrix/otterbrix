@@ -54,6 +54,18 @@ namespace components::sql::transform {
             expr->append_param(transform_a_expr_operand(node->lexpr, names, params));
             expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         } else {
+            if (stype == scalar_type::add) {
+                auto operand = transform_a_expr_operand(node->rexpr, names, params);
+                if (std::holds_alternative<expression_ptr>(operand)) {
+                    return std::get<expression_ptr>(operand);
+                }
+                auto value =
+                    make_scalar_expression(resource_,
+                                           std::holds_alternative<expressions::key_t>(operand) ? scalar_type::get_field
+                                                                                               : scalar_type::constant);
+                value->append_param(std::move(operand));
+                return value;
+            }
             if (stype == scalar_type::subtract) {
                 expr = make_scalar_expression(resource_, scalar_type::unary_minus);
             }
@@ -1566,8 +1578,12 @@ namespace components::sql::transform {
                             expr->append_param(resolve_having_operand(sub->lexpr, names, plan, group));
                             expr->append_param(resolve_having_operand(sub->rexpr, names, plan, group));
                         } else {
-                            // Unary minus: proper unary operator with single operand
-                            expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+                            if (stype == scalar_type::add) {
+                                return resolve_having_operand(sub->rexpr, names, plan, group);
+                            }
+                            if (stype == scalar_type::subtract) {
+                                expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+                            }
                             expr->append_param(resolve_having_operand(sub->rexpr, names, plan, group));
                         }
                         return expr;

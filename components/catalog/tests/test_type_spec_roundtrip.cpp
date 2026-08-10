@@ -17,7 +17,6 @@ TEST_CASE("catalog::type_spec::scalars_encode_empty") {
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::DOUBLE}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::STRING_LITERAL}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::TIMESTAMP}) == "");
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::BLOB}) == "");
 }
 
 TEST_CASE("catalog::type_spec::decimal_roundtrip") {

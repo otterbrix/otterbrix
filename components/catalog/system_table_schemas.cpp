@@ -643,30 +643,11 @@ namespace components::catalog {
 
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
-        switch (t.type()) {
-            case LT::BOOLEAN:
-            case LT::TINYINT:
-            case LT::UTINYINT:
-            case LT::SMALLINT:
-            case LT::USMALLINT:
-            case LT::INTEGER:
-            case LT::UINTEGER:
-            case LT::BIGINT:
-            case LT::UBIGINT:
-            case LT::FLOAT:
-            case LT::DOUBLE:
-            case LT::STRING_LITERAL:
-            case LT::TIMESTAMP:
-            case LT::TIMESTAMP_TZ:
-            case LT::DATE:
-            case LT::TIME:
-            case LT::TIME_TZ:
-            case LT::INTERVAL:
-            case LT::BLOB:
-            case LT::UUID:
-                return "";
-            default:
-                break;
+        // Only a type atttypid can carry on its own goes specless. Anything else — an
+        // unsigned integer, a BLOB, a UUID, a nested type — is written out below, or it
+        // would come back as neither an oid nor a spec.
+        if (builtin_type_to_oid(t.type()) != INVALID_OID) {
+            return "";
         }
         // ENUM: flat text "ENUM:type_name:label0=val0,label1=val1,..."
         if (t.type() == LT::ENUM) {

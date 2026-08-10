@@ -43,7 +43,7 @@ namespace components::operators {
     namespace {
         // Writes ONE computed SET value into its target column. The value arrives already
         // in the target's type — validation spliced the cast into the value expression —
-        // so this only has to address the right slot and copy.
+        // and already flat, so this only has to address the right slot and copy.
         [[nodiscard]] core::error_t write_target(const expressions::key_t& target,
                                                  const vector::vector_t& new_values,
                                                  vector::data_chunk_t& out_chunk,
@@ -206,6 +206,7 @@ namespace components::operators {
         }
         // Read the flags before writing: the simple path's graph input IS out_chunk.
         for (size_t i = 0; i < updates_.size(); i++) {
+            result.data[i].flatten(match_count);
             if (auto error = write_target(updates_[i]->key(), result.data[i], out_chunk, match_count);
                 error.contains_error()) {
                 return error;

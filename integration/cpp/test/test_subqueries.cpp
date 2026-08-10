@@ -100,9 +100,7 @@ namespace {
         return out;
     }
 
-    bool contains(const std::string& hay, const std::string& needle) {
-        return hay.find(needle) != std::string::npos;
-    }
+    bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
 } // namespace
 
@@ -1656,7 +1654,8 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
+            s,
+            "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10); // sub-query is true -> all employees pass
     }
@@ -1665,7 +1664,8 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 2);");
+            s,
+            "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 2);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0); // sub-query is false -> no rows
     }
@@ -1674,7 +1674,8 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "SELECT name FROM TestDatabase.Employees WHERE ARRAY(SELECT id FROM TestDatabase.Departments);");
+            s,
+            "SELECT name FROM TestDatabase.Employees WHERE ARRAY(SELECT id FROM TestDatabase.Departments);");
         REQUIRE(cur->is_error());
     }
 
@@ -1731,7 +1732,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
+            s,
+            "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
     }
@@ -1740,7 +1742,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE 1 = 0);");
+            s,
+            "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE 1 = 0);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -2012,7 +2015,8 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
         // v=1050 matches only if the IN-list includes ids past 1024 (was: truncated to 1..1024 -> 0).
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "SELECT COUNT(*) FROM TestDatabase.probe WHERE v IN (SELECT id FROM TestDatabase.big);");
+            s,
+            "SELECT COUNT(*) FROM TestDatabase.probe WHERE v IN (SELECT id FROM TestDatabase.big);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
@@ -2246,8 +2250,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     INFO("SELECT DISTINCT dept_id LIMIT 3 returns exactly 3 distinct rows (was < 3: scan capped pre-dedup)");
     {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 3;");
+        auto cur = dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
     }
@@ -2255,8 +2258,8 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     INFO("SELECT DISTINCT dept_id LIMIT 2 OFFSET 2 returns exactly 2 distinct rows");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 2 OFFSET 2;");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 2 OFFSET 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -2278,8 +2281,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     INFO("SELECT DISTINCT dept_id LIMIT 0 returns 0 rows");
     {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 0;");
+        auto cur = dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 0;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -2370,8 +2372,8 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
     {
         // dept_id = 3 has two employees (Eve, Frank); LIMIT 1 -> 1 row.
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 3 LIMIT 1;");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.Employees WHERE dept_id = 3 LIMIT 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }

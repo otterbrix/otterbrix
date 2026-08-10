@@ -26,9 +26,7 @@ namespace {
         return out;
     }
 
-    bool contains(const std::string& hay, const std::string& needle) {
-        return hay.find(needle) != std::string::npos;
-    }
+    bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
     // A single-row cursor carrying `marker` in the "QUERY PLAN" column — the observable output of a
     // host-supplied renderer, so a test can assert which renderer produced a query's EXPLAIN.
@@ -42,8 +40,9 @@ namespace {
     }
 
     // Distinct host renderers: each emits a fixed marker so the selected slot is observable.
-    cursor_t_ptr
-    fake_render(std::pmr::memory_resource* mr, const services::collection::explain_plan_node& /*root*/, bool /*analyze*/) {
+    cursor_t_ptr fake_render(std::pmr::memory_resource* mr,
+                             const services::collection::explain_plan_node& /*root*/,
+                             bool /*analyze*/) {
         return marker_cursor(mr, std::string_view("FAKE-RENDERER"));
     }
     // Marker deliberately NOT a substring of (nor containing) "FAKE-RENDERER", so a distinctness
@@ -95,7 +94,8 @@ TEST_CASE("integration::cpp::test_explain::sql") {
                     ->is_success());
     }
 
-    INFO("EXPLAIN SELECT: single QUERY PLAN column, scans the table"); {
+    INFO("EXPLAIN SELECT: single QUERY PLAN column, scans the table");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
@@ -105,20 +105,24 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(contains(plan_text(cur), "orders"));
     }
 
-    INFO("EXPLAIN SELECT with JOIN renders both scanned relations"); {
+    INFO("EXPLAIN SELECT with JOIN renders both scanned relations");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;");
+            s,
+            "EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "orders"));
         REQUIRE(contains(t, "customer"));
     }
 
-    INFO("EXPLAIN ANALYZE reports actual per-operator stats"); {
+    INFO("EXPLAIN ANALYZE reports actual per-operator stats");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;");
+            s,
+            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "actual time"));
@@ -126,7 +130,8 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(contains(t, "loops="));
     }
 
-    INFO("plan-only EXPLAIN INSERT does NOT change the table"); {
+    INFO("plan-only EXPLAIN INSERT does NOT change the table");
+    {
         {
             auto s = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(s, "EXPLAIN INSERT INTO TestDatabase.orders (id, cust) VALUES (99, 99);")
@@ -140,12 +145,12 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         }
     }
 
-    INFO("EXPLAIN ANALYZE INSERT executes and commits (PostgreSQL-compatible)"); {
+    INFO("EXPLAIN ANALYZE INSERT executes and commits (PostgreSQL-compatible)");
+    {
         {
             auto s = otterbrix::session_id_t();
             REQUIRE(dispatcher
-                        ->execute_sql(s,
-                                      "EXPLAIN ANALYZE INSERT INTO TestDatabase.orders (id, cust) VALUES (99, 99);")
+                        ->execute_sql(s, "EXPLAIN ANALYZE INSERT INTO TestDatabase.orders (id, cust) VALUES (99, 99);")
                         ->is_success());
         }
         {
@@ -156,12 +161,12 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         }
     }
 
-    INFO("EXPLAIN (ANALYZE false/off/0) is plan-only — the inner DML must NOT execute"); {
+    INFO("EXPLAIN (ANALYZE false/off/0) is plan-only — the inner DML must NOT execute");
+    {
         // Regression: an `ANALYZE <false-ish>` arg was misread as ANALYZE=true and ran the INSERT.
-        for (const char* q :
-             {"EXPLAIN (ANALYZE false) INSERT INTO TestDatabase.orders (id, cust) VALUES (77, 77);",
-              "EXPLAIN (ANALYZE off) INSERT INTO TestDatabase.orders (id, cust) VALUES (66, 66);",
-              "EXPLAIN (ANALYZE 0) INSERT INTO TestDatabase.orders (id, cust) VALUES (55, 55);"}) {
+        for (const char* q : {"EXPLAIN (ANALYZE false) INSERT INTO TestDatabase.orders (id, cust) VALUES (77, 77);",
+                              "EXPLAIN (ANALYZE off) INSERT INTO TestDatabase.orders (id, cust) VALUES (66, 66);",
+                              "EXPLAIN (ANALYZE 0) INSERT INTO TestDatabase.orders (id, cust) VALUES (55, 55);"}) {
             auto s = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(s, q)->is_success());
         }
@@ -171,13 +176,15 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 4); // still 4 — no plan-only form executed
     }
 
-    INFO("EXPLAIN (ANALYZE true) DOES execute the inner DML (positive control)"); {
+    INFO("EXPLAIN (ANALYZE true) DOES execute the inner DML (positive control)");
+    {
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(
-                            s, "EXPLAIN (ANALYZE true) INSERT INTO TestDatabase.orders (id, cust) VALUES (88, 88);")
-                        ->is_success());
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(s,
+                                  "EXPLAIN (ANALYZE true) INSERT INTO TestDatabase.orders (id, cust) VALUES (88, 88);")
+                    ->is_success());
         }
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
@@ -185,23 +192,27 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // now 5 — ANALYZE true ran the insert
     }
 
-    INFO("plan-only EXPLAIN does NOT execute an uncorrelated sub-query"); {
+    INFO("plan-only EXPLAIN does NOT execute an uncorrelated sub-query");
+    {
         // The scalar sub-query returns 2 rows (customer); if plan-only EXPLAIN ran it, compaction to a
         // single value would error. Plan-only must skip sub-query execution and still render the plan.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN SELECT * FROM TestDatabase.orders WHERE id = (SELECT id FROM TestDatabase.customer);");
+            s,
+            "EXPLAIN SELECT * FROM TestDatabase.orders WHERE id = (SELECT id FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         REQUIRE(contains(plan_text(cur), "orders"));
     }
 
-    INFO("EXPLAIN of an unsupported (DDL) inner statement is rejected"); {
+    INFO("EXPLAIN of an unsupported (DDL) inner statement is rejected");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN CREATE TABLE TestDatabase.foo(x int);");
         REQUIRE(cur->is_error());
     }
 
-    INFO("host customization: set_explain_renderer swaps output, SQL unchanged"); {
+    INFO("host customization: set_explain_renderer swaps output, SQL unchanged");
+    {
         // Register the fake at slot 0 — the default slot a plain EXPLAIN (render_id == 0) selects.
         REQUIRE(dispatcher->set_explain_renderer(0, &fake_render));
         auto s = otterbrix::session_id_t();
@@ -242,11 +253,12 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
                     ->is_success());
     }
 
-    INFO("EXPLAIN ANALYZE: scalar WHERE sub-query renders an InitPlan with the sub-scan + stats"); {
+    INFO("EXPLAIN ANALYZE: scalar WHERE sub-query renders an InitPlan with the sub-scan + stats");
+    {
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            s,
-            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust = (SELECT max(id) FROM TestDatabase.customer);");
+        auto cur = dispatcher->execute_sql(s,
+                                           "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust = (SELECT "
+                                           "max(id) FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "InitPlan 1 (returns $")); // PostgreSQL-style InitPlan header + param slot
@@ -254,10 +266,12 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(contains(t, "actual time"));           // ANALYZE stats present (main + sub tree)
     }
 
-    INFO("EXPLAIN ANALYZE: IN (SELECT ...) renders an InitPlan"); {
+    INFO("EXPLAIN ANALYZE: IN (SELECT ...) renders an InitPlan");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust IN (SELECT id FROM TestDatabase.customer);");
+            s,
+            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust IN (SELECT id FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "InitPlan 1 (returns $"));
@@ -267,39 +281,45 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
     // The attach-at-root placement is operator-INDEPENDENT: the flattened sub-query's param lands on a
     // scan / match / aggregate / join, but the InitPlan renders at the root regardless. These three cover
     // the carriers that motivated the rewrite (EXISTS->match, HAVING->aggregate, JOIN-ON->join).
-    INFO("EXPLAIN ANALYZE: EXISTS (...) renders an InitPlan (carrier: operator_match)"); {
-        auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE EXISTS (SELECT id FROM TestDatabase.customer);");
-        REQUIRE(cur->is_success());
-        const auto t = plan_text(cur);
-        REQUIRE(contains(t, "InitPlan 1 (returns $"));
-        REQUIRE(contains(t, "customer"));
-    }
-
-    INFO("EXPLAIN ANALYZE: HAVING sub-query renders an InitPlan (carrier: operator_group / aggregate)"); {
-        auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(s,
-                                           "EXPLAIN ANALYZE SELECT cust, count(*) FROM TestDatabase.orders "
-                                           "GROUP BY cust HAVING count(*) > (SELECT min(id) FROM TestDatabase.customer);");
-        REQUIRE(cur->is_success());
-        const auto t = plan_text(cur);
-        REQUIRE(contains(t, "InitPlan 1 (returns $"));
-        REQUIRE(contains(t, "customer"));
-    }
-
-    INFO("EXPLAIN ANALYZE: JOIN-ON sub-query renders an InitPlan (carrier: operator_join)"); {
+    INFO("EXPLAIN ANALYZE: EXISTS (...) renders an InitPlan (carrier: operator_match)");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
-            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c "
-            "ON o.cust = c.id AND c.id = (SELECT max(id) FROM TestDatabase.customer);");
+            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE EXISTS (SELECT id FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "customer"));
+    }
+
+    INFO("EXPLAIN ANALYZE: HAVING sub-query renders an InitPlan (carrier: operator_group / aggregate)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s,
+                                    "EXPLAIN ANALYZE SELECT cust, count(*) FROM TestDatabase.orders "
+                                    "GROUP BY cust HAVING count(*) > (SELECT min(id) FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "customer"));
+    }
+
+    INFO("EXPLAIN ANALYZE: JOIN-ON sub-query renders an InitPlan (carrier: operator_join)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s,
+                                    "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c "
+                                    "ON o.cust = c.id AND c.id = (SELECT max(id) FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "InitPlan 1 (returns $"));
     }
 
-    INFO("EXPLAIN ANALYZE: two sub-queries render two globally-numbered InitPlans"); {
+    INFO("EXPLAIN ANALYZE: two sub-queries render two globally-numbered InitPlans");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders "
@@ -311,7 +331,8 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(contains(t, "InitPlan 2 (returns $")); // global numbering, second sub-query
     }
 
-    INFO("EXPLAIN ANALYZE: nested sub-query — both InitPlans present (all flattened top-level)"); {
+    INFO("EXPLAIN ANALYZE: nested sub-query — both InitPlans present (all flattened top-level)");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
@@ -323,13 +344,15 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(contains(t, "InitPlan 2 (returns $")); // nested sub-query is a sibling InitPlan, not dropped
     }
 
-    INFO("plain EXPLAIN (not ANALYZE) shows the sub-query InitPlan STRUCTURE (PostgreSQL), without stats"); {
+    INFO("plain EXPLAIN (not ANALYZE) shows the sub-query InitPlan STRUCTURE (PostgreSQL), without stats");
+    {
         // PostgreSQL's plain EXPLAIN shows the InitPlan shape even though it does not RUN the sub-query.
         // We build each flattened sub-query's physical plan and capture its IR, but never execute it — so
         // the InitPlan section appears with no `actual time`/rows/loops.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN SELECT * FROM TestDatabase.orders WHERE cust = (SELECT max(id) FROM TestDatabase.customer);");
+            s,
+            "EXPLAIN SELECT * FROM TestDatabase.orders WHERE cust = (SELECT max(id) FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "orders"));
@@ -365,7 +388,8 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
     REQUIRE(dispatcher->set_explain_renderer(1, &fake_render));
     REQUIRE(dispatcher->set_explain_renderer(2, &fake_render_2));
 
-    INFO("per-query selection: id 1 -> fake, id 0 -> postgres default"); {
+    INFO("per-query selection: id 1 -> fake, id 0 -> postgres default");
+    {
         {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
@@ -377,12 +401,13 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
             auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 0);
             REQUIRE(cur->is_success());
             const auto t = plan_text(cur);
-            REQUIRE(contains(t, "orders"));         // built-in postgres output
+            REQUIRE(contains(t, "orders")); // built-in postgres output
             REQUIRE_FALSE(contains(t, "FAKE-RENDERER"));
         }
     }
 
-    INFO("per-query, NOT global: interleaved ids each pick their own renderer"); {
+    INFO("per-query, NOT global: interleaved ids each pick their own renderer");
+    {
         auto s1 = otterbrix::session_id_t();
         auto c1 = dispatcher->execute_sql(s1, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
         auto s0 = otterbrix::session_id_t();
@@ -391,7 +416,8 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE_FALSE(contains(plan_text(c0), "FAKE-RENDERER"));
     }
 
-    INFO("multiple renderers registered simultaneously: id 1 and id 2 are distinct"); {
+    INFO("multiple renderers registered simultaneously: id 1 and id 2 are distinct");
+    {
         auto s1 = otterbrix::session_id_t();
         auto c1 = dispatcher->execute_sql(s1, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
         auto s2 = otterbrix::session_id_t();
@@ -406,16 +432,18 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE_FALSE(contains(t2, "FAKE-RENDERER"));
     }
 
-    INFO("out-of-range id resolves to the built-in default (a default, not a fallback branch)"); {
+    INFO("out-of-range id resolves to the built-in default (a default, not a fallback branch)");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 999);
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        REQUIRE(contains(t, "orders"));             // postgres default
+        REQUIRE(contains(t, "orders")); // postgres default
         REQUIRE_FALSE(contains(t, "FAKE-RENDERER"));
     }
 
-    INFO("EXPLAIN ANALYZE via a custom renderer sees analyze == true"); {
+    INFO("EXPLAIN ANALYZE via a custom renderer sees analyze == true");
+    {
         REQUIRE(dispatcher->set_explain_renderer(3, &fake_render_analyze));
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders;", 3);
@@ -423,7 +451,8 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE(contains(plan_text(cur), "FAKE-ANALYZE-ON"));
     }
 
-    INFO("registration fan-out reaches every pooled executor"); {
+    INFO("registration fan-out reaches every pooled executor");
+    {
         // The pool has 4 executors; a session hashes to one. Sweep enough sessions that a single
         // set_explain_renderer(1, ...) registration must have reached whichever executor each hits.
         for (int i = 0; i < 12; ++i) {
@@ -453,21 +482,22 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
     }
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(
-            dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20);")->is_success());
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20);")
+                    ->is_success());
     }
 
-    INFO("out-of-range registration id is rejected, not an unbounded allocation"); {
+    INFO("out-of-range registration id is rejected, not an unbounded allocation");
+    {
         // A bogus huge id must return false (bounded) — never resize the per-executor registry to
         // gigabytes of fill (which, with exceptions disabled, would abort the process).
         REQUIRE_FALSE(dispatcher->set_explain_renderer(4000000000u, &fake_render));
     }
 
-    INFO("a null renderer is rejected (reported failure, not silent success)"); {
-        REQUIRE_FALSE(dispatcher->set_explain_renderer(5, nullptr));
-    }
+    INFO("a null renderer is rejected (reported failure, not silent success)");
+    { REQUIRE_FALSE(dispatcher->set_explain_renderer(5, nullptr)); }
 
-    INFO("out-of-range render_id resolves to slot 0 — the host's default, not the built-in"); {
+    INFO("out-of-range render_id resolves to slot 0 — the host's default, not the built-in");
+    {
         // Host overwrites the default slot 0 with its own renderer; an out-of-range query id must
         // resolve to THAT slot-0 default (not the hardcoded built-in postgres).
         REQUIRE(dispatcher->set_explain_renderer(0, &fake_render_2)); // slot 0 = FAKE-SPARK
@@ -479,7 +509,8 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
         REQUIRE_FALSE(contains(t, "orders")); // NOT the built-in postgres plan
     }
 
-    INFO("execute_sql_with_params honors render_id (previously dropped)"); {
+    INFO("execute_sql_with_params honors render_id (previously dropped)");
+    {
         // slot 1 = FAKE-RENDERER; slot 0 was overwritten to FAKE-SPARK above. No bound parameters are
         // needed — the point is that this entry point stamps render_id like execute_sql does.
         REQUIRE(dispatcher->set_explain_renderer(1, &fake_render));
@@ -487,7 +518,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
         auto cur = dispatcher->execute_sql_with_params(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", {}, 1);
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        REQUIRE(contains(t, "FAKE-RENDERER"));  // render_id 1 honored (slot 1)
+        REQUIRE(contains(t, "FAKE-RENDERER"));    // render_id 1 honored (slot 1)
         REQUIRE_FALSE(contains(t, "FAKE-SPARK")); // not the slot-0 default
     }
 }
@@ -518,7 +549,8 @@ TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
                     ->is_success());
     }
 
-    INFO("EXPLAIN ANALYZE records the recursive-CTE producer's rows (regression: was rows=0)"); {
+    INFO("EXPLAIN ANALYZE records the recursive-CTE producer's rows (regression: was rows=0)");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
@@ -546,7 +578,8 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
     std::pmr::monotonic_buffer_resource pool{std::pmr::new_delete_resource()};
     auto* mr = &pool;
 
-    INFO("5 rows / 3 loops rounds to 2 (truncation gave 1)"); {
+    INFO("5 rows / 3 loops rounds to 2 (truncation gave 1)");
+    {
         services::collection::explain_plan_node node(mr);
         node.type = components::operators::operator_type::full_scan; // renders "Seq Scan"
         node.rows = 5;
@@ -557,7 +590,8 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
         REQUIRE(contains(plan_text(cur), "rows=2"));
     }
 
-    INFO("2 rows / 3 loops rounds to 1 (truncation gave 0)"); {
+    INFO("2 rows / 3 loops rounds to 1 (truncation gave 0)");
+    {
         services::collection::explain_plan_node node(mr);
         node.type = components::operators::operator_type::full_scan;
         node.rows = 2;
@@ -592,12 +626,13 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
     }
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,30);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,30);")
+                ->is_success());
     }
 
-    INFO("EXPLAIN of an effectively-limited SELECT shows a Limit node ABOVE the scan"); {
+    INFO("EXPLAIN of an effectively-limited SELECT shows a Limit node ABOVE the scan");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders LIMIT 2;");
         REQUIRE(cur->is_success());
@@ -607,22 +642,25 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
         REQUIRE(t.find("Limit") < t.find("orders")); // outermost node — rendered above the scan
     }
 
-    INFO("EXPLAIN of DISTINCT ... LIMIT shows a Limit node (above the DISTINCT/scan)"); {
+    INFO("EXPLAIN of DISTINCT ... LIMIT shows a Limit node (above the DISTINCT/scan)");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders LIMIT 1;");
         REQUIRE(cur->is_success());
         REQUIRE(contains(plan_text(cur), "Limit"));
     }
 
-    INFO("EXPLAIN of GROUP BY ... LIMIT shows a Limit node (above the aggregate/scan)"); {
+    INFO("EXPLAIN of GROUP BY ... LIMIT shows a Limit node (above the aggregate/scan)");
+    {
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN SELECT cust, count(*) FROM TestDatabase.orders GROUP BY cust LIMIT 1;");
+        auto cur =
+            dispatcher->execute_sql(s, "EXPLAIN SELECT cust, count(*) FROM TestDatabase.orders GROUP BY cust LIMIT 1;");
         REQUIRE(cur->is_success());
         REQUIRE(contains(plan_text(cur), "Limit"));
     }
 
-    INFO("EXPLAIN with NO limit clause shows NO Limit node"); {
+    INFO("EXPLAIN with NO limit clause shows NO Limit node");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
@@ -631,7 +669,8 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
         REQUIRE_FALSE(contains(t, "Limit"));
     }
 
-    INFO("EXPLAIN of LIMIT ALL (an ineffective window) shows NO Limit node"); {
+    INFO("EXPLAIN of LIMIT ALL (an ineffective window) shows NO Limit node");
+    {
         // LIMIT ALL parses to unlimit()+offset 0 -> limit_effective == false -> operator_limit skipped.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders LIMIT ALL;");
@@ -660,17 +699,19 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
     }
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,30);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,30);")
+                ->is_success());
     }
 
     // HAVING lowers to a dedicated operator_having_t (operator_type::having), rendered "Having"
     // above the "Aggregate" — distinct from a WHERE "Filter".
-    INFO("EXPLAIN of GROUP BY ... HAVING shows a Having node above the Aggregate"); {
+    INFO("EXPLAIN of GROUP BY ... HAVING shows a Having node above the Aggregate");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s, "EXPLAIN SELECT cust, count(*) FROM TestDatabase.orders GROUP BY cust HAVING count(*) > 1;");
+            s,
+            "EXPLAIN SELECT cust, count(*) FROM TestDatabase.orders GROUP BY cust HAVING count(*) > 1;");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Having"));
@@ -726,16 +767,15 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Seq Scan"));
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders ORDER BY id;"), "Sort"));
     REQUIRE(contains(label_of("EXPLAIN SELECT id + cust FROM TestDatabase.orders;"), "Project"));
-    REQUIRE(contains(
-        label_of("EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;"),
-        "Hash Join"));
+    REQUIRE(
+        contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;"),
+                 "Hash Join"));
     // Non-equi join condition can't hash → Nested Loop.
-    REQUIRE(contains(
-        label_of("EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust > c.id;"),
-        "Nested Loop"));
-    REQUIRE(contains(
-        label_of("EXPLAIN SELECT id FROM TestDatabase.orders UNION SELECT id FROM TestDatabase.customer;"),
-        "Append"));
+    REQUIRE(
+        contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust > c.id;"),
+                 "Nested Loop"));
+    REQUIRE(contains(label_of("EXPLAIN SELECT id FROM TestDatabase.orders UNION SELECT id FROM TestDatabase.customer;"),
+                     "Append"));
     REQUIRE(contains(label_of("EXPLAIN VALUES (1),(2);"), "Values Scan"));
     // Plan-only EXPLAIN of DML does not execute (proven by the EXPLAIN-INSERT-doesn't-run test above).
     REQUIRE(contains(label_of("EXPLAIN INSERT INTO TestDatabase.orders (id, cust) VALUES (9, 9);"), "Insert"));
@@ -753,7 +793,8 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 // stamped merged path and folds into each side's full_scan (a pushable
 // `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
-    auto config = test_helpers::make_test_config("/tmp/test_explain/join_shared_col", /*disk_on=*/true, /*wal_on=*/true);
+    auto config =
+        test_helpers::make_test_config("/tmp/test_explain/join_shared_col", /*disk_on=*/true, /*wal_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -938,17 +979,16 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
     {
         // Distinct (a,b) combos: (1,10),(1,20),(2,10) -> 3. Groups on a: {1,2} -> 2.
         auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(s, "INSERT INTO TestDatabase.t (a, b) VALUES (1,10),(1,10),(1,20),(2,10),(2,10);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(s, "INSERT INTO TestDatabase.t (a, b) VALUES (1,10),(1,10),(1,20),(2,10),(2,10);")
+                ->is_success());
     }
 
     // Positive: group keys == projection ({a,b} ⊆ {a,b}) -> DISTINCT cleared.
     INFO("DISTINCT a,b GROUP BY a,b: DISTINCT is redundant -> no Unique, still 3 rows");
     {
         auto s = otterbrix::session_id_t();
-        auto plan =
-            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a, b FROM TestDatabase.t GROUP BY a, b;");
+        auto plan = dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a, b FROM TestDatabase.t GROUP BY a, b;");
         REQUIRE(plan->is_success());
         REQUIRE_FALSE(contains(plan_text(plan), "Unique"));
 
@@ -965,14 +1005,13 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
     INFO("DISTINCT a, COUNT(*) GROUP BY a: group ⊊ projection -> no Unique, 2 rows");
     {
         auto s = otterbrix::session_id_t();
-        auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
+        auto plan =
+            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
         REQUIRE(plan->is_success());
         REQUIRE_FALSE(contains(plan_text(plan), "Unique"));
 
         auto s2 = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(s2, "SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -982,8 +1021,7 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
     INFO("TRAP: DISTINCT a GROUP BY a,b: DISTINCT is NOT redundant -> Unique kept, 2 rows");
     {
         auto s = otterbrix::session_id_t();
-        auto plan =
-            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
+        auto plan = dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
         REQUIRE(plan->is_success());
         REQUIRE(contains(plan_text(plan), "Unique"));
 

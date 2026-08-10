@@ -204,8 +204,7 @@ namespace components::planner::optimizer {
 
             // Name-based fallback (validate_schema has not stamped paths on these keys).
             auto cols = collect_referenced_columns(conj);
-            bool in_left =
-                !cols.empty() && std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
+            bool in_left = !cols.empty() && std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
             bool in_right =
                 !cols.empty() && std::includes(right_cols.begin(), right_cols.end(), cols.begin(), cols.end());
             if (in_left && !in_right) {
@@ -659,9 +658,8 @@ namespace components::planner::optimizer {
                     std::pmr::vector<size_t> p{resource};
                     p.push_back(partner_merged);
                     partner.set_path(std::move(p));
-                    derived.push_back(kc->key_on_left
-                                          ? make_compare_expression(resource, kc->op, partner, kc->param)
-                                          : make_compare_expression(resource, kc->op, kc->param, partner));
+                    derived.push_back(kc->key_on_left ? make_compare_expression(resource, kc->op, partner, kc->param)
+                                                      : make_compare_expression(resource, kc->op, kc->param, partner));
                 }
             }
             conjuncts.insert(conjuncts.end(), derived.begin(), derived.end());
@@ -888,8 +886,7 @@ namespace components::planner::optimizer {
                     // promote_cross_join now stamps). MUST be captured BEFORE the left
                     // bucket wraps children()[0] in an unstamped aggregate below.
                     const bool left_width_known = join->children()[0]->has_output_types();
-                    const size_t left_width =
-                        left_width_known ? join->children()[0]->output_types().size() : 0;
+                    const size_t left_width = left_width_known ? join->children()[0]->output_types().size() : 0;
 
                     // Only push below a row-preserving side of an outer join
                     // Left preserves left, right preserves right, full preserves none, inner/cross preserve both.
@@ -1218,8 +1215,7 @@ namespace components::planner::optimizer {
             // Only an inlined single-table body: a table-scan aggregate (resolved oid, scan
             // implicit). A recursive-CTE reference lowers to an empty-identity aggregate over a
             // node_recursive_cte (no oid) and is therefore left untouched here.
-            if (source->type() != node_type::aggregate_t ||
-                source->table_oid() == components::catalog::INVALID_OID) {
+            if (source->type() != node_type::aggregate_t || source->table_oid() == components::catalog::INVALID_OID) {
                 return node;
             }
             auto* body = static_cast<node_aggregate_t*>(source.get());

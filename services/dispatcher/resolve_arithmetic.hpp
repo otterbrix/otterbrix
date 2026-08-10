@@ -7,7 +7,7 @@
 #include <optional>
 
 namespace services::dispatcher {
-    
+
     struct resolved_arithmetic_t {
         components::casts::cast_t lhs_cast;
         components::casts::cast_t rhs_cast;

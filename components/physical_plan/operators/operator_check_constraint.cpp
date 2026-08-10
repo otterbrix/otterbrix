@@ -269,8 +269,7 @@ namespace components::operators {
                     if (!ctx.strict_absent || def == nullptr || def->is_null()) {
                         return constant_leaf(r, true);
                     }
-                    return constant_leaf(r,
-                                         apply(col_is_rhs ? const_val.compare(*def) : def->compare(const_val)));
+                    return constant_leaf(r, apply(col_is_rhs ? const_val.compare(*def) : def->compare(const_val)));
                 }
 
                 const auto compare_type_of = [&op]() {
@@ -380,8 +379,7 @@ namespace components::operators {
                 compiled.condition = expressions::classify_condition(tree);
                 if (compiled.condition == expressions::condition_kind::computed) {
                     auto types = schema_chunk->types();
-                    auto built =
-                        expressions::build_condition_graph(resource_, check_params_, tree.get(), types);
+                    auto built = expressions::build_condition_graph(resource_, check_params_, tree.get(), types);
                     if (built.has_error()) {
                         set_error(built.error());
                         return;
@@ -452,12 +450,11 @@ namespace components::operators {
                             }
                         }
                         if (has_null_element) {
-                            set_error(core::error_t{
-                                core::error_code_t::other_error,
-                                std::pmr::string{"NOT NULL array column '" + col_name + "' requires " +
-                                                     std::to_string(required_size) +
-                                                     " non-null elements",
-                                                 resource_}});
+                            set_error(
+                                core::error_t{core::error_code_t::other_error,
+                                              std::pmr::string{"NOT NULL array column '" + col_name + "' requires " +
+                                                                   std::to_string(required_size) + " non-null elements",
+                                                               resource_}});
                             return;
                         }
                     }
@@ -474,8 +471,7 @@ namespace components::operators {
                 const vector::vector_t* decisions = nullptr;
                 std::optional<vector::data_chunk_t> produced;
                 if (compiled.graph) {
-                    auto decided =
-                        expressions::run_graph(compiled.graph.get(), check_params_, chunk, graph_context);
+                    auto decided = expressions::run_graph(compiled.graph.get(), check_params_, chunk, graph_context);
                     if (decided.has_error()) {
                         set_error(decided.error());
                         return;
@@ -487,10 +483,10 @@ namespace components::operators {
                     const bool passed =
                         decisions != nullptr && !decisions->is_null(row) && decisions->get_value<bool>(row);
                     if (!passed) {
-                        set_error(core::error_t{core::error_code_t::other_error,
-                                                std::pmr::string{"CHECK constraint \"" + check_exprs_[index].first +
-                                                                     "\" violated",
-                                                                 resource_}});
+                        set_error(core::error_t{
+                            core::error_code_t::other_error,
+                            std::pmr::string{"CHECK constraint \"" + check_exprs_[index].first + "\" violated",
+                                             resource_}});
                         return;
                     }
                 }

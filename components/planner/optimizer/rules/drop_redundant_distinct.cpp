@@ -50,8 +50,7 @@ namespace components::planner::optimizer {
             for (const auto& expr : group->expressions()) {
                 const bool emitted = index++ < emitted_end;
                 const bool is_scalar = expr->group() == ce::expression_group::scalar;
-                const auto* scalar =
-                    is_scalar ? static_cast<const ce::scalar_expression_t*>(expr.get()) : nullptr;
+                const auto* scalar = is_scalar ? static_cast<const ce::scalar_expression_t*>(expr.get()) : nullptr;
                 if (scalar != nullptr && scalar->type() == ce::scalar_type::group_field) {
                     if (scalar->key().path().size() != 1) {
                         return false; // nested / computed grouping key
@@ -68,7 +67,7 @@ namespace components::planner::optimizer {
                     column = column_of(scalar);
                 }
                 outputs.push_back(column != nullptr && column->path().size() == 1 ? column->path().front()
-                                                                                 : not_a_column);
+                                                                                  : not_a_column);
             }
             return !keys.empty();
         }

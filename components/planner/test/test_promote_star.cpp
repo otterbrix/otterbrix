@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
@@ -18,7 +19,6 @@
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <components/casts/default_casts.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <initializer_list>
@@ -138,8 +138,7 @@ namespace {
                                        expressions::param_storage{p});
     }
 
-    expressions::expression_ptr
-    eq_key_param(std::pmr::memory_resource* res, const char* l, core::parameter_id_t p) {
+    expressions::expression_ptr eq_key_param(std::pmr::memory_resource* res, const char* l, core::parameter_id_t p) {
         return cmp_key_param(res, compare_type::eq, l, p);
     }
 
@@ -171,21 +170,48 @@ namespace {
     star_leaves make_ssb_leaves(std::pmr::memory_resource* res) {
         star_leaves s;
         s.dim_date = make_scan(res,
-                               {"d_datekey", "d_date", "d_dayofweek", "d_month", "d_year", "d_yearmonthnum",
-                                "d_yearmonth", "d_daynuminweek", "d_daynuminmonth", "d_daynuminyear",
-                                "d_monthnuminyear", "d_weeknuminyear", "d_sellingseason", "d_lastdayinweekfl",
-                                "d_lastdayinmonthfl", "d_holidayfl", "d_weekdayfl"});
+                               {"d_datekey",
+                                "d_date",
+                                "d_dayofweek",
+                                "d_month",
+                                "d_year",
+                                "d_yearmonthnum",
+                                "d_yearmonth",
+                                "d_daynuminweek",
+                                "d_daynuminmonth",
+                                "d_daynuminyear",
+                                "d_monthnuminyear",
+                                "d_weeknuminyear",
+                                "d_sellingseason",
+                                "d_lastdayinweekfl",
+                                "d_lastdayinmonthfl",
+                                "d_holidayfl",
+                                "d_weekdayfl"});
         s.customer = make_scan(
-            res, {"c_custkey", "c_name", "c_address", "c_city", "c_nation", "c_region", "c_phone", "c_mktsegment"});
+            res,
+            {"c_custkey", "c_name", "c_address", "c_city", "c_nation", "c_region", "c_phone", "c_mktsegment"});
         s.supplier = make_scan(res, {"s_suppkey", "s_name", "s_address", "s_city", "s_nation", "s_region", "s_phone"});
-        s.part = make_scan(res,
-                           {"p_partkey", "p_name", "p_mfgr", "p_category", "p_brand1", "p_color", "p_type", "p_size",
-                            "p_container"});
+        s.part = make_scan(
+            res,
+            {"p_partkey", "p_name", "p_mfgr", "p_category", "p_brand1", "p_color", "p_type", "p_size", "p_container"});
         s.lineorder = make_scan(res,
-                                {"lo_orderkey", "lo_linenumber", "lo_custkey", "lo_partkey", "lo_suppkey",
-                                 "lo_orderdate", "lo_orderpriority", "lo_shippriority", "lo_quantity",
-                                 "lo_extendedprice", "lo_ordtotalprice", "lo_discount", "lo_revenue", "lo_supplycost",
-                                 "lo_tax", "lo_commitdate", "lo_shipmode"});
+                                {"lo_orderkey",
+                                 "lo_linenumber",
+                                 "lo_custkey",
+                                 "lo_partkey",
+                                 "lo_suppkey",
+                                 "lo_orderdate",
+                                 "lo_orderpriority",
+                                 "lo_shippriority",
+                                 "lo_quantity",
+                                 "lo_extendedprice",
+                                 "lo_ordtotalprice",
+                                 "lo_discount",
+                                 "lo_revenue",
+                                 "lo_supplycost",
+                                 "lo_tax",
+                                 "lo_commitdate",
+                                 "lo_shipmode"});
         return s;
     }
 
@@ -213,8 +239,7 @@ namespace {
             return 0;
         }
         size_t n = 0;
-        if (node->type() == node_type::join_t &&
-            static_cast<node_join_t*>(node.get())->type() == join_type::cross) {
+        if (node->type() == node_type::join_t && static_cast<node_join_t*>(node.get())->type() == join_type::cross) {
             ++n;
         }
         for (const auto& c : node->children()) {
@@ -311,7 +336,8 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     agg->append_child(group);
     agg->append_child(sort);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
+    auto validated =
+        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
 
     // --- Sanity: the validator resolved every locus against the MERGED FROM-order
@@ -320,8 +346,8 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     auto* g_dyear = static_cast<scalar_expression_t*>(group->expressions()[0].get());
     auto* g_cnat = static_cast<scalar_expression_t*>(group->expressions()[1].get());
     auto* g_sum = static_cast<aggregate_expression_t*>(group->expressions()[4].get());
-    REQUIRE(g_dyear->key().path()[0] == 4);  // d_year   (dim_date @0 + 4)
-    REQUIRE(g_cnat->key().path()[0] == 21);  // c_nation (customer @17 + 4)
+    REQUIRE(g_dyear->key().path()[0] == 4); // d_year   (dim_date @0 + 4)
+    REQUIRE(g_cnat->key().path()[0] == 21); // c_nation (customer @17 + 4)
     REQUIRE(g_sum->params().size() == 1);
     REQUIRE(is_expr(g_sum->params()[0]));
     auto* g_sub = static_cast<scalar_expression_t*>(as_expr(g_sum->params()[0]).get());
@@ -407,8 +433,8 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     auto* g_proj_cnat_a = static_cast<scalar_expression_t*>(group_after->expressions()[3].get());
     auto* g_sum_a = static_cast<aggregate_expression_t*>(group_after->expressions()[4].get());
     auto* g_sub_a = static_cast<scalar_expression_t*>(as_expr(g_sum_a->params()[0]).get());
-    CHECK(g_dyear_a->key().path()[0] == 21);            // d_year        4  -> 21
-    CHECK(g_cnat_a->key().path()[0] == 38);             // c_nation      21 -> 38
+    CHECK(g_dyear_a->key().path()[0] == 21); // d_year        4  -> 21
+    CHECK(g_cnat_a->key().path()[0] == 38);  // c_nation      21 -> 38
     CHECK(g_proj_dyear_a->key().path()[0] == 21);
     CHECK(g_proj_cnat_a->key().path()[0] == 38);
     CHECK(as_key(g_sub_a->params()[0]).path()[0] == 12); // lo_revenue    53 -> 12
@@ -444,8 +470,8 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     auto source = cross_chain(res, {a, b, c});
 
     auto where = make_compare_union_expression(res, compare_type::union_and);
-    where->append_child(eq_keys(res, "a_k", "b_k"));  // straddles the inner join
-    where->append_child(eq_keys(res, "b_v", "c_k"));  // straddles the outer join
+    where->append_child(eq_keys(res, "a_k", "b_k")); // straddles the inner join
+    where->append_child(eq_keys(res, "b_v", "c_k")); // straddles the outer join
     where->append_child(cmp_keys(res, compare_type::ne, "a_id", "b_v"));
     auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
 
@@ -582,7 +608,8 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     agg->append_child(match);
     agg->append_child(select);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
+    auto validated =
+        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // The condition key resolved against the merged schema.
     auto* cond_after_validate = static_cast<compare_expression_t*>(as_expr(case_expr->params()[0]).get());

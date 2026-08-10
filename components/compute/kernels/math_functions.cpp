@@ -188,9 +188,9 @@ namespace {
     }
 
     std::unique_ptr<row_function> make_abs_func(std::pmr::memory_resource* resource,
-                                               const std::string& name,
-                                               const std::string& short_doc,
-                                               const std::string& full_doc) {
+                                                const std::string& name,
+                                                const std::string& short_doc,
+                                                const std::string& full_doc) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
         auto fn = std::make_unique<row_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -11,7 +12,6 @@
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <components/casts/default_casts.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <memory_resource>

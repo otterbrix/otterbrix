@@ -11,7 +11,7 @@ namespace components::operators {
             return type == logical_type::DATE || type == logical_type::TIME || type == logical_type::TIME_TZ ||
                    type == logical_type::TIMESTAMP || type == logical_type::TIMESTAMP_TZ;
         }
-        
+
         complex_logical_type boolean() noexcept { return complex_logical_type{logical_type::BOOLEAN}; }
 
         bool is_comparable(const complex_logical_type& type) noexcept {

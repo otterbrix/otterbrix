@@ -3,6 +3,7 @@
 // check the shape of the resulting node tree
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -18,7 +19,6 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/tests/generaty.hpp>
-#include <components/casts/default_casts.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 namespace {
@@ -67,8 +67,7 @@ static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_li
 // disk-shaped scan: an aggregate_t{db,rel} that carries its columns ONLY in
 // output_types() (a real disk scan has no in-memory node_data_t child). Used to
 // prove collect_subtree_columns() reads output_types() rather than a data node.
-static node_aggregate_ptr
-make_disk_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> col_names) {
+static node_aggregate_ptr make_disk_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> col_names) {
     auto agg = make_node_aggregate(r, db, rel);
     std::pmr::vector<components::types::complex_logical_type> out_types(r);
     for (const char* name : col_names) {
@@ -919,4 +918,3 @@ TEST_CASE("logical_plan::pushdown_filter_join_full_push_keeps_distinct_aggregate
     REQUIRE(pushed->children()[0] == left_data);
     REQUIRE(pushed->children()[1]->type() == node_type::match_t);
 }
-

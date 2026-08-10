@@ -1571,9 +1571,10 @@ TEST_CASE("cast_registry: add(complex_cast_entry) stores a struct cast at its de
     std::pmr::vector<complex_logical_type> fields{{complex_logical_type{logical_type::INTEGER}}, resource};
     const complex_logical_type pair_type = complex_logical_type::create_struct("pair", fields);
 
-    cast_t custom = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
-        return core::error_t::no_error();
-    };
+    cast_t custom =
+        [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
+            return core::error_t::no_error();
+        };
 
     REQUIRE_FALSE(
         registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment}).contains_error());
@@ -1673,9 +1674,10 @@ TEST_CASE("cast_registry: cost_of reports the element cost for containers, nothi
         std::pmr::vector<complex_logical_type> fields{{complex_logical_type{logical_type::INTEGER}}, resource};
         const complex_logical_type pair_type = complex_logical_type::create_struct("pair", fields);
         const complex_logical_type other_type = complex_logical_type::create_struct("other", fields);
-        cast_t custom = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
-            return core::error_t::no_error();
-        };
+        cast_t custom =
+            [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
+                return core::error_t::no_error();
+            };
         const cast_cost declared_cost{.precision_loss = 3, .footprint = 42}; // distinctive, not field-derived
         REQUIRE_FALSE(registry.add(pair_type, other_type, complex_cast_entry{custom, declared_cost}).contains_error());
 
@@ -1749,9 +1751,10 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
         const complex_logical_type struct_i64 = make_struct("s", logical_type::BIGINT);
         REQUIRE_FALSE(registry.level_of(struct_i32, struct_i64).has_value());
 
-        cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
-            return core::error_t::no_error();
-        };
+        cast_t noop =
+            [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
+                return core::error_t::no_error();
+            };
         // Declared implicit (with the cost it is ranked by) -> implicit; a container over it
         // inherits that, like any other element.
         REQUIRE_FALSE(
@@ -1768,9 +1771,10 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
     {
         const complex_logical_type struct_a = make_struct("t", logical_type::INTEGER);
         const complex_logical_type struct_b = make_struct("t", logical_type::BIGINT);
-        cast_t noop = [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
-            return core::error_t::no_error();
-        };
+        cast_t noop =
+            [](cast_kind, const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) {
+                return core::error_t::no_error();
+            };
         REQUIRE_FALSE(
             registry.add(struct_a, struct_b, complex_cast_entry{noop, level::explicit_only}).contains_error());
         REQUIRE(registry.level_of(struct_a, struct_b) == std::optional<level>{level::explicit_only});
@@ -1979,7 +1983,7 @@ TEST_CASE("composite_cast: identity/copy leaf builds partially-changed composite
         vector::vector_t result{resource, tgt};
         REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result, context, 2).contains_error());
 
-        REQUIRE(result.entries()[0]->get_value<int32_t>(0) == -77);        // copied verbatim
+        REQUIRE(result.entries()[0]->get_value<int32_t>(0) == -77);               // copied verbatim
         REQUIRE(result.entries()[1]->get_value<double>(0) == Catch::Approx(2.5)); // widened
         REQUIRE(result.is_null(1));
     }
@@ -2296,7 +2300,8 @@ TEST_CASE("cast_registry: registration order does not affect which common type w
     auto* resource = std::pmr::get_default_resource();
 
     struct helper {
-        static core::error_t noop(const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) noexcept {
+        static core::error_t
+        noop(const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) noexcept {
             return core::error_t::no_error();
         }
     };
@@ -2698,8 +2703,8 @@ TEST_CASE("default casts: NULL is transparent to common-type resolution") {
         auto with_null = common(registry, null_type, integer_type);
         REQUIRE(with_null.has_value());
         REQUIRE(with_null->type.type() == logical_type::INTEGER);
-        REQUIRE(with_null->left_cast);         // NULL -> INTEGER
-        REQUIRE_FALSE(with_null->right_cast);  // already the common type
+        REQUIRE(with_null->left_cast);        // NULL -> INTEGER
+        REQUIRE_FALSE(with_null->right_cast); // already the common type
 
         // and the same whichever side it arrives on
         auto mirrored = common(registry, integer_type, null_type);
@@ -2729,9 +2734,9 @@ TEST_CASE("default casts: NULL is transparent to common-type resolution") {
         REQUIRE(widened.has_value());
         REQUIRE(widened->type.type() == logical_type::BIGINT);
         REQUIRE(widened->casts.size() == 3);
-        REQUIRE(widened->casts[0]);           // NULL -> BIGINT
-        REQUIRE(widened->casts[1]);           // INTEGER -> BIGINT
-        REQUIRE_FALSE(widened->casts[2]);     // already the common type
+        REQUIRE(widened->casts[0]);       // NULL -> BIGINT
+        REQUIRE(widened->casts[1]);       // INTEGER -> BIGINT
+        REQUIRE_FALSE(widened->casts[2]); // already the common type
     }
 
     SECTION("n-ary: a null does not knock decimals off their own supertype rule") {

@@ -6,8 +6,8 @@
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
-#include <components/logical_plan/param_storage.hpp>
 #include <components/logical_plan/node_unregister_udf.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_register_cast.hpp>
 #include <components/physical_plan/operators/operator_register_udf.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
@@ -616,10 +616,11 @@ namespace services::dispatcher {
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                                  &collection::executor::executor_t::set_explain_renderer,
-                                                                  id,
-                                                                  fn);
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(executor_addresses_[i],
+                                            &collection::executor::executor_t::set_explain_renderer,
+                                            id,
+                                            fn);
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }
@@ -702,9 +703,9 @@ namespace services::dispatcher {
                                const components::types::complex_logical_type& source,
                                const components::types::complex_logical_type& target) {
             auto seq = boost::intrusive_ptr(new components::logical_plan::node_sequence_t(resource));
-            seq->append_child(components::logical_plan::make_node_catalog_resolve_namespace(
-                resource,
-                core::dbname_t{std::string{"public"}}));
+            seq->append_child(
+                components::logical_plan::make_node_catalog_resolve_namespace(resource,
+                                                                              core::dbname_t{std::string{"public"}}));
             for (const auto* type : {&source, &target}) {
                 if (type->type() == components::types::logical_type::UNKNOWN) {
                     seq->append_child(components::logical_plan::make_node_catalog_resolve_type(
@@ -730,8 +731,8 @@ namespace services::dispatcher {
         // Step 1 — resolve + validate through the standard pipeline (read-only): an
         // unregistered source/target type is rejected, as is an already-registered
         // (source, target). The executor returns the resolved types on resolved_cast.
-        auto leaf = boost::intrusive_ptr(
-            new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
+        auto leaf =
+            boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
         const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <components/compute/function.hpp>          // compute::function_uid / invalid_function_uid
-#include <components/expressions/expression.hpp>     // expressions::expression_ptr (shipped outputs)
-#include <components/types/types.hpp>                // types::complex_logical_type
+#include <components/compute/function.hpp>       // compute::function_uid / invalid_function_uid
+#include <components/expressions/expression.hpp> // expressions::expression_ptr (shipped outputs)
+#include <components/types/types.hpp>            // types::complex_logical_type
 
 #include <cstdint>
 #include <memory_resource>
@@ -39,8 +39,8 @@ namespace components::operators {
         std::pmr::string function_name;          // "sum"/"count"/"min"/"max"/"avg" (agent classify())
         std::pmr::vector<uint64_t> arg_col_path; // resolved column-index path; EMPTY => COUNT(*)
         components::compute::function_uid func_uid{components::compute::invalid_function_uid};
-        bool distinct{false};                    // always false in scope (optimizer skips DISTINCT)
-        std::pmr::string alias;                  // group->add_value output name
+        bool distinct{false};   // always false in scope (optimizer skips DISTINCT)
+        std::pmr::string alias; // group->add_value output name
         types::complex_logical_type result_type;
 
         explicit pushed_aggregate_t(std::pmr::memory_resource* resource)

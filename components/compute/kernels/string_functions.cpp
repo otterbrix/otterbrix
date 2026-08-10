@@ -237,14 +237,17 @@ namespace {
 
         // NA-aware: NA is accepted at signature-match time by the string/integer
         // matchers (kernel_signature.cpp); kernel body propagates via has_null_input.
-        kernel_signature_t sig2(function_type_t::row,
-                                {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
-                                {output_type::fixed(logical_type::STRING_LITERAL)});
+        kernel_signature_t sig2(
+            function_type_t::row,
+            {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
+            {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k2(std::move(sig2), row_substring_2);
         (void) fn->add_kernel(resource, std::move(k2));
 
         kernel_signature_t sig3(function_type_t::row,
-                                {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT), parameter_type::exact(logical_type::BIGINT)},
+                                {parameter_type::exact(logical_type::STRING_LITERAL),
+                                 parameter_type::exact(logical_type::BIGINT),
+                                 parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k3(std::move(sig3), row_substring_3);
         (void) fn->add_kernel(resource, std::move(k3));
@@ -278,7 +281,9 @@ namespace {
         auto fn = std::make_unique<row_function>(name, arity::ternary(), doc, /*available_kernel_slots=*/1);
 
         kernel_signature_t sig(function_type_t::row,
-                               {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
+                               {parameter_type::exact(logical_type::STRING_LITERAL),
+                                parameter_type::exact(logical_type::STRING_LITERAL),
+                                parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::STRING_LITERAL)});
         row_kernel k(std::move(sig), row_regexp_replace);
         (void) fn->add_kernel(resource, std::move(k));
@@ -294,10 +299,10 @@ namespace {
 
         auto fn = std::make_unique<row_function>(name, arity::var_args(2), doc, /*available_kernel_slots=*/2);
 
-        kernel_signature_t sig2(function_type_t::row,
-                                {parameter_type::exact(logical_type::STRING_LITERAL),
-                                 parameter_type::exact(logical_type::STRING_LITERAL)},
-                                {output_type::fixed(logical_type::BOOLEAN)});
+        kernel_signature_t sig2(
+            function_type_t::row,
+            {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
+            {output_type::fixed(logical_type::BOOLEAN)});
         row_kernel k2(std::move(sig2), row_regexp_like);
         (void) fn->add_kernel(resource, std::move(k2));
 
@@ -329,10 +334,11 @@ namespace components::compute {
                                                        "regexp_replace",
                                                        "Regex substitution",
                                                        "REGEXP_REPLACE(s, pattern, replacement)"));
-        (void) r.add_function(make_regexp_like_func(r.resource(),
-                                                    "regexp_like",
-                                                    "Regex match test",
-                                                    "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
+        (void) r.add_function(
+            make_regexp_like_func(r.resource(),
+                                  "regexp_like",
+                                  "Regex match test",
+                                  "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
     }
 
 } // namespace components::compute

@@ -440,8 +440,8 @@ namespace components::operators {
                 return;
             }
             if (out_types.empty()) {
-                out_types = output_types_.size() == computed.value().data.size() ? output_types_
-                                                                                 : computed.value().types();
+                out_types =
+                    output_types_.size() == computed.value().data.size() ? output_types_ : computed.value().types();
             }
             // .finalize() does not copy data by itself
             vector::data_chunk_t single(resource_, out_types, 1);

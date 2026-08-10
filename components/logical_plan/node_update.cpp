@@ -18,9 +18,7 @@ namespace components::logical_plan {
         append_child(limit);
     }
 
-    const std::pmr::vector<expressions::expression_ptr>& node_update_t::updates() const {
-        return update_expressions_;
-    }
+    const std::pmr::vector<expressions::expression_ptr>& node_update_t::updates() const { return update_expressions_; }
 
     std::pmr::vector<expressions::expression_ptr>& node_update_t::updates() { return update_expressions_; }
 

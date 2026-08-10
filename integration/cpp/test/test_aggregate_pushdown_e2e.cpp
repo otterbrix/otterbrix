@@ -77,7 +77,7 @@ namespace {
             REQUIRE(cur->value(2, 0).value<uint64_t>() == 5);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(4, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 0).value<int64_t>() == 30); // 150 / 5
+            REQUIRE(cur->value(5, 0).value<int64_t>() == 30);   // 150 / 5
             REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
         }
 

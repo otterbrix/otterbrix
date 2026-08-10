@@ -35,9 +35,9 @@ namespace {
 
     components::compute::function_types_mask any_kind() {
         return components::compute::create_mask(components::compute::function_type_t::row,
-                                               components::compute::function_type_t::vector,
-                                               components::compute::function_type_t::aggregate,
-                                               components::compute::function_type_t::expand);
+                                                components::compute::function_type_t::vector,
+                                                components::compute::function_type_t::aggregate,
+                                                components::compute::function_type_t::expand);
     }
 
     core::result_wrapper_t<resolved_function_t> resolve(std::string_view name,
@@ -136,8 +136,13 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
     REQUIRE(counted.value().result.type() == logical_type::UBIGINT);
 
     std::pmr::vector<complex_logical_type> none(resource());
-    auto star =
-        resolve_function(resource(), casts(), components::graph_execution_context{}, functions(), "count", none, any_kind());
+    auto star = resolve_function(resource(),
+                                 casts(),
+                                 components::graph_execution_context{},
+                                 functions(),
+                                 "count",
+                                 none,
+                                 any_kind());
     REQUIRE_FALSE(star.has_error());
     REQUIRE(star.value().result.type() == logical_type::UBIGINT);
 }
@@ -184,14 +189,19 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
 // GROUP BY is the mirror image and takes nothing else.
 TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds are allowed") {
     const auto scalar_only = components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector);
+                                                              components::compute::function_type_t::vector);
     const auto aggregate_only = components::compute::create_mask(components::compute::function_type_t::aggregate);
 
     auto integer = args({logical_type::BIGINT});
     auto text = args({logical_type::STRING_LITERAL});
 
-    auto sum_in_where =
-        resolve_function(resource(), casts(), components::graph_execution_context{}, functions(), "sum", integer, scalar_only);
+    auto sum_in_where = resolve_function(resource(),
+                                         casts(),
+                                         components::graph_execution_context{},
+                                         functions(),
+                                         "sum",
+                                         integer,
+                                         scalar_only);
     REQUIRE(sum_in_where.has_error());
     REQUIRE(sum_in_where.error().type == core::error_code_t::incorrect_function_argument);
 
@@ -205,12 +215,22 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
     REQUIRE(length_in_aggregate.has_error());
 
     // Each is fine in the clause that accepts it.
-    REQUIRE_FALSE(
-        resolve_function(resource(), casts(), components::graph_execution_context{}, functions(), "sum", integer, aggregate_only)
-            .has_error());
-    REQUIRE_FALSE(
-        resolve_function(resource(), casts(), components::graph_execution_context{}, functions(), "length", text, scalar_only)
-            .has_error());
+    REQUIRE_FALSE(resolve_function(resource(),
+                                   casts(),
+                                   components::graph_execution_context{},
+                                   functions(),
+                                   "sum",
+                                   integer,
+                                   aggregate_only)
+                      .has_error());
+    REQUIRE_FALSE(resolve_function(resource(),
+                                   casts(),
+                                   components::graph_execution_context{},
+                                   functions(),
+                                   "length",
+                                   text,
+                                   scalar_only)
+                      .has_error());
 }
 
 // abs keeps the argument's own type, including a decimal's (width, scale) and an unsigned's.

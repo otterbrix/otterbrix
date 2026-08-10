@@ -72,11 +72,10 @@ namespace services::dispatcher {
                                                components::logical_plan::node_t* node,
                                                const components::graph_execution_context& execution_context);
 
-    [[nodiscard]] core::error_t
-    convert_column_defaults(std::pmr::memory_resource* resource,
-                            const components::casts::cast_registry_t* cast_registry,
-                            const components::graph_execution_context& execution_context,
-                            std::vector<components::table::column_definition_t>& columns);
+    [[nodiscard]] core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
+                                                        const components::casts::cast_registry_t* cast_registry,
+                                                        const components::graph_execution_context& execution_context,
+                                                        std::vector<components::table::column_definition_t>& columns);
 
     namespace impl {
         [[nodiscard]] core::error_t

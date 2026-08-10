@@ -64,7 +64,7 @@ namespace components::operators {
 
         // Types the input from `probe` and builds computed_graph_ over it. Idempotent.
         [[nodiscard]] core::error_t build_computed_graph(pipeline::context_t* pipeline_context,
-                                                        const vector::data_chunk_t& probe);
+                                                         const vector::data_chunk_t& probe);
     };
 
 } // namespace components::operators

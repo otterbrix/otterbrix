@@ -198,11 +198,12 @@ namespace components::sql::transform {
                     }
                     auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                     col_ref.deduce_side(names);
-                    return param_storage{expression_ptr{make_cast_expression(resource_,
-                                                                             param_storage{std::move(col_ref.field)},
-                                                                             target_type_res.value(),
-                                                                             casts::cast_t{},
-                                                                             cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
+                    return param_storage{expression_ptr{
+                        make_cast_expression(resource_,
+                                             param_storage{std::move(col_ref.field)},
+                                             target_type_res.value(),
+                                             casts::cast_t{},
+                                             cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                 }
                 // A cast over a scalar jsonb navigation, e.g. (t #>> 'a.c')::bigint:
                 // resolve the navigation to its flattened column key and annotate it,
@@ -212,8 +213,7 @@ namespace components::sql::transform {
                 // constant, identical on every row.
                 if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
                     auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
-                    if (sub->kind == AEXPR_OP && sub->name &&
-                        nodeTag(sub->name->lst.front().data) == T_String &&
+                    if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
                         is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
                         auto target_type_res = get_type(resource_, cast->typeName);
                         if (target_type_res.has_error()) {
@@ -224,11 +224,12 @@ namespace components::sql::transform {
                         if (!resolve_jsonb_scalar_key(sub, names, navigated)) {
                             return nullptr;
                         }
-                        return param_storage{expression_ptr{make_cast_expression(resource_,
-                                                                                 param_storage{std::move(navigated)},
-                                                                                 target_type_res.value(),
-                                                                                 casts::cast_t{},
-                                                                                 cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
+                        return param_storage{expression_ptr{make_cast_expression(
+                            resource_,
+                            param_storage{std::move(navigated)},
+                            target_type_res.value(),
+                            casts::cast_t{},
+                            cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                     }
                 }
                 return add_param_value(node, plan->parameters.get());
@@ -292,9 +293,9 @@ namespace components::sql::transform {
             case T_SubLink: {
                 auto sub = pg_ptr_cast<SubLink>(node);
                 if (sub->subLinkType != EXPR_SUBLINK) {
-                    error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
+                    error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
                     return nullptr;
                 }
                 // Scalar sub-query as an arithmetic operand: flatten it and return the bound parameter id
@@ -345,9 +346,9 @@ namespace components::sql::transform {
                     case T_Float:
                         return strVal(value);
                     case T_Null:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"jsonb key must be a constant value, not NULL", resource_});
+                        error_ =
+                            core::error_t(core::error_code_t::sql_parse_error,
+                                          std::pmr::string{"jsonb key must be a constant value, not NULL", resource_});
                         return {};
                     default:
                         break;
@@ -561,10 +562,8 @@ namespace components::sql::transform {
                         // the negated ANY/ALL forms, so disk pushdown inherits the same shape.
                         auto guard_param = plan->parameters->add_parameter(
                             types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
-                        auto guard = make_compare_expression(resource_,
-                                                             compare_type::is_not_null,
-                                                             key_left.field,
-                                                             guard_param);
+                        auto guard =
+                            make_compare_expression(resource_, compare_type::is_not_null, key_left.field, guard_param);
                         auto guarded = make_compare_union_expression(resource_, compare_type::union_and);
                         guarded->append_child(guard);
                         guarded->append_child(not_expr);
@@ -615,12 +614,12 @@ namespace components::sql::transform {
                                 auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
                                 note_cast_type(target_type_res.value());
-                                auto conversion = make_cast_expression(
-                                    resource_,
-                                    param_storage{std::move(col_ref.field)},
-                                    target_type_res.value(),
-                                    casts::cast_t{},
-                                    cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast);
+                                auto conversion = make_cast_expression(resource_,
+                                                                       param_storage{std::move(col_ref.field)},
+                                                                       target_type_res.value(),
+                                                                       casts::cast_t{},
+                                                                       cast->try_cast ? casts::cast_kind::try_cast
+                                                                                      : casts::cast_kind::cast);
                                 return param_storage{expressions::expression_ptr{conversion}};
                             }
                             // '<jsonb nav chain> ::? type' in a predicate, e.g.
@@ -663,12 +662,12 @@ namespace components::sql::transform {
                                     return bound;
                                 }
                                 note_cast_type(target_type_res.value());
-                                auto conversion = make_cast_expression(
-                                    resource_,
-                                    bound,
-                                    target_type_res.value(),
-                                    casts::cast_t{},
-                                    cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast);
+                                auto conversion = make_cast_expression(resource_,
+                                                                       bound,
+                                                                       target_type_res.value(),
+                                                                       casts::cast_t{},
+                                                                       cast->try_cast ? casts::cast_kind::try_cast
+                                                                                      : casts::cast_kind::cast);
                                 return param_storage{expressions::expression_ptr{conversion}};
                             }
                             return add_param_value(node, plan->parameters.get());
@@ -846,8 +845,7 @@ namespace components::sql::transform {
                         membership->inner_op() != compare_type::regex) {
                         const auto negated = negate_scalar_compare(membership->inner_op());
                         if (negated != compare_type::invalid) {
-                            membership->set_type(ctype == compare_type::any ? compare_type::all
-                                                                            : compare_type::any);
+                            membership->set_type(ctype == compare_type::any ? compare_type::all : compare_type::any);
                             membership->set_inner_op(negated);
                             return right;
                         }

@@ -2,10 +2,10 @@
 
 #include "column_data.hpp"
 #include "column_segment.hpp"
-#include <components/expressions/execution_graph_builder.hpp>
 #include "storage/block_handle.hpp"
 #include "storage/block_manager.hpp"
 #include "storage/buffer_manager.hpp"
+#include <components/expressions/execution_graph_builder.hpp>
 
 namespace components::table {
 

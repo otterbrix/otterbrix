@@ -209,8 +209,10 @@ namespace components::operators {
                     if (graph) {
                         merged = join_detail::merged_chunk(res, outer_schema_, inner_chunk);
                         join_detail::point_at_probe_row(res, *merged, outer_chunk, row);
-                        auto decided =
-                            expressions::run_graph(graph.get(), ctx->parameters.parameters, *merged, ctx->execution_context);
+                        auto decided = expressions::run_graph(graph.get(),
+                                                              ctx->parameters.parameters,
+                                                              *merged,
+                                                              ctx->execution_context);
                         if (decided.has_error()) {
                             co_return decided.error();
                         }

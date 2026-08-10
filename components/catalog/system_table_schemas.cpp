@@ -229,9 +229,9 @@ namespace components::catalog {
 
         std::vector<column_definition_t> pg_cast_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), /*not_null*/ true);       // cast identity — pg_depend anchor
-            c.emplace_back("castsource", oid_col(), true);             // pg_type.oid of the source type
-            c.emplace_back("casttarget", oid_col(), true);             // pg_type.oid of the target type
+            c.emplace_back("oid", oid_col(), /*not_null*/ true); // cast identity — pg_depend anchor
+            c.emplace_back("castsource", oid_col(), true);       // pg_type.oid of the source type
+            c.emplace_back("casttarget", oid_col(), true);       // pg_type.oid of the target type
             // (castsource, casttarget) is the registry lookup key; oid is the catalog-row identity
             // used for by-oid delete and pg_depend edges. No castcontext column yet — implicitness
             // lives on the in-memory cast_entry (set by register_default_casts) and is only needed

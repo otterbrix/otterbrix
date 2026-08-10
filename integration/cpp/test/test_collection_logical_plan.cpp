@@ -279,23 +279,20 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto del =
-                WRAP_DML_TARGET(table_database_name,
-                                table_collection_name,
-                                logical_plan::make_node_delete(
-                                    dispatcher->resource(),
-                                    logical_plan::make_node_match(
-                                        dispatcher->resource(),
-                                        core::dbname_t{table_database_name},
-                                        core::relname_t{table_collection_name},
-                                        make_compare_expression(dispatcher->resource(),
-                                                                compare_type::gt,
-                                                                key{dispatcher->resource(), "count", side_t::left},
-                                                                id_par{1})),
-                                    logical_plan::make_node_limit(dispatcher->resource(),
-                                                                  {},
-                                                                  {},
-                                                                  logical_plan::limit_t::unlimit())));
+            auto del = WRAP_DML_TARGET(
+                table_database_name,
+                table_collection_name,
+                logical_plan::make_node_delete(
+                    dispatcher->resource(),
+                    logical_plan::make_node_match(
+                        dispatcher->resource(),
+                        core::dbname_t{table_database_name},
+                        core::relname_t{table_collection_name},
+                        make_compare_expression(dispatcher->resource(),
+                                                compare_type::gt,
+                                                key{dispatcher->resource(), "count", side_t::left},
+                                                id_par{1})),
+                    logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit())));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur =
@@ -544,8 +541,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto update_expr = expressions::make_scalar_expression(dispatcher->resource(),
                                                                    expressions::scalar_type::multiply,
                                                                    expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->append_param(
-                expressions::key_t{dispatcher->resource(), "count", expressions::side_t::right});
+            update_expr->append_param(expressions::key_t{dispatcher->resource(), "count", expressions::side_t::right});
             update_expr->append_param(id_par{1});
 
             auto expr = components::expressions::make_compare_expression(

@@ -89,7 +89,10 @@ namespace components::operators {
             std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
             revert_index_futures.reserve(base_append_tables.size() + base_delete_tables.size());
             for (auto oid : base_append_tables) {
-                components::execution_context_t abort_ctx{ctx->session, txn_data, ctx->execution_context.timezone_offset, oid};
+                components::execution_context_t abort_ctx{ctx->session,
+                                                          txn_data,
+                                                          ctx->execution_context.timezone_offset,
+                                                          oid};
                 auto [_ri, rif] = actor_zeta::send(ctx->index_address,
                                                    &services::index::manager_index_t::revert_insert,
                                                    abort_ctx,
@@ -97,7 +100,10 @@ namespace components::operators {
                 revert_index_futures.push_back(std::move(rif));
             }
             for (auto oid : base_delete_tables) {
-                components::execution_context_t abort_ctx{ctx->session, txn_data, ctx->execution_context.timezone_offset, oid};
+                components::execution_context_t abort_ctx{ctx->session,
+                                                          txn_data,
+                                                          ctx->execution_context.timezone_offset,
+                                                          oid};
                 auto [_rd, rdf] = actor_zeta::send(ctx->index_address,
                                                    &services::index::manager_index_t::revert_delete,
                                                    abort_ctx,

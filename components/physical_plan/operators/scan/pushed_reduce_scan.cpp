@@ -69,12 +69,11 @@ namespace components::operators {
                     cached_types_ = std::move(types);
                     types_cached_ = true;
                 }
-                auto filter_result =
-                    transform_predicate(resource_,
-                                        expression_,
-                                        cached_types_,
-                                        &ctx->parameters,
-                                        ctx->execution_context);
+                auto filter_result = transform_predicate(resource_,
+                                                         expression_,
+                                                         cached_types_,
+                                                         &ctx->parameters,
+                                                         ctx->execution_context);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();

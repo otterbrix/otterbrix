@@ -25,7 +25,7 @@ TEST_CASE("regex_t::compile anchored like_to_regex-style pattern") {
     const auto& re = compiled.value();
     REQUIRE(re.match("abbbc"));
     REQUIRE(re.match("ac"));
-    REQUIRE_FALSE(re.match("abbb"));  // no trailing c
+    REQUIRE_FALSE(re.match("abbb"));   // no trailing c
     REQUIRE_FALSE(re.match("xabbbc")); // ^ anchors to start
 }
 

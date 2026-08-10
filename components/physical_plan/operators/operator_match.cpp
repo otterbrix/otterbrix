@@ -87,8 +87,7 @@ namespace components::operators {
                                                 : vector::data_chunk_t(resource, types, chunk.size());
         int64_t out_count = 0;
         for (size_t i = 0; i < chunk.size(); i++) {
-            const bool keep =
-                decisions == nullptr || (!decisions->is_null(i) && decisions->get_value<bool>(i));
+            const bool keep = decisions == nullptr || (!decisions->is_null(i) && decisions->get_value<bool>(i));
             if (keep) {
                 for (size_t j : populated_cols) {
                     out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));

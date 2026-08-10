@@ -193,8 +193,8 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
                      "ALTER TABLE TestDatabase.child_b ADD CONSTRAINT fk_b "
                      "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) ON DELETE CASCADE;")
                     ->is_success());
-        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")
-                    ->is_success());
+        REQUIRE(
+            exec(dispatcher, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
         // child_a: two rows referencing parent 1, one referencing parent 2 (survives).
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.child_a (id, parent_id) VALUES (10, 1), (11, 1), (12, 2);")
                     ->is_success());
@@ -262,10 +262,9 @@ TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_de
     INFO("setup: walls(height DEFAULT 5) + CHECK (height IS NOT NULL)");
     {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
-        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.walls (id bigint, height bigint DEFAULT 5);")
-                    ->is_success());
-        REQUIRE(exec(dispatcher,
-                     "ALTER TABLE TestDatabase.walls ADD CONSTRAINT chk_height CHECK (height IS NOT NULL);")
+        REQUIRE(
+            exec(dispatcher, "CREATE TABLE TestDatabase.walls (id bigint, height bigint DEFAULT 5);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.walls ADD CONSTRAINT chk_height CHECK (height IS NOT NULL);")
                     ->is_success());
     }
 
@@ -289,8 +288,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_de
     INFO("omitting a column with NO default still violates the check (stores NULL)");
     {
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.floors (id bigint, depth bigint);")->is_success());
-        REQUIRE(exec(dispatcher,
-                     "ALTER TABLE TestDatabase.floors ADD CONSTRAINT chk_depth CHECK (depth IS NOT NULL);")
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.floors ADD CONSTRAINT chk_depth CHECK (depth IS NOT NULL);")
                     ->is_success());
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.floors (id) VALUES (1);");
         REQUIRE(cur->is_error());

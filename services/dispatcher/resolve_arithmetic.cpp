@@ -14,17 +14,17 @@ namespace services::dispatcher {
         if (auto exact = resolve_operator(code, lhs, rhs)) {
             return resolved_arithmetic_t{{}, {}, lhs, rhs, *exact};
         }
-        
+
         auto common = registry.find_best_common_type(lhs, rhs);
         if (!common.has_value()) {
             return std::nullopt;
         }
-        
+
         auto unified = resolve_operator(code, common->type, common->type);
         if (!unified.has_value()) {
             return std::nullopt;
         }
-        
+
         return resolved_arithmetic_t{std::move(common->left_cast),
                                      std::move(common->right_cast),
                                      common->type,
@@ -32,9 +32,8 @@ namespace services::dispatcher {
                                      *unified};
     }
 
-    std::optional<resolved_arithmetic_t> resolve_arithmetic(const cast_registry_t&,
-                                                            operator_code code,
-                                                            const complex_logical_type& operand) {
+    std::optional<resolved_arithmetic_t>
+    resolve_arithmetic(const cast_registry_t&, operator_code code, const complex_logical_type& operand) {
         auto exact = resolve_operator(code, operand);
         if (!exact.has_value()) {
             return std::nullopt;

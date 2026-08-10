@@ -13,15 +13,15 @@ namespace components::operators {
     struct select_column_t {
         enum class kind
         {
-            field_ref,  // simple column reference (get_field) — uses group_key_t::kind::column
-            coalesce,   // COALESCE(...)                       — uses group_key_t::kind::coalesce
-            case_when,  // CASE WHEN ... END                   — uses group_key_t::kind::case_when
-            arithmetic, // add/subtract/multiply/divide/...    — uses arith_op + operands
-            constant,   // literal constant                    — uses constant_value
+            field_ref,   // simple column reference (get_field) — uses group_key_t::kind::column
+            coalesce,    // COALESCE(...)                       — uses group_key_t::kind::coalesce
+            case_when,   // CASE WHEN ... END                   — uses group_key_t::kind::case_when
+            arithmetic,  // add/subtract/multiply/divide/...    — uses arith_op + operands
+            constant,    // literal constant                    — uses constant_value
             star_expand, // SELECT * — copy all columns from input chunk as-is
-            function,   // a call — only the graph computes it, there is no per-row form
-            comparison, // a projected comparison — a boolean column, likewise graph-only
-            conversion  // a cast spelled in the query — likewise graph-only
+            function,    // a call — only the graph computes it, there is no per-row form
+            comparison,  // a projected comparison — a boolean column, likewise graph-only
+            conversion   // a cast spelled in the query — likewise graph-only
         };
 
         kind type{kind::field_ref};

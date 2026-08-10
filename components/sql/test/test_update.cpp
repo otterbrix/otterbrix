@@ -41,16 +41,14 @@ using vec = std::vector<v>;
 using fields = std::pmr::vector<expression_ptr>;
 
 // A SET value expression, keyed by the column it is assigned to.
-static expression_ptr set_value(std::pmr::memory_resource* resource,
-                                components::expressions::key_t target,
-                                scalar_type type) {
+static expression_ptr
+set_value(std::pmr::memory_resource* resource, components::expressions::key_t target, scalar_type type) {
     return make_scalar_expression(resource, type, target);
 }
 
 // SET <target> = $id
-static expression_ptr set_const(std::pmr::memory_resource* resource,
-                                components::expressions::key_t target,
-                                core::parameter_id_t id) {
+static expression_ptr
+set_const(std::pmr::memory_resource* resource, components::expressions::key_t target, core::parameter_id_t id) {
     auto expr = set_value(resource, std::move(target), scalar_type::constant);
     static_cast<scalar_expression_t*>(expr.get())->append_param(id);
     return expr;
@@ -63,7 +61,8 @@ TEST_CASE("components::sql::update") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10;",
                            R"_($update: <oid:0> {$upsert: 0, $match: {$all_true}, $limit: -1})_",
                            vec({v(&resource, 10l)}),
@@ -72,7 +71,8 @@ TEST_CASE("components::sql::update") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name';",
                            R"_($update: <oid:0> {$upsert: 0, $match: {$all_true}, $limit: -1})_",
                            vec({v(&resource, "new name")}),
@@ -81,7 +81,8 @@ TEST_CASE("components::sql::update") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true;",
                            R"_($update: <oid:0> {$upsert: 0, $match: {$all_true}, $limit: -1})_",
                            vec({v(&resource, true)}),
@@ -90,8 +91,10 @@ TEST_CASE("components::sql::update") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{1}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{1}));
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{2}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
@@ -108,7 +111,8 @@ TEST_CASE("components::sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10 WHERE id = 1;",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 10l), v(&resource, 1l)}),
@@ -117,7 +121,8 @@ TEST_CASE("components::sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name' WHERE name = 'old_name';",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"name": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, "new name"), v(&resource, "old_name")}),
@@ -126,7 +131,8 @@ TEST_CASE("components::sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true WHERE is_doc = false;",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"is_doc": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, true), v(&resource, false)}),
@@ -135,8 +141,10 @@ TEST_CASE("components::sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
-        f.emplace_back(set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{1}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
+        f.emplace_back(
+            set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{1}));
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{2}));
         TEST_SIMPLE_UPDATE(

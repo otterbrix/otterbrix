@@ -12,8 +12,8 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     expressions::expression_ptr transformer::transform_update_expr(Node* node,
-                                                       const name_collection_t& names,
-                                                       logical_plan::parameter_node_t* params) {
+                                                                   const name_collection_t& names,
+                                                                   logical_plan::parameter_node_t* params) {
         auto operand = transform_a_expr_operand(node, names, params);
         if (has_error()) {
             return nullptr;
@@ -21,9 +21,9 @@ namespace components::sql::transform {
         if (std::holds_alternative<expression_ptr>(operand)) {
             return std::get<expression_ptr>(operand);
         }
-        auto value = make_scalar_expression(resource_,
-                                            std::holds_alternative<expressions::key_t>(operand) ? scalar_type::get_field
-                                                                                   : scalar_type::constant);
+        auto value = make_scalar_expression(
+            resource_,
+            std::holds_alternative<expressions::key_t>(operand) ? scalar_type::get_field : scalar_type::constant);
         value->append_param(std::move(operand));
         return value;
     }
@@ -65,8 +65,7 @@ namespace components::sql::transform {
                 if (!res->indirection->lst.empty()) {
                     // The write path nulls whole columns for a NULL literal but has
                     // no NA cast kernel for element writes — reject those here.
-                    if (nodeTag(res->val) == T_A_Const &&
-                        nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
+                    if (nodeTag(res->val) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
                         error_ = core::error_t(
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"setting a nested element to NULL is not supported", resource_});

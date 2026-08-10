@@ -43,9 +43,7 @@ namespace {
         return out;
     }
 
-    bool contains(const std::string& hay, const std::string& needle) {
-        return hay.find(needle) != std::string::npos;
-    }
+    bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
     // TestDatabase.big rows: a in {1,2,3,6,7,8}; a>5 -> {6,7,8}; a<3 -> {1,2}.
     // b = a*10, c = a*100 (so c>50 holds for every a>5 row).
@@ -83,7 +81,8 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
     {
         auto s = otterbrix::session_id_t();
         auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN WITH c AS (SELECT a,b FROM TestDatabase.big) SELECT * FROM c WHERE a > 5;");
+            s,
+            "EXPLAIN WITH c AS (SELECT a,b FROM TestDatabase.big) SELECT * FROM c WHERE a > 5;");
         REQUIRE(plan->is_success());
         const auto t = plan_text(plan);
         REQUIRE(contains(t, "Seq Scan on big"));
@@ -99,8 +98,9 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
     INFO("POSITIVE SELECT * body: filter fuses into the scan");
     {
         auto s = otterbrix::session_id_t();
-        auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN WITH c AS (SELECT * FROM TestDatabase.big) SELECT * FROM c WHERE a > 5;");
+        auto plan =
+            dispatcher->execute_sql(s,
+                                    "EXPLAIN WITH c AS (SELECT * FROM TestDatabase.big) SELECT * FROM c WHERE a > 5;");
         REQUIRE(plan->is_success());
         const auto t = plan_text(plan);
         REQUIRE(contains(t, "Seq Scan on big"));
@@ -117,7 +117,8 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
     {
         auto s = otterbrix::session_id_t();
         auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN WITH c AS (SELECT a,b FROM TestDatabase.big WHERE b > 0) SELECT * FROM c WHERE a > 5;");
+            s,
+            "EXPLAIN WITH c AS (SELECT a,b FROM TestDatabase.big WHERE b > 0) SELECT * FROM c WHERE a > 5;");
         REQUIRE(plan->is_success());
         const auto t = plan_text(plan);
         REQUIRE(contains(t, "Seq Scan on big"));
@@ -125,7 +126,8 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
 
         auto s2 = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s2, "WITH c AS (SELECT a,b FROM TestDatabase.big WHERE b > 0) SELECT * FROM c WHERE a > 5;");
+            s2,
+            "WITH c AS (SELECT a,b FROM TestDatabase.big WHERE b > 0) SELECT * FROM c WHERE a > 5;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3); // b>0 keeps all; a>5 -> {6,7,8}
     }
@@ -137,7 +139,8 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
         // above the Project. Both `c` refs are real base columns (no rename), so both resolve.
         auto s = otterbrix::session_id_t();
         auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN WITH c AS (SELECT a,c FROM TestDatabase.big) SELECT * FROM c WHERE a > 5 AND c > 50;");
+            s,
+            "EXPLAIN WITH c AS (SELECT a,c FROM TestDatabase.big) SELECT * FROM c WHERE a > 5 AND c > 50;");
         REQUIRE(plan->is_success());
         const auto t = plan_text(plan);
         REQUIRE(contains(t, "Seq Scan on big"));
@@ -145,7 +148,8 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
 
         auto s2 = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s2, "WITH c AS (SELECT a,c FROM TestDatabase.big) SELECT * FROM c WHERE a > 5 AND c > 50;");
+            s2,
+            "WITH c AS (SELECT a,c FROM TestDatabase.big) SELECT * FROM c WHERE a > 5 AND c > 50;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3); // a>5 -> {6,7,8}; their c = {600,700,800} all > 50
     }
@@ -174,7 +178,8 @@ TEST_CASE("integration::cte_pushdown::negatives_stay_correct") {
 
         auto s2 = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            s2, "WITH c AS (SELECT a FROM TestDatabase.big ORDER BY a LIMIT 3) SELECT * FROM c WHERE a > 5;");
+            s2,
+            "WITH c AS (SELECT a FROM TestDatabase.big ORDER BY a LIMIT 3) SELECT * FROM c WHERE a > 5;");
         REQUIRE(cur->is_success());
         // ORDER BY a LIMIT 3 -> {1,2,3}; then a>5 -> {} (0). A wrong push-below-LIMIT -> {6,7,8} (3).
         REQUIRE(cur->size() == 0);
@@ -186,7 +191,8 @@ TEST_CASE("integration::cte_pushdown::negatives_stay_correct") {
         // index base column `b` at the scan -> wrong rows. The prefix-identity guard forbids it.
         auto s = otterbrix::session_id_t();
         auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN WITH c AS (SELECT b,a FROM TestDatabase.big) SELECT * FROM c WHERE a > 5;");
+            s,
+            "EXPLAIN WITH c AS (SELECT b,a FROM TestDatabase.big) SELECT * FROM c WHERE a > 5;");
         REQUIRE(plan->is_success());
         REQUIRE(contains(plan_text(plan), "Filter")); // stays above the Project
 
@@ -202,12 +208,11 @@ TEST_CASE("integration::cte_pushdown::negatives_stay_correct") {
         // c is referenced twice with DIFFERENT filters. Each reference is inlined as its own
         // body; pushing a>5 into one and a<3 into the other must not corrupt the other arm.
         auto s2 = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(s2,
-                                    "WITH c AS (SELECT a FROM TestDatabase.big) "
-                                    "SELECT a FROM c WHERE a > 5 "
-                                    "UNION ALL "
-                                    "SELECT a FROM c WHERE a < 3;");
+        auto cur = dispatcher->execute_sql(s2,
+                                           "WITH c AS (SELECT a FROM TestDatabase.big) "
+                                           "SELECT a FROM c WHERE a > 5 "
+                                           "UNION ALL "
+                                           "SELECT a FROM c WHERE a < 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5); // {6,7,8} + {1,2}
     }
@@ -244,8 +249,8 @@ TEST_CASE("integration::cte_pushdown::distinct_survives_full_push") {
         // flag — must survive the collapse. Rows with a = 1: (1,10) twice ->
         // DISTINCT keeps exactly one. A dropped DISTINCT returns both duplicates.
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            s, "WITH c AS (SELECT a,b FROM DD.dup) SELECT DISTINCT * FROM c WHERE a = 1;");
+        auto cur =
+            dispatcher->execute_sql(s, "WITH c AS (SELECT a,b FROM DD.dup) SELECT DISTINCT * FROM c WHERE a = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
@@ -268,16 +273,15 @@ TEST_CASE("integration::cte_pushdown::distinct_survives_full_push") {
     INFO("no DISTINCT: the pass-through consumer still collapses (plan stays minimal, rows unchanged)");
     {
         auto s = otterbrix::session_id_t();
-        auto plan = dispatcher->execute_sql(
-            s, "EXPLAIN WITH c AS (SELECT a,b FROM DD.dup) SELECT * FROM c WHERE a = 1;");
+        auto plan =
+            dispatcher->execute_sql(s, "EXPLAIN WITH c AS (SELECT a,b FROM DD.dup) SELECT * FROM c WHERE a = 1;");
         REQUIRE(plan->is_success());
         const auto t = plan_text(plan);
         REQUIRE(contains(t, "Seq Scan on dup"));
         REQUIRE_FALSE(contains(t, "Filter"));
 
         auto s2 = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(s2, "WITH c AS (SELECT a,b FROM DD.dup) SELECT * FROM c WHERE a = 1;");
+        auto cur = dispatcher->execute_sql(s2, "WITH c AS (SELECT a,b FROM DD.dup) SELECT * FROM c WHERE a = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2); // both duplicates: no DISTINCT requested
     }
@@ -296,8 +300,8 @@ TEST_CASE("integration::cte_pushdown::recursive_untouched") {
     }
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE RC.OrgChart(id int, manager_id int, name string);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(s, "CREATE TABLE RC.OrgChart(id int, manager_id int, name string);")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();

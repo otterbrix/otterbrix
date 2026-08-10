@@ -41,7 +41,7 @@ namespace components::types {
                     return false;
             }
         }
-    }
+    } // namespace
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
 
@@ -387,9 +387,8 @@ namespace components::types {
             // Surface it as a conversion_failure error instead.
             if (!is_scalar_castable_physical_type(type.to_physical_type()) ||
                 !is_scalar_castable_physical_type(type_.to_physical_type())) {
-                std::string message = "cannot cast logical_type " +
-                                      std::to_string(static_cast<int>(type_.type())) + " to logical_type " +
-                                      std::to_string(static_cast<int>(type.type()));
+                std::string message = "cannot cast logical_type " + std::to_string(static_cast<int>(type_.type())) +
+                                      " to logical_type " + std::to_string(static_cast<int>(type.type()));
                 return core::error_t{core::error_code_t::conversion_failure,
                                      std::pmr::string{message.c_str(), resource_}};
             }

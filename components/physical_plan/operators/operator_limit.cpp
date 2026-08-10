@@ -5,9 +5,7 @@
 
 namespace components::operators {
 
-    operator_limit_t::operator_limit_t(std::pmr::memory_resource* resource,
-                                       log_t log,
-                                       logical_plan::limit_t limit)
+    operator_limit_t::operator_limit_t(std::pmr::memory_resource* resource, log_t log, logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::limit)
         , limit_(limit) {}
 
@@ -25,7 +23,7 @@ namespace components::operators {
         const int64_t offset = limit_.offset();
         const int64_t lim = limit_.limit();
         const int64_t win_start = offset;
-        const int64_t win_end = (lim < 0)                                        ? std::numeric_limits<int64_t>::max()
+        const int64_t win_end = (lim < 0) ? std::numeric_limits<int64_t>::max()
                                 : (offset > std::numeric_limits<int64_t>::max() - lim)
                                     ? std::numeric_limits<int64_t>::max()
                                     : offset + lim;

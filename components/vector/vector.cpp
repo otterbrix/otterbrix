@@ -72,7 +72,7 @@ namespace components::vector {
         , type_(std::move(type))
         , data_(nullptr)
         , validity_(type_.type() == types::logical_type::NA ? validity_mask_t{resource, nullptr}
-                                                           : validity_mask_t{resource, capacity}) {
+                                                            : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
             return;
         }

@@ -54,7 +54,8 @@ namespace components::casts::kernels {
                                         uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             int32_t value = 0;
-            if (source.is_null(row) || !detail::enum_value_of(result->type(), source.get_value<std::string_view>(row), &value)) {
+            if (source.is_null(row) ||
+                !detail::enum_value_of(result->type(), source.get_value<std::string_view>(row), &value)) {
                 result->set_null(row, true);
                 continue;
             }

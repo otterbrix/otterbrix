@@ -50,11 +50,11 @@ TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_re
     // Correlated LATERAL scalar aggregate: sum(inner_t.v) filtered by the outer id.
     // The WHERE's correlated parameter changes per outer row, so the filter is rebuilt
     // each drive while the cached column types are reused.
-    auto cur = dispatcher->execute_sql(
-        session,
-        "SELECT o.id, sub.s "
-        "FROM s.outer_t o, "
-        "     LATERAL (SELECT sum(inner_t.v) AS s FROM s.inner_t WHERE inner_t.k = o.id) sub;");
+    auto cur =
+        dispatcher->execute_sql(session,
+                                "SELECT o.id, sub.s "
+                                "FROM s.outer_t o, "
+                                "     LATERAL (SELECT sum(inner_t.v) AS s FROM s.inner_t WHERE inner_t.k = o.id) sub;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);

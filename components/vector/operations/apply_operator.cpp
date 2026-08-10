@@ -14,19 +14,18 @@ namespace components::vector::operations {
     namespace {
 
         template<typename T>
-        inline constexpr bool is_number =
-            (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) || std::is_same_v<T, types::int128_t> ||
-                std::is_same_v<T, types::uint128_t>;
+        inline constexpr bool is_number = (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) ||
+                                          std::is_same_v<T, types::int128_t> || std::is_same_v<T, types::uint128_t>;
 
         template<typename T>
-        inline constexpr bool is_integral_value =
-            (std::is_integral_v<T> && !std::is_same_v<T, bool>) || std::is_same_v<T, types::int128_t> ||
-                std::is_same_v<T, types::uint128_t>;
+        inline constexpr bool
+            is_integral_value = (std::is_integral_v<T> && !std::is_same_v<T, bool>) ||
+                                std::is_same_v<T, types::int128_t> || std::is_same_v<T, types::uint128_t>;
 
         template<typename T>
-        inline constexpr bool is_decimal_storage =
-            (std::is_integral_v<T> && std::is_signed_v<T> && !std::is_same_v<T, bool>) ||
-            std::is_same_v<T, types::int128_t>;
+        inline constexpr bool is_decimal_storage = (std::is_integral_v<T> && std::is_signed_v<T> &&
+                                                    !std::is_same_v<T, bool>) ||
+                                                   std::is_same_v<T, types::int128_t>;
 
         core::error_t shift_out_of_range(std::pmr::memory_resource* resource) {
             return core::error_t(core::error_code_t::invalid_parameter,
@@ -89,8 +88,10 @@ namespace components::vector::operations {
                         break;
                     case operator_code::mod:
                         if constexpr (std::is_floating_point_v<T>) {
-                            return core::error_t(core::error_code_t::invalid_parameter,
-                                                 std::pmr::string{"operator does not accept modulus on floating point types", output->resource()});
+                            return core::error_t(
+                                core::error_code_t::invalid_parameter,
+                                std::pmr::string{"operator does not accept modulus on floating point types",
+                                                 output->resource()});
                         } else {
                             if (is_zero(rhs)) {
                                 return core::error_t(core::error_code_t::invalid_parameter,
@@ -100,8 +101,9 @@ namespace components::vector::operations {
                         }
                         break;
                     default:
-                        return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"operator encountered unsupported operator code", output->resource()});
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"operator encountered unsupported operator code", output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -141,8 +143,9 @@ namespace components::vector::operations {
                         write<bool>(output, row, lhs >= rhs);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"compare_rows encountered unsupported operator code", output->resource()});
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"compare_rows encountered unsupported operator code", output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -243,8 +246,9 @@ namespace components::vector::operations {
                             break;
                         }
                         default:
-                            failure = core::error_t(core::error_code_t::invalid_parameter,
-                                                 std::pmr::string{"compare_rows encountered unsupported operation", output->resource()});
+                            failure = core::error_t(
+                                core::error_code_t::invalid_parameter,
+                                std::pmr::string{"compare_rows encountered unsupported operation", output->resource()});
                             return;
                     }
                 });
@@ -294,8 +298,9 @@ namespace components::vector::operations {
                                           uint8_t scale,
                                           uint64_t count) {
             if constexpr (!is_decimal_storage<T>) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"decimal_scaled_rows received non-decimal type", output->resource()});
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"decimal_scaled_rows received non-decimal type", output->resource()});
             } else {
                 types::int128_t factor = types::POWERS_OF_TEN[scale];
                 types::int128_t limit = types::POWERS_OF_TEN[width];
@@ -310,26 +315,26 @@ namespace components::vector::operations {
                     if (code == operator_code::multiply) {
                         if (multiplication_overflows(lhs, rhs)) {
                             failure = core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"decimal overflow", output->resource()});
+                                                    std::pmr::string{"decimal overflow", output->resource()});
                             return;
                         }
                         scaled = lhs * rhs / factor;
                     } else {
                         if (rhs == 0) {
                             failure = core::error_t(core::error_code_t::invalid_parameter,
-                                                 std::pmr::string{"division by zero", output->resource()});
+                                                    std::pmr::string{"division by zero", output->resource()});
                             return;
                         }
                         if (multiplication_overflows(lhs, factor)) {
                             failure = core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"decimal overflow", output->resource()});
+                                                    std::pmr::string{"decimal overflow", output->resource()});
                             return;
                         }
                         scaled = lhs * factor / rhs;
                     }
                     if (scaled >= limit || scaled <= -limit) {
-                            failure = core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"decimal overflow", output->resource()});
+                        failure = core::error_t(core::error_code_t::invalid_parameter,
+                                                std::pmr::string{"decimal overflow", output->resource()});
                         return;
                     }
                     write<T>(output, row, static_cast<T>(scaled));
@@ -361,9 +366,8 @@ namespace components::vector::operations {
                    type == types::logical_type::TIMESTAMP_TZ;
         }
 
-        core::date::days add_interval_to_date(core::date::days date,
-                                              core::date::interval_t interval,
-                                              int sign) noexcept {
+        core::date::days
+        add_interval_to_date(core::date::days date, core::date::interval_t interval, int sign) noexcept {
             auto day = core::date::pg_epoch + std::chrono::days{date.count()};
             if (interval.month.count()) {
                 day = core::date::apply_months(day, (sign * interval.month).count());
@@ -454,23 +458,25 @@ namespace components::vector::operations {
                 const bool interval_left = lhs == lt::INTERVAL;
                 assert((interval_left || rhs == lt::INTERVAL) && "scaling needs an interval operand");
                 if (code == operator_code::divide && !interval_left) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
                 }
                 const vector_t& interval = interval_left ? left : right;
                 const vector_t& factor = interval_left ? right : left;
                 const bool divide = code == operator_code::divide;
                 return each_row(left, right, output, count, [&](uint64_t row) {
                     const double scale = numeric_at(factor, row);
-                    output->set_value(row,
-                                      scale_interval(interval.get_value<date::interval_t>(row),
-                                                     divide ? 1.0 / scale : scale));
+                    output->set_value(
+                        row,
+                        scale_interval(interval.get_value<date::interval_t>(row), divide ? 1.0 / scale : scale));
                 });
             }
 
             if (!is_add && code != operator_code::subtract) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
             }
 
             if ((lhs == lt::DATE && rhs == lt::INTERVAL) || (is_add && lhs == lt::INTERVAL && rhs == lt::DATE)) {
@@ -492,9 +498,9 @@ namespace components::vector::operations {
                 const vector_t& intervals = timestamp_left ? right : left;
                 const int applied = timestamp_left ? sign : 1;
                 return each_row(left, right, output, count, [&](uint64_t row) {
-                    output->set_value(row,
-                                      date::timestamp_t{
-                                          add_interval_to_timestamp(stamps.get_value<date::timestamp_t>(row).value,
+                    output->set_value(
+                        row,
+                        date::timestamp_t{add_interval_to_timestamp(stamps.get_value<date::timestamp_t>(row).value,
                                                                     intervals.get_value<date::interval_t>(row),
                                                                     applied)});
                 });
@@ -534,8 +540,9 @@ namespace components::vector::operations {
             }
 
             if (is_add) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
             }
 
             if (lhs == lt::DATE && rhs == lt::DATE) {
@@ -565,8 +572,9 @@ namespace components::vector::operations {
                                                        date::months{0}});
                 });
             }
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
         }
 
         core::error_t struct_compare(operator_code code,
@@ -584,20 +592,20 @@ namespace components::vector::operations {
                 if (interval) {
                     const auto lhs = left.get_value<date::interval_t>(row);
                     const auto rhs = right.get_value<date::interval_t>(row);
-                    ordering = lhs.month.count() != rhs.month.count() ? (lhs.month < rhs.month
-                                                                             ? std::strong_ordering::less
-                                                                             : std::strong_ordering::greater)
-                               : lhs.day.count() != rhs.day.count()
-                                   ? (lhs.day < rhs.day ? std::strong_ordering::less : std::strong_ordering::greater)
-                               : lhs.time.count() != rhs.time.count()
-                                   ? (lhs.time < rhs.time ? std::strong_ordering::less : std::strong_ordering::greater)
-                                   : std::strong_ordering::equal;
+                    ordering =
+                        lhs.month.count() != rhs.month.count()
+                            ? (lhs.month < rhs.month ? std::strong_ordering::less : std::strong_ordering::greater)
+                        : lhs.day.count() != rhs.day.count()
+                            ? (lhs.day < rhs.day ? std::strong_ordering::less : std::strong_ordering::greater)
+                        : lhs.time.count() != rhs.time.count()
+                            ? (lhs.time < rhs.time ? std::strong_ordering::less : std::strong_ordering::greater)
+                            : std::strong_ordering::equal;
                 } else {
                     const auto lhs = left.get_value<date::timetz_t>(row);
                     const auto rhs = right.get_value<date::timetz_t>(row);
                     const auto lhs_utc = lhs.time - std::chrono::duration_cast<date::microseconds>(lhs.zone);
                     const auto rhs_utc = rhs.time - std::chrono::duration_cast<date::microseconds>(rhs.zone);
-                    ordering = lhs_utc < rhs_utc  ? std::strong_ordering::less
+                    ordering = lhs_utc < rhs_utc   ? std::strong_ordering::less
                                : rhs_utc < lhs_utc ? std::strong_ordering::greater
                                                    : std::strong_ordering::equal;
                 }
@@ -651,18 +659,14 @@ namespace components::vector::operations {
             return {row * stride, row * stride + stride};
         }
 
-        std::partial_ordering compare_element_at(const vector_t& left,
-                                                 uint64_t left_index,
-                                                 const vector_t& right,
-                                                 uint64_t right_index);
+        std::partial_ordering
+        compare_element_at(const vector_t& left, uint64_t left_index, const vector_t& right, uint64_t right_index);
 
         template<typename...>
         struct element_ordering {
             template<typename T>
-            std::partial_ordering operator()(const vector_t& left,
-                                             uint64_t left_index,
-                                             const vector_t& right,
-                                             uint64_t right_index) {
+            std::partial_ordering
+            operator()(const vector_t& left, uint64_t left_index, const vector_t& right, uint64_t right_index) {
                 const T lhs = left.get_value<T>(left_index);
                 const T rhs = right.get_value<T>(right_index);
                 if (equals(lhs, rhs)) {
@@ -699,10 +703,8 @@ namespace components::vector::operations {
             return left_length < right_length ? std::partial_ordering::less : std::partial_ordering::greater;
         }
 
-        std::partial_ordering compare_element_at(const vector_t& left,
-                                                 uint64_t left_index,
-                                                 const vector_t& right,
-                                                 uint64_t right_index) {
+        std::partial_ordering
+        compare_element_at(const vector_t& left, uint64_t left_index, const vector_t& right, uint64_t right_index) {
             if (left.is_null(left_index) || right.is_null(right_index)) {
                 return std::partial_ordering::unordered;
             }
@@ -710,11 +712,7 @@ namespace components::vector::operations {
             if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
                 return compare_container_rows(left, left_index, right, right_index); // nested containers
             }
-            return types::simple_physical_type_switch<element_ordering>(physical,
-                                                                        left,
-                                                                        left_index,
-                                                                        right,
-                                                                        right_index);
+            return types::simple_physical_type_switch<element_ordering>(physical, left, left_index, right, right_index);
         }
 
         core::error_t container_compare(operator_code code,
@@ -754,7 +752,8 @@ namespace components::vector::operations {
                         break;
                     default:
                         return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"container_compare encountered unsupported operator code", output->resource()});
+                                             std::pmr::string{"container_compare encountered unsupported operator code",
+                                                              output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -777,8 +776,9 @@ namespace components::vector::operations {
                 if constexpr (is_number<T>) {
                     return arithmetic_rows<T>(code, left, right, output, count);
                 } else {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"binary operator encountered unsupported operation", output->resource()});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"binary operator encountered unsupported operation", output->resource()});
                 }
             }
         };
@@ -797,8 +797,9 @@ namespace components::vector::operations {
                     }
                     return core::error_t::no_error();
                 } else {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
                 }
             }
         };
@@ -817,8 +818,9 @@ namespace components::vector::operations {
                     }
                     return core::error_t::no_error();
                 } else {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
                 }
             }
         };
@@ -929,8 +931,9 @@ namespace components::vector::operations {
                 return core::error_t::no_error();
             case operator_code::logical_not:
                 if (operand.type().to_physical_type() != types::physical_type::BOOL) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"unary operator encountered unsupported type", output->resource()});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"unary operator encountered unsupported type", output->resource()});
                 }
                 for (uint64_t row = 0; row < count; row++) {
                     if (operand.is_null(row)) {
@@ -954,8 +957,9 @@ namespace components::vector::operations {
                                                                             output,
                                                                             count);
             default:
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
         }
     }
 

@@ -377,9 +377,8 @@ TEST_CASE("integration::list_array::array_default_padding") {
 
     INFO("a NOT NULL column is not exempted by having a DEFAULT: the pad would still be NULL");
     {
-        REQUIRE(
-            exec(dispatcher, "CREATE TABLE TestDatabase.nnd (id bigint, v int[3] NOT NULL DEFAULT ARRAY[1,2,3]);")
-                ->is_success());
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.nnd (id bigint, v int[3] NOT NULL DEFAULT ARRAY[1,2,3]);")
+                    ->is_success());
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.nnd (id) VALUES (1);")->is_success());
         {
             auto sel = exec(dispatcher, "SELECT v FROM TestDatabase.nnd WHERE id = 1;");

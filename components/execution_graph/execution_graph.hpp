@@ -60,7 +60,6 @@ namespace components::execution_graph {
         // Everything a node can tell about itself before types exist: arity and wiring.
         [[nodiscard]] virtual core::error_t validate() const;
 
-
         execution_storage_t* storage_{nullptr};
         uint64_t* sizes_{nullptr};
         slot_list_t input_indices_;
@@ -246,8 +245,6 @@ namespace components::execution_graph {
     using parameter_node_ptr = boost::intrusive_ptr<parameter_node_t>;
     using operator_node_ptr = boost::intrusive_ptr<operator_node_t>;
     using function_node_ptr = boost::intrusive_ptr<function_node_t>;
-
-
 
     class execution_graph_t final {
     public:

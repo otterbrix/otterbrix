@@ -11,7 +11,8 @@ using types::logical_type;
 
 namespace {
 
-    core::error_t noop_cast(const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) noexcept {
+    core::error_t
+    noop_cast(const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) noexcept {
         return core::error_t::no_error();
     }
 

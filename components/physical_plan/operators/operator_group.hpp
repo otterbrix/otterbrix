@@ -164,8 +164,7 @@ namespace components::operators {
         std::unique_ptr<execution_graph::execution_graph_t> output_graph_;
         std::pmr::vector<types::complex_logical_type> input_types_{resource_};
 
-        core::error_t build_output_graph(pipeline::context_t* pipeline_context,
-                                        const vector::data_chunk_t& probe);
+        core::error_t build_output_graph(pipeline::context_t* pipeline_context, const vector::data_chunk_t& probe);
     };
 
 } // namespace components::operators

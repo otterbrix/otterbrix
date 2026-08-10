@@ -962,10 +962,9 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
 
         // An ARRAY key does not cast to BIGINT (cast_as errors): out-of-domain.
         // Pre-fix: assert-abort (Debug) / empty-optional deref (Release UB).
-        auto array_key = logical_value_t::create_array(
-            res,
-            complex_logical_type{logical_type::BIGINT},
-            std::vector<logical_value_t>{logical_value_t(res, int64_t{7})});
+        auto array_key = logical_value_t::create_array(res,
+                                                       complex_logical_type{logical_type::BIGINT},
+                                                       std::vector<logical_value_t>{logical_value_t(res, int64_t{7})});
         index.insert(array_key, components::index::index_value_t(int64_t{2}), tz);
 
         // In-domain lookups stay exact and unaffected.

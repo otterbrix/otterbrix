@@ -104,9 +104,7 @@ namespace components::operators {
         const uint64_t n = probe.size();
         for (uint64_t li = 0; li < n; ++li) {
             bool matched = false;
-            for (size_t ci = 0;
-                 condition_ != expressions::condition_kind::never && ci < build_chunks.size();
-                 ++ci) {
+            for (size_t ci = 0; condition_ != expressions::condition_kind::never && ci < build_chunks.size(); ++ci) {
                 const auto& B = build_chunks[ci];
                 if (B.size() == 0) {
                     continue;

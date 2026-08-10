@@ -77,9 +77,10 @@ TEST_CASE("operators::resolve_operator: bitwise operators are integer-only") {
     // The "same numeric type" rule that arithmetic uses must not reach these.
     REQUIRE_FALSE(resolve_operator(operator_code::bit_and, real, real).has_value());
     REQUIRE_FALSE(resolve_operator(operator_code::bit_or, boolean, boolean).has_value());
-    REQUIRE_FALSE(
-        resolve_operator(operator_code::bit_xor, complex_logical_type::create_decimal(10, 2), complex_logical_type::create_decimal(10, 2))
-            .has_value());
+    REQUIRE_FALSE(resolve_operator(operator_code::bit_xor,
+                                   complex_logical_type::create_decimal(10, 2),
+                                   complex_logical_type::create_decimal(10, 2))
+                      .has_value());
 
     auto inverted = resolve_operator(operator_code::bit_not, integer);
     REQUIRE(inverted.has_value());

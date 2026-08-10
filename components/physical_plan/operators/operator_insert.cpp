@@ -44,11 +44,8 @@ namespace components::operators {
                 auto target_type = binding.target_type;
                 target_type.set_alias(std::string(binding.target_name));
                 vector::vector_t casted(resource_, target_type, input.size());
-                auto error = binding.cast(casts::cast_kind::cast,
-                                          input.data[i],
-                                          &casted,
-                                          ctx->execution_context,
-                                          input.size());
+                auto error =
+                    binding.cast(casts::cast_kind::cast, input.data[i], &casted, ctx->execution_context, input.size());
                 if (error.contains_error()) {
                     return error;
                 }
@@ -258,8 +255,8 @@ namespace components::operators {
             if (affected_rows_ != 0) {
                 // No RETURNING: emit column-less chunks whose cardinalities sum to the
                 // affected-row count (the cursor totals chunk sizes).
-                set_output(make_operator_data(
-                    resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+                set_output(make_operator_data(resource_,
+                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
             } else {
                 set_output(nullptr);
             }

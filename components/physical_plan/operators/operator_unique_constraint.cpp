@@ -120,8 +120,7 @@ namespace components::operators {
             std::pmr::vector<types::complex_logical_type> key_types(resource_);
             key_types.reserve(sources.size());
             for (const auto& src : sources) {
-                key_types.push_back(src.col != kAbsentCol ? in_chunks.front().data[src.col].type()
-                                                          : src.def->type());
+                key_types.push_back(src.col != kAbsentCol ? in_chunks.front().data[src.col].type() : src.def->type());
             }
             std::pmr::vector<components::vector::data_chunk_t> key_chunks(resource_);
             key_chunks.reserve(in_chunks.size());
@@ -235,8 +234,7 @@ namespace components::operators {
             // above is unaffected. After LAYER 1 every qualifying key is unique in
             // the batch, so the just-written row contributes exactly one row to its
             // key's scan result: a match count > 1 means a pre-existing distinct row.
-            if (ctx->disk_address == actor_zeta::address_t::empty_address() ||
-                table_oid_ == catalog::INVALID_OID) {
+            if (ctx->disk_address == actor_zeta::address_t::empty_address() || table_oid_ == catalog::INVALID_OID) {
                 continue;
             }
 
@@ -277,8 +275,8 @@ namespace components::operators {
                         off = 0;
                         continue;
                     }
-                    const uint64_t take = std::min<uint64_t>(counts[c] - off,
-                                                             components::vector::DEFAULT_VECTOR_CAPACITY - cur_n);
+                    const uint64_t take =
+                        std::min<uint64_t>(counts[c] - off, components::vector::DEFAULT_VECTOR_CAPACITY - cur_n);
                     // 7-arg copy: bounded partial of qualifying[c]. source_count is the
                     // FULL selection length (counts[c]) so a DICTIONARY source's merged
                     // indexing covers the slice; source_offset walks the selection and

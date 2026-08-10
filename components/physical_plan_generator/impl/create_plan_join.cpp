@@ -141,8 +141,8 @@ namespace services::planner::impl {
             if (join_node->type() == join_type::inner) {
                 const auto left_eff = components::logical_plan::effective_table_oid(node->children().front());
                 const auto right_eff = components::logical_plan::effective_table_oid(node->children().back());
-                if (left_eff != components::catalog::INVALID_OID &&
-                    right_eff != components::catalog::INVALID_OID && left_eff != right_eff) {
+                if (left_eff != components::catalog::INVALID_OID && right_eff != components::catalog::INVALID_OID &&
+                    left_eff != right_eff) {
                     const auto left_it = context.row_counts.find(left_eff);
                     const auto right_it = context.row_counts.find(right_eff);
                     if (left_it != context.row_counts.end() && right_it != context.row_counts.end()) {

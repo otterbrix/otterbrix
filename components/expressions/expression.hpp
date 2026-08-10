@@ -23,7 +23,6 @@ namespace components::expressions {
         const std::string& result_alias() const;
         void set_result_alias(const std::string& alias);
 
-
         const types::complex_logical_type& result_type() const noexcept { return result_type_; }
         void set_result_type(const types::complex_logical_type& type) { result_type_ = type; }
 

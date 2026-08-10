@@ -15,6 +15,7 @@
 
 #include <core/spinlock/spinlock.hpp>
 
+#include <components/casts/cast_entry.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
@@ -23,7 +24,6 @@
 #include <components/session/session.hpp>
 #include <components/sql/parser/extension.hpp>
 #include <components/sql/transformer/transformer.hpp>
-#include <components/casts/cast_entry.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <services/dispatcher/dispatcher.hpp>

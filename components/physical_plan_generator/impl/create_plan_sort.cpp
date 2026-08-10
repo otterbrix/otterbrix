@@ -13,9 +13,9 @@ namespace services::planner::impl {
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
-        auto sort = known ? boost::intrusive_ptr(
-                                new components::operators::operator_sort_t(plan_resource, context.log.clone()))
-                          : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));
+        auto sort =
+            known ? boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()))
+                  : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));
 
         for (const auto& expr : node->expressions()) {
             if (expr->group() == components::expressions::expression_group::sort) {

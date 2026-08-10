@@ -8,8 +8,8 @@
 
 namespace services::dispatcher {
 
-    using components::casts::allowed_in;
     using components::graph_execution_context;
+    using components::casts::allowed_in;
     using components::casts::cast_cost;
     using components::casts::cast_registry_t;
     using components::casts::cast_type;
@@ -21,9 +21,7 @@ namespace services::dispatcher {
 
     namespace {
 
-        bool is_null_argument(const complex_logical_type& type) noexcept {
-            return type.type() == logical_type::NA;
-        }
+        bool is_null_argument(const complex_logical_type& type) noexcept { return type.type() == logical_type::NA; }
 
         struct total_cost_t {
             uint64_t precision_loss{0};
@@ -96,8 +94,8 @@ namespace services::dispatcher {
         }
 
         std::optional<complex_logical_type> materialize_family(const graph_execution_context& context,
-                                                              const complex_logical_type& family,
-                                                              const complex_logical_type& argument) {
+                                                               const complex_logical_type& family,
+                                                               const complex_logical_type& argument) {
             if (family.type() == argument.type()) {
                 return argument;
             }
@@ -278,10 +276,10 @@ namespace services::dispatcher {
                                  std::pmr::string{"unrecognized function '" + std::string(name) + "'", resource});
         }
         if (!best.has_value() && rejected_by_context) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
-                                 std::pmr::string{"function '" + std::string(name) +
-                                                      "' is not allowed in this part of the statement",
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::incorrect_function_argument,
+                std::pmr::string{"function '" + std::string(name) + "' is not allowed in this part of the statement",
+                                 resource});
         }
         if (!best.has_value()) {
             return core::error_t(core::error_code_t::incorrect_function_argument,

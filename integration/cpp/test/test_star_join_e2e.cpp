@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
@@ -19,7 +20,6 @@
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <components/casts/default_casts.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <initializer_list>
@@ -78,9 +78,7 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
 
     dispatcher->execute_sql(session, "CREATE DATABASE " + db + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
-    auto create = [&](const std::string& t) {
-        REQUIRE(run("CREATE TABLE " + db + "." + t + "();")->is_success());
-    };
+    auto create = [&](const std::string& t) { REQUIRE(run("CREATE TABLE " + db + "." + t + "();")->is_success()); };
 
     // dim_date, customer, supplier, part, fact — fact LAST (the q4 FROM order).
     create("dd");   // (d_key, d_year)
@@ -94,10 +92,8 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
                 ".cust (c_key, c_nation, c_region) VALUES "
                 "(10, 'BRAZIL', 'AMERICA'), (11, 'CANADA', 'AMERICA'), (12, 'FRANCE', 'EUROPE');")
                 ->is_success());
-    REQUIRE(run("INSERT INTO " + db + ".supp (s_key, s_region) VALUES (20, 'AMERICA'), (21, 'EUROPE');")
-                ->is_success());
-    REQUIRE(run("INSERT INTO " + db +
-                ".prt (p_key, p_mfgr) VALUES (30, 'MFGR#1'), (31, 'MFGR#2'), (32, 'MFGR#3');")
+    REQUIRE(run("INSERT INTO " + db + ".supp (s_key, s_region) VALUES (20, 'AMERICA'), (21, 'EUROPE');")->is_success());
+    REQUIRE(run("INSERT INTO " + db + ".prt (p_key, p_mfgr) VALUES (30, 'MFGR#1'), (31, 'MFGR#2'), (32, 'MFGR#3');")
                 ->is_success());
     // fact rows: (date, cust, supp, part, revenue, cost)
     //   surviving all filters (c_region/s_region = AMERICA, p_mfgr in {1,2}):
@@ -121,7 +117,8 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
     // SSB-q4-shaped star. Fact LAST; unqualified WHERE columns (distinct names).
     const std::string sql = "SELECT d_year, c_nation, SUM(f_rev - f_cost) AS profit "
                             "FROM " +
-                            db + ".dd, " + db + ".cust, " + db + ".supp, " + db + ".prt, " + db + ".fct "
+                            db + ".dd, " + db + ".cust, " + db + ".supp, " + db + ".prt, " + db +
+                            ".fct "
                             "WHERE f_dk = d_key AND f_ck = c_key AND f_sk = s_key AND f_pk = p_key "
                             "AND c_region = 'AMERICA' AND s_region = 'AMERICA' "
                             "AND (p_mfgr = 'MFGR#1' OR p_mfgr = 'MFGR#2') "
@@ -186,8 +183,7 @@ namespace {
                                        expressions::param_storage{bare_key(res, r)});
     }
 
-    expression_ptr
-    eq_key_param(std::pmr::memory_resource* res, const char* l, core::parameter_id_t p) {
+    expression_ptr eq_key_param(std::pmr::memory_resource* res, const char* l, core::parameter_id_t p) {
         return make_compare_expression(res,
                                        compare_type::eq,
                                        expressions::param_storage{bare_key(res, l)},
@@ -310,7 +306,8 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     agg->append_child(sort);
     agg->append_child(select);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
+    auto validated =
+        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);
@@ -368,7 +365,8 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
     REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success()); // (g, k, x)
     REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success()); // (k) dimension
     // a: many rows per (g, k). b matches keys 100 and 101 (key 999 has no match).
-    REQUIRE(run("INSERT INTO " + edb + ".a (g, k, x) VALUES "
+    REQUIRE(run("INSERT INTO " + edb +
+                ".a (g, k, x) VALUES "
                 "(1,100,1),(1,100,2),(1,100,3),(1,101,4),(1,101,5),"
                 "(2,100,10),(2,100,20),(2,999,7);")
                 ->is_success());
@@ -384,16 +382,14 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
         }
         return t;
     };
-    auto has = [](const std::string& hay, const std::string& needle) {
-        return hay.find(needle) != std::string::npos;
-    };
+    auto has = [](const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; };
 
-    const std::string min_sql = "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb +
-                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
-    const std::string max_sql = "SELECT g, MAX(x) AS m FROM " + edb + ".a JOIN " + edb +
-                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
-    const std::string sum_sql = "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb +
-                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string min_sql =
+        "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string max_sql =
+        "SELECT g, MAX(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string sum_sql =
+        "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
 
     // --- Plan: MIN/MAX push a partial aggregate under the Hash Join; SUM does not.
     const std::string min_plan = plan_text(min_sql);
@@ -455,7 +451,8 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success()); // (g, k, x)
     REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success()); // (k) dimension
     // a: many rows per (g, k).
-    REQUIRE(run("INSERT INTO " + edb + ".a (g, k, x) VALUES "
+    REQUIRE(run("INSERT INTO " + edb +
+                ".a (g, k, x) VALUES "
                 "(1,100,1),(1,100,2),(1,100,3),(2,200,10),(2,200,20);")
                 ->is_success());
     // b DUPLICATES key 100 (x2) and carries key 200 once -> every a-row @k=100 is
@@ -472,16 +469,14 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
         }
         return t;
     };
-    auto has = [](const std::string& hay, const std::string& needle) {
-        return hay.find(needle) != std::string::npos;
-    };
+    auto has = [](const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; };
 
-    const std::string min_sql = "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb +
-                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
-    const std::string max_sql = "SELECT g, MAX(x) AS m FROM " + edb + ".a JOIN " + edb +
-                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
-    const std::string sum_sql = "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb +
-                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string min_sql =
+        "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string max_sql =
+        "SELECT g, MAX(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string sum_sql =
+        "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
 
     // MIN/MAX push the partial under the join; SUM does not.
     CHECK(has(plan_text(min_sql), "Pushed Aggregate Scan on a"));

@@ -10,9 +10,8 @@
 namespace {
     // A pattern match is a regexp_like() CALL, not a comparison operator — the same shape the SQL
     // transformer lowers LIKE to, and the only one the execution graph runs.
-    components::expressions::expression_ptr regexp_like_call(std::pmr::memory_resource* resource,
-                                                             const std::string& column,
-                                                             core::parameter_id_t pattern) {
+    components::expressions::expression_ptr
+    regexp_like_call(std::pmr::memory_resource* resource, const std::string& column, core::parameter_id_t pattern) {
         std::pmr::vector<components::expressions::param_storage> args{resource};
         args.emplace_back(components::expressions::key_t{resource, column, components::expressions::side_t::left});
         args.emplace_back(pattern);
@@ -164,8 +163,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1}));
-            expr->append_child(
-                regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
+            expr->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          core::dbname_t{database_name},
                                                                          core::relname_t{collection_name},
@@ -194,8 +192,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1}));
-            expr_or->append_child(
-                regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
+            expr_or->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
             expr_and->append_child(expr_or);
             expr_and->append_child(
                 components::expressions::make_compare_expression(dispatcher->resource(),
@@ -292,8 +289,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1}));
-            expr->append_child(
-                regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
+            expr->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          core::dbname_t{database_name},
                                                                          core::relname_t{collection_name},

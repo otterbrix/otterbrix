@@ -490,8 +490,9 @@ namespace components::sql::transform {
                         default:
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-                                std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
-                                                 resource_});
+                                std::pmr::string{
+                                    "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                    resource_});
                             return nullptr;
                     }
                     break;
@@ -539,7 +540,8 @@ namespace components::sql::transform {
             }
         }
 
-        auto limit_node = logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
+        auto limit_node =
+            logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
         if (limit_param || offset_param) {
             deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
         }
@@ -589,9 +591,9 @@ namespace components::sql::transform {
                 }
             }
             if (res == nullptr) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"ORDER BY position is out of range of the select list",
-                                                        resource_});
+                error_ =
+                    core::error_t(core::error_code_t::sql_parse_error,
+                                  std::pmr::string{"ORDER BY position is out of range of the select list", resource_});
                 return false;
             }
             if (nodeTag(res->val) == T_ColumnRef) {
@@ -602,9 +604,9 @@ namespace components::sql::transform {
                 out.field = expressions::key_t{resource_, res->name};
                 return true;
             }
-            error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   std::pmr::string{"positional ORDER BY over a computed column requires an alias",
-                                                    resource_});
+            error_ = core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"positional ORDER BY over a computed column requires an alias", resource_});
             return false;
         };
 
@@ -639,9 +641,9 @@ namespace components::sql::transform {
                 // v1: DISTINCT ON over a compound/UNION query is not supported (plain DISTINCT is).
                 // Plain DISTINCT is the NIL List sentinel; a real ON expression is anything else.
                 if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
-                    error_ = core::error_t(
-                        core::error_code_t::unimplemented_yet,
-                        std::pmr::string{"DISTINCT ON is not supported over a UNION query", resource_});
+                    error_ =
+                        core::error_t(core::error_code_t::unimplemented_yet,
+                                      std::pmr::string{"DISTINCT ON is not supported over a UNION query", resource_});
                     return nullptr;
                 }
                 agg->set_distinct(true);
@@ -761,9 +763,9 @@ namespace components::sql::transform {
                 // A top-level VALUES row has no named columns to resolve a sort key against;
                 // ORDER BY over VALUES is not yet supported (LIMIT/OFFSET are). Clean error,
                 // never a silently dropped ORDER BY.
-                error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                       std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported",
-                                                        resource_});
+                error_ = core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported", resource_});
                 return nullptr;
             }
             // Honor VALUES … LIMIT/OFFSET: wrap in an aggregate so create_plan_aggregate lowers
@@ -929,7 +931,8 @@ namespace components::sql::transform {
                                                                    param_storage{std::move(col_ref.field)},
                                                                    target_type_res.value(),
                                                                    casts::cast_t{},
-                                                                   cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast);
+                                                                   cast->try_cast ? casts::cast_kind::try_cast
+                                                                                  : casts::cast_kind::cast);
                             conversion->key() = expressions::key_t{resource_, alias};
                             select_node->append_expression(conversion);
                             break;
@@ -1012,8 +1015,9 @@ namespace components::sql::transform {
                                         for (auto& k : jsonb_path::split_operand(rhs, resource_)) {
                                             std::pmr::vector<std::pmr::string> segs(base);
                                             segs.emplace_back(std::move(k));
-                                            del->append_param(
-                                                expressions::key_t(resource_, jsonb_path::flatten(segs, resource_), side));
+                                            del->append_param(expressions::key_t(resource_,
+                                                                                 jsonb_path::flatten(segs, resource_),
+                                                                                 side));
                                         }
                                         select_node->append_expression(del);
                                         break;
@@ -1033,9 +1037,9 @@ namespace components::sql::transform {
                                 transform_select_a_expr(a_expr, res->name, names, plan, sel_node);
                                 break;
                             }
-                            if (auto compare_op = get_compare_type(op_str);
-                                compare_op != compare_type::invalid && compare_op != compare_type::regex &&
-                                a_expr->lexpr) {
+                            if (auto compare_op = get_compare_type(op_str); compare_op != compare_type::invalid &&
+                                                                            compare_op != compare_type::regex &&
+                                                                            a_expr->lexpr) {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
                                 auto compare = make_compare_expression(
@@ -1046,9 +1050,9 @@ namespace components::sql::transform {
                                 if (has_error()) {
                                     return nullptr;
                                 }
-                                compare->set_key(expressions::key_t{
-                                    resource_,
-                                    res->name ? std::string{res->name} : std::string{op_str}});
+                                compare->set_key(
+                                    expressions::key_t{resource_,
+                                                       res->name ? std::string{res->name} : std::string{op_str}});
                                 select_node->append_expression(compare);
                                 break;
                             }
@@ -1312,8 +1316,7 @@ namespace components::sql::transform {
                 // parameter bindings from a discarded pass left in plan->parameters.
                 const bool correlated = !join->correlations().empty();
                 if (correlated || plan->sub_queries.size() != saved_subq) {
-                    auto inner_agg =
-                        logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    auto inner_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     inner_agg->append_child(std::move(body));
                     join->append_child(inner_agg);
                     // ON = all_true: the inner sub-plan already filters via the bound
@@ -1421,8 +1424,7 @@ namespace components::sql::transform {
                 if (key_scalar->type() != scalar_type::group_field) {
                     continue;
                 }
-                group->append_expression(
-                    make_scalar_expression(resource_, scalar_type::get_field, key_scalar->key()));
+                group->append_expression(make_scalar_expression(resource_, scalar_type::get_field, key_scalar->key()));
             }
         }
         pending_internal_aggs_.clear();
@@ -1494,7 +1496,8 @@ namespace components::sql::transform {
                                 indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names)
                                     .field.as_pmr_string());
                         } else {
-                            lead_sort_names.emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
+                            lead_sort_names
+                                .emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
                         }
                     }
                     for (size_t i = 0; i < on_keys.size(); ++i) {

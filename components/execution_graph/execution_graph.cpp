@@ -51,13 +51,13 @@ namespace components::execution_graph {
         for (auto slot : input_indices_) {
             if (slot == invalid_slot) {
                 return core::error_t(core::error_code_t::schema_error,
-                    std::pmr::string{"execution graph: node input is not connected", resource()});
+                                     std::pmr::string{"execution graph: node input is not connected", resource()});
             }
         }
         for (auto slot : output_indices_) {
             if (slot == invalid_slot) {
                 return core::error_t(core::error_code_t::schema_error,
-                    std::pmr::string{"execution graph: node output is not connected", resource()});
+                                     std::pmr::string{"execution graph: node output is not connected", resource()});
             }
         }
         return core::error_t::no_error();
@@ -81,7 +81,7 @@ namespace components::execution_graph {
         }
         if (!cast_) {
             return core::error_t(core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: cast node has no resolved cast", resource()});
+                                 std::pmr::string{"execution graph: cast node has no resolved cast", resource()});
         }
         return core::error_t::no_error();
     }
@@ -186,11 +186,13 @@ namespace components::execution_graph {
             return error;
         }
         if (!function_) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(
+                core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: aggregate node has no resolved function", resource()});
         }
         if (output_indices_.size() != 1) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(
+                core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: aggregate node produces exactly one value", resource()});
         }
         return core::error_t::no_error();
@@ -215,7 +217,8 @@ namespace components::execution_graph {
             }
             const auto& entries = nested->entries();
             if (step >= entries.size()) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(
+                    core::error_code_t::schema_error,
                     std::pmr::string{"execution graph: field node step is outside the nested value", resource()});
             }
             nested = entries[step].get();
@@ -250,7 +253,7 @@ namespace components::execution_graph {
         }
         if (path_.empty()) {
             return core::error_t(core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: field node has no path", resource()});
+                                 std::pmr::string{"execution graph: field node has no path", resource()});
         }
         return core::error_t::no_error();
     }
@@ -284,7 +287,8 @@ namespace components::execution_graph {
         }
         const size_t expected = operators::arity_of(op_) == operators::operator_arity::binary ? 2 : 1;
         if (input_indices_.size() != expected) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(
+                core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: operator node operand count does not match its arity", resource()});
         }
         return core::error_t::no_error();
@@ -343,10 +347,11 @@ namespace components::execution_graph {
         if (kind_ == blend_kind::coalesce) {
             if (input_indices_.empty()) {
                 return core::error_t(core::error_code_t::schema_error,
-                    std::pmr::string{"execution graph: coalesce node has no operands", resource()});
+                                     std::pmr::string{"execution graph: coalesce node has no operands", resource()});
             }
         } else if (input_indices_.size() < 2) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(
+                core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: case node has no condition and result pair", resource()});
         }
         return core::error_t::no_error();
@@ -387,7 +392,8 @@ namespace components::execution_graph {
             auto& chunk = std::get<vector::data_chunk_t>(produced);
             assert(chunk.size() == count);
             if (chunk.column_count() != output_indices_.size()) {
-                return core::error_t(core::error_code_t::incorrect_function_return_type,
+                return core::error_t(
+                    core::error_code_t::incorrect_function_return_type,
                     std::pmr::string{"execution graph: function returned an unexpected column count", resource()});
             }
             for (size_t position = 0; position < output_indices_.size(); position++) {
@@ -399,8 +405,10 @@ namespace components::execution_graph {
         auto& values = std::get<std::pmr::vector<types::logical_value_t>>(produced);
         assert(values.size() == count);
         if (output_indices_.size() != 1) {
-            return core::error_t(core::error_code_t::incorrect_function_return_type,
-                std::pmr::string{"execution graph: function returned one column but the node declares several", resource()});
+            return core::error_t(
+                core::error_code_t::incorrect_function_return_type,
+                std::pmr::string{"execution graph: function returned one column but the node declares several",
+                                 resource()});
         }
         for (uint64_t row = 0; row < values.size(); row++) {
             output(0).set_null(row, values[row].is_null());
@@ -417,15 +425,14 @@ namespace components::execution_graph {
             return error;
         }
         if (function_ == nullptr) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(
+                core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: function node has no resolved function", resource()});
         }
         return core::error_t::no_error();
     }
 
-    parameter_node_t::parameter_node_t(std::pmr::memory_resource* resource,
-                                       core::parameter_id_t id,
-                                       slot_id_t output)
+    parameter_node_t::parameter_node_t(std::pmr::memory_resource* resource, core::parameter_id_t id, slot_id_t output)
         : execution_node_t(resource, slot_list_t(resource), slot_list_t({output}, resource))
         , id_(id) {}
 
@@ -435,11 +442,12 @@ namespace components::execution_graph {
         }
         if (parameters_ == nullptr) {
             return core::error_t(core::error_code_t::invalid_parameter,
-                std::pmr::string{"execution graph: parameters are not bound", resource()});
+                                 std::pmr::string{"execution graph: parameters are not bound", resource()});
         }
         auto value = parameters_->find(id_);
         if (value == parameters_->end()) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
                 std::pmr::string{"execution graph: parameter is not in the bound parameter map", resource()});
         }
         // parameters stored as logical_value_t, and it can not hold NULL with type associated with it
@@ -505,8 +513,7 @@ namespace components::execution_graph {
         return append(new operator_node_t(resource_, op, operand, output));
     }
 
-    node_id_t
-    execution_graph_t::add_function(std::string_view name, const slot_list_t& inputs, size_t output_count) {
+    node_id_t execution_graph_t::add_function(std::string_view name, const slot_list_t& inputs, size_t output_count) {
         slot_list_t outputs(resource_);
         outputs.reserve(output_count);
         for (size_t position = 0; position < output_count; position++) {
@@ -534,8 +541,7 @@ namespace components::execution_graph {
         return nodes_[node]->output_indices()[position];
     }
 
-    void
-    execution_graph_t::bind_input(slot_id_t slot, size_t column_index, const types::complex_logical_type& type) {
+    void execution_graph_t::bind_input(slot_id_t slot, size_t column_index, const types::complex_logical_type& type) {
         prepared_ = false;
         slots_[slot].input_column = column_index;
         slots_[slot].bound = true;
@@ -594,13 +600,13 @@ namespace components::execution_graph {
             for (auto slot : nodes_[index]->input_indices()) {
                 if (slot >= slots_.size()) {
                     return core::error_t(core::error_code_t::schema_error,
-                        std::pmr::string{"execution graph: input slot misconfigured", resource()});
+                                         std::pmr::string{"execution graph: input slot misconfigured", resource()});
                 }
             }
             for (auto slot : nodes_[index]->output_indices()) {
                 if (slot >= slots_.size() || slots_[slot].bound || producer[slot] != invalid_node) {
                     return core::error_t(core::error_code_t::schema_error,
-                        std::pmr::string{"execution graph: output slot misconfigured", resource()});
+                                         std::pmr::string{"execution graph: output slot misconfigured", resource()});
                 }
                 producer[slot] = node_id_t{index};
             }
@@ -608,13 +614,13 @@ namespace components::execution_graph {
         for (size_t index = 0; index < slots_.size(); index++) {
             if (!slots_[index].typed || (!slots_[index].bound && producer[index] == invalid_node)) {
                 return core::error_t(core::error_code_t::schema_error,
-                    std::pmr::string{"execution graph: intermediate slot misconfigured", resource()});
+                                     std::pmr::string{"execution graph: intermediate slot misconfigured", resource()});
             }
         }
         for (auto slot : output_slots_) {
             if (slot >= slots_.size()) {
                 return core::error_t(core::error_code_t::schema_error,
-                    std::pmr::string{"execution graph: output slot misconfigured", resource()});
+                                     std::pmr::string{"execution graph: output slot misconfigured", resource()});
             }
         }
         return order_nodes();
@@ -691,7 +697,7 @@ namespace components::execution_graph {
         }
         if (order_.size() != live_count) {
             return core::error_t(core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: cycle detected", resource()});
+                                 std::pmr::string{"execution graph: cycle detected", resource()});
         }
         return core::error_t::no_error();
     }
@@ -721,7 +727,7 @@ namespace components::execution_graph {
     core::error_t execution_graph_t::prepare() {
         if (output_slots_.empty()) {
             return core::error_t(core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: no outputs were set", resource()});
+                                 std::pmr::string{"execution graph: no outputs were set", resource()});
         }
         auto error = validate();
         if (error.contains_error()) {
@@ -768,9 +774,8 @@ namespace components::execution_graph {
         }
     }
 
-    core::error_t execution_graph_t::run(execution_node_t* node,
-                                         const graph_execution_context& context,
-                                         uint64_t ambient) {
+    core::error_t
+    execution_graph_t::run(execution_node_t* node, const graph_execution_context& context, uint64_t ambient) {
         uint64_t count = unconstrained_rows;
         for (auto slot : node->input_indices()) {
             count = std::min(count, slot_sizes_[slot]);
@@ -782,8 +787,7 @@ namespace components::execution_graph {
         // A node with NO inputs has nothing to take a size from, so it works at the row count it was
         // handed
         const bool constant = count == unconstrained_rows && !node->input_indices().empty();
-        const uint64_t execute_over =
-            node->input_indices().empty() ? ambient : (constant ? uint64_t{1} : count);
+        const uint64_t execute_over = node->input_indices().empty() ? ambient : (constant ? uint64_t{1} : count);
         auto error = node->process(context, execute_over);
         if (error.contains_error()) {
             return error;
@@ -803,11 +807,12 @@ namespace components::execution_graph {
                                              const graph_execution_context& context) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: process() before prepare()", resource()});
+                                 std::pmr::string{"execution graph: process() before prepare()", resource()});
         }
         const uint64_t count = input.size();
         if (count > capacity_) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(
+                core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: input chunk exceeds the graph capacity", resource()});
         }
         for (size_t index = 0; index < slots_.size(); index++) {
@@ -815,13 +820,15 @@ namespace components::execution_graph {
                 continue;
             }
             if (slots_[index].input_column >= input.column_count()) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(
+                    core::error_code_t::schema_error,
                     std::pmr::string{"execution graph: input column is missing from the chunk", resource()});
             }
             const auto& column = input.data[slots_[index].input_column];
             // catches a chunk laid out differently than the schema the slots were bound against
             if (column.type() != slots_[index].type) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(
+                    core::error_code_t::schema_error,
                     std::pmr::string{"execution graph: input column type does not match its slot", resource()});
             }
             data_storage_[index].reference(column);
@@ -838,11 +845,11 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<vector::data_chunk_t>
-    execution_graph_t::finalize(const graph_execution_context& context, uint64_t count) {
+    core::result_wrapper_t<vector::data_chunk_t> execution_graph_t::finalize(const graph_execution_context& context,
+                                                                             uint64_t count) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: finalize() before prepare()", resource()});
+                                 std::pmr::string{"execution graph: finalize() before prepare()", resource()});
         }
         uint64_t rows = count;
         for (auto node : order_) {

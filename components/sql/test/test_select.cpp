@@ -147,9 +147,10 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
                        vec({v(&resource, "^pattern$")}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
-                       R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}, $select: {}})_",
-                       vec({v(&resource, 9.99)}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
+        R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}, $select: {}})_",
+        vec({v(&resource, 9.99)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT ((column_name).sub_type).* FROM TestCollection WHERE ((column_name).sub_type).field1 > ((column_name).sub_type).field2;)_",

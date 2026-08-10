@@ -1,7 +1,7 @@
 #include "test_config.hpp"
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
-#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -38,9 +38,7 @@ namespace {
         return cursor->chunks().front().column_count();
     }
 
-    bool is_null_at(const cursor_t_ptr& cursor, uint64_t row) {
-        return cursor->chunks().front().data[0].is_null(row);
-    }
+    bool is_null_at(const cursor_t_ptr& cursor, uint64_t row) { return cursor->chunks().front().data[0].is_null(row); }
 
     bool bool_at(const cursor_t_ptr& cursor, uint64_t row) {
         const auto& column = cursor->chunks().front().data[0];
@@ -66,8 +64,8 @@ namespace {
             case logical_type::DOUBLE:
                 return column.get_value<double>(row);
             case logical_type::DECIMAL: {
-                const auto* extension = reinterpret_cast<const components::types::decimal_logical_type_extension*>(
-                    type.extension());
+                const auto* extension =
+                    reinterpret_cast<const components::types::decimal_logical_type_extension*>(type.extension());
                 return static_cast<double>(column.get_value<int64_t>(row)) /
                        std::pow(10.0, static_cast<double>(extension->scale()));
             }
@@ -603,8 +601,6 @@ TEST_CASE("integration::cpp::select_rework::try_cast over unparsable strings") {
     CHECK(nulls == 1);
     CHECK(converted == 1);
 }
-
-
 
 // ------------------------------------------------------------------- WHERE
 

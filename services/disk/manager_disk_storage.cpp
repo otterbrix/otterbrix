@@ -8,8 +8,7 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
-                                                components::vector::data_chunk_t& data) {
+    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid, components::vector::data_chunk_t& data) {
         // Bootstrap / WAL-replay only (pre-scheduler-start). Replay records carry no
         // MVCC txn, so the append commits under transaction_data{0, 0}. The
         // storage_entry_sync borrow is safe in this single-threaded window.

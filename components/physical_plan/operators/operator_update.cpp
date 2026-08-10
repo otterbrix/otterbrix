@@ -45,9 +45,9 @@ namespace components::operators {
         // in the target's type — validation spliced the cast into the value expression —
         // so this only has to address the right slot and copy.
         [[nodiscard]] core::error_t write_target(const expressions::key_t& target,
-                                                  const vector::vector_t& new_values,
-                                                  vector::data_chunk_t& out_chunk,
-                                                  uint64_t count) {
+                                                 const vector::vector_t& new_values,
+                                                 vector::data_chunk_t& out_chunk,
+                                                 uint64_t count) {
             assert(target.path().front() != size_t(-1));
             auto* col_vec = out_chunk.at(target.path());
 
@@ -146,9 +146,9 @@ namespace components::operators {
     } // anonymous namespace
 
     core::error_t operator_update::apply_updates_(pipeline::context_t* pipeline_context,
-                                                   vector::data_chunk_t& out_chunk,
-                                                   const vector::data_chunk_t* from_chunk,
-                                                   uint64_t match_count) {
+                                                  vector::data_chunk_t& out_chunk,
+                                                  const vector::data_chunk_t* from_chunk,
+                                                  uint64_t match_count) {
         // Graph input: the matched rows, with the FROM side appended for UPDATE ... FROM so
         // a right-side key resolves at right_offset. Both sides are already aligned
         // row-for-row, so the merge only references them — no copy.
@@ -655,8 +655,7 @@ namespace components::operators {
             // across all flushes (append ranges are per-flush via record_flush; the
             // delete marker is a single per-txn/table tombstone).
             if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(
-                    components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
             }
 
@@ -681,8 +680,8 @@ namespace components::operators {
             if (affected_rows_ > 0) {
                 // Column-less chunks whose cardinalities sum to the affected-row count
                 // (the cursor totals chunk sizes).
-                set_output(make_operator_data(
-                    resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+                set_output(make_operator_data(resource_,
+                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
             } else {
                 set_output(nullptr);
             }

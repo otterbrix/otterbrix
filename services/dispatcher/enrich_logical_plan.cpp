@@ -214,8 +214,8 @@ namespace services::catalog_resolve {
                 group_node = c.get();
             }
         }
-        const node_t* target_list = select_node != nullptr && !select_node->expressions().empty() ? select_node
-                                                                                                 : group_node;
+        const node_t* target_list =
+            select_node != nullptr && !select_node->expressions().empty() ? select_node : group_node;
         if (target_list == nullptr) {
             return out;
         }

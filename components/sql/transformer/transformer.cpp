@@ -254,8 +254,7 @@ namespace components::sql::transform {
         return log_node;
     }
 
-    logical_plan::node_ptr transformer::transform_explain(ExplainStmt& node,
-                                                          logical_plan::execution_plan_t* plan) {
+    logical_plan::node_ptr transformer::transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan) {
         // EXPLAIN ANALYZE is signalled by an "analyze" DefElem in the options list. No style/format
         // option is read from SQL — output formatting is a host C++ concern (the executor's renderer
         // registry, selected per-query by execution_plan_t::explain_render_id).
@@ -274,8 +273,7 @@ namespace components::sql::transform {
                         is_analyze = intVal(def->arg) != 0;
                     } else if (nodeTag(def->arg) == T_String) {
                         const std::string_view v{strVal(def->arg)};
-                        is_analyze = !(v == "false" || v == "off" || v == "0" || v == "no" || v == "f" ||
-                                       v == "n");
+                        is_analyze = !(v == "false" || v == "off" || v == "0" || v == "no" || v == "f" || v == "n");
                     } else {
                         is_analyze = true;
                     }

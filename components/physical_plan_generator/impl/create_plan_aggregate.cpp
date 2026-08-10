@@ -147,8 +147,7 @@ namespace services::planner::impl {
                     // multi-arg / expression / parameter argument (SUM(a+b)) is not representable.
                     if (a->params().empty()) {
                         // count-star: arg_col_path stays empty
-                    } else if (a->params().size() == 1 &&
-                               std::holds_alternative<ce::key_t>(a->params().front())) {
+                    } else if (a->params().size() == 1 && std::holds_alternative<ce::key_t>(a->params().front())) {
                         const auto& kp = std::get<ce::key_t>(a->params().front()).path();
                         pa.arg_col_path.assign(kp.begin(), kp.end());
                     } else {
@@ -372,8 +371,8 @@ namespace services::planner::impl {
                 if (agg_node->is_distinct()) {
                     auto distinct_op =
                         context.has_table_oid(node->table_oid())
-                            ? boost::intrusive_ptr(new components::operators::operator_distinct_t(context.resource,
-                                                                                                  context.log.clone()))
+                            ? boost::intrusive_ptr(
+                                  new components::operators::operator_distinct_t(context.resource, context.log.clone()))
                             : boost::intrusive_ptr(
                                   new components::operators::operator_distinct_t(node->resource(), log_t{}));
                     distinct_op->set_children(std::move(executor));

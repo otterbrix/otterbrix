@@ -54,8 +54,8 @@ TEST_CASE("vector::operations::a null operand makes the arithmetic result null")
     auto right = column<int64_t>(logical_type::BIGINT, {10, 20, std::nullopt});
     auto output = slot(logical_type::BIGINT);
 
-    REQUIRE_FALSE(vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 3)
-                      .contains_error());
+    REQUIRE_FALSE(
+        vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 3).contains_error());
 
     REQUIRE_FALSE(output.is_null(0));
     REQUIRE(output.get_value<int64_t>(0) == 10);
@@ -83,9 +83,8 @@ TEST_CASE("vector::operations::AND is false against unknown, OR is true against 
     auto right = column<bool>(logical_type::BOOLEAN, {std::nullopt, std::nullopt, std::nullopt});
 
     auto conjunction = slot(logical_type::BOOLEAN);
-    REQUIRE_FALSE(
-        vector::operations::apply_binary(operator_code::logical_and, left, right, &conjunction, context(), 3)
-            .contains_error());
+    REQUIRE_FALSE(vector::operations::apply_binary(operator_code::logical_and, left, right, &conjunction, context(), 3)
+                      .contains_error());
     // FALSE AND UNKNOWN is FALSE -- the case a plain null-propagation gets wrong.
     REQUIRE_FALSE(conjunction.is_null(0));
     REQUIRE_FALSE(conjunction.get_value<bool>(0));
@@ -93,9 +92,8 @@ TEST_CASE("vector::operations::AND is false against unknown, OR is true against 
     REQUIRE(conjunction.is_null(2));
 
     auto disjunction = slot(logical_type::BOOLEAN);
-    REQUIRE_FALSE(
-        vector::operations::apply_binary(operator_code::logical_or, left, right, &disjunction, context(), 3)
-            .contains_error());
+    REQUIRE_FALSE(vector::operations::apply_binary(operator_code::logical_or, left, right, &disjunction, context(), 3)
+                      .contains_error());
     REQUIRE(disjunction.is_null(0));
     // TRUE OR UNKNOWN is TRUE.
     REQUIRE_FALSE(disjunction.is_null(1));
@@ -107,8 +105,8 @@ TEST_CASE("vector::operations::NOT unknown stays unknown but IS NULL never does"
     auto operand = column<bool>(logical_type::BOOLEAN, {true, false, std::nullopt});
 
     auto negated = slot(logical_type::BOOLEAN);
-    REQUIRE_FALSE(vector::operations::apply_unary(operator_code::logical_not, operand, &negated, context(), 3)
-                      .contains_error());
+    REQUIRE_FALSE(
+        vector::operations::apply_unary(operator_code::logical_not, operand, &negated, context(), 3).contains_error());
     REQUIRE_FALSE(negated.get_value<bool>(0));
     REQUIRE(negated.get_value<bool>(1));
     REQUIRE(negated.is_null(2));
@@ -125,17 +123,15 @@ TEST_CASE("vector::operations::a reused slot does not leak the previous chunk's 
     auto output = slot(logical_type::BIGINT);
     auto first_left = column<int64_t>(logical_type::BIGINT, {std::nullopt, std::nullopt});
     auto first_right = column<int64_t>(logical_type::BIGINT, {1, 1});
-    REQUIRE_FALSE(
-        vector::operations::apply_binary(operator_code::add, first_left, first_right, &output, context(), 2)
-            .contains_error());
+    REQUIRE_FALSE(vector::operations::apply_binary(operator_code::add, first_left, first_right, &output, context(), 2)
+                      .contains_error());
     REQUIRE(output.is_null(0));
 
     // Same slot, a chunk with no nulls at all.
     auto second_left = column<int64_t>(logical_type::BIGINT, {7, 8});
     auto second_right = column<int64_t>(logical_type::BIGINT, {1, 1});
-    REQUIRE_FALSE(
-        vector::operations::apply_binary(operator_code::add, second_left, second_right, &output, context(), 2)
-            .contains_error());
+    REQUIRE_FALSE(vector::operations::apply_binary(operator_code::add, second_left, second_right, &output, context(), 2)
+                      .contains_error());
     REQUIRE_FALSE(output.is_null(0));
     REQUIRE(output.get_value<int64_t>(0) == 8);
 }
@@ -200,8 +196,8 @@ TEST_CASE("vector::operations::comparison walks ARRAY elements, length-aware") {
     SECTION("a NULL ELEMENT makes the row UNKNOWN, unless an earlier element already differs") {
         auto left = arrays({{1, 2, 3}, {1, 2, 3}});
         auto right = arrays({{1, 2, 3}, {9, 2, 3}});
-        left.set_null({0, 1}, true);  // row 0: null in the middle, otherwise equal -> UNKNOWN
-        left.set_null({1, 2}, true);  // row 1: differs at element 0 already -> definitely unequal
+        left.set_null({0, 1}, true); // row 0: null in the middle, otherwise equal -> UNKNOWN
+        left.set_null({1, 2}, true); // row 1: differs at element 0 already -> definitely unequal
         auto out = slot(logical_type::BOOLEAN);
         REQUIRE_FALSE(
             vector::operations::apply_binary(operator_code::equal, left, right, &out, context(), 2).contains_error());

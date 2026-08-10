@@ -1,9 +1,9 @@
 #include "full_scan.hpp"
 
 #include <components/expressions/cast_expression.hpp>
-#include <components/expressions/execution_graph_builder.hpp>
 #include <components/expressions/clone_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/execution_graph_builder.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/like_to_regex.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -255,8 +255,7 @@ namespace components::operators {
                                 continue;
                             }
                             if (val.type() == col_type) {
-                                leaves.emplace_back(
-                                    std::make_unique<table::constant_filter_t>(inner_op, val, indices));
+                                leaves.emplace_back(std::make_unique<table::constant_filter_t>(inner_op, val, indices));
                                 continue;
                             }
                             auto coerced = val.cast_as(col_type, context.timezone_offset);
@@ -407,14 +406,14 @@ namespace components::operators {
                         }
                         graph = std::move(built.value());
                     }
-                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::expression_filter_t>(
-                        std::move(compare_clone),
-                        std::move(column_paths),
-                        std::move(param_snapshot),
-                        context,
-                        std::move(chunk_types),
-                        std::move(graph),
-                        condition));
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::expression_filter_t>(std::move(compare_clone),
+                                                                     std::move(column_paths),
+                                                                     std::move(param_snapshot),
+                                                                     context,
+                                                                     std::move(chunk_types),
+                                                                     std::move(graph),
+                                                                     condition));
                 }
                 // Column-vs-column `a.x OP a.y`: both operands are columns -> a column_column_filter_t that
                 // fetches both values per row and compares (is_pure_compare only accepts a plain comparison).
@@ -493,10 +492,10 @@ namespace components::operators {
                     if (compiled.has_error()) {
                         return compiled.convert_error<std::unique_ptr<table::table_filter_t>>();
                     }
-                    return std::unique_ptr<table::table_filter_t>(
-                        std::make_unique<table::regex_filter_t>(std::pmr::string{pat.value<std::string_view>(), resource},
-                                                                expression->regex_icase(),
-                                                                std::move(indices)));
+                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::regex_filter_t>(
+                        std::pmr::string{pat.value<std::string_view>(), resource},
+                        expression->regex_icase(),
+                        std::move(indices)));
                 }
                 // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
                 // compare semantics see int32 storage on both sides, so the literal must be
@@ -633,11 +632,7 @@ namespace components::operators {
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {
                 auto filter_result =
-                    transform_predicate(resource_,
-                                        expression_,
-                                        guard_types_,
-                                        &ctx->parameters,
-                                        ctx->execution_context);
+                    transform_predicate(resource_, expression_, guard_types_, &ctx->parameters, ctx->execution_context);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();

@@ -90,8 +90,7 @@ namespace components::planner::optimizer {
             }
 
             // Capture this join's boundary from the intact stamped children first.
-            const bool classifiable = join->type() == join_type::cross &&
-                                      join->children()[0]->has_output_types() &&
+            const bool classifiable = join->type() == join_type::cross && join->children()[0]->has_output_types() &&
                                       join->children()[1]->has_output_types();
             const size_t left_width = classifiable ? join->children()[0]->output_types().size() : 0;
             const size_t right_width = classifiable ? join->children()[1]->output_types().size() : 0;
@@ -204,8 +203,7 @@ namespace components::planner::optimizer {
             if (join->children().size() < 2) {
                 return true;
             }
-            const bool classifiable = join->type() == join_type::cross &&
-                                      join->children()[0]->has_output_types() &&
+            const bool classifiable = join->type() == join_type::cross && join->children()[0]->has_output_types() &&
                                       join->children()[1]->has_output_types();
             const size_t left_width = classifiable ? join->children()[0]->output_types().size() : 0;
             const size_t right_width = classifiable ? join->children()[1]->output_types().size() : 0;
@@ -326,8 +324,7 @@ namespace components::planner::optimizer {
                 }
                 auto* cmp = static_cast<compare_expression_t*>(expr.get());
                 const compare_type t = cmp->type();
-                if (t == compare_type::union_and || t == compare_type::union_or ||
-                    t == compare_type::union_not) {
+                if (t == compare_type::union_and || t == compare_type::union_or || t == compare_type::union_not) {
                     for (auto& child : cmp->children()) {
                         walk_compare(child);
                     }

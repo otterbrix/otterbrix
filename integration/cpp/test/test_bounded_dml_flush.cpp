@@ -305,8 +305,8 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kRowCount);
     }
-    REQUIRE(exec(dispatcher, "INSERT INTO FlushDb.src (k) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);")
-                ->is_success());
+    REQUIRE(
+        exec(dispatcher, "INSERT INTO FlushDb.src (k) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);")->is_success());
 
     // n well ABOVE the flush threshold (512) and BELOW the total (kRowCount=3000): the
     // sink mid-flushes at least once before the bound is reached, so matched_total_ must
@@ -314,9 +314,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     constexpr uint64_t kBound = 1500;
     const auto flushes_before = services::collection::executor::dml_flush_count();
     {
-        auto cur = exec(dispatcher,
-                        "DELETE FROM FlushDb.tgt USING FlushDb.src WHERE tgt.k = src.k LIMIT " +
-                            std::to_string(kBound) + ";");
+        auto cur =
+            exec(dispatcher,
+                 "DELETE FROM FlushDb.tgt USING FlushDb.src WHERE tgt.k = src.k LIMIT " + std::to_string(kBound) + ";");
         INFO("bounded USING delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
     }

@@ -370,7 +370,10 @@ namespace components::operators {
         // storage_delete_rows + WAL physical_delete + index path entirely. It buffers
         // nothing (buffered_rows()==0), so it is a single-shot sink — never mid-flushed.
         if (oid_col_idx_ >= 0) {
-            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset, table_oid_};
+            components::execution_context_t exec_ctx{ctx->session,
+                                                     ctx->txn,
+                                                     ctx->execution_context.timezone_offset,
+                                                     table_oid_};
             auto [_c, cf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::delete_pg_catalog_rows,
                                              exec_ctx,
@@ -398,7 +401,10 @@ namespace components::operators {
 
             auto op = [this, ctx, mirror_index](
                           std::pmr::memory_resource* res) -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
-                components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset, table_oid_};
+                components::execution_context_t exec_ctx{ctx->session,
+                                                         ctx->txn,
+                                                         ctx->execution_context.timezone_offset,
+                                                         table_oid_};
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 
@@ -507,8 +513,7 @@ namespace components::operators {
             // Record the delete marker ONCE across all flushes: COMMIT/ABORT key the
             // MVCC swap/revert on the txn id, not on per-flush ranges.
             if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(
-                    components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
             }
 
@@ -540,8 +545,8 @@ namespace components::operators {
             auto types = co_await std::move(tf);
             // The result carries only the affected-row count as cardinality (no row data),
             // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the table's types.
-            set_output(make_operator_data(
-                resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
+            set_output(make_operator_data(resource_,
+                                          dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
         }
         mark_executed();
     }

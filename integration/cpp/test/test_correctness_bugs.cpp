@@ -699,6 +699,56 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
     REQUIRE(reverts_after == reverts_before + 1);
 }
 
+// Issue #551: the physical revert of a CHECK-rejected INSERT truncated the segment's
+// row count but left the string dictionary size untouched. String offsets are stored
+// as the CUMULATIVE dictionary size at append time and scan derives each length as
+// offset[row] - offset[row-1], so the next accepted row's offset still included the
+// rejected row's payload — its string came back concatenated with the rejected one
+// ('clean' + 'REJECTED' = 'cleanREJECTED').
+TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_leak_string_payload") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_string_leak");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.a (id bigint, name text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "ALTER TABLE t.a ADD CONSTRAINT chk_id CHECK (id > 0);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');");
+        INFO("CHECK-violating INSERT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (2, 'clean');")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.a;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const int name_col = find_column(*cur, "name");
+        REQUIRE(name_col >= 0);
+        auto name = cur->value(static_cast<uint64_t>(name_col), 0);
+        INFO("name value: '" << name.value<std::string_view>() << "'");
+        REQUIRE(name.value<std::string_view>() == "clean");
+    }
+}
+
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_physical_append") {
     auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_reverts_physical_append");
     test_clear_directory(config);

@@ -1673,9 +1673,30 @@ namespace components::table {
 
     void column_segment_t::revert_append(uint64_t start_row) {
         // A BIT (validity) segment stores appended rows as validity bits, so reverting must reset the
-        // bits in [start_row, end) back to valid before the tail is reused on re-append. Every other
-        // segment (fixed-size / string) only had raw values written into its buffer by the append; a
-        // re-append overwrites them, so reverting just needs to drop the count.
+        // bits in [start_row, end) back to valid before the tail is reused on re-append. A STRING
+        // segment stores per-row offsets as the CUMULATIVE dictionary size (scan derives each length
+        // as offset[row] - offset[row-1]), so the dictionary size must be rolled back to the last
+        // kept row's offset — otherwise a re-appended string lands after the reverted payload and its
+        // offset spans both, concatenating the dead bytes onto the new value. Fixed-size segments
+        // only had raw values written into their buffer; a re-append overwrites them, so reverting
+        // just needs to drop the count.
+        if (type.to_physical_type() == types::physical_type::STRING) {
+            uint64_t new_count = start_row - static_cast<uint64_t>(start);
+            auto& buffer_manager = block->block_manager.buffer_manager;
+            // Resident managed block (already pinned on the append path); pin cannot OOM here.
+            auto pinned = buffer_manager.pin(block);
+            assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
+            if (!pinned.has_error()) {
+                auto& handle = pinned.value();
+                auto dict = impl::dictionary(*this, handle);
+                auto offsets = reinterpret_cast<int32_t*>(handle.ptr() + block_offset() + impl::DICTIONARY_HEADER_SIZE);
+                // Offsets are cumulative; big-string markers store the negated size, NULL rows copy
+                // the previous offset — |offset[new_count - 1]| is the dictionary usage to keep.
+                int32_t last = new_count == 0 ? 0 : offsets[new_count - 1];
+                dict.size = static_cast<uint32_t>(last < 0 ? -last : last);
+                impl::set_dictionary(*this, handle, dict);
+            }
+        }
         if (type.to_physical_type() == types::physical_type::BIT) {
             uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 

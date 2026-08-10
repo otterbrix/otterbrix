@@ -1778,8 +1778,8 @@ namespace services::collection::executor {
                                                    rd_ctx,
                                                    std::move(revert_delete_tables));
                 co_await std::move(rdf);
-                exec_result.pg_catalog_delete_tables.clear();
             }
+            exec_result.pg_catalog_delete_tables.clear();
 
             auto [_ab, abf] =
                 actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);

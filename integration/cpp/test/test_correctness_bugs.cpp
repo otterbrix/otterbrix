@@ -749,6 +749,85 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_l
     }
 }
 
+// Mid-segment variants of the #551 revert: the segment is NOT empty after the revert,
+// so the dictionary size must be rolled back to the LAST KEPT row's offset (not zero).
+// The kept row being a plain string exercises the positive cumulative offset; the kept
+// row being NULL exercises the offset-copy path (a NULL append copies the previous
+// row's offset, which must still be treated as the dictionary usage to keep).
+TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segment_keeps_prior_strings") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_string_leak_mid_segment");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.a (id bigint, name text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "ALTER TABLE t.a ADD CONSTRAINT chk_id CHECK (id > 0);")->is_success());
+    }
+
+    SECTION("last kept row is a plain string") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (1, 'keep');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (2, 'clean');")->is_success());
+        }
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM t.a ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        INFO("row0: '" << cur->value(0, 0).value<std::string_view>() << "' row1: '"
+                       << cur->value(0, 1).value<std::string_view>() << "'");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "keep");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "clean");
+    }
+
+    SECTION("last kept row is NULL") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (1, 'keep');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id) VALUES (3);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (2, 'clean');")->is_success());
+        }
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM t.a ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        INFO("row0: '" << cur->value(0, 0).value<std::string_view>() << "' row1: '"
+                       << cur->value(0, 1).value<std::string_view>() << "'");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "keep");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "clean");
+        REQUIRE(cur->value(0, 2).is_null());
+    }
+}
+
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_physical_append") {
     auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_reverts_physical_append");
     test_clear_directory(config);

@@ -1754,6 +1754,33 @@ namespace services::collection::executor {
                 }
             }
 
+            // Heap delete-mark un-stamp, mirroring operator_abort_transaction (1).
+            // A DELETE/UPDATE stamped MVCC delete marks (deleter == this txn) BEFORE
+            // the constraint check failed. The aborted txn never commits, so readers
+            // still see the rows — but chunk_vector_info::delete_rows skips an
+            // already-stamped slot, so without the un-stamp the next UPDATE's
+            // delete-half silently no-ops (duplicating the row via its append-half)
+            // and the row can never be deleted again. Union base + catalog heaps:
+            // pg_catalog tables have no index engines but their marks must be
+            // un-stamped all the same.
+            if (resolve_txn.transaction_id != 0 &&
+                (!exec_result.dml_deletes.empty() || !exec_result.pg_catalog_delete_tables.empty()) &&
+                disk_address_ != actor_zeta::address_t::empty_address()) {
+                std::set<components::catalog::oid_t> revert_set{exec_result.pg_catalog_delete_tables.begin(),
+                                                                exec_result.pg_catalog_delete_tables.end()};
+                for (const auto& del : exec_result.dml_deletes) {
+                    revert_set.insert(del.table_oid);
+                }
+                std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
+                components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.session_tz};
+                auto [_rd, rdf] = actor_zeta::send(disk_address_,
+                                                   &services::disk::manager_disk_t::storage_revert_deletes,
+                                                   rd_ctx,
+                                                   std::move(revert_delete_tables));
+                co_await std::move(rdf);
+                exec_result.pg_catalog_delete_tables.clear();
+            }
+
             auto [_ab, abf] =
                 actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
             co_await std::move(abf);

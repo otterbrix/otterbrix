@@ -2320,6 +2320,122 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
     }
 }
 
+TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
+    // Issue #558.C: CHECK constraints must be enforced on UPDATE, not only INSERT.
+    auto config = test_create_config("/tmp/test_sql_features/check_constraint_on_update");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: items with CHECK (age > 0) and one valid row");
+    {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, age bigint, name text);");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_age CHECK (age > 0);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, 25, 'alice');");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("UPDATE violating the CHECK is rejected");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE TestDatabase.items SET age = -5 WHERE id = 1;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("the stored value is unchanged after the rejected UPDATE");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT age FROM TestDatabase.items WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(*(cur->chunks().front().data[0].data<int64_t>()) == 25);
+    }
+
+    INFO("UPDATE of a different column passes an untouched CHECK column through");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE TestDatabase.items SET name = 'bob' WHERE id = 1;");
+        INFO("other-column update error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("UPDATE satisfying the CHECK is accepted");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE TestDatabase.items SET age = 30 WHERE id = 1;");
+        INFO("valid update error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT age FROM TestDatabase.items WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(*(cur->chunks().front().data[0].data<int64_t>()) == 30);
+    }
+
+    INFO("compound CHECK is enforced on UPDATE");
+    {
+        auto config2 = test_create_config("/tmp/test_sql_features/check_constraint_on_update_compound");
+        test_clear_directory(config2);
+        config2.disk.on = true;
+        config2.wal.on = false;
+        test_spaces space2(config2);
+        auto* d2 = space2.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            d2->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            d2->execute_sql(session, "CREATE TABLE TestDatabase.scores (id bigint, val bigint);");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.scores ADD CONSTRAINT chk_val CHECK (val > 0 AND val < 100);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(session, "INSERT INTO TestDatabase.scores (id, val) VALUES (1, 50);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(session, "UPDATE TestDatabase.scores SET val = 100 WHERE id = 1;");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(session, "UPDATE TestDatabase.scores SET val = 99 WHERE id = 1;");
+            INFO("in-range update error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") {
     // Verifies that CHECK constraints with unsupported expression node types
     // (T_FuncCall) are rejected at creation time with a clear error, not silently stored
@@ -5931,3 +6047,4 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
                 *core::date::parse_timestamp("2024-03-01 08:00:00"));
     }
 }
+

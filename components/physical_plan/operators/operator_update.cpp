@@ -481,18 +481,22 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 output_->chunks());
+            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE
+            // across all flushes (append ranges are per-flush via record_flush; the
+            // delete marker is a single per-txn/table tombstone). Recorded BEFORE the
+            // flush-error check for the same reason record_flush records the append
+            // range first: the storage op stamps the delete marks before its append
+            // half can fail, and only a recorded marker lets the failed-statement
+            // abort tail (storage_revert_deletes) un-stamp them.
+            if (!delete_marker_recorded_) {
+                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                delete_marker_recorded_ = true;
+            }
+
             if (err.contains_error()) {
                 set_error(err);
                 mark_failed();
                 co_return;
-            }
-
-            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE
-            // across all flushes (append ranges are per-flush via record_flush; the
-            // delete marker is a single per-txn/table tombstone).
-            if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
-                delete_marker_recorded_ = true;
             }
 
             // Release the flushed batch: the accumulated updated rows and the lockstep

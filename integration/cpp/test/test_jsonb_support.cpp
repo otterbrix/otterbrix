@@ -17,7 +17,9 @@
 //   delete  (projection) : -    #-           .. project every column except the named subtree
 //
 // Paths are spelled either dotted ('a.b') or as a postgres text array ('{a,b}').
-// Keys are case-sensitive; a path that no column matches is a hard ERROR, not NULL.
+// Keys are case-sensitive and matched verbatim (segments are NOT dequoted). A
+// scalar navigation whose path matches no column yields SQL NULL (see
+// navigation_over_missing_key_yields_null); table-valued expansion still errors.
 //
 // The cases below are split in two:
 //   * SUPPORTED  — value-exact pins of behavior that is correct and worth keeping.
@@ -220,7 +222,13 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
         CHECK(i64(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;"), "v", 0) == 10);
     }
 
-    SECTION("keys are case-sensitive") { CHECK_FALSE(exec(d, "SELECT t ->> 'X' AS v FROM jp.t;")->is_success()); }
+    SECTION("keys are case-sensitive: the wrong-case key is absent (NULL), not 'x'") {
+        auto cur = exec(d, "SELECT id, t ->> 'X' AS v FROM jp.t ORDER BY id;");
+        REQUIRE(cur->is_success());
+        for (size_t r = 0; r < 4; ++r) {
+            CHECK(is_null(cur, "v", r));
+        }
+    }
 }
 
 // -> and #> : object expansion. These are table-valued — they widen the projection
@@ -598,8 +606,10 @@ TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
         CHECK(ids(cur) == std::set<int64_t>{2, 3});
     }
 
-    SECTION("a navigation naming no column is still a clean error, not a wrong answer") {
-        CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = t #>> 'nokey';")->is_success());
+    SECTION("a navigation naming no column is NULL: the compare is UNKNOWN, no rows") {
+        auto cur = exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = t #>> 'nokey';");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 0);
     }
 }
 
@@ -640,8 +650,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         "SELECT t #>> ARRAY['a','b'] AS v FROM jp.t;",
         // navigation in the SELECT list of a GROUP BY query
         "SELECT t #>> 'a.b' AS v FROM jp.t GROUP BY id;",
-        // path segments are not dequoted
-        "SELECT t #>> '{\"a\",\"b\"}' AS v FROM jp.t;",
         // an intermediate (non-leaf) key is not a scalar
         "SELECT t #>> 'a' AS v FROM jp.t;",
         // postgres jsonpath / containment / concatenation operators do not exist
@@ -798,8 +806,13 @@ TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segm
     CHECK(i64(exec(d, "SELECT d #>> 'a.b.c' AS v FROM jp.d WHERE id = 1;"), "v", 0) == 111);
     CHECK(i64(exec(d, "SELECT d #>> '{a,b,c}' AS v FROM jp.d WHERE id = 1;"), "v", 0) == 111);
     CHECK(i64(exec(d, "SELECT d #>> 'p.q.r.s.t' AS v FROM jp.d WHERE id = 2;"), "v", 0) == 222);
-    // the truncated path nobody wrote is (correctly) absent now
-    CHECK_FALSE(exec(d, "SELECT d #>> 'a.c' AS v FROM jp.d;")->is_success());
+    // the truncated path nobody wrote is absent: it navigates to NULL
+    {
+        auto miss = exec(d, "SELECT d #>> 'a.c' AS v FROM jp.d ORDER BY id;");
+        REQUIRE(miss->is_success());
+        CHECK(is_null(miss, "v", 0));
+        CHECK(is_null(miss, "v", 1));
+    }
 
     // partial expansion through the deep path
     auto expand = exec(d, "SELECT d -> 'a' -> 'b' FROM jp.d WHERE id = 1;");
@@ -915,8 +928,12 @@ TEST_CASE("integration::cpp::test_jsonb_support::zero_match_expand_is_an_error")
     auto* d = space.dispatcher();
     seed(d);
 
-    // the scalar operator errors, as it always has
-    CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());
+    // the scalar operator navigates to NULL for an absent key (postgres 3VL)
+    {
+        auto scalar = exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;");
+        REQUIRE(scalar->is_success());
+        CHECK(is_null(scalar, "v", 0));
+    }
 
     // the table-valued one now errors too, instead of producing zero columns
     CHECK_FALSE(exec(d, "SELECT t -> 'nokey' FROM jp.t;")->is_success());
@@ -997,19 +1014,78 @@ TEST_CASE("integration::cpp::test_jsonb_support::existence_over_missing_key") {
     CHECK_FALSE(exec(d, "SELECT id FROM jp.r WHERE nosuchcol IS NULL;")->is_success());
 }
 
-// STILL a hard error, deferred (documented): scalar navigation over an absent key
-// should yield SQL NULL, and `<nav> IS NULL` should be a boolean. Both need the
-// select-list / compare paths to synthesize a typed NULL leaf for a flagged key,
-// a larger change than the existence rewrite; pinned so the deferral is visible.
-TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_still_errors") {
+// Scalar navigation over an absent key is the NULL-valued analogue of existence
+// (postgres 3VL): a path no column matches navigates to SQL NULL for every row,
+// and `<nav> IS NULL` is an ordinary boolean predicate. Only navigation keys get
+// the lenient handling — a mistyped regular column reference still hard-errors.
+TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_yields_null") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/missing_nav");
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());           // deferred: NULL every row
-    CHECK_FALSE(exec(d, "SELECT t #>> 'no.key' AS v FROM jp.t;")->is_success());          // deferred: NULL every row
-    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;")->is_success()); // deferred: row 4
+    SECTION("projection: a key no row has is NULL for every row") {
+        // the third spelling: segments are matched verbatim (not dequoted), so a
+        // quoted pg-array path names a key nobody wrote — absent, hence NULL
+        for (const auto* sql : {"SELECT id, t ->> 'nokey' AS v FROM jp.t ORDER BY id;",
+                                "SELECT id, t #>> 'no.key' AS v FROM jp.t ORDER BY id;",
+                                "SELECT id, t #>> '{\"a\",\"b\"}' AS v FROM jp.t ORDER BY id;"}) {
+            INFO(sql);
+            auto cur = exec(d, sql);
+            if (!cur->is_success()) {
+                UNSCOPED_INFO(cur->get_error().what);
+            }
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 4);
+            for (size_t r = 0; r < 4; ++r) {
+                CHECK(is_null(cur, "v", r));
+            }
+        }
+    }
+
+    SECTION("IS NULL over a navigation is a boolean predicate") {
+        // the parenthesized spelling routes through the NullTest computed-operand path
+        auto paren = exec(d, "SELECT id FROM jp.t WHERE (t #>> 'a.b') IS NULL;");
+        if (!paren->is_success()) {
+            UNSCOPED_INFO(paren->get_error().what);
+        }
+        REQUIRE(paren->is_success());
+        CHECK(ids(paren) == std::set<int64_t>{4});
+        // the bare spelling must agree
+        auto cur = exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;");
+        if (!cur->is_success()) {
+            UNSCOPED_INFO(cur->get_error().what);
+        }
+        REQUIRE(cur->is_success());
+        CHECK(ids(cur) == std::set<int64_t>{4});
+        CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NOT NULL;")) == std::set<int64_t>{1, 2, 3});
+    }
+
+    SECTION("IS [NOT] NULL over a missing key: NULL for every row") {
+        auto cur = exec(d, "SELECT id FROM jp.t WHERE t ->> 'nokey' IS NULL;");
+        if (!cur->is_success()) {
+            UNSCOPED_INFO(cur->get_error().what);
+        }
+        REQUIRE(cur->is_success());
+        CHECK(ids(cur) == std::set<int64_t>{1, 2, 3, 4});
+        auto none = exec(d, "SELECT id FROM jp.t WHERE t ->> 'nokey' IS NOT NULL;");
+        REQUIRE(none->is_success());
+        CHECK(none->size() == 0);
+    }
+
+    SECTION("a compare against a missing key is UNKNOWN: no rows, not an error") {
+        auto cur = exec(d, "SELECT id FROM jp.t WHERE t ->> 'nokey' = 10;");
+        if (!cur->is_success()) {
+            UNSCOPED_INFO(cur->get_error().what);
+        }
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 0);
+    }
+
+    SECTION("a mistyped regular column still hard-errors") {
+        CHECK_FALSE(exec(d, "SELECT nosuchcol FROM jp.t;")->is_success());
+        CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE nosuchcol = 1;")->is_success());
+    }
 }
 
 // [A] The key operand of a jsonb operator is a literal: a bare string/number, a
@@ -1041,8 +1117,11 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
         REQUIRE(cast->is_success());
         CHECK(i64(cast, "v", 0) == 10);
         CHECK(i64(cast, "v", 1) == 30);
-        // ->> is single-key, so ('a.b'::text) is the literal key "a.b" (no such column)
-        CHECK_FALSE(exec(d, "SELECT t ->> ('a.b'::text) AS v FROM jp.t;")->is_success());
+        // ->> is single-key, so ('a.b'::text) is the literal key "a.b" — no such
+        // column, and an absent key navigates to NULL
+        auto miss = exec(d, "SELECT t ->> ('a.b'::text) AS v FROM jp.t;");
+        REQUIRE(miss->is_success());
+        CHECK(is_null(miss, "v", 0));
     }
 
     SECTION("a cast key composes in every clause the bare key does") {
@@ -1060,8 +1139,11 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
 
     SECTION("a non-string cast key resolves to its value and never crashes") {
         // (1::bool) used to segfault; now the key is the text "1" (no such column).
-        // Both the scalar and the table-valued form error cleanly on the miss.
-        CHECK_FALSE(exec(d, "SELECT t ->> (1::bool) AS v FROM jp.t;")->is_success());
+        // The scalar form navigates the absent key to NULL; the table-valued form
+        // still errors cleanly (it cannot expand columns that do not exist).
+        auto scalar = exec(d, "SELECT t ->> (1::bool) AS v FROM jp.t;");
+        REQUIRE(scalar->is_success());
+        CHECK(is_null(scalar, "v", 0));
         CHECK_FALSE(exec(d, "SELECT t -> (1::bool) FROM jp.t;")->is_success());
     }
 }

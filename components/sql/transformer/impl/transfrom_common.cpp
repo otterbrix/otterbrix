@@ -627,6 +627,31 @@ namespace components::sql::transform {
                     return transform_jsonb_exists(node, names, plan->parameters.get(), op_str);
                 }
 
+                // `<nav> IS [NOT] NULL`: the grammar binds IS [NOT] NULL tighter than a
+                // user operator, so the navigation operator arrives on top with the
+                // NullTest wrapped around its key operand. Unwrap the NullTest, resolve
+                // the navigation key from the remaining chain, and emit the null check
+                // over it — the parenthesized spelling `(<nav>) IS NULL` reaches the
+                // same shape through transform_null_test's computed-operand branch.
+                if (is_jsonb_nav_operator(op_str) && node->rexpr && nodeTag(node->rexpr) == T_NullTest) {
+                    auto* null_test = pg_ptr_cast<NullTest>(node->rexpr);
+                    Node* saved_rexpr = node->rexpr;
+                    node->rexpr = pg_ptr_cast<Node>(null_test->arg);
+                    expressions::key_t nav_key{resource_};
+                    const bool resolved = resolve_jsonb_scalar_key(node, names, nav_key);
+                    node->rexpr = saved_rexpr;
+                    if (!resolved) {
+                        return nullptr;
+                    }
+                    auto dummy = plan->parameters->add_parameter(
+                        types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+                    return make_compare_expression(resource_,
+                                                   null_test->nulltesttype == IS_NULL ? compare_type::is_null
+                                                                                      : compare_type::is_not_null,
+                                                   nav_key,
+                                                   dummy);
+                }
+
                 auto comp_type = get_compare_type(op_str);
                 if (comp_type == compare_type::invalid) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
@@ -1247,6 +1272,14 @@ namespace components::sql::transform {
         }
 
         // Right operand: the key(s) this step navigates into.
+        // A ParamRef ($1) would stringify to the literal key "$1" — with absent-key
+        // navigation yielding NULL that would silently answer NULL for every row
+        // instead of telling the caller that parameter-supplied keys don't exist.
+        if (node->rexpr && nodeTag(node->rexpr) == T_ParamRef) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"jsonb operator key cannot be a parameter", resource_});
+            return false;
+        }
         std::string key_str = get_str_value(node->rexpr);
         if (has_error()) {
             return false;
@@ -1309,7 +1342,15 @@ namespace components::sql::transform {
         }
         // The only difference from a prefix key is the scalar-vs-table guard above;
         // the flattening itself is identical, so share it.
-        return resolve_jsonb_prefix_key(node, names, out_key);
+        if (!resolve_jsonb_prefix_key(node, names, out_key)) {
+            return false;
+        }
+        // Scalar navigation over a key no column matches is a legal ABSENT leaf
+        // (postgres 3VL — it navigates to SQL NULL), not the hard "path not found"
+        // error a mistyped regular column deserves. Table-valued prefixes (expand /
+        // delete) stay strict — they cannot synthesize columns out of nothing.
+        out_key.set_absent_ok(true);
+        return true;
     }
 
     expression_ptr transformer::transform_jsonb_exists(A_Expr* node,

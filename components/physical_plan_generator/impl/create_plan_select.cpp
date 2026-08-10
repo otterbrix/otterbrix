@@ -39,6 +39,18 @@ namespace services::planner::impl {
                     auto field = expr->params().empty()
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
+                    if (field.path().empty()) {
+                        // A jsonb navigation over an absent key: validation resolved it to
+                        // a typed NULL leaf (no source column to read), so project it as a
+                        // NULL constant — constant_value is the null it was constructed
+                        // with, and the column type arrives via set_output_types.
+                        col.type = components::operators::select_column_t::kind::constant;
+                        col.key.type = components::operators::group_key_t::kind::column;
+                        if (col.key.name.empty() && !field.storage().empty()) {
+                            col.key.name = std::pmr::string(field.storage().back(), resource);
+                        }
+                        break;
+                    }
                     col.key.type = components::operators::group_key_t::kind::column;
                     col.key.full_path = field.path();
                     // Validation always resolves a concrete side; carry it so a

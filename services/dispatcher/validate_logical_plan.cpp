@@ -410,6 +410,35 @@ namespace services::dispatcher {
             }
         }
 
+        // True when `name` is an INTERMEDIATE object key of the flattened
+        // representation: no column is named `name` itself, but columns exist under
+        // "name/". Scalar navigation must NOT treat such a key as an absent (NULL)
+        // leaf — the object exists; reading it as a scalar stays an error.
+        [[nodiscard]] bool has_child_columns(const named_schema& schema, const std::string& name) {
+            const std::string prefix = name + "/";
+            for (const auto& c : schema) {
+                if (c.type.has_alias() && std::string(c.type.alias()).rfind(prefix, 0) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // The output column type of a scalar jsonb navigation whose key matches no
+        // column: a typed NULL leaf. STRING_LITERAL matches how a bare NULL literal
+        // is projected; the alias is the projection's output name (the AS alias when
+        // one was given, else the flattened path itself).
+        [[nodiscard]] components::types::complex_logical_type
+        absent_nav_null_type(const components::expressions::scalar_expression_t* scalar_expr,
+                             const components::expressions::key_t& key) {
+            components::types::complex_logical_type null_type(logical_type::STRING_LITERAL);
+            const auto& name_key = scalar_expr->key().storage().empty() ? key : scalar_expr->key();
+            if (!name_key.storage().empty()) {
+                null_type.set_alias(std::string(name_key.storage().back()));
+            }
+            return null_type;
+        }
+
         // Rewrite an is_not_null / is_null predicate on a multi-type field into
         // an OR / AND over its per-type-variant columns: the key "exists" iff ANY
         // variant is non-null, and is null only if ALL variants are null. This is
@@ -487,6 +516,56 @@ namespace services::dispatcher {
                 combined->append_child(make_compare_expression(resource, cmp->type(), vkey, cmp->right()));
             }
             return combined;
+        }
+
+        // A value compare over a jsonb navigation whose key matches no column is
+        // UNKNOWN for every row (the absent leaf is SQL NULL), so it selects
+        // nothing: fold it to the canonical no-rows predicate instead of letting
+        // validate_key hard-error on the flagged key. is_null / is_not_null over
+        // such keys are already folded by rewrite_multitype_null_checks, so what
+        // reaches here is a value compare. union_not is deliberately NOT descended
+        // into: NOT UNKNOWN is still UNKNOWN, but an all_false folded under NOT
+        // would flip into match-everything — the strict "path not found" error is
+        // the safe behavior there.
+        components::expressions::expression_ptr
+        fold_absent_nav_compares(std::pmr::memory_resource* resource,
+                                 const components::expressions::expression_ptr& expr,
+                                 const named_schema& schema) {
+            using namespace components::expressions;
+            if (!expr || expr->group() != expression_group::compare) {
+                return expr;
+            }
+            auto* cmp = static_cast<compare_expression_t*>(expr.get());
+            if (cmp->is_union()) {
+                if (cmp->type() == compare_type::union_not) {
+                    return expr;
+                }
+                auto rebuilt = make_compare_union_expression(resource, cmp->type());
+                for (const auto& ch : cmp->children()) {
+                    rebuilt->append_child(fold_absent_nav_compares(resource, ch, schema));
+                }
+                return rebuilt;
+            }
+            if (cmp->type() == compare_type::is_null || cmp->type() == compare_type::is_not_null) {
+                return expr;
+            }
+            auto operand_is_absent = [&](const param_storage& p) -> bool {
+                if (!std::holds_alternative<components::expressions::key_t>(p)) {
+                    return false;
+                }
+                const auto& key = std::get<components::expressions::key_t>(p);
+                if (!key.absent_ok() || key.storage().empty() || !key.path().empty()) {
+                    return false;
+                }
+                components::expressions::key_t probe = key;
+                auto found = find_types(resource, probe, schema);
+                return found.has_error() && found.error().type != core::error_code_t::ambiguous_name &&
+                       !has_child_columns(schema, key.as_string());
+            };
+            if (operand_is_absent(cmp->left()) || operand_is_absent(cmp->right())) {
+                return make_compare_expression(resource, compare_type::all_false);
+            }
+            return expr;
         }
 
         [[nodiscard]] core::result_wrapper_t<named_schema>
@@ -1831,6 +1910,7 @@ namespace services::dispatcher {
                     // over their variants (jsonb '?'/'?|'/'?&' over multi-type).
                     for (auto& e : node_match->expressions()) {
                         e = impl::rewrite_multitype_null_checks(resource, e, incoming_schema);
+                        e = impl::fold_absent_nav_compares(resource, e, incoming_schema);
                     }
                     auto res = impl::validate_schema(resource,
                                                      idx,
@@ -2074,6 +2154,19 @@ namespace services::dispatcher {
                                     auto res =
                                         impl::validate_key(resource, key, incoming_schema, incoming_schema, true);
                                     if (res.has_error()) {
+                                        // A jsonb navigation key that matches no column is a legal
+                                        // ABSENT leaf (postgres 3VL): project a typed NULL column
+                                        // instead of erroring. Ambiguity still errors, and so does
+                                        // an intermediate object key (its children exist — it is
+                                        // not a scalar, not an absent leaf).
+                                        if (key.absent_ok() &&
+                                            res.error().type != core::error_code_t::ambiguous_name &&
+                                            !impl::has_child_columns(incoming_schema, key.as_string())) {
+                                            result.emplace_back(
+                                                type_from_t{node->result_alias(),
+                                                            impl::absent_nav_null_type(scalar_expr, key)});
+                                            continue;
+                                        }
                                         return res.convert_error<named_schema>();
                                     }
                                 }
@@ -2161,6 +2254,11 @@ namespace services::dispatcher {
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
                                     result_schema.push_back(incoming_schema[key.path().front()]);
+                                } else if (key.path().empty() && key.absent_ok()) {
+                                    // An absent jsonb-navigation leaf (validated above as a
+                                    // typed NULL projection) still occupies its output slot.
+                                    result_schema.push_back(type_from_t{node->result_alias(),
+                                                                        impl::absent_nav_null_type(scalar_expr, key)});
                                 }
                             } else if (scalar_expr->type() == scalar_type::star_expand) {
                                 for (const auto& col : incoming_schema) {

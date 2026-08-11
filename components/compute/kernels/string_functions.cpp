@@ -1,6 +1,7 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
 
+#include <core/regex/like_to_regex.hpp>
 #include <core/regex/regex.hpp>
 
 #include <cassert>
@@ -176,6 +177,17 @@ namespace {
         return core::error_t::no_error();
     }
 
+    class regexp_like_state_t final : public kernel_state {
+    public:
+        std::optional<core::regex_t> compiled;
+        std::string pattern;
+        bool case_insensitive = false;
+    };
+
+    static core::result_wrapper_t<kernel_state_ptr> init_regexp_like(kernel_context&, kernel_init_args) {
+        return kernel_state_ptr{std::make_unique<regexp_like_state_t>()};
+    }
+
     // regexp_like(subject, pattern [, flags]) -> BOOL. PostgreSQL's spelling, and what SQL LIKE /
     // ILIKE lower to: a match is a FUNCTION over two strings, not a comparison operator, so it
     // builds a function node the execution graph can run like any other.
@@ -199,27 +211,36 @@ namespace {
         const auto subject = inputs[0].value<std::string_view>();
         const auto pattern = inputs[1].value<std::string_view>();
         bool case_insensitive = false;
+        bool glob = false;
+        bool negate = false;
         if (inputs.size() > 2) {
             const auto flags = inputs[2].value<std::string_view>();
             case_insensitive = flags.find('i') != std::string_view::npos;
+            glob = flags.find('l') != std::string_view::npos;
+            negate = flags.find('n') != std::string_view::npos;
         }
 
-        // The pattern is the same constant for every row of a scan, so compiling it per row would
-        // dominate the match. One entry is enough: a query evaluates one pattern at a time.
-        // TODO: with coroutines it is still dangerous to have them cached here
-        thread_local std::string cached_pattern;
-        thread_local bool cached_icase = false;
-        thread_local std::optional<core::regex_t> cached_regex;
-        if (!cached_regex.has_value() || cached_icase != case_insensitive || cached_pattern != pattern) {
-            auto compiled = core::regex_t::compile(resource, pattern, case_insensitive);
+        // Compiling per row would dominate the match, so the compiled pattern lives in the kernel
+        // state, which belongs to the call site: one regexp_like node sees one pattern, and a LIKE
+        // ANY fold gives each of its N patterns a node of its own.
+        auto* state = static_cast<regexp_like_state_t*>(ctx.state());
+        assert(state && "regexp_like kernel was not initialized");
+        if (!state->compiled.has_value() || state->case_insensitive != case_insensitive || state->pattern != pattern) {
+            // `l` marks the pattern a SQL LIKE glob: LIKE ANY over a sub-query binds its patterns
+            // raw, so nothing upstream of the match can convert them.
+            const std::string source = glob ? core::like_to_regex(std::string{pattern}) : std::string{pattern};
+            auto compiled = core::regex_t::compile(resource, source, case_insensitive);
             if (compiled.has_error()) {
                 return compiled.error();
             }
-            cached_regex.emplace(std::move(compiled.value()));
-            cached_pattern.assign(pattern.data(), pattern.size());
-            cached_icase = case_insensitive;
+            state->compiled.emplace(std::move(compiled.value()));
+            state->pattern.assign(pattern.data(), pattern.size());
+            state->case_insensitive = case_insensitive;
         }
-        output.emplace_back(resource, cached_regex->match(subject));
+        // `n` inverts the match (NOT LIKE) here rather than through a node of its own. A NULL
+        // subject already returned NA above, so the inversion never turns UNKNOWN into a match.
+        const bool matched = state->compiled->match(subject);
+        output.emplace_back(resource, negate ? !matched : matched);
         return core::error_t::no_error();
     }
 
@@ -303,7 +324,7 @@ namespace {
             function_type_t::row,
             {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
             {output_type::fixed(logical_type::BOOLEAN)});
-        row_kernel k2(std::move(sig2), row_regexp_like);
+        row_kernel k2(std::move(sig2), row_regexp_like, init_regexp_like);
         (void) fn->add_kernel(resource, std::move(k2));
 
         kernel_signature_t sig3(function_type_t::row,
@@ -311,7 +332,7 @@ namespace {
                                  parameter_type::exact(logical_type::STRING_LITERAL),
                                  parameter_type::exact(logical_type::STRING_LITERAL)},
                                 {output_type::fixed(logical_type::BOOLEAN)});
-        row_kernel k3(std::move(sig3), row_regexp_like);
+        row_kernel k3(std::move(sig3), row_regexp_like, init_regexp_like);
         (void) fn->add_kernel(resource, std::move(k3));
 
         return fn;

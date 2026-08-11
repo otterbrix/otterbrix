@@ -86,17 +86,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    aggregate_node_t::aggregate_node_t(std::pmr::memory_resource* resource,
-                                       std::string_view name,
-                                       slot_list_t inputs,
-                                       slot_id_t output,
-                                       bool distinct)
-        : execution_node_t(resource, std::move(inputs), slot_list_t({output}, resource))
-        , name_(name, resource)
-        , distinct_(distinct)
-        , seen_(resource) {}
-
-    vector::data_chunk_t aggregate_node_t::deduplicated(const vector::data_chunk_t& arguments, uint64_t count) {
+    vector::data_chunk_t function_node_t::deduplicated(const vector::data_chunk_t& arguments, uint64_t count) {
         std::pmr::vector<uint64_t> first_occurrences(resource());
         first_occurrences.reserve(count);
         for (uint64_t row = 0; row < count; row++) {
@@ -110,7 +100,7 @@ namespace components::execution_graph {
         return unique;
     }
 
-    vector::data_chunk_t aggregate_node_t::argument_chunk(uint64_t count) const {
+    vector::data_chunk_t function_node_t::argument_chunk(uint64_t count) const {
         std::pmr::vector<types::complex_logical_type> argument_types(resource());
         argument_types.reserve(input_indices_.size());
         for (size_t position = 0; position < input_indices_.size(); position++) {
@@ -126,22 +116,11 @@ namespace components::execution_graph {
         return arguments;
     }
 
-    core::error_t aggregate_node_t::process(const graph_execution_context&, uint64_t count) {
-        auto arguments = argument_chunk(count);
-        if (distinct_ && !input_indices_.empty() && count > 0) {
-            arguments = deduplicated(arguments, count);
+    core::error_t function_node_t::finalize(const graph_execution_context&, uint64_t*) {
+        // for regular functions it is a no-op
+        if (!reduces_) {
+            return core::error_t::no_error();
         }
-        if (!executor_) {
-            auto executor = function_->make_executor(resource(), arguments.types());
-            if (executor.has_error()) {
-                return executor.error();
-            }
-            executor_ = std::move(executor.value());
-        }
-        return executor_->consume(arguments);
-    }
-
-    core::error_t aggregate_node_t::finalize(const graph_execution_context&, uint64_t*) {
         if (!executor_) {
             auto arguments = argument_chunk(0);
             auto executor = function_->make_executor(resource(), arguments.types());
@@ -177,24 +156,6 @@ namespace components::execution_graph {
         output(0).set_value(0, value);
         // output size is always 1
         set_output_size(0, 1);
-        return core::error_t::no_error();
-    }
-
-    core::error_t aggregate_node_t::validate() const {
-        auto error = execution_node_t::validate();
-        if (error.contains_error()) {
-            return error;
-        }
-        if (!function_) {
-            return core::error_t(
-                core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: aggregate node has no resolved function", resource()});
-        }
-        if (output_indices_.size() != 1) {
-            return core::error_t(
-                core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: aggregate node produces exactly one value", resource()});
-        }
         return core::error_t::no_error();
     }
 
@@ -304,6 +265,31 @@ namespace components::execution_graph {
     core::error_t blend_node_t::process(const graph_execution_context&, uint64_t count) {
         const size_t arity = input_indices_.size();
         vector::vector_t& result = output(0);
+        if (kind_ == blend_kind::logical_and || kind_ == blend_kind::logical_or) {
+            const bool decisive = kind_ == blend_kind::logical_or;
+            for (uint64_t row = 0; row < count; row++) {
+                bool settled = false;
+                bool unknown = false;
+                for (size_t position = 0; position < arity; position++) {
+                    if (input(position).is_null(row)) {
+                        unknown = true;
+                        continue;
+                    }
+                    if (input(position).get_value<bool>(row) == decisive) {
+                        settled = true;
+                        break;
+                    }
+                }
+                // Nothing settled it and an operand was UNKNOWN: the fold is UNKNOWN.
+                if (!settled && unknown) {
+                    result.set_null(row, true);
+                    continue;
+                }
+                result.set_null(row, false);
+                result.set_value(row, settled ? decisive : !decisive);
+            }
+            return core::error_t::no_error();
+        }
         for (uint64_t row = 0; row < count; row++) {
             // arity means "nothing selected": every condition was false or UNKNOWN and there is no
             // ELSE, or every COALESCE operand was null. SQL calls that NULL.
@@ -344,46 +330,50 @@ namespace components::execution_graph {
         if (error.contains_error()) {
             return error;
         }
-        if (kind_ == blend_kind::coalesce) {
-            if (input_indices_.empty()) {
-                return core::error_t(core::error_code_t::schema_error,
-                                     std::pmr::string{"execution graph: coalesce node has no operands", resource()});
+        if (kind_ == blend_kind::case_when) {
+            if (input_indices_.size() < 2) {
+                return core::error_t(
+                    core::error_code_t::schema_error,
+                    std::pmr::string{"execution graph: case node has no condition and result pair", resource()});
             }
-        } else if (input_indices_.size() < 2) {
-            return core::error_t(
-                core::error_code_t::schema_error,
-                std::pmr::string{"execution graph: case node has no condition and result pair", resource()});
+        } else if (input_indices_.empty()) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"execution graph: blend node has no operands", resource()});
         }
         return core::error_t::no_error();
     }
 
     function_node_t::function_node_t(std::pmr::memory_resource* resource,
-                                     std::string_view name,
+                                     const compute::function* function,
                                      slot_list_t inputs,
-                                     slot_list_t outputs)
+                                     slot_list_t outputs,
+                                     bool reduces,
+                                     bool distinct)
         : execution_node_t(resource, std::move(inputs), std::move(outputs))
-        , name_(name, resource) {}
+        , function_(function)
+        , context_(resource)
+        , distinct_(distinct)
+        , reduces_(reduces)
+        , seen_(resource) {}
 
     core::error_t function_node_t::process(const graph_execution_context&, uint64_t count) {
-        std::pmr::vector<types::complex_logical_type> argument_types(resource());
-        argument_types.reserve(input_indices_.size());
-        for (size_t position = 0; position < input_indices_.size(); position++) {
-            argument_types.push_back(input(position).type());
+        auto arguments = argument_chunk(count);
+        if (distinct_ && !input_indices_.empty() && count > 0) {
+            arguments = deduplicated(arguments, count);
         }
-        vector::data_chunk_t arguments(resource(), argument_types, std::vector<size_t>{}, count);
-        for (size_t position = 0; position < input_indices_.size(); position++) {
-            arguments.data[position].reference(input(position));
+        // The executor is built once and kept, so kernel state survives across chunks
+        if (!executor_) {
+            auto executor = function_->make_executor(resource(), arguments.types(), nullptr, context_);
+            if (executor.has_error()) {
+                return executor.error();
+            }
+            executor_ = std::move(executor.value());
         }
-        arguments.set_cardinality(count);
-        // TODO: function kernel can only work with flat vectors for now
-        arguments.flatten();
-
-        // Run the call on THIS node's resource. The kernel allocates its output from the execution
-        // context, and the produced vectors are referenced straight into the graph's slots below --
-        // which are the graph's own allocation, so a vector built on the default resource cannot be
-        // adopted by one (validity_mask_t assignment asserts the two resources match).
-        compute::exec_context_t function_context{resource()};
-        auto result = function_->execute(arguments, nullptr, function_context);
+        // A reduction accumulates here and produces its value in finalize().
+        if (reduces_) {
+            return executor_->consume(arguments);
+        }
+        auto result = executor_->execute(arguments);
         if (result.has_error()) {
             return result.error();
         }
@@ -428,6 +418,10 @@ namespace components::execution_graph {
             return core::error_t(
                 core::error_code_t::schema_error,
                 std::pmr::string{"execution graph: function node has no resolved function", resource()});
+        }
+        if (reduces_ && output_indices_.size() != 1) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"execution graph: reduction produces exactly one value", resource()});
         }
         return core::error_t::no_error();
     }
@@ -488,9 +482,15 @@ namespace components::execution_graph {
         return slot_id_t{slots_.size() - 1};
     }
 
-    node_id_t execution_graph_t::add_aggregate(std::string_view name, const slot_list_t& inputs, bool distinct) {
+    node_id_t
+    execution_graph_t::add_aggregate(const compute::function* function, const slot_list_t& inputs, bool distinct) {
         auto output = declare_slot();
-        return append(new aggregate_node_t(resource_, name, slot_list_t(inputs, resource_), output, distinct));
+        return append(new function_node_t(resource_,
+                                          function,
+                                          slot_list_t(inputs, resource_),
+                                          slot_list_t({output}, resource_),
+                                          /*reduces=*/true,
+                                          distinct));
     }
 
     node_id_t execution_graph_t::add_field(slot_id_t input, const std::pmr::vector<size_t>& path) {
@@ -513,13 +513,14 @@ namespace components::execution_graph {
         return append(new operator_node_t(resource_, op, operand, output));
     }
 
-    node_id_t execution_graph_t::add_function(std::string_view name, const slot_list_t& inputs, size_t output_count) {
+    node_id_t
+    execution_graph_t::add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count) {
         slot_list_t outputs(resource_);
         outputs.reserve(output_count);
         for (size_t position = 0; position < output_count; position++) {
             outputs.push_back(declare_slot());
         }
-        return append(new function_node_t(resource_, name, slot_list_t(inputs, resource_), std::move(outputs)));
+        return append(new function_node_t(resource_, function, slot_list_t(inputs, resource_), std::move(outputs)));
     }
 
     node_id_t execution_graph_t::add_parameter(core::parameter_id_t id) {
@@ -558,18 +559,6 @@ namespace components::execution_graph {
         auto* target = dynamic_cast<cast_node_t*>(nodes_[node].get());
         assert(target && "execution graph: set_cast on a node that is not a cast");
         target->set_cast(std::move(cast));
-    }
-
-    void execution_graph_t::set_function(node_id_t node, const compute::function* function) {
-        auto* target = dynamic_cast<function_node_t*>(nodes_[node].get());
-        assert(target && "execution graph: set_function on a node that is not a function call");
-        target->set_function(function);
-    }
-
-    void execution_graph_t::set_aggregate_function(node_id_t node, const compute::function* function) {
-        auto* target = dynamic_cast<aggregate_node_t*>(nodes_[node].get());
-        assert(target && "execution graph: set_aggregate_function on a node that is not a reduction");
-        target->set_function(function);
     }
 
     node_id_t execution_graph_t::insert_cast_before(node_id_t consumer,
@@ -756,15 +745,14 @@ namespace components::execution_graph {
         std::pmr::vector<bool> reduced(slots_.size(), false, resource_);
         for (auto id : order_) {
             const auto& node = *nodes_[id];
-            const bool is_aggregate = dynamic_cast<const aggregate_node_t*>(&node) != nullptr;
             bool reads_reduced = false;
             for (auto slot : node.input_indices()) {
                 reads_reduced = reads_reduced || reduced[slot];
             }
-            // The aggregate itself runs BELOW: it is what consumes the per-chunk rows. Its OUTPUT
+            // The reduction itself runs BELOW: it is what consumes the per-chunk rows. Its OUTPUT
             // is reduced, so everything reading it lands above.
             for (auto slot : node.output_indices()) {
-                reduced[slot] = is_aggregate || reads_reduced;
+                reduced[slot] = node.reduces() || reads_reduced;
             }
             if (reads_reduced) {
                 above_reduction_.push_back(id);

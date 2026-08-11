@@ -74,8 +74,8 @@ namespace components::compute {
 
     core::error_t aggregate_kernel::finalize(aggregate_kernel_context& ctx) const { return finalize_(ctx); }
 
-    row_kernel::row_kernel(kernel_signature_t signature, row_exec_fn exec)
-        : compute_kernel(std::move(signature))
+    row_kernel::row_kernel(kernel_signature_t signature, row_exec_fn exec, kernel_init_fn init)
+        : compute_kernel(std::move(signature), init)
         , exec_(exec) {}
 
     core::error_t row_kernel::execute(kernel_context& ctx,

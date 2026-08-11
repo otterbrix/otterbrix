@@ -1419,6 +1419,31 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
 
+        // TODO: should be resolved like any other function, there is nothing special about this one
+        // SQL LIKE / ILIKE / regexp all match through regexp_like(subject, pattern, flags)
+        [[nodiscard]] core::result_wrapper_t<components::compute::function_uid>
+        resolve_regex_match(std::pmr::memory_resource* resource,
+                            const components::casts::cast_registry_t* cast_registry,
+                            components::compute::function_types_mask allowed_function_types,
+                            const components::types::complex_logical_type& subject,
+                            const components::types::complex_logical_type& pattern) {
+            std::pmr::vector<components::types::complex_logical_type> arguments(resource);
+            arguments.push_back(subject);
+            arguments.push_back(pattern);
+            arguments.emplace_back(logical_type::STRING_LITERAL);
+            auto resolved = resolve_function(resource,
+                                             *cast_registry,
+                                             components::graph_execution_context{},
+                                             *components::compute::function_registry_t::get_default(),
+                                             "regexp_like",
+                                             arguments,
+                                             allowed_function_types);
+            if (resolved.has_error()) {
+                return resolved.convert_error<components::compute::function_uid>();
+            }
+            return resolved.value().uid;
+        }
+
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(std::pmr::memory_resource* resource,
                         const components::casts::cast_registry_t* cast_registry,
@@ -1432,6 +1457,76 @@ namespace services::dispatcher {
             auto allowed_function_types =
                 components::compute::create_mask(components::compute::function_type_t::row,
                                                  components::compute::function_type_t::vector);
+
+            auto operand_type =
+                [&](param_storage& operand) -> core::result_wrapper_t<components::types::complex_logical_type> {
+                if (std::holds_alternative<components::expressions::key_t>(operand)) {
+                    auto key_res = validate_key(resource,
+                                                std::get<components::expressions::key_t>(operand),
+                                                schema_left,
+                                                schema_right,
+                                                same_schema);
+                    if (key_res.has_error()) {
+                        return key_res.error();
+                    }
+                    return key_res.value().front().type;
+                }
+                if (std::holds_alternative<core::parameter_id_t>(operand)) {
+                    auto bound = parameters.parameters.find(std::get<core::parameter_id_t>(operand));
+                    if (bound == parameters.parameters.end()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"unbound parameter in comparison", resource});
+                    }
+                    return bound->second.type();
+                }
+                auto& sub_expr = std::get<components::expressions::expression_ptr>(operand);
+                if (sub_expr->group() == expression_group::function) {
+                    auto& func_expr = reinterpret_cast<components::expressions::function_expression_ptr&>(sub_expr);
+                    auto expr_res = validate_schema(resource,
+                                                    cast_registry,
+                                                    func_expr.get(),
+                                                    parameters,
+                                                    schema_left,
+                                                    schema_right,
+                                                    same_schema,
+                                                    allowed_function_types);
+                    if (expr_res.has_error()) {
+                        return expr_res.error();
+                    }
+                    return expr_res.value().front().type;
+                }
+                if (sub_expr->group() == expression_group::cast) {
+                    core::error_t cast_error = core::error_t::no_error();
+                    impl::param_type_resolver resolve_cast{resource,
+                                                           cast_registry,
+                                                           schema_left,
+                                                           parameters,
+                                                           cast_error,
+                                                           &schema_right,
+                                                           same_schema};
+                    auto resolved = resolve_cast(operand);
+                    if (cast_error.contains_error()) {
+                        return cast_error;
+                    }
+                    return resolved;
+                }
+                if (sub_expr->group() == expression_group::scalar) {
+                    auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
+                    auto scalar_error = resolve_scalar_output_type(resource,
+                                                                   cast_registry,
+                                                                   scalar,
+                                                                   schema_left,
+                                                                   parameters,
+                                                                   &schema_right,
+                                                                   same_schema);
+                    if (scalar_error.contains_error()) {
+                        return scalar_error;
+                    }
+                    return scalar->result_type();
+                }
+                return core::error_t(core::error_code_t::schema_error,
+                                     std::pmr::string{"unsupported comparison operand", resource});
+            };
 
             switch (expr->type()) {
                 case compare_type::union_and:
@@ -1480,80 +1575,7 @@ namespace services::dispatcher {
                 case compare_type::gt:
                 case compare_type::gte:
                 case compare_type::lt:
-                case compare_type::lte:
-                    // TODO: check type for regex
-                case compare_type::regex: {
-                    auto operand_type =
-                        [&](param_storage& operand) -> core::result_wrapper_t<components::types::complex_logical_type> {
-                        if (std::holds_alternative<components::expressions::key_t>(operand)) {
-                            auto key_res = validate_key(resource,
-                                                        std::get<components::expressions::key_t>(operand),
-                                                        schema_left,
-                                                        schema_right,
-                                                        same_schema);
-                            if (key_res.has_error()) {
-                                return key_res.error();
-                            }
-                            return key_res.value().front().type;
-                        }
-                        if (std::holds_alternative<core::parameter_id_t>(operand)) {
-                            auto bound = parameters.parameters.find(std::get<core::parameter_id_t>(operand));
-                            if (bound == parameters.parameters.end()) {
-                                return core::error_t(core::error_code_t::invalid_parameter,
-                                                     std::pmr::string{"unbound parameter in comparison", resource});
-                            }
-                            return bound->second.type();
-                        }
-                        auto& sub_expr = std::get<components::expressions::expression_ptr>(operand);
-                        if (sub_expr->group() == expression_group::function) {
-                            auto& func_expr =
-                                reinterpret_cast<components::expressions::function_expression_ptr&>(sub_expr);
-                            auto expr_res = validate_schema(resource,
-                                                            cast_registry,
-                                                            func_expr.get(),
-                                                            parameters,
-                                                            schema_left,
-                                                            schema_right,
-                                                            same_schema,
-                                                            allowed_function_types);
-                            if (expr_res.has_error()) {
-                                return expr_res.error();
-                            }
-                            return expr_res.value().front().type;
-                        }
-                        if (sub_expr->group() == expression_group::cast) {
-                            core::error_t cast_error = core::error_t::no_error();
-                            impl::param_type_resolver resolve_cast{resource,
-                                                                   cast_registry,
-                                                                   schema_left,
-                                                                   parameters,
-                                                                   cast_error,
-                                                                   &schema_right,
-                                                                   same_schema};
-                            auto resolved = resolve_cast(operand);
-                            if (cast_error.contains_error()) {
-                                return cast_error;
-                            }
-                            return resolved;
-                        }
-                        if (sub_expr->group() == expression_group::scalar) {
-                            auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
-                            auto scalar_error = resolve_scalar_output_type(resource,
-                                                                           cast_registry,
-                                                                           scalar,
-                                                                           schema_left,
-                                                                           parameters,
-                                                                           &schema_right,
-                                                                           same_schema);
-                            if (scalar_error.contains_error()) {
-                                return scalar_error;
-                            }
-                            return scalar->result_type();
-                        }
-                        return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{"unsupported comparison operand", resource});
-                    };
-
+                case compare_type::lte: {
                     auto left_type = operand_type(expr->left());
                     if (left_type.has_error()) {
                         return left_type.error();
@@ -1562,7 +1584,7 @@ namespace services::dispatcher {
                     if (right_type.has_error()) {
                         return right_type.error();
                     }
-                    if (expr->type() != compare_type::regex && left_type.value() != right_type.value()) {
+                    if (left_type.value() != right_type.value()) {
                         std::pmr::vector<param_storage*> sides(resource);
                         sides.push_back(&expr->left());
                         sides.push_back(&expr->right());
@@ -1583,6 +1605,26 @@ namespace services::dispatcher {
                     }
                     break;
                 }
+                case compare_type::regex: {
+                    auto subject_type = operand_type(expr->left());
+                    if (subject_type.has_error()) {
+                        return subject_type.error();
+                    }
+                    auto pattern_type = operand_type(expr->right());
+                    if (pattern_type.has_error()) {
+                        return pattern_type.error();
+                    }
+                    auto resolved = resolve_regex_match(resource,
+                                                        cast_registry,
+                                                        allowed_function_types,
+                                                        subject_type.value(),
+                                                        pattern_type.value());
+                    if (resolved.has_error()) {
+                        return resolved.convert_error<named_schema>();
+                    }
+                    expr->add_function_uid(resolved.value());
+                    break;
+                }
                 case compare_type::any:
                 case compare_type::all:
                 case compare_type::is_null:
@@ -1595,6 +1637,20 @@ namespace services::dispatcher {
                                                     same_schema);
                         if (key_res.has_error()) {
                             return key_res.convert_error<named_schema>();
+                        }
+                        // LIKE ANY / ALL matches each element with the same call the scalar form
+                        // uses; the elements are strings, whatever the set they came from.
+                        if (expr->inner_op() == compare_type::regex) {
+                            auto resolved = resolve_regex_match(
+                                resource,
+                                cast_registry,
+                                allowed_function_types,
+                                key_res.value().front().type,
+                                components::types::complex_logical_type{logical_type::STRING_LITERAL});
+                            if (resolved.has_error()) {
+                                return resolved.convert_error<named_schema>();
+                            }
+                            expr->add_function_uid(resolved.value());
                         }
                     }
                     break;

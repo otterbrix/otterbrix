@@ -2,6 +2,7 @@
 
 #include "expression.hpp"
 #include "key.hpp"
+#include <components/compute/function.hpp>
 #include <memory_resource>
 
 namespace components::expressions {
@@ -44,22 +45,20 @@ namespace components::expressions {
         bool do_not_fold() const noexcept;
         void make_unfoldable() noexcept;
 
-        // Regex-family flags. Meaningful for a compare_type::regex compare (scalar ILIKE / NOT ILIKE) and
-        // for the inner_op of a compare_type::any/all (LIKE/ILIKE/NOT-LIKE ANY): apply like_to_regex per
-        // element (LIKE glob vs a raw regexp), match case-insensitively (ILIKE), and invert the per-element
-        // result before the any/all fold (NOT LIKE).
-        bool regex_like() const noexcept;
-        bool regex_icase() const noexcept;
-        bool regex_negate() const noexcept;
-        void set_regex_flags(bool like, bool icase, bool negate) noexcept;
+        // Flags for SQL LIKE -> regex transformation ('i' case-insensitive, 'l' glob, 'n' negated)
+        core::parameter_id_t regex_flags_param() const noexcept;
+        void set_regex_flags(core::parameter_id_t flags) noexcept;
+
+        // The match function, resolved by validation. Should become a plain function call operand.
+        void add_function_uid(compute::function_uid uid) noexcept;
+        compute::function_uid function_uid() const noexcept;
 
     private:
         compare_type type_;
         compare_type inner_op_ = compare_type::invalid;
         bool do_not_fold_ = false;
-        bool regex_like_ = false;
-        bool regex_icase_ = false;
-        bool regex_negate_ = false;
+        core::parameter_id_t regex_flags_param_{0};
+        compute::function_uid function_uid_{compute::invalid_function_uid};
         param_storage left_;
         param_storage right_;
         std::pmr::vector<expression_ptr> children_;

@@ -144,8 +144,8 @@ TEST_CASE("components::sql::select_from_where") {
         vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
-                       vec({v(&resource, "^pattern$")}));
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
+                       vec({v(&resource, "pattern"), v(&resource, "l")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
@@ -181,20 +181,18 @@ TEST_CASE("components::sql::select_from_where") {
                        vec({v(&resource, 1l), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE '%test%';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
-                       vec({v(&resource, "^.*test.*$")}));
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
+                       vec({v(&resource, "%test%"), v(&resource, "l")}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pre_fix';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0}}}})_",
-                       vec({v(&resource, "^pre.fix$")}));
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
+                       vec({v(&resource, "pre_fix"), v(&resource, "l")}));
 
-    // NULL NOT LIKE p is UNKNOWN, so the scalar negated LIKE carries the same
-    // is_not_null guard the negated ANY/ALL forms get (three-valued semantics).
-    TEST_SIMPLE_SELECT(
-        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
-        R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #1}, $not: [$function: {name: {"regexp_like"}, args: {"name", #0}}]]}})_",
-        vec({v(&resource, "^.*test.*$"),
-             v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+    // NULL NOT LIKE p is UNKNOWN: the match itself inverts, and a NULL subject never reaches it, so
+    // the negated form is the same call with an 'n' flag — no union_not, no is_not_null guard.
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
+                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
+                       vec({v(&resource, "%test%"), v(&resource, "ln")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL AND count IN (1, 2);)_",

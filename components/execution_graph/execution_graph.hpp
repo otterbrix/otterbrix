@@ -44,6 +44,10 @@ namespace components::execution_graph {
         virtual core::error_t process(const graph_execution_context& context, uint64_t count) = 0;
         virtual core::error_t finalize(const graph_execution_context& context, uint64_t* row_count);
 
+        // True when the node reduces its input to a single row, so its output is read above the
+        // reduction (see execution_graph_t::split_at_reduction).
+        [[nodiscard]] virtual bool reduces() const noexcept { return false; }
+
         const slot_list_t& input_indices() const noexcept { return input_indices_; }
         const slot_list_t& output_indices() const noexcept { return output_indices_; }
 
@@ -122,24 +126,35 @@ namespace components::execution_graph {
     // [0,N] inputs, [0,M] output
     // Does not change cardinality
     class function_node_t final : public execution_node_t {
-        friend class execution_graph_t;
-
     public:
         function_node_t(std::pmr::memory_resource* resource,
-                        std::string_view name,
+                        const compute::function* function,
                         slot_list_t inputs,
-                        slot_list_t outputs);
+                        slot_list_t outputs,
+                        bool reduces = false,
+                        bool distinct = false);
 
         core::error_t process(const graph_execution_context& context, uint64_t count) override;
+        core::error_t finalize(const graph_execution_context& context, uint64_t* row_count) override;
 
-        const std::pmr::string& name() const noexcept { return name_; }
+        [[nodiscard]] bool reduces() const noexcept override { return reduces_; }
 
     private:
         [[nodiscard]] core::error_t validate() const override;
-        void set_function(const compute::function* function) noexcept { function_ = function; }
 
-        std::pmr::string name_;
+        vector::data_chunk_t argument_chunk(uint64_t count) const;
+        vector::data_chunk_t deduplicated(const vector::data_chunk_t& arguments, uint64_t count);
+
         const compute::function* function_{nullptr};
+        compute::exec_context_t context_;
+        std::unique_ptr<compute::function_executor> executor_;
+        // aggregate specifics:
+        bool distinct_{false};
+        bool reduces_{false};
+        struct value_hash_t {
+            size_t operator()(const types::logical_value_t& value) const noexcept { return value.hash(); }
+        };
+        std::pmr::unordered_set<types::logical_value_t, value_hash_t, std::equal_to<>> seen_;
     };
 
     // [1, N] inputs, [1] output
@@ -148,7 +163,9 @@ namespace components::execution_graph {
         enum class blend_kind
         {
             coalesce,
-            case_when
+            case_when,
+            logical_and,
+            logical_or
         };
 
         blend_node_t(std::pmr::memory_resource* resource, blend_kind kind, slot_list_t inputs, slot_id_t output);
@@ -161,43 +178,6 @@ namespace components::execution_graph {
         [[nodiscard]] core::error_t validate() const override;
 
         blend_kind kind_;
-    };
-
-    // [0, N] inputs, [1] output
-    // changes cardinality to 1
-    class aggregate_node_t final : public execution_node_t {
-        friend class execution_graph_t;
-
-    public:
-        aggregate_node_t(std::pmr::memory_resource* resource,
-                         std::string_view name,
-                         slot_list_t inputs,
-                         slot_id_t output,
-                         bool distinct);
-
-        // appends chunk to internal state
-        core::error_t process(const graph_execution_context& context, uint64_t count) override;
-        // actually return the output
-        core::error_t finalize(const graph_execution_context& context, uint64_t* row_count) override;
-
-        const std::pmr::string& name() const noexcept { return name_; }
-
-    private:
-        [[nodiscard]] core::error_t validate() const override;
-        void set_function(const compute::function* function) noexcept { function_ = function; }
-
-        vector::data_chunk_t argument_chunk(uint64_t count) const;
-        vector::data_chunk_t deduplicated(const vector::data_chunk_t& arguments, uint64_t count);
-
-        std::pmr::string name_;
-        const compute::function* function_{nullptr};
-        bool distinct_{false};
-        // created by the first process() of a group and set to null after finalize
-        std::unique_ptr<compute::function_executor> executor_;
-        struct value_hash_t {
-            size_t operator()(const types::logical_value_t& value) const noexcept { return value.hash(); }
-        };
-        std::pmr::unordered_set<types::logical_value_t, value_hash_t, std::equal_to<>> seen_;
     };
 
     // [1] input, [1] output.
@@ -240,7 +220,6 @@ namespace components::execution_graph {
     using execution_node_ptr = boost::intrusive_ptr<execution_node_t>;
     using blend_node_ptr = boost::intrusive_ptr<blend_node_t>;
     using field_node_ptr = boost::intrusive_ptr<field_node_t>;
-    using aggregate_node_ptr = boost::intrusive_ptr<aggregate_node_t>;
     using cast_node_ptr = boost::intrusive_ptr<cast_node_t>;
     using parameter_node_ptr = boost::intrusive_ptr<parameter_node_t>;
     using operator_node_ptr = boost::intrusive_ptr<operator_node_t>;
@@ -265,13 +244,13 @@ namespace components::execution_graph {
         node_id_t add_cast(slot_id_t input, casts::cast_kind kind = casts::cast_kind::cast);
         node_id_t add_operator(operators::operator_code op, slot_id_t left, slot_id_t right);
         node_id_t add_operator(operators::operator_code op, slot_id_t operand);
-        node_id_t add_function(std::string_view name, const slot_list_t& inputs, size_t output_count);
+        node_id_t add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count);
         node_id_t add_parameter(core::parameter_id_t id);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
         // `path` is the steps BELOW the input column;
         // the output slot references the nested vector they reach, so it owns no storage of its own.
         node_id_t add_field(slot_id_t input, const std::pmr::vector<size_t>& path);
-        node_id_t add_aggregate(std::string_view name, const slot_list_t& inputs, bool distinct = false);
+        node_id_t add_aggregate(const compute::function* function, const slot_list_t& inputs, bool distinct = false);
 
         void connect(node_id_t consumer, size_t position, slot_id_t producer);
 
@@ -281,8 +260,6 @@ namespace components::execution_graph {
         void bind_input(slot_id_t slot, size_t column_index, const types::complex_logical_type& type);
         void set_slot_type(slot_id_t slot, const types::complex_logical_type& type);
         void set_cast(node_id_t node, casts::cast_t cast);
-        void set_function(node_id_t node, const compute::function* function);
-        void set_aggregate_function(node_id_t node, const compute::function* function);
 
         // inserting before consumer has to change it's input slot
         node_id_t insert_cast_before(node_id_t consumer,

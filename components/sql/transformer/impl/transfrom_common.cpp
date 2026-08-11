@@ -1,12 +1,12 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>
-#include <components/expressions/like_to_regex.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/regex/like_to_regex.hpp>
 
 using namespace components::expressions;
 
@@ -551,37 +551,26 @@ namespace components::sql::transform {
                         // that would turn match-nothing into match-everything.
                         return make_compare_expression(resource_, compare_type::all_false);
                     }
-                    auto pattern = expressions::like_to_regex(std::string(raw_val.value().value<std::string_view>()));
+                    auto pattern = std::string(raw_val.value().value<std::string_view>());
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
                     const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE
                     const bool negate = (op_str == "!~~" || op_str == "!~~*"); // NOT LIKE / NOT ILIKE
 
-                    // Convert to regex function call
+                    // Convert to regex function call. NOT [I]LIKE is the `n` flag rather than a
+                    // union_not: the match itself inverts, so a NULL subject stays UNKNOWN (the row
+                    // is dropped, as PostgreSQL does) without an is_not_null guard around it.
+                    std::string flags{"l"};
+                    if (icase) {
+                        flags += 'i';
+                    }
+                    if (negate) {
+                        flags += 'n';
+                    }
                     std::pmr::vector<expressions::param_storage> args{resource_};
                     args.emplace_back(key_left.field);
                     args.emplace_back(param_id);
-                    if (icase) {
-                        args.emplace_back(
-                            plan->parameters->add_parameter(types::logical_value_t(resource_, std::string{"i"})));
-                    }
-                    auto cmp = make_function_expression(resource_, "regexp_like", std::move(args));
-                    if (negate) {
-                        auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
-                        not_expr->append_child(cmp);
-                        // A NULL subject makes `NULL NOT [I]LIKE p` UNKNOWN -> the row is dropped
-                        // (PostgreSQL); the bare union_not would flip the regex's NULL-subject
-                        // false into true and keep it. Guard with is_not_null(col) exactly like
-                        // the negated ANY/ALL forms, so disk pushdown inherits the same shape.
-                        auto guard_param = plan->parameters->add_parameter(
-                            types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
-                        auto guard =
-                            make_compare_expression(resource_, compare_type::is_not_null, key_left.field, guard_param);
-                        auto guarded = make_compare_union_expression(resource_, compare_type::union_and);
-                        guarded->append_child(guard);
-                        guarded->append_child(not_expr);
-                        return guarded;
-                    }
-                    return cmp;
+                    args.emplace_back(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
+                    return make_function_expression(resource_, "regexp_like", std::move(args));
                 }
 
                 // JSONB key existence: '?' / '?|' / '?&'. Desugars to IS NOT NULL.
@@ -1031,7 +1020,17 @@ namespace components::sql::transform {
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
                 expr->set_inner_op(inner_op);
                 if (inner_op == compare_type::regex) {
-                    expr->set_regex_flags(re_like, re_icase, re_negate);
+                    std::string flags;
+                    if (re_like) {
+                        flags += 'l';
+                    }
+                    if (re_icase) {
+                        flags += 'i';
+                    }
+                    if (re_negate) {
+                        flags += 'n';
+                    }
+                    expr->set_regex_flags(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
                 }
                 // ANY/ALL pushes into the disk scan as a conjunction of per-element filters
                 // (transform_predicate: constant_filter for comparisons, regex_filter for LIKE/ILIKE). The

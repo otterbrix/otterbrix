@@ -123,7 +123,7 @@ namespace components::compute {
 
     class row_kernel : public compute_kernel {
     public:
-        row_kernel(kernel_signature_t signature, row_exec_fn exec);
+        row_kernel(kernel_signature_t signature, row_exec_fn exec, kernel_init_fn init = nullptr);
 
         core::error_t execute(kernel_context& ctx,
                               const std::pmr::vector<types::logical_value_t>& inputs,

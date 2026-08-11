@@ -42,7 +42,8 @@ namespace components::expressions {
                 if (src->do_not_fold()) {
                     dst->make_unfoldable();
                 }
-                dst->set_regex_flags(src->regex_like(), src->regex_icase(), src->regex_negate());
+                dst->set_regex_flags(src->regex_flags_param());
+                dst->add_function_uid(src->function_uid());
                 for (const auto& child : src->children()) {
                     dst->append_child(clone_expression(resource, child));
                 }

@@ -36,6 +36,8 @@ namespace components::expressions {
             core::result_wrapper_t<slot_id_t> blend_slot(const scalar_expression_t* expression);
             core::result_wrapper_t<slot_id_t> compare_slot(const compare_expression_t* expression);
             core::result_wrapper_t<slot_id_t> quantified_slot(const compare_expression_t* expression);
+            core::result_wrapper_t<slot_id_t>
+            match_slot(const compare_expression_t* expression, slot_id_t subject, slot_id_t pattern);
             std::pmr::memory_resource* resource() const noexcept { return graph_->resource(); }
 
             execution_graph_t* graph_;
@@ -182,11 +184,40 @@ namespace components::expressions {
             return graph_->output_slot(node);
         }
 
+        // SQL LIKE / ILIKE / regexp: a match call over (subject, pattern, flags).
+        core::result_wrapper_t<slot_id_t>
+        builder_t::match_slot(const compare_expression_t* expression, slot_id_t subject, slot_id_t pattern) {
+            const auto* function =
+                compute::function_registry_t::get_default()->get_function(expression->function_uid());
+            if (function == nullptr) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"execution graph builder: match was not resolved by validation", resource()});
+            }
+            const auto flags_id = expression->regex_flags_param();
+            auto flags = parameters_.find(flags_id);
+            if (flags == parameters_.end()) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"execution graph builder: match flags are not bound", resource()});
+            }
+            auto flags_node = graph_->add_parameter(flags_id);
+            const auto flags_slot = graph_->output_slot(flags_node);
+            graph_->set_slot_type(flags_slot, flags->second.type());
+
+            execution_graph::slot_list_t inputs({subject, pattern, flags_slot}, resource());
+            auto node = graph_->add_function(function, inputs, 1);
+            graph_->set_slot_type(graph_->output_slot(node), complex_logical_type{logical_type::BOOLEAN});
+            return graph_->output_slot(node);
+        }
+
         // ANY / ALL
         core::result_wrapper_t<slot_id_t> builder_t::quantified_slot(const compare_expression_t* expression) {
             const bool is_any = expression->type() == compare_type::any;
+            // A regex inner op is a match call per element, not an operator.
+            const bool is_match = expression->inner_op() == compare_type::regex;
             const auto inner = to_operator_code(expression->inner_op());
-            if (inner == operators::operator_code::invalid) {
+            if (!is_match && inner == operators::operator_code::invalid) {
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"execution graph builder: " + to_string(expression->type()) +
                                                           " over " + to_string(expression->inner_op()),
@@ -229,40 +260,52 @@ namespace components::expressions {
                                                       resource()});
             }
             const auto element_type = bound->second.type().child_type();
-            const auto left_type = graph_->slot_type(left.value());
-            if (left_type.type() == logical_type::NA) {
+            if (graph_->slot_type(left.value()).type() == logical_type::NA) {
                 graph_->set_slot_type(left.value(), element_type);
-            } else if (left_type != element_type) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"execution graph builder: " + to_string(expression->type()) +
-                                                          " operands were not unified",
-                                                      resource()});
             }
 
-            const auto fold = is_any ? operators::operator_code::logical_or : operators::operator_code::logical_and;
-            auto folded = execution_graph::invalid_slot;
+            // ANY is an OR over the per-element results, ALL an AND: one fold node over the N of them.
+            execution_graph::slot_list_t results(resource());
+            results.reserve(elements.size());
             for (size_t index = 0; index < elements.size(); index++) {
                 std::pmr::vector<size_t> step({index}, resource());
                 auto element_node = graph_->add_field(set_slot, step);
                 const auto element_slot = graph_->output_slot(element_node);
                 graph_->set_slot_type(element_slot, element_type);
-                auto compared = graph_->add_operator(inner, left.value(), element_slot);
-                auto compared_slot = graph_->output_slot(compared);
-                graph_->set_slot_type(compared_slot, complex_logical_type{logical_type::BOOLEAN});
-                if (folded == execution_graph::invalid_slot) {
-                    folded = compared_slot;
+                if (is_match) {
+                    auto matched = match_slot(expression, left.value(), element_slot);
+                    if (matched.has_error()) {
+                        return matched;
+                    }
+                    results.push_back(matched.value());
                     continue;
                 }
-                auto combined = graph_->add_operator(fold, folded, compared_slot);
-                folded = graph_->output_slot(combined);
-                graph_->set_slot_type(folded, complex_logical_type{logical_type::BOOLEAN});
+                auto compared = graph_->add_operator(inner, left.value(), element_slot);
+                const auto compared_slot = graph_->output_slot(compared);
+                graph_->set_slot_type(compared_slot, complex_logical_type{logical_type::BOOLEAN});
+                results.push_back(compared_slot);
             }
-            return folded;
+            auto fold = graph_->add_blend(is_any ? execution_graph::blend_node_t::blend_kind::logical_or
+                                                 : execution_graph::blend_node_t::blend_kind::logical_and,
+                                          results);
+            graph_->set_slot_type(graph_->output_slot(fold), complex_logical_type{logical_type::BOOLEAN});
+            return graph_->output_slot(fold);
         }
 
         core::result_wrapper_t<slot_id_t> builder_t::compare_slot(const compare_expression_t* expression) {
             if (expression->type() == compare_type::any || expression->type() == compare_type::all) {
                 return quantified_slot(expression);
+            }
+            if (expression->type() == compare_type::regex) {
+                auto subject = slot_of(expression->left());
+                if (subject.has_error()) {
+                    return subject;
+                }
+                auto pattern = slot_of(expression->right());
+                if (pattern.has_error()) {
+                    return pattern;
+                }
+                return match_slot(expression, subject.value(), pattern.value());
             }
             const auto code = to_operator_code(expression->type());
             if (code == operators::operator_code::invalid) {
@@ -354,8 +397,7 @@ namespace components::expressions {
                 }
                 inputs.push_back(slot.value());
             }
-            auto node = graph_->add_aggregate(expression->function_name(), inputs, expression->is_distinct());
-            graph_->set_aggregate_function(node, function);
+            auto node = graph_->add_aggregate(function, inputs, expression->is_distinct());
             graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
             return graph_->output_slot(node);
         }
@@ -387,8 +429,7 @@ namespace components::expressions {
                 }
                 inputs.push_back(slot.value());
             }
-            auto node = graph_->add_function(expression->name(), inputs, 1);
-            graph_->set_function(node, function);
+            auto node = graph_->add_function(function, inputs, 1);
             graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
             return graph_->output_slot(node);
         }

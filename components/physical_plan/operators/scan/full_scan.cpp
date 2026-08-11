@@ -5,8 +5,8 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/execution_graph_builder.hpp>
 #include <components/expressions/function_expression.hpp>
-#include <components/expressions/like_to_regex.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <core/regex/like_to_regex.hpp>
 #include <core/regex/regex.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -179,9 +179,21 @@ namespace components::operators {
                 const auto& arr_param = parameters->parameters.at(param_id);
                 const bool is_any = expression->type() == expressions::compare_type::any;
                 const bool is_regex = inner_op == expressions::compare_type::regex;
-                const bool re_like = is_regex && expression->regex_like();
-                const bool re_icase = is_regex && expression->regex_icase();
-                const bool re_negate = is_regex && expression->regex_negate();
+                // Match flags are a bound parameter written by the transformer, the same operand
+                // regexp_like takes: 'i' case-insensitive, 'l' the pattern is a SQL LIKE glob.
+                std::string_view re_flags;
+                if (is_regex) {
+                    auto flags_it = parameters->parameters.find(expression->regex_flags_param());
+                    if (flags_it == parameters->parameters.end()) {
+                        return core::error_t{
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"regex comparison has no bound flags parameter", resource}};
+                    }
+                    re_flags = flags_it->second.value<std::string_view>();
+                }
+                const bool re_like = re_flags.find('l') != std::string_view::npos;
+                const bool re_icase = re_flags.find('i') != std::string_view::npos;
+                const bool re_negate = re_flags.find('n') != std::string_view::npos;
 
                 // Build the per-element leaf filters (regex_filter for LIKE/ILIKE, constant_filter otherwise).
                 // Empty / 0-row sub-query: the array param is the NA-null sentinel; .children() is invalid, so
@@ -231,7 +243,7 @@ namespace components::operators {
                             }
                             std::pmr::string pat{resource};
                             if (re_like) {
-                                const std::string converted = expressions::like_to_regex(std::string(raw));
+                                const std::string converted = core::like_to_regex(std::string(raw));
                                 pat.assign(converted.begin(), converted.end());
                             } else {
                                 pat.assign(raw.begin(), raw.end());
@@ -483,19 +495,30 @@ namespace components::operators {
                         return core::error_t{core::error_code_t::comparison_failure,
                                              std::pmr::string{"incorrect argument type for regex", resource}};
                     }
+                    // Match flags are a bound parameter, the same operand regexp_like takes.
+                    auto flags_it = parameters->parameters.find(expression->regex_flags_param());
+                    if (flags_it == parameters->parameters.end()) {
+                        return core::error_t{
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"regex comparison has no bound flags parameter", resource}};
+                    }
+                    const auto flags = flags_it->second.value<std::string_view>();
+                    const bool icase = flags.find('i') != std::string_view::npos;
+                    const std::string source = flags.find('l') != std::string_view::npos
+                                                   ? core::like_to_regex(std::string{pat.value<std::string_view>()})
+                                                   : std::string{pat.value<std::string_view>()};
                     // Compile ONCE at plan time: a pattern RE2 rejects (raw regexp with a backreference,
                     // lookahead, ...) must surface as an error on the scan error channel — identical to
                     // the in-memory regex_predicate — never a filter that silently drops every row
                     // (regex_filter_t::matches relies on this validation).
-                    auto compiled =
-                        core::regex_t::compile(resource, pat.value<std::string_view>(), expression->regex_icase());
+                    auto compiled = core::regex_t::compile(resource, source, icase);
                     if (compiled.has_error()) {
                         return compiled.convert_error<std::unique_ptr<table::table_filter_t>>();
                     }
-                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::regex_filter_t>(
-                        std::pmr::string{pat.value<std::string_view>(), resource},
-                        expression->regex_icase(),
-                        std::move(indices)));
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::regex_filter_t>(std::pmr::string{source, resource},
+                                                                icase,
+                                                                std::move(indices)));
                 }
                 // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
                 // compare semantics see int32 storage on both sides, so the literal must be

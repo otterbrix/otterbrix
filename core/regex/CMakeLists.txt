@@ -2,10 +2,12 @@ project(regex)
 
 set(header_${PROJECT_NAME}
         regex.hpp
+        like_to_regex.hpp
         )
 
 set(source_${PROJECT_NAME}
         regex.cpp
+        like_to_regex.cpp
         )
 
 add_library(otterbrix_${PROJECT_NAME}

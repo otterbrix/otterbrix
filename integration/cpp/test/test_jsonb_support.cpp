@@ -215,9 +215,11 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
         CHECK(type_of(cur, "n") == components::types::logical_type::BIGINT);
     }
 
-    SECTION("navigation works through a table alias, and via the base name too") {
+    SECTION("navigation works through a table alias, which hides the base name") {
         CHECK(i64(exec(d, "SELECT tt #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;"), "v", 0) == 10);
-        CHECK(i64(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;"), "v", 0) == 10);
+        // An alias replaces the relation name, so the base name no longer reaches the table
+        // as in PostgreSQL, which answers such a reference with a hint to use the alias instead
+        CHECK_FALSE(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;")->is_success());
     }
 
     SECTION("keys are case-sensitive") { CHECK_FALSE(exec(d, "SELECT t ->> 'X' AS v FROM jp.t;")->is_success()); }

@@ -15,6 +15,8 @@
 #include <vector>
 
 namespace components::sql::transform {
+    inline constexpr size_t MAX_COLUMN_REF_SEGMENTS = 5;
+
     template<class T>
     static T& pg_cast(Node& node) {
         return reinterpret_cast<T&>(node);
@@ -44,10 +46,10 @@ namespace components::sql::transform {
     // Role-named DTO produced by the transformer when reading a RangeVar
     // (table reference) out of the parser AST. Carries each of the four name
     // components a SQL parser may attach to a qualified table reference:
-    // optional catalog (database), optional schema, the relation (table) name,
-    // and an optional uid. dbname picker logic (catalog with schema as
-    // fallback) is applied at construction so callers see a single role-named
-    // field.
+    // optional uid, optional catalog (database), optional schema, and the
+    // relation (table) name. Each slot holds what the grammar put there and
+    // nothing else — name resolution compares slots by position, so a value
+    // moved between slots is a wrong answer, not a convenience.
     struct qualified_name {
         std::string dbname;
         std::string relname;
@@ -62,62 +64,67 @@ namespace components::sql::transform {
         std::string schema = construct(table->schemaname);
         std::string rel = construct(table->relname);
         std::string uuid = construct(table->uid);
-        // The parser produces several RangeVar shapes:
-        //   `tbl`            -> catalogname="", schemaname=""
-        //   `db.tbl`         -> catalogname=db, schemaname=""
-        //   `schema.tbl`     -> catalogname="", schemaname=schema
-        //                       (from makeRangeVarFromAnyName: ALTER/RENAME paths)
-        //   `db.schema.tbl`  -> catalogname=db, schemaname=schema
+        // The parser produces one RangeVar shape per arity, and both productions
+        // that build one (qualified_name and makeRangeVarFromAnyName) agree:
+        //   `tbl`               -> catalogname="",  schemaname=""
+        //   `db.tbl`            -> catalogname=db,  schemaname=""
+        //   `db.schema.tbl`     -> catalogname=db,  schemaname=schema
         //   `uid.db.schema.tbl` -> uid=uid, catalogname=db, schemaname=schema
-        // Pre-10.E callers ran the picker `cfn.database.empty() ? cfn.schema :
-        // cfn.database` at every use site while keeping cfn.schema unchanged.
-        // Mirror that here: pick dbname once, but leave schemaname intact so
-        // factories that consume both fields (create_collection, create_index,
-        // drop_collection, drop_index) keep the original parser-display schema.
-        if (dbname.empty()) {
-            dbname = schema;
-        }
         return {std::move(dbname), std::move(rel), std::move(schema), std::move(uuid)};
     }
+
+    inline const std::string& visible_name(const qualified_name& name, const std::string& alias) noexcept {
+        return alias.empty() ? name.relname : alias;
+    }
+
+    struct from_element_t {
+        qualified_name name;
+        std::string alias;
+
+        const std::string& visible_name() const noexcept { return transform::visible_name(name, alias); }
+    };
+
+    struct column_ref_t;
 
     struct name_collection_t {
         qualified_name left_name;
         std::string left_alias;
         qualified_name right_name;
         std::string right_alias;
+        std::vector<from_element_t> extra_left; // FROM elements that belong to left but came in through a nested join
 
-        // Additional aliases that belong to the left scope but came in through a nested join.
-        std::vector<qualified_name> extra_left_names;
-        std::vector<std::string> extra_left_aliases;
+        struct using_column_t {
+            std::string name;
+            logical_plan::join_type join;
+        };
+        std::vector<using_column_t> using_columns;
+        const using_column_t* using_column(std::string_view name) const;
 
         bool is_left_table(const std::string& name) const;
         bool is_right_table(const std::string& name) const;
-        bool is_left_table(const std::string& dbname, const std::string& name) const;
-        bool is_right_table(const std::string& dbname, const std::string& name) const;
+
+        core::result_wrapper_t<expressions::side_t> resolve(std::pmr::memory_resource* resource,
+                                                            const column_ref_t& ref) const;
+
+        core::error_t refuse_indistinguishable_elements(std::pmr::memory_resource* resource) const;
     };
 
-    expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name);
-    expressions::side_t
-    deduce_side(const name_collection_t& names, const std::string& dbname, const std::string& target_name);
-
     struct column_ref_t {
+        std::string uid;
         std::string db;
+        std::string schema;
         std::string table;
         expressions::key_t field;
 
         explicit column_ref_t(std::pmr::memory_resource* resource)
             : field(resource) {}
-        column_ref_t(std::string table, expressions::key_t field)
-            : table(std::move(table))
-            , field(std::move(field)) {}
-        column_ref_t(std::string db, std::string table, expressions::key_t field)
-            : db(std::move(db))
-            , table(std::move(table))
-            , field(std::move(field)) {}
-        void deduce_side(const name_collection_t& names);
+        explicit column_ref_t(expressions::key_t field)
+            : field(std::move(field)) {}
+
+        bool is_qualified() const noexcept { return !table.empty(); }
     };
 
-    column_ref_t
+    core::result_wrapper_t<column_ref_t>
     columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names);
     core::result_wrapper_t<column_ref_t> indirection_to_field(std::pmr::memory_resource* resource,
                                                               A_Indirection* indirection,
@@ -130,7 +137,9 @@ namespace components::sql::transform {
             case JOIN_FULL:
                 return logical_plan::join_type::full;
             case JOIN_INNER:
-                return join->quals ? logical_plan::join_type::inner : logical_plan::join_type::cross;
+                return (join->quals || (join->usingClause && !join->usingClause->lst.empty()))
+                           ? logical_plan::join_type::inner
+                           : logical_plan::join_type::cross;
             case JOIN_LEFT:
                 return logical_plan::join_type::left;
             case JOIN_RIGHT:

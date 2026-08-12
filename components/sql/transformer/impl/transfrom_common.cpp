@@ -188,18 +188,19 @@ namespace components::sql::transform {
                 if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
                     return *corr;
                 }
-                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
-                key.deduce_side(names);
+                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
+                if (transform_failed(key_res)) {
+                    return nullptr;
+                }
+                auto key = std::move(key_res.value());
                 return key.field;
             }
             case T_A_Indirection: {
                 auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node), names);
-                if (res.has_error()) {
-                    error_ = res.error();
+                if (transform_failed(res)) {
                     return nullptr;
                 }
                 auto key = std::move(res.value());
-                key.deduce_side(names);
                 return key.field;
             }
             case T_ParamRef:
@@ -307,30 +308,33 @@ namespace components::sql::transform {
                 if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
                     return *corr;
                 }
-                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
-                key.deduce_side(names);
+                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
+                if (transform_failed(key_res)) {
+                    return nullptr;
+                }
+                auto key = std::move(key_res.value());
                 return key.field;
             }
             case T_A_Indirection: {
                 auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node), names);
-                if (res.has_error()) {
-                    error_ = res.error();
+                if (transform_failed(res)) {
                     return nullptr;
                 }
                 auto key = std::move(res.value());
-                key.deduce_side(names);
                 return key.field;
             }
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
                 if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
                     auto target_type_res = get_type(resource_, cast->typeName);
-                    if (target_type_res.has_error()) {
-                        error_ = target_type_res.error();
+                    if (transform_failed(target_type_res)) {
                         return nullptr;
                     }
-                    auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
-                    col_ref.deduce_side(names);
+                    auto col_ref_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                    if (transform_failed(col_ref_res)) {
+                        return nullptr;
+                    }
+                    auto col_ref = std::move(col_ref_res.value());
                     return param_storage{expression_ptr{
                         make_cast_expression(resource_,
                                              param_storage{std::move(col_ref.field)},
@@ -349,8 +353,7 @@ namespace components::sql::transform {
                     if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
                         is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
                         auto target_type_res = get_type(resource_, cast->typeName);
-                        if (target_type_res.has_error()) {
-                            error_ = target_type_res.error();
+                        if (transform_failed(target_type_res)) {
                             return nullptr;
                         }
                         expressions::key_t navigated{resource_};
@@ -414,6 +417,9 @@ namespace components::sql::transform {
                     args.reserve(func->args->lst.size());
                     for (const auto& arg : func->args->lst) {
                         args.emplace_back(resolve_select_operand(pg_ptr_cast<Node>(arg.data), names, plan, group));
+                        if (has_error()) {
+                            return nullptr;
+                        }
                     }
                 }
 
@@ -534,8 +540,11 @@ namespace components::sql::transform {
         }
         // Resolve against the OUTER scope so the key's path + side match how the
         // lateral join operator locates the column in the outer row's chunk.
-        auto outer_col = columnref_to_field(resource_, ref, *lateral_outer_names_);
-        outer_col.deduce_side(*lateral_outer_names_);
+        auto outer_col_res = columnref_to_field(resource_, ref, *lateral_outer_names_);
+        if (transform_failed(outer_col_res)) {
+            return std::nullopt;
+        }
+        auto outer_col = std::move(outer_col_res.value());
         const std::string dedup_key =
             std::string(strVal(ref->fields->lst.front().data)) + "." + std::string(outer_col.field.as_string());
         if (auto it = lateral_correlation_map_.find(dedup_key); it != lateral_correlation_map_.end()) {
@@ -574,8 +583,7 @@ namespace components::sql::transform {
             }
         }
 
-        if (auto res = get_value(resource_, node); res.has_error()) {
-            error_ = res.error();
+        if (auto res = get_value(resource_, node); transform_failed(res)) {
             return core::parameter_id_t{};
         } else {
             return params->add_parameter(std::move(res.value()));
@@ -653,11 +661,15 @@ namespace components::sql::transform {
                 if (op_str == "~~" || op_str == "!~~" || op_str == "~~*" || op_str == "!~~*") {
                     column_ref_t key_left(resource_);
                     if (nodeTag(node->lexpr) == T_ColumnRef) {
-                        key_left = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names);
+                        auto resolved_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names);
+                        if (transform_failed(resolved_res)) {
+                            return nullptr;
+                        }
+                        auto resolved = std::move(resolved_res.value());
+                        key_left = std::move(resolved);
                     } else if (nodeTag(node->lexpr) == T_A_Indirection) {
                         auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->lexpr), names);
-                        if (res.has_error()) {
-                            error_ = res.error();
+                        if (transform_failed(res)) {
                             return nullptr;
                         }
                         key_left = std::move(res.value());
@@ -667,10 +679,8 @@ namespace components::sql::transform {
                                           std::pmr::string{"LIKE: left side must be a column reference", resource_});
                         return nullptr;
                     }
-                    key_left.deduce_side(names);
                     auto raw_val = get_value(resource_, node->rexpr);
-                    if (raw_val.has_error()) {
-                        error_ = raw_val.error();
+                    if (transform_failed(raw_val)) {
                         return nullptr;
                     }
                     if (raw_val.value().is_null()) {
@@ -733,30 +743,34 @@ namespace components::sql::transform {
                             if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
                                 return *corr;
                             }
-                            auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
-                            key.deduce_side(names);
+                            auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
+                            if (transform_failed(key_res)) {
+                                return nullptr;
+                            }
+                            auto key = std::move(key_res.value());
                             return key.field;
                         }
                         case T_A_Indirection: {
                             auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node), names);
-                            if (res.has_error()) {
-                                error_ = res.error();
+                            if (transform_failed(res)) {
                                 return nullptr;
                             }
                             auto key = std::move(res.value());
-                            key.deduce_side(names);
                             return key.field;
                         }
                         case T_TypeCast: {
                             auto cast = pg_ptr_cast<TypeCast>(node);
                             if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
                                 auto target_type_res = get_type(resource_, cast->typeName);
-                                if (target_type_res.has_error()) {
-                                    error_ = target_type_res.error();
+                                if (transform_failed(target_type_res)) {
                                     return nullptr;
                                 }
-                                auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
-                                col_ref.deduce_side(names);
+                                auto col_ref_res =
+                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                                if (transform_failed(col_ref_res)) {
+                                    return nullptr;
+                                }
+                                auto col_ref = std::move(col_ref_res.value());
                                 note_cast_type(target_type_res.value());
                                 auto conversion = make_cast_expression(resource_,
                                                                        param_storage{std::move(col_ref.field)},
@@ -774,8 +788,7 @@ namespace components::sql::transform {
                                     nodeTag(sub->name->lst.front().data) == T_String &&
                                     is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
                                     auto target_type_res = get_type(resource_, cast->typeName);
-                                    if (target_type_res.has_error()) {
-                                        error_ = target_type_res.error();
+                                    if (transform_failed(target_type_res)) {
                                         return nullptr;
                                     }
                                     expressions::key_t k{resource_};
@@ -850,18 +863,20 @@ namespace components::sql::transform {
                             args.reserve(expr->args->lst.size());
                             for (const auto& arg : expr->args->lst) {
                                 if (nodeTag(arg.data) == T_ColumnRef) {
-                                    auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
-                                    key.deduce_side(names);
+                                    auto key_res =
+                                        columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                                    if (transform_failed(key_res)) {
+                                        return nullptr;
+                                    }
+                                    auto key = std::move(key_res.value());
                                     args.emplace_back(std::move(key.field));
                                 } else if (nodeTag(arg.data) == T_A_Indirection) {
                                     auto res =
                                         indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
-                                    if (res.has_error()) {
-                                        error_ = res.error();
+                                    if (transform_failed(res)) {
                                         return nullptr;
                                     }
                                     auto key = std::move(res.value());
-                                    key.deduce_side(names);
                                     args.emplace_back(std::move(key.field));
                                 } else if (nodeTag(arg.data) == T_FuncCall) {
                                     args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data),
@@ -1020,12 +1035,10 @@ namespace components::sql::transform {
                     return nullptr;
                 }
                 auto key_in_res = node_to_field(resource_, node->lexpr, names);
-                if (key_in_res.has_error()) {
-                    error_ = key_in_res.error();
+                if (transform_failed(key_in_res)) {
                     return nullptr;
                 }
                 auto key_in = std::move(key_in_res.value());
-                key_in.deduce_side(names);
 
                 auto op_str = std::string(strVal(node->name->lst.front().data));
                 bool is_not_in = (op_str == "<>");
@@ -1125,12 +1138,10 @@ namespace components::sql::transform {
                     return nullptr;
                 }
                 auto key_res = node_to_field(resource_, node->testexpr, names);
-                if (key_res.has_error()) {
-                    error_ = key_res.error();
+                if (transform_failed(key_res)) {
                     return nullptr;
                 }
                 auto key = std::move(key_res.value());
-                key.deduce_side(names);
                 // Operator symbol is last (schema-qualified OPERATOR(schema.op) prepends the schema).
                 auto op_str = std::string_view(strVal(node->operName->lst.back().data));
                 // LIKE family: ~~ (LIKE), ~~* (ILIKE), !~~ (NOT LIKE), !~~* (NOT ILIKE) all map to a regex
@@ -1256,18 +1267,19 @@ namespace components::sql::transform {
                     args.emplace_back(*corr);
                     continue;
                 }
-                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
-                key.deduce_side(names);
+                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                if (transform_failed(key_res)) {
+                    return nullptr;
+                }
+                auto key = std::move(key_res.value());
                 pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_A_Indirection) {
                 auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
-                if (res.has_error()) {
-                    error_ = res.error();
+                if (transform_failed(res)) {
                     return nullptr;
                 }
                 auto key = std::move(res.value());
-                key.deduce_side(names);
                 pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_FuncCall) {
@@ -1320,8 +1332,11 @@ namespace components::sql::transform {
                     segments.emplace_back(std::pmr::string{base_name.c_str(), resource_}); // column at root
                 }
             } else {
-                auto cr = columnref_to_field(resource_, ref, names);
-                cr.deduce_side(names);
+                auto cr_res = columnref_to_field(resource_, ref, names);
+                if (transform_failed(cr_res)) {
+                    return false;
+                }
+                auto cr = std::move(cr_res.value());
                 side = cr.field.side();
                 for (const auto& s : cr.field.storage()) {
                     segments.emplace_back(s);
@@ -1331,12 +1346,10 @@ namespace components::sql::transform {
         }
         if (nodeTag(lexpr) == T_A_Indirection) {
             auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(lexpr), names);
-            if (res.has_error()) {
-                error_ = res.error();
+            if (transform_failed(res)) {
                 return false;
             }
             auto cr = std::move(res.value());
-            cr.deduce_side(names);
             side = cr.field.side();
             for (const auto& s : cr.field.storage()) {
                 segments.emplace_back(s);
@@ -1556,7 +1569,11 @@ namespace components::sql::transform {
             for (const auto& arg : func_call->args->lst) {
                 if (nodeTag(arg.data) == T_ColumnRef) {
                     // Correlated outer reference: bind per outer row via a parameter.
-                    auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                    auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                    if (transform_failed(key_res)) {
+                        return nullptr;
+                    }
+                    auto key = std::move(key_res.value());
                     // Placeholder type only used to satisfy validation; the real value (with
                     // its true type) is bound from the outer row at runtime. BIGINT keeps
                     // integer-typed table functions like generate_series matchable.
@@ -1581,8 +1598,11 @@ namespace components::sql::transform {
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
-                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
-                key.deduce_side(names);
+                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                if (transform_failed(key_res)) {
+                    return nullptr;
+                }
+                auto key = std::move(key_res.value());
                 args.emplace_back(std::move(key.field));
             } else {
                 args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), params));
@@ -1617,12 +1637,10 @@ namespace components::sql::transform {
                     return nullptr;
                 }
                 auto col_key_res = node_to_field(resource_, pg_ptr_cast<Node>(node->arg), names);
-                if (col_key_res.has_error()) {
-                    error_ = col_key_res.error();
+                if (transform_failed(col_key_res)) {
                     return nullptr;
                 }
                 auto col_key = std::move(col_key_res.value());
-                col_key.deduce_side(names);
                 auto param_id = add_param_value(pg_ptr_cast<Node>(when->expr), plan->parameters.get());
                 auto cond = make_compare_expression(resource_, compare_type::eq, col_key.field, param_id);
                 expr->append_param(expression_ptr(cond));
@@ -1729,8 +1747,11 @@ namespace components::sql::transform {
                     for (const auto& arg : func->args->lst) {
                         auto* arg_node = pg_ptr_cast<Node>(arg.data);
                         if (nodeTag(arg_node) == T_ColumnRef) {
-                            auto col = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
-                            col.deduce_side(names);
+                            auto col_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
+                            if (transform_failed(col_res)) {
+                                return nullptr;
+                            }
+                            auto col = std::move(col_res.value());
                             args.emplace_back(std::move(col.field));
                         } else if (nodeTag(arg_node) == T_A_Expr) {
                             args.emplace_back(resolve_having_operand(arg_node, names, plan, group));
@@ -1762,8 +1783,11 @@ namespace components::sql::transform {
                 return expressions::key_t{resource_, alias};
             }
             case T_ColumnRef: {
-                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
-                key.deduce_side(names);
+                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
+                if (transform_failed(key_res)) {
+                    return nullptr;
+                }
+                auto key = std::move(key_res.value());
                 return key.field;
             }
             case T_A_Const:
@@ -1879,12 +1903,10 @@ namespace components::sql::transform {
         // A bare column keeps the fast validity-bitmap path in the predicate operator.
         if (nodeTag(node->arg) == T_ColumnRef || nodeTag(node->arg) == T_A_Indirection) {
             auto key_res = node_to_field(resource_, pg_ptr_cast<Node>(node->arg), names);
-            if (key_res.has_error()) {
-                error_ = key_res.error();
+            if (transform_failed(key_res)) {
                 return nullptr;
             }
             auto key = std::move(key_res.value());
-            key.deduce_side(names);
             return make_compare_expression(resource_, cmp, key.field, param_id);
         }
 

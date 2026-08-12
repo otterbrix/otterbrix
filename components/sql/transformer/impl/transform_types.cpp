@@ -46,8 +46,7 @@ namespace components::sql::transform {
     } // namespace
 
     logical_plan::node_ptr transformer::transform_create_type(CompositeTypeStmt& node) {
-        if (auto field_res = get_types(resource_, *node.coldeflist); field_res.has_error()) {
-            error_ = field_res.error();
+        if (auto field_res = get_types(resource_, *node.coldeflist); transform_failed(field_res)) {
             return nullptr;
         } else {
             auto type = types::complex_logical_type::create_struct(construct(node.typevar->relname), field_res.value());

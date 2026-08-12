@@ -320,12 +320,13 @@ namespace components::expressions {
                                                               " has no operands",
                                                           resource()});
                 }
-                auto folded = slot_of_expression(expression->children().front().get());
-                if (folded.has_error()) {
-                    return folded;
+                auto first = slot_of_expression(expression->children().front().get());
+                if (first.has_error()) {
+                    return first;
                 }
+                slot_id_t folded = first.value();
                 if (operators::arity_of(code) == operators::operator_arity::unary) {
-                    auto node = graph_->add_operator(code, folded.value());
+                    auto node = graph_->add_operator(code, folded);
                     graph_->set_slot_type(graph_->output_slot(node), complex_logical_type{logical_type::BOOLEAN});
                     return graph_->output_slot(node);
                 }
@@ -334,7 +335,7 @@ namespace components::expressions {
                     if (next.has_error()) {
                         return next;
                     }
-                    auto node = graph_->add_operator(code, folded.value(), next.value());
+                    auto node = graph_->add_operator(code, folded, next.value());
                     graph_->set_slot_type(graph_->output_slot(node), complex_logical_type{logical_type::BOOLEAN});
                     folded = graph_->output_slot(node);
                 }

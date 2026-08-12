@@ -196,7 +196,6 @@ namespace components::table {
                                                           uint64_t count,
                                                           vector::vector_t& base_data);
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
-        bool check_row(int64_t row_id, const table_filter_t* filter);
         bool row_is_updated(int64_t row_id);
 
         void cleanup_update(update_info_t& info);
@@ -225,8 +224,6 @@ namespace components::table {
         void merge_update(Args&&... args);
         template<typename... Args>
         void fetch_row(Args&&... args) const;
-        template<typename... Args>
-        bool check_row(Args&&... args) const;
         template<typename... Args>
         void fetch_committed_range(Args&&... args) const;
 
@@ -299,10 +296,6 @@ namespace components::table {
         template<typename T>
         static void
         templated_fetch_row(update_info_t& info, uint64_t row_index, vector::vector_t& result, uint64_t result_index);
-
-        static bool check_row_validity(update_info_t& info, uint64_t row_index, const table_filter_t* filter);
-        template<typename T>
-        static bool templated_check_row(update_info_t& info, uint64_t row_index, const table_filter_t* filter);
 
         types::physical_type type_;
         std::unique_ptr<update_node_t> root_;
@@ -593,43 +586,6 @@ namespace components::table {
                 throw std::runtime_error("unhandled physical types");
         }
     }
-    template<typename... Args>
-    bool update_segment_t::check_row(Args&&... args) const {
-        switch (type_) {
-            case types::physical_type::BIT:
-                return check_row_validity(std::forward<Args>(args)...);
-            case types::physical_type::BOOL:
-            case types::physical_type::INT8:
-                return templated_check_row<int8_t>(std::forward<Args>(args)...);
-            case types::physical_type::INT16:
-                return templated_check_row<int16_t>(std::forward<Args>(args)...);
-            case types::physical_type::INT32:
-                return templated_check_row<int32_t>(std::forward<Args>(args)...);
-            case types::physical_type::INT64:
-                return templated_check_row<int64_t>(std::forward<Args>(args)...);
-            case types::physical_type::UINT8:
-                return templated_check_row<uint8_t>(std::forward<Args>(args)...);
-            case types::physical_type::UINT16:
-                return templated_check_row<uint16_t>(std::forward<Args>(args)...);
-            case types::physical_type::UINT32:
-                return templated_check_row<uint32_t>(std::forward<Args>(args)...);
-            case types::physical_type::UINT64:
-                return templated_check_row<uint64_t>(std::forward<Args>(args)...);
-            case types::physical_type::INT128:
-                return templated_check_row<types::int128_t>(std::forward<Args>(args)...);
-            case types::physical_type::UINT128:
-                return templated_check_row<types::uint128_t>(std::forward<Args>(args)...);
-            case types::physical_type::FLOAT:
-                return templated_check_row<float>(std::forward<Args>(args)...);
-            case types::physical_type::DOUBLE:
-                // case types::physical_type::INTERVAL:
-                // return templated_check_row<interval_t>(std::forward<Args>(args)...);
-            case types::physical_type::STRING:
-                return templated_check_row<std::string_view>(std::forward<Args>(args)...);
-            default:
-                throw std::runtime_error("unhandled physical types");
-        }
-    }
 
     template<typename... Args>
     void update_segment_t::fetch_committed_range(Args&&... args) const {
@@ -911,20 +867,6 @@ namespace components::table {
                 result_data[result_index] = info_data[it - tuples];
             }
         });
-    }
-
-    template<typename T>
-    bool update_segment_t::templated_check_row(update_info_t& info, uint64_t row_index, const table_filter_t* filter) {
-        bool result = false;
-        update_info_t::update_for_transaction(info, [&](update_info_t* current) {
-            auto info_data = current->data<T>();
-            auto tuples = current->tuples();
-            auto it = std::lower_bound(tuples, tuples + current->N, row_index);
-            if (it != tuples + current->N && *it == row_index) {
-                result = table_filter_dispatch(filter, info_data[it - tuples]);
-            }
-        });
-        return result;
     }
 
 } // namespace components::table

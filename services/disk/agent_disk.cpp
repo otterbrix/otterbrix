@@ -1650,16 +1650,29 @@ namespace services::disk {
             }
             co_return std::move(result);
         }
+        // The key tuple becomes the same thing a pushed WHERE is: `col == k0 AND col == k1 ...` as one
+        // graph, with the key cells bound as its parameters.
+        namespace expr = components::expressions;
         for (std::uint64_t i = 0; i < nkeys; ++i) {
-            auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+            components::types::parameter_map_t parameters{resource()};
+            auto predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
             for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
-                std::pmr::vector<std::uint64_t> idx_vec{resource()};
-                idx_vec.push_back(key_col_indices[ki]);
-                filter->child_filters.push_back(
-                    std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                           keys.value(ki, i),
-                                                                           std::move(idx_vec)));
+                const core::parameter_id_t id{static_cast<uint16_t>(ki)};
+                parameters.emplace(id, keys.value(ki, i));
+                expr::key_t column{resource()};
+                column.set_path(std::pmr::vector<size_t>{{key_col_indices[ki]},
+                                                         std::pmr::polymorphic_allocator<size_t>{resource()}});
+                predicate->append_child(expr::make_compare_expression(resource(), expr::compare_type::eq, column, id));
             }
+            auto built = expr::build_condition_graph(resource(), parameters, predicate.get(), entry->storage->types());
+            if (built.has_error()) {
+                result.emplace_back();
+                continue;
+            }
+            auto filter = std::make_unique<components::table::table_filter_t>(std::move(parameters),
+                                                                              components::graph_execution_context{},
+                                                                              std::move(built.value()),
+                                                                              expr::condition_kind::computed);
             // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
             // Catalog-read path: a scan_error degrades this key's entry to empty, matching the
             // not-owned/record-only fallback (callers handle empty entries).

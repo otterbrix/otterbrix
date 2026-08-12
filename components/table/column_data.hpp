@@ -87,12 +87,6 @@ namespace components::table {
                                       vector::indexing_vector_t& indexing,
                                       uint64_t count,
                                       bool allow_updates);
-        virtual void filter(uint64_t vector_index,
-                            column_scan_state& state,
-                            vector::vector_t& result,
-                            vector::indexing_vector_t& indexing,
-                            uint64_t& count,
-                            const table_filter_t& filter);
         virtual void filter_scan(uint64_t vector_index,
                                  column_scan_state& state,
                                  vector::vector_t& result,
@@ -117,8 +111,6 @@ namespace components::table {
 
         // `error` carries an out_of_memory error_t when a pin fails during the predicate check;
         // on error the bool return is meaningless and the scan loop stops.
-        virtual bool check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error);
-        virtual bool check_validity(int64_t row_id);
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);

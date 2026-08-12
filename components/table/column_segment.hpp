@@ -63,16 +63,7 @@ namespace components::table {
                   uint64_t result_offset,
                   scan_vector_type scan_type);
 
-        // Returns out_of_memory when a pin fails; otherwise the predicate result.
-        [[nodiscard]] core::result_wrapper_t<bool> check_predicate(int64_t row_id, const table_filter_t* filter);
         void fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
-
-        static uint64_t filter_indexing(vector::indexing_vector_t& indexing,
-                                        vector::vector_t& vector,
-                                        vector::unified_vector_format& uvf,
-                                        const table_filter_t& filter,
-                                        uint64_t scan_count,
-                                        uint64_t& approved_tuple_count);
 
         void skip(column_scan_state& state);
 

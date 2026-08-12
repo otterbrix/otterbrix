@@ -428,18 +428,6 @@ namespace components::table {
         fetch_row(pin.update_info(), row_in_vector, result, result_idx);
     }
 
-    bool update_segment_t::check_row(int64_t row_id, const table_filter_t* filter) {
-        uint64_t vector_index = static_cast<uint64_t>(row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
-        auto entry = update_node(vector_index);
-        if (!entry.is_set()) {
-            return true;
-        }
-        uint64_t row_in_vector =
-            static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-        auto pin = entry.pin();
-        return check_row(pin.update_info(), row_in_vector, filter);
-    }
-
     bool update_segment_t::row_is_updated(int64_t row_id) {
         uint64_t vector_index = static_cast<uint64_t>(row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
         auto entry = update_node(vector_index);
@@ -621,16 +609,4 @@ namespace components::table {
         });
     }
 
-    bool update_segment_t::check_row_validity(update_info_t& info, uint64_t row_index, const table_filter_t* filter) {
-        bool result = true;
-        update_info_t::update_for_transaction(info, [&](update_info_t* current) {
-            auto info_data = current->data<bool>();
-            auto tuples = current->tuples();
-            auto it = std::lower_bound(tuples, tuples + current->N, row_index);
-            if (it != tuples + current->N && *it == row_index) {
-                result = table_filter_dispatch(filter, info_data[it - tuples]);
-            }
-        });
-        return result;
-    }
 } // namespace components::table

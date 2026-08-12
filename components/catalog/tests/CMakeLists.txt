@@ -9,7 +9,6 @@ set(${PROJECT_NAME}_SOURCES
         # cover only the structural primitives.
         test_identity_primitives.cpp
         test_oids.cpp
-        test_set_membership_filter.cpp
         test_system_schemas.cpp
         test_type_spec_roundtrip.cpp
 )

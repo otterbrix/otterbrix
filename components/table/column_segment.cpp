@@ -296,61 +296,6 @@ namespace components::table {
             result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
         }
 
-        template<typename T>
-        core::result_wrapper_t<bool>
-        fixed_size_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                return pinned.convert_error<bool>();
-            }
-            auto& handle = pinned.value();
-
-            auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
-            return table_filter_dispatch(filter, *reinterpret_cast<T*>(data_ptr));
-        }
-
-        core::result_wrapper_t<bool>
-        validity_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
-            assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                return pinned.convert_error<bool>();
-            }
-            auto& handle = pinned.value();
-            auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
-
-            return table_filter_dispatch(filter, mask.row_is_valid(static_cast<uint64_t>(row_id)));
-        }
-
-        core::result_wrapper_t<bool> string_check_row(column_segment_t& segment,
-                                                      column_fetch_state& state,
-                                                      int64_t row_id,
-                                                      const table_filter_t* filter) {
-            auto* handle_ptr = state.get_or_insert_handle(segment);
-            if (!handle_ptr) {
-                return state.fetch_error; // implicit error_t -> result_wrapper_t<bool>
-            }
-            auto& handle = *handle_ptr;
-
-            auto baseptr = handle.ptr() + segment.block_offset();
-            auto dict = dictionary(segment, handle);
-            auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
-
-            auto dict_offset = base_data[row_id];
-            uint32_t string_length;
-            if (row_id == 0) {
-                string_length = static_cast<uint32_t>(std::abs(dict_offset));
-            } else {
-                string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
-            }
-
-            return table_filter_dispatch(filter,
-                                         fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
-        }
-
         struct standard_fixed_size_t {
             template<typename T>
             static void append(std::byte* target,
@@ -1091,63 +1036,6 @@ namespace components::table {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
         }
     }
-    core::result_wrapper_t<bool> column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
-        if (compression_ == compression::compression_type::CONSTANT) {
-            // For CONSTANT segments, all rows have the same value at offset 0.
-            // Rewrite row_id to 0 so the check reads from the single stored value.
-            row_id = start;
-        }
-        if (compression_ == compression::compression_type::RLE ||
-            compression_ == compression::compression_type::DICTIONARY) {
-            // For compressed segments, per-row predicate check on raw block data doesn't work.
-            // Return true (accept the row) — correctness is maintained by the filter
-            // evaluating on the fully scanned/decompressed data.
-            return true;
-        }
-        switch (type.to_physical_type()) {
-            case types::physical_type::BOOL:
-                return impl::fixed_size_check_row<bool>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::INT8:
-                return impl::fixed_size_check_row<int8_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::INT16:
-                return impl::fixed_size_check_row<int16_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::INT32:
-                return impl::fixed_size_check_row<int32_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::INT64:
-                return impl::fixed_size_check_row<int64_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::UINT8:
-                return impl::fixed_size_check_row<uint8_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::UINT16:
-                return impl::fixed_size_check_row<uint16_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::UINT32:
-                return impl::fixed_size_check_row<uint32_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::UINT64:
-                return impl::fixed_size_check_row<uint64_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::INT128:
-                return impl::fixed_size_check_row<types::int128_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::UINT128:
-                return impl::fixed_size_check_row<types::uint128_t>(*this,
-                                                                    static_cast<int64_t>(row_id - start),
-                                                                    filter);
-            case types::physical_type::FLOAT:
-                return impl::fixed_size_check_row<float>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::DOUBLE:
-                return impl::fixed_size_check_row<double>(*this, static_cast<int64_t>(row_id - start), filter);
-            // case types::physical_type::INTERVAL:
-            // return impl::fixed_size_check_row<interval_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::LIST:
-                return impl::fixed_size_check_row<uint64_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::BIT:
-                return impl::validity_check_row(*this, static_cast<int64_t>(row_id - start), filter);
-            case types::physical_type::STRING: {
-                column_fetch_state state;
-                return impl::string_check_row(*this, state, static_cast<int64_t>(row_id - start), filter);
-            }
-            default:
-                throw std::logic_error("Unsupported type for FixedSizeUncompressed::GetFunction");
-        }
-    }
-
     void column_segment_t::fetch_row(column_fetch_state& state,
                                      int64_t row_id,
                                      vector::vector_t& result,
@@ -1277,26 +1165,6 @@ namespace components::table {
         return result_count;
     }
 
-    // Regex has no SIMD form; match each string row with regex_filter_t::matches (RE2, compiled once).
-    // Mirrors filter_selection but folds validity + regex match into one per-row test.
-    static uint64_t filter_selection_regex(vector::unified_vector_format& uvf,
-                                           const regex_filter_t& filter,
-                                           vector::indexing_vector_t& sel,
-                                           uint64_t approved_tuple_count,
-                                           vector::indexing_vector_t& result_sel) {
-        auto& mask = uvf.validity;
-        auto vec = uvf.get_data<std::string_view>();
-        uint64_t result_count = 0;
-        for (uint64_t i = 0; i < approved_tuple_count; i++) {
-            auto idx = sel.get_index(i);
-            auto vector_idx = uvf.referenced_indexing->get_index(idx);
-            bool matched = mask.row_is_valid(vector_idx) && filter.matches(vec[vector_idx]);
-            result_sel.set_index(result_count, idx);
-            result_count += matched;
-        }
-        return result_count;
-    }
-
     template<class T>
     static void filter_selection_switch(vector::unified_vector_format& uvf,
                                         T predicate,
@@ -1407,125 +1275,6 @@ namespace components::table {
                 throw std::logic_error("Unknown comparison type for filter");
         }
         indexing = new_indexing;
-    }
-    uint64_t column_segment_t::filter_indexing(vector::indexing_vector_t& indexing,
-                                               vector::vector_t& vector,
-                                               vector::unified_vector_format& uvf,
-                                               const table_filter_t& filter,
-                                               uint64_t,
-                                               uint64_t& approved_tuple_count) {
-        assert(filter.filter_type != expressions::compare_type::invalid);
-        assert(!is_union_compare_condition(filter.filter_type));
-        // set_membership_filter_t doesn't fit the single-predicate vectorized path —
-        // it has multiple values, requiring per-row contains() rather than a SIMD compare.
-        // Until M4 wires a vectorized IN-list path here, fall through to the row-based
-        // check_row dispatch (which IS set_membership_filter_t-aware via table_filter_dispatch).
-        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
-            return approved_tuple_count;
-        }
-        // Regex is a per-row match, not a SIMD compare — filter_selection_switch has no regex case (it would
-        // throw). Evaluate it here with regex_filter_t::matches (RE2) so the vectorized path is CORRECT:
-        // declining (returning the count unchanged) would wrongly pass every row, because column_data_t::filter
-        // has no row-based fallback after this call. Checked before the constant_filter cast: filter_type ==
-        // regex is unique to regex_filter_t, so the cast below is safe.
-        if (filter.filter_type == expressions::compare_type::regex) {
-            vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
-            approved_tuple_count = filter_selection_regex(uvf,
-                                                          filter.cast<regex_filter_t>(),
-                                                          indexing,
-                                                          approved_tuple_count,
-                                                          new_indexing);
-            indexing = new_indexing;
-            return approved_tuple_count;
-        }
-        auto& constant_filter = filter.cast<constant_filter_t>();
-        switch (vector.type().to_physical_type()) {
-            case types::physical_type::UINT8: {
-                auto predicate = constant_filter.constant.value<uint8_t>();
-                filter_selection_switch<uint8_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::UINT16: {
-                auto predicate = constant_filter.constant.value<uint16_t>();
-                filter_selection_switch<uint16_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::UINT32: {
-                auto predicate = constant_filter.constant.value<uint32_t>();
-                filter_selection_switch<uint32_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::UINT64: {
-                auto predicate = constant_filter.constant.value<uint64_t>();
-                filter_selection_switch<uint64_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::UINT128: {
-                auto predicate = constant_filter.constant.value<types::uint128_t>();
-                filter_selection_switch<types::uint128_t>(uvf,
-                                                          predicate,
-                                                          indexing,
-                                                          approved_tuple_count,
-                                                          filter.filter_type);
-                break;
-            }
-            case types::physical_type::INT8: {
-                auto predicate = constant_filter.constant.value<int8_t>();
-                filter_selection_switch<int8_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::INT16: {
-                auto predicate = constant_filter.constant.value<int16_t>();
-                filter_selection_switch<int16_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::INT32: {
-                auto predicate = constant_filter.constant.value<int32_t>();
-                filter_selection_switch<int32_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::INT64: {
-                auto predicate = constant_filter.constant.value<int64_t>();
-                filter_selection_switch<int64_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::INT128: {
-                auto predicate = constant_filter.constant.value<types::int128_t>();
-                filter_selection_switch<types::int128_t>(uvf,
-                                                         predicate,
-                                                         indexing,
-                                                         approved_tuple_count,
-                                                         filter.filter_type);
-                break;
-            }
-            case types::physical_type::FLOAT: {
-                auto predicate = constant_filter.constant.value<float>();
-                filter_selection_switch<float>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::DOUBLE: {
-                auto predicate = constant_filter.constant.value<double>();
-                filter_selection_switch<double>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            case types::physical_type::STRING: {
-                auto predicate = constant_filter.constant.value<std::string_view>();
-                filter_selection_switch<std::string_view>(uvf,
-                                                          predicate,
-                                                          indexing,
-                                                          approved_tuple_count,
-                                                          filter.filter_type);
-                break;
-            }
-            case types::physical_type::BOOL: {
-                auto predicate = constant_filter.constant.value<bool>();
-                filter_selection_switch<bool>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
-                break;
-            }
-            default:
-                throw std::logic_error("Invalid type for filter value");
-        }
-        return approved_tuple_count;
     }
 
     void column_segment_t::skip(column_scan_state& state) { state.internal_index = state.row_index; }

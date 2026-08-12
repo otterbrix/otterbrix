@@ -631,12 +631,11 @@ TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valu
     }
 }
 
-TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_stringify") {
-    // The disk-pushdown builder used to read every regex ANY/ALL pattern
-    // element with value<std::string_view>() — *reinterpret_cast<std::string*> over a BIGINT
-    // payload for `s LIKE ANY (SELECT int_col ...)` — instead of coercing a non-text element to
-    // the subject's string type the way the in-memory regex_any_predicate does. The element must
-    // stringify (BIGINT 12 -> pattern '12'), never be dereferenced as a string.
+TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_need_a_cast") {
+    // A LIKE ANY set holds patterns, so its elements must be text. `s LIKE ANY (SELECT bigint_col
+    // ...)` has no regexp_like(TEXT, BIGINT, TEXT) kernel and is rejected — the same answer
+    // PostgreSQL gives for `text ~~ bigint`. Nothing stringifies the elements implicitly; the
+    // conversion is spelled in the query, and then the sub-query is a pattern set like any other.
     auto config = test_create_config("/tmp/test_sql_features/like_any_non_string_elements");
     test_clear_directory(config);
     config.disk.on = false;
@@ -654,12 +653,27 @@ TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_str
     REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
     REQUIRE(run("INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, '12');")->is_success());
 
-    INFO("BIGINT sub-query elements stringify into LIKE patterns");
+    INFO("BIGINT sub-query elements are not patterns");
     {
-        // Elements {1, 12, 3} stringify to patterns '1', '12', '3'; only s = '12' matches one.
         auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT id FROM regexdb.t);");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("CAST in the sub-query target list makes it a pattern set");
+    {
+        // Elements {1, 12, 3} become patterns '1', '12', '3'; only s = '12' matches one.
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT CAST(id AS TEXT) FROM regexdb.t);");
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1); // the s = '12' row
+    }
+
+    INFO("the :: spelling resolves the same way");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT id::text FROM regexdb.t);");
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
     }
 }
 

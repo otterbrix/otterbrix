@@ -37,7 +37,7 @@ namespace components::table {
         , statistics_(resource, type_.type())
         , resource_(resource) {}
 
-    filter_propagate_result_t column_data_t::check_zonemap(column_scan_state&, table_filter_t& filter) {
+    filter_propagate_result_t column_data_t::check_zonemap(column_scan_state&, table_filter_t&) {
         if (!statistics_.has_stats()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
@@ -48,83 +48,12 @@ namespace components::table {
         if (has_updates()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        // set_membership_filter_t has multiple constants; zonemap pruning would need
-        // to compute min(values), max(values) and intersect with the segment range. Until
-        // Future wiring will add zonemap pruning; fall through to per-row dispatch (NO_PRUNING_POSSIBLE).
-        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
-        // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
-        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
-        // An expression_filter_t (WHERE f(col) OP const) has no single constant to bound a segment's
-        // [min,max] against, and its layout is not a constant_filter_t — never cast it here.
-        if (dynamic_cast<const expression_filter_t*>(&filter)) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
-
-        if (filter.filter_type == expressions::compare_type::eq ||
-            filter.filter_type == expressions::compare_type::gt ||
-            filter.filter_type == expressions::compare_type::gte ||
-            filter.filter_type == expressions::compare_type::lt ||
-            filter.filter_type == expressions::compare_type::lte) {
-            auto& constant_filter = filter.cast<constant_filter_t>();
-            const auto& constant = constant_filter.constant;
-            const auto& min = statistics_.min_value();
-            const auto& max = statistics_.max_value();
-            switch (filter.filter_type) {
-                case expressions::compare_type::eq:
-                    // eq is impossible if constant < min or constant > max
-                    if (constant < min || constant > max) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    break;
-                case expressions::compare_type::gt:
-                    // value > constant: impossible if max <= constant
-                    if (max <= constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    // always true if min > constant
-                    if (min > constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                case expressions::compare_type::gte:
-                    // value >= constant: impossible if max < constant
-                    if (max < constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (min >= constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                case expressions::compare_type::lt:
-                    // value < constant: impossible if min >= constant
-                    if (min >= constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (max < constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                case expressions::compare_type::lte:
-                    // value <= constant: impossible if min > constant
-                    if (min > constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (max <= constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
+        // The comparison used to come from a constant filter's (column, op, constant); a graph does
+        // not expose one yet, so nothing can be intersected with [min, max] here.
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
-    filter_propagate_result_t column_data_t::check_segment_zonemap(column_scan_state& state, table_filter_t& filter) {
+    filter_propagate_result_t column_data_t::check_segment_zonemap(column_scan_state& state, table_filter_t&) {
         if (!state.current || !state.current->segment_statistics().has_stats()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
@@ -132,71 +61,7 @@ namespace components::table {
         if (!seg_stats.has_stats() || seg_stats.min_value().is_null() || seg_stats.max_value().is_null()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        // See check_zonemap above — set_membership_filter_t needs min(values)/max(values)
-        // intersection logic, deferred to M4. Until then, no pruning for IN-list filters.
-        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
-        // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
-        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
-        // expression_filter_t is not a constant_filter_t and carries no single bound — no pruning.
-        if (dynamic_cast<const expression_filter_t*>(&filter)) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
-
-        if (filter.filter_type == expressions::compare_type::eq ||
-            filter.filter_type == expressions::compare_type::gt ||
-            filter.filter_type == expressions::compare_type::gte ||
-            filter.filter_type == expressions::compare_type::lt ||
-            filter.filter_type == expressions::compare_type::lte) {
-            auto& constant_filter = filter.cast<constant_filter_t>();
-            const auto& constant = constant_filter.constant;
-            const auto& min = seg_stats.min_value();
-            const auto& max = seg_stats.max_value();
-            switch (filter.filter_type) {
-                case expressions::compare_type::eq:
-                    if (constant < min || constant > max) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    break;
-                case expressions::compare_type::gt:
-                    if (max <= constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (min > constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                case expressions::compare_type::gte:
-                    if (max < constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (min >= constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                case expressions::compare_type::lt:
-                    if (min >= constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (max < constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                case expressions::compare_type::lte:
-                    if (min > constant) {
-                        return filter_propagate_result_t::ALWAYS_FALSE;
-                    }
-                    if (max <= constant) {
-                        return filter_propagate_result_t::ALWAYS_TRUE;
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
+        // See check_zonemap above — no bound to intersect with [min, max] while a filter is a graph.
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
@@ -353,19 +218,6 @@ namespace components::table {
         result.slice(indexing, s_count);
     }
 
-    void column_data_t::filter(uint64_t vector_index,
-                               column_scan_state& state,
-                               vector::vector_t& result,
-                               vector::indexing_vector_t& indexing,
-                               uint64_t& count,
-                               const table_filter_t& filter) {
-        uint64_t scan_count = scan(vector_index, state, result);
-
-        vector::unified_vector_format uvf(result.resource(), scan_count);
-        result.to_unified_format(scan_count, uvf);
-        column_segment_t::filter_indexing(indexing, result, uvf, filter, scan_count, count);
-    }
-
     void column_data_t::filter_scan(uint64_t vector_index,
                                     column_scan_state& state,
                                     vector::vector_t& result,
@@ -518,79 +370,6 @@ namespace components::table {
         count_ = static_cast<uint64_t>(start_row - start_);
         segment->next = nullptr;
         transient.revert_append(static_cast<uint64_t>(start_row));
-    }
-
-    bool column_data_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
-        if (updates_ &&
-            updates_->has_updates(static_cast<uint64_t>(row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
-            // The vector has some updated rows. Check if THIS specific row is updated.
-            if (updates_->row_is_updated(row_id)) {
-                // Row is in the update overlay — check against the updated value only
-                return updates_->check_row(row_id, filter);
-            }
-        }
-        // STRUCT columns store child data in sub_columns, not in data_ segments — fetch the full value
-        // STRUCT/ARRAY/LIST columns store their payload in child columns, not in the
-        // data_ segments, so a whole-value predicate (e.g. WHERE v = ARRAY[...]) must
-        // materialize the full row value via fetch_row and compare it — the segment path
-        // below would call the unimplemented array/list fetch().
-        if (type_.to_physical_type() == types::physical_type::STRUCT ||
-            type_.to_physical_type() == types::physical_type::ARRAY ||
-            type_.to_physical_type() == types::physical_type::LIST) {
-            column_fetch_state fetch_state;
-            vector::vector_t result(resource_, type_, 1);
-            fetch_row(fetch_state, row_id, result, 0);
-            if (fetch_state.fetch_error.contains_error()) {
-                error = fetch_state.fetch_error;
-                return false;
-            }
-            if (!result.validity().row_is_valid(0)) {
-                return false;
-            }
-            if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                return set->contains(result.value(0));
-            }
-            return filter->cast<constant_filter_t>().compare(result.value(0));
-        }
-        auto segment = data_.get_segment(row_id);
-        // For compressed segments, fetch the actual decompressed value
-        auto comp = segment->compression();
-        if (comp == compression::compression_type::RLE || comp == compression::compression_type::DICTIONARY) {
-            column_fetch_state fetch_state;
-            vector::vector_t result(resource_, type_, 1);
-            fetch_row(fetch_state, row_id, result, 0);
-            if (fetch_state.fetch_error.contains_error()) {
-                error = fetch_state.fetch_error;
-                return false;
-            }
-            if (!result.validity().row_is_valid(0)) {
-                return false;
-            }
-            // Dispatch handles constant_filter_t, set_membership_filter_t, and the string-only regex_filter_t.
-            if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                return set->contains(result.value(0));
-            }
-            if (filter->filter_type == expressions::compare_type::regex) {
-                auto cell = result.value(0); // bind before value<string_view>() (chunk value is a temporary)
-                return filter->cast<regex_filter_t>().matches(cell.value<std::string_view>());
-            }
-            const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(result.value(0));
-        }
-        auto checked = segment->check_predicate(row_id, filter);
-        if (checked.has_error()) {
-            error = checked.error();
-            return false;
-        }
-        return checked.value();
-    }
-
-    bool column_data_t::check_validity(int64_t row_id) {
-        // Fetch a single row to check validity
-        column_fetch_state fetch_state;
-        vector::vector_t result(resource_, type_, 1);
-        fetch_row(fetch_state, row_id, result, 0);
-        return result.validity().row_is_valid(0);
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {

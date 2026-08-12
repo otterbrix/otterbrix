@@ -287,8 +287,11 @@ namespace components::execution_graph {
         // Feed one chunk. Call finalize to get results
         core::error_t process(const vector::data_chunk_t& input, const graph_execution_context& context);
         // count -> size of whole batch
-        // TODO: store accumulated count
         core::result_wrapper_t<vector::data_chunk_t> finalize(const graph_execution_context& context, uint64_t count);
+        core::error_t finalize_inplace(const graph_execution_context& context,
+                                       uint64_t count,
+                                       vector::data_chunk_t* target,
+                                       uint64_t target_row);
 
         // -- inspection ------------------------------------------------------------------------
 
@@ -328,6 +331,7 @@ namespace components::execution_graph {
         node_id_t append(execution_node_ptr node);
         // Drives one node: settles its row count from its inputs, and processes the node
         core::error_t run(execution_node_t* node, const graph_execution_context& context, uint64_t ambient);
+        core::error_t reduce(const graph_execution_context& context, uint64_t* rows);
         // order nodes to be executed based on their data dependency
         core::error_t order_nodes();
         // processing after reduction node is meaningless, since count will be 0 until finalize is called

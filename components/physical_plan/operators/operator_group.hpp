@@ -164,6 +164,12 @@ namespace components::operators {
         std::unique_ptr<execution_graph::execution_graph_t> output_graph_;
         std::pmr::vector<types::complex_logical_type> input_types_{resource_};
 
+        // Gather scratch, reused across chunks. (group, row) pairs for ONE input chunk, sorted so
+        // each group's rows are contiguous; the gather then touches only the groups that chunk
+        // actually contains. Both are sized once and refilled, never reallocated per chunk.
+        std::pmr::vector<std::pair<uint32_t, uint32_t>> gather_order_{resource_};
+        vector::indexing_vector_t gather_indexing_{resource_, vector::DEFAULT_VECTOR_CAPACITY};
+
         core::error_t build_output_graph(pipeline::context_t* pipeline_context, const vector::data_chunk_t& probe);
     };
 

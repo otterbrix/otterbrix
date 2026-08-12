@@ -1,5 +1,6 @@
 #include "operator_group.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -110,63 +111,6 @@ namespace components::operators {
             return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
 
-        // Row-wise concatenation of the per-batch gathers of ONE group into a sequence
-        // of <=DEFAULT_VECTOR_CAPACITY chunks (same schema; total cardinality = sum of
-        // parts). CORE INVARIANT: a data_chunk_t may never be constructed with capacity
-        // > DEFAULT_VECTOR_CAPACITY (data_chunk.cpp:16 asserts and aborts), so a group
-        // whose rows exceed 1024 must NOT be fused into one chunk. The aggregate batch
-        // path treats every chunk of one compute() batch as the SAME logical group:
-        // aggregate_executor consumes+merges each chunk into one running state and
-        // finalizes once (kernel_executor.cpp:197), so the parts fold to a single value
-        // regardless of how the group's rows are split. Rows (and row_ids) are appended
-        // with the same vector_ops::copy primitive the gather step uses, in order, so
-        // the folded value matches the legacy single-fused-chunk path exactly.
-        chunks_vector_t concat_parts_into_batches(std::pmr::memory_resource* resource, chunks_vector_t& parts) {
-            assert(!parts.empty());
-            uint64_t total = 0;
-            for (auto& part : parts) {
-                total += part.size();
-            }
-            auto types = parts.front().types();
-            size_t col_count = types.size();
-            chunks_vector_t out(resource);
-            if (total == 0) {
-                vector::data_chunk_t empty(resource, types, 1);
-                empty.set_cardinality(0);
-                out.emplace_back(std::move(empty));
-                return out;
-            }
-            out.reserve((total + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY);
-            // Flatten the group's rows into back-to-back <=1024-row chunks. A source part
-            // may straddle a chunk boundary, so copy it in (possibly two) windows.
-            uint64_t part_idx = 0;
-            uint64_t part_pos = 0; // rows already copied out of parts[part_idx]
-            uint64_t remaining = total;
-            while (remaining > 0) {
-                uint64_t cap = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, remaining);
-                vector::data_chunk_t chunk(resource, types, cap);
-                chunk.set_cardinality(cap);
-                uint64_t filled = 0;
-                while (filled < cap) {
-                    while (part_idx < parts.size() && parts[part_idx].size() == part_pos) {
-                        part_idx++;
-                        part_pos = 0;
-                    }
-                    auto& part = parts[part_idx];
-                    uint64_t avail = part.size() - part_pos;
-                    uint64_t take = std::min<uint64_t>(avail, cap - filled);
-                    for (size_t c = 0; c < col_count; c++) {
-                        vector::vector_ops::copy(part.data[c], chunk.data[c], take, part_pos, filled);
-                    }
-                    vector::vector_ops::copy(part.row_ids, chunk.row_ids, take, part_pos, filled);
-                    part_pos += take;
-                    filled += take;
-                }
-                remaining -= cap;
-                out.emplace_back(std::move(chunk));
-            }
-            return out;
-        }
     } // anonymous namespace
 
     operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log)
@@ -374,32 +318,43 @@ namespace components::operators {
         if (n > 0) {
             auto in_types = input.types();
             size_t col_count = in_types.size();
-            // Stable per-group row lists for this chunk.
-            std::pmr::vector<std::pmr::vector<uint64_t>> rows_by_group(resource_);
-            rows_by_group.resize(group_count_, std::pmr::vector<uint64_t>(resource_));
+
+            // Sort this chunk's (group, row) pairs and emit one gather per run of equal group.
+            // The previous shape allocated a row list per group and then walked ALL group_count_
+            // groups for every chunk, which made the gather O(chunks * groups) — at 500k distinct
+            // keys that is ~122M inner-vector constructions for 500k rows of work. Sorting is
+            // O(n log n) over at most DEFAULT_VECTOR_CAPACITY pairs and touches only the groups
+            // present in this chunk, so the gather is O(rows) again.
+            // std::pair orders by group then row, so rows stay in ascending order within a group
+            // — the same per-group order the row-list build produced.
+            gather_order_.clear();
+            gather_order_.reserve(n);
             for (uint64_t r = 0; r < n; r++) {
-                rows_by_group[gids[r]].push_back(r);
+                gather_order_.emplace_back(gids[r], static_cast<uint32_t>(r));
             }
-            for (size_t g = 0; g < group_count_; g++) {
-                auto& rows = rows_by_group[g];
-                if (rows.empty()) {
-                    continue;
+            std::sort(gather_order_.begin(), gather_order_.end());
+
+            for (size_t begin = 0; begin < gather_order_.size();) {
+                const uint32_t group = gather_order_[begin].first;
+                size_t end = begin;
+                while (end < gather_order_.size() && gather_order_[end].first == group) {
+                    end++;
                 }
-                uint64_t cnt = static_cast<uint64_t>(rows.size());
+                const uint64_t cnt = static_cast<uint64_t>(end - begin);
+                for (uint64_t i = 0; i < cnt; i++) {
+                    gather_indexing_.data()[i] = gather_order_[begin + i].second;
+                }
                 vector::data_chunk_t grp(resource_, in_types, cnt);
                 grp.set_cardinality(cnt);
-                vector::indexing_vector_t indexing(resource_, cnt);
-                for (uint64_t i = 0; i < cnt; i++) {
-                    indexing.data()[i] = rows[i];
-                }
                 for (size_t c = 0; c < col_count; c++) {
                     if (is_placeholder(input.data[c])) {
                         continue;
                     }
-                    vector::vector_ops::copy(input.data[c], grp.data[c], indexing, cnt, 0, 0);
+                    vector::vector_ops::copy(input.data[c], grp.data[c], gather_indexing_, cnt, 0, 0);
                 }
-                vector::vector_ops::copy(input.row_ids, grp.row_ids, indexing, cnt, 0, 0);
-                gathered_rows_per_group_[g].emplace_back(std::move(grp));
+                vector::vector_ops::copy(input.row_ids, grp.row_ids, gather_indexing_, cnt, 0, 0);
+                gathered_rows_per_group_[group].emplace_back(std::move(grp));
+                begin = end;
             }
         }
 
@@ -412,19 +367,39 @@ namespace components::operators {
             return;
         }
 
+        // Every group runs the same graph over the same schema and produces 1 row
+        // We can pack up to DEFAULT_VACTOR_CAPACITY into one chunk without extra allocations
+        const vector::data_chunk_t* schema_probe = nullptr;
+        for (size_t group = 0; group < num_groups && schema_probe == nullptr; group++) {
+            if (!gathered_rows_per_group_[group].empty()) {
+                schema_probe = &gathered_rows_per_group_[group].front();
+            }
+        }
+        if (schema_probe == nullptr) {
+            return;
+        }
+        if (auto error = build_output_graph(pipeline_context, *schema_probe); error.contains_error()) {
+            set_error(error);
+            return;
+        }
+        output_graph_->set_parameters(&pipeline_context->parameters.parameters);
+
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        chunks_vector_t emitted(resource_);
+        out_types.reserve(output_graph_->output_slots().size());
+        for (auto slot : output_graph_->output_slots()) {
+            out_types.push_back(output_graph_->slot_type(slot));
+        }
+        if (output_types_.size() == out_types.size()) {
+            out_types = output_types_;
+        }
+        vector::data_chunk_t batch(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
+        uint64_t batch_rows = 0;
+
         for (size_t group = 0; group < num_groups; group++) {
             auto& parts = gathered_rows_per_group_[group];
             if (parts.empty()) {
                 continue;
             }
-            // TODO: each group should have the same column types
-            if (auto error = build_output_graph(pipeline_context, parts.front()); error.contains_error()) {
-                set_error(error);
-                return;
-            }
-            output_graph_->set_parameters(&pipeline_context->parameters.parameters);
             uint64_t group_rows = 0;
             for (const auto& chunk : parts) {
                 if (auto error = output_graph_->process(chunk, pipeline_context->execution_context);
@@ -434,28 +409,25 @@ namespace components::operators {
                 }
                 group_rows += chunk.size();
             }
-            auto computed = output_graph_->finalize(pipeline_context->execution_context, group_rows);
-            if (computed.has_error()) {
-                set_error(computed.error());
+            if (batch_rows == vector::DEFAULT_VECTOR_CAPACITY) {
+                batch.set_cardinality(batch_rows);
+                out.emplace_back(std::move(batch));
+                batch = vector::data_chunk_t(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
+                batch_rows = 0;
+            }
+            if (auto error = output_graph_->finalize_inplace(pipeline_context->execution_context,
+                                                             group_rows,
+                                                             &batch,
+                                                             batch_rows);
+                error.contains_error()) {
+                set_error(error);
                 return;
             }
-            if (out_types.empty()) {
-                out_types =
-                    output_types_.size() == computed.value().data.size() ? output_types_ : computed.value().types();
-            }
-            // .finalize() does not copy data by itself
-            vector::data_chunk_t single(resource_, out_types, 1);
-            single.set_cardinality(1);
-            for (size_t column = 0; column < computed.value().data.size(); column++) {
-                vector::vector_ops::copy(computed.value().data[column], single.data[column], 1, 0, 0);
-            }
-            emitted.emplace_back(std::move(single));
+            batch_rows++;
         }
-        if (emitted.empty()) {
-            return;
-        }
-        for (auto& chunk : concat_parts_into_batches(resource_, emitted)) {
-            out.emplace_back(std::move(chunk));
+        if (batch_rows > 0) {
+            batch.set_cardinality(batch_rows);
+            out.emplace_back(std::move(batch));
         }
     }
 

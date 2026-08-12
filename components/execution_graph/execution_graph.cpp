@@ -833,21 +833,19 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<vector::data_chunk_t> execution_graph_t::finalize(const graph_execution_context& context,
-                                                                             uint64_t count) {
+    core::error_t execution_graph_t::reduce(const graph_execution_context& context, uint64_t* rows) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: finalize() before prepare()", resource()});
         }
-        uint64_t rows = count;
         for (auto node : order_) {
-            auto error = nodes_[node]->finalize(context, &rows);
+            auto error = nodes_[node]->finalize(context, rows);
             if (error.contains_error()) {
                 return error;
             }
         }
         for (auto node : above_reduction_) {
-            auto error = run(nodes_[node].get(), context, rows);
+            auto error = run(nodes_[node].get(), context, *rows);
             if (error.contains_error()) {
                 return error;
             }
@@ -857,7 +855,41 @@ namespace components::execution_graph {
             emitted = std::min(emitted, slot_sizes_[slot]);
         }
         if (emitted != unconstrained_rows) {
-            rows = emitted;
+            *rows = emitted;
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t execution_graph_t::finalize_inplace(const graph_execution_context& context,
+                                                      uint64_t count,
+                                                      vector::data_chunk_t* target,
+                                                      uint64_t target_row) {
+        uint64_t rows = count;
+        if (auto error = reduce(context, &rows); error.contains_error()) {
+            return error;
+        }
+        if (target->column_count() < output_slots_.size()) {
+            return core::error_t(
+                core::error_code_t::schema_error,
+                std::pmr::string{"execution graph: finalize target has fewer columns than the graph outputs",
+                                 resource()});
+        }
+        if (target_row + rows > target->capacity()) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"execution graph: finalize target cannot hold the outputs at that row", resource()});
+        }
+        for (size_t index = 0; index < output_slots_.size(); index++) {
+            vector::vector_ops::copy(data_storage_[output_slots_[index]], target->data[index], rows, 0, target_row);
+        }
+        return core::error_t::no_error();
+    }
+
+    core::result_wrapper_t<vector::data_chunk_t> execution_graph_t::finalize(const graph_execution_context& context,
+                                                                             uint64_t count) {
+        uint64_t rows = count;
+        if (auto error = reduce(context, &rows); error.contains_error()) {
+            return error;
         }
         std::pmr::vector<types::complex_logical_type> output_types(resource_);
         output_types.reserve(output_slots_.size());

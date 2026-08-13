@@ -50,29 +50,37 @@ namespace components::compute {
     }
 
     aggregate_kernel::aggregate_kernel(kernel_signature_t signature,
-                                       kernel_init_fn init,
-                                       aggregate_consume_fn consume,
-                                       aggregate_merge_fn merge,
+                                       aggregate_layout_fn layout,
+                                       aggregate_update_fn update,
                                        aggregate_finalize_fn finalize)
-        : compute_kernel(std::move(signature), init)
-        , consume_(consume)
-        , merge_(merge)
+        : compute_kernel(std::move(signature))
+        , layout_(layout)
+        , update_(update)
         , finalize_(finalize) {
-        if (!init_) {
-            throw std::logic_error("Aggregate kernels require init function!");
+        if (!layout_ || !update_ || !finalize_) {
+            throw std::logic_error("Aggregate kernels require a state layout, an update and a finalize!");
         }
     }
 
-    core::error_t aggregate_kernel::consume(kernel_context& ctx, const data_chunk_t& input) const {
-        return consume_(ctx, input);
+    aggregate_state_layout_t
+    aggregate_kernel::state_layout(const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        return layout_(inputs);
     }
 
-    core::error_t
-    aggregate_kernel::merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state& into) const {
-        return merge_(ctx, std::move(from), into);
+    core::error_t aggregate_kernel::update(kernel_context& ctx,
+                                           const data_chunk_t& input,
+                                           core::span<const uint32_t> groups,
+                                           aggregate_states_t states) const {
+        return update_(ctx, input, groups, states);
     }
 
-    core::error_t aggregate_kernel::finalize(aggregate_kernel_context& ctx) const { return finalize_(ctx); }
+    core::error_t aggregate_kernel::finalize(kernel_context& ctx,
+                                             aggregate_states_t states,
+                                             uint64_t first,
+                                             uint64_t count,
+                                             vector_t& output) const {
+        return finalize_(ctx, states, first, count, output);
+    }
 
     row_kernel::row_kernel(kernel_signature_t signature, row_exec_fn exec, kernel_init_fn init)
         : compute_kernel(std::move(signature), init)

@@ -4,7 +4,6 @@
 #include <components/expressions/forward.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <memory_resource>
-#include <unordered_map>
 
 #include <components/expressions/execution_graph_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -97,14 +96,9 @@ namespace components::operators {
 
         void set_input_types(const std::pmr::vector<types::complex_logical_type>& types);
 
-        // --- Push-based streaming pipeline (STEP 3) ---
-        // GROUP BY / aggregation folds an unbounded input into a bounded set of group
-        // rows, so it is a SINK. Unlike a buffer-everything sink, this one accumulates
-        // INCREMENTALLY: push() folds each input batch into the running group table
-        // (typed per-group aggregate accumulators), appending nothing to out;
-        // finalize() materializes the accumulated groups into the result chunk(s).
-        // State is bounded by the number of GROUPS, not by the input row count, so a
-        // 4-table-join + GROUP BY no longer materializes every intermediate row.
+        // GROUP BY folds an unbounded input into a bounded set of group rows, so it is a SINK:
+        // push() folds each batch into the group table and appends nothing, finalize() emits the
+        // groups.
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
@@ -115,62 +109,49 @@ namespace components::operators {
         std::pmr::vector<expressions::expression_ptr> outputs_;
         // Plan-time resolved output types by final output position (see set_output_types).
         std::pmr::vector<types::complex_logical_type> output_types_;
-
-        // --- Incremental hash-aggregate group table (R1-b: typed HASH+VERIFY) ---
-        // A group is identified by a uint64 TYPED hash of its key cells; collisions
-        // resolve by storing the candidate key cells (one row per group in
-        // group_key_chunk_) and VERIFYING with a typed cell-by-cell comparison. No
-        // logical_value_t in the per-row accumulate hot path.
-        bool plan_built_ = false; // first-push lazy init of the key chunk
-        bool any_input_ = false;  // at least one input batch was pushed
-        size_t group_count_ = 0;  // number of live groups
-        size_t key_count_ = 0;    // number of group-key columns
-
-        // Candidate key cells, one row per group. Column types come from the first
-        // probe chunk's key columns (stable, never NA), so output key types are read
-        // straight off this chunk — no group_keys_[0][k].type() NA hazard.
-        // Held by pointer because data_chunk_t has no default ctor and its schema is
-        // only known on first push.
-        std::pmr::vector<vector::data_chunk_t> group_key_chunk_storage_; // 0 or 1 element
-        std::pmr::unordered_map<uint64_t, std::pmr::vector<uint32_t>> group_hash_index_;
-
-        std::pmr::vector<chunks_vector_t> gathered_rows_per_group_;
-
-        // Folds one input batch into the running group table. Returns an error_t
-        // (no throw / no set_error on the streaming path). Computed-key columns are
-        // appended to `input` for the duration of the call.
-        core::error_t accumulate(pipeline::context_t* pipeline_context, vector::data_chunk_t& input);
-
-        // First-push lazy setup: resolve the per-aggregate plan + key column schema.
-        core::error_t build_plan(const vector::data_chunk_t& probe);
-
-        // Builds the per-input "probe" key chunk: column key -> referenced source
-        // column (zero copy); coalesce / case_when / multi-part path -> a derived
-        // column materialized via extract_key_value. One uniform chunk feeds the
-        // typed hash + typed verify for single- AND multi-column keys.
-        vector::data_chunk_t make_key_probe(const vector::data_chunk_t& input);
-
-        // Materializes the accumulated group table into <=DEFAULT_VECTOR_CAPACITY-group
-        // result chunks appended to `out` (key columns + finalized aggregates), running
-        // post-aggregate arithmetic + HAVING per slice. Slicing here (never building a
-        // chunk with capacity > 1024) is what keeps the data_chunk_t ctor invariant for
-        // an unbounded number of groups. Errors are reported via set_error()/has_error().
-        void materialize_groups(pipeline::context_t* pipeline_context, chunks_vector_t& out);
-
-        // Builds the single-row result for a global aggregate (no GROUP BY keys) over
-        // an EMPTY input — e.g. SELECT COUNT(*) FROM empty_table.
-        vector::data_chunk_t empty_aggregate_result(pipeline::context_t* pipeline_context);
-
-        std::unique_ptr<execution_graph::execution_graph_t> output_graph_;
         std::pmr::vector<types::complex_logical_type> input_types_{resource_};
 
-        // Gather scratch, reused across chunks. (group, row) pairs for ONE input chunk, sorted so
-        // each group's rows are contiguous; the gather then touches only the groups that chunk
-        // actually contains. Both are sized once and refilled, never reallocated per chunk.
-        std::pmr::vector<std::pair<uint32_t, uint32_t>> gather_order_{resource_};
-        vector::indexing_vector_t gather_indexing_{resource_, vector::DEFAULT_VECTOR_CAPACITY};
+        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        // Slots holding the grouping keys, in key order. The graph writes them per chunk (that is
+        // what gets hashed) and reads them back per group at finalize.
+        execution_graph::slot_list_t key_slots_{resource_};
 
-        core::error_t build_output_graph(pipeline::context_t* pipeline_context, const vector::data_chunk_t& probe);
+        // The group table. Keys live in fixed DEFAULT_VECTOR_CAPACITY-row blocks, so a group id
+        // splits into (block, row), growth appends a block, and no chunk ever exceeds the vector
+        // capacity. Group ids are handed out in discovery order.
+        std::pmr::vector<vector::data_chunk_t> key_blocks_;
+        uint64_t group_count_{0};
+
+        // Flat open-addressed index over the key blocks: power-of-two capacity, linear probing,
+        // the full hash stored beside the id. The hash only FILTERS — every candidate is verified
+        // cell by cell, because two different keys can hash alike and a key may be a struct or an
+        // array.
+        struct hash_entry_t {
+            uint64_t hash{0};
+            uint32_t group{empty_group};
+        };
+        static constexpr uint32_t empty_group{std::numeric_limits<uint32_t>::max()};
+        std::pmr::vector<hash_entry_t> index_;
+        uint64_t index_mask_{0};
+
+        // Per-chunk scratch, allocated once at plan time and refilled: the key columns the graph
+        // wrote (referenced, never copied), one hash per row, and each row's group id.
+        std::pmr::vector<vector::data_chunk_t> key_probe_;
+        std::pmr::vector<vector::vector_t> hashes_;
+        std::vector<uint64_t> key_columns_;
+        std::pmr::vector<uint32_t> row_groups_{resource_};
+
+        bool plan_built_{false};
+        bool any_input_{false};
+
+        // First-push setup: builds the graph over the input schema, declaring a slot per key.
+        core::error_t build_plan(pipeline::context_t* pipeline_context, const vector::data_chunk_t& probe);
+        // Finds or creates the group of every row of the current key columns, filling row_groups_.
+        core::error_t resolve_groups(vector::data_chunk_t& keys);
+        // Appends one group's key cells to the key blocks and indexes it.
+        void append_group(const vector::data_chunk_t& keys, uint64_t row, uint64_t hash);
+        void grow_index();
+        [[nodiscard]] bool keys_equal(const vector::data_chunk_t& keys, uint64_t row, uint32_t group) const;
     };
 
 } // namespace components::operators

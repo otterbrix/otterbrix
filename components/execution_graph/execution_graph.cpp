@@ -12,10 +12,6 @@ namespace components::execution_graph {
         : input_indices_(std::move(inputs), resource)
         , output_indices_(std::move(outputs), resource) {}
 
-    core::error_t execution_node_t::finalize(const graph_execution_context&, uint64_t*) {
-        return core::error_t::no_error();
-    }
-
     const vector::vector_t& execution_node_t::input(size_t n) const {
         assert(storage_ && "execution node is not attached to a graph storage");
         assert(input_indices_[n] < storage_->size());
@@ -86,18 +82,26 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    vector::data_chunk_t function_node_t::deduplicated(const vector::data_chunk_t& arguments, uint64_t count) {
-        std::pmr::vector<uint64_t> first_occurrences(resource());
-        first_occurrences.reserve(count);
-        for (uint64_t row = 0; row < count; row++) {
-            if (seen_.insert(arguments.data.front().value(row)).second) {
-                first_occurrences.push_back(row);
-            }
+    core::result_wrapper_t<uint64_t> function_node_t::select_distinct(const vector::data_chunk_t& arguments,
+                                                                      uint64_t count) {
+        if (!distinct_states_) {
+            distinct_states_.emplace(resource(), compute::aggregate_state_of<value_set_t>());
         }
-        vector::indexing_vector_t indexing(resource(), first_occurrences.data());
-        vector::data_chunk_t unique(resource(), arguments.types(), first_occurrences.size());
-        arguments.copy(unique, indexing, first_occurrences.size(), 0);
-        return unique;
+        distinct_states_->reserve(states_ ? states_->size() : 0);
+        auto sets = distinct_states_->states();
+        distinct_groups_.clear();
+        distinct_groups_.reserve(count);
+        uint64_t kept = 0;
+        for (uint64_t row = 0; row < count; row++) {
+            const uint32_t group = group_ids_[row];
+            if (!sets.at<value_set_t>(group).insert(arguments.data.front().value(row)).second) {
+                continue;
+            }
+            distinct_rows_.set_index(kept, row);
+            distinct_groups_.push_back(group);
+            kept++;
+        }
+        return kept;
     }
 
     vector::data_chunk_t function_node_t::argument_chunk(uint64_t count) const {
@@ -116,46 +120,46 @@ namespace components::execution_graph {
         return arguments;
     }
 
-    core::error_t function_node_t::finalize(const graph_execution_context&, uint64_t*) {
-        // for regular functions it is a no-op
-        if (!reduces_) {
+    core::error_t function_node_t::ensure_executor() {
+        if (executor_) {
             return core::error_t::no_error();
         }
-        if (!executor_) {
-            auto arguments = argument_chunk(0);
-            auto executor = function_->make_executor(resource(), arguments.types());
-            if (executor.has_error()) {
-                return executor.error();
-            }
-            executor_ = std::move(executor.value());
-            if (auto error = executor_->consume(arguments); error.contains_error()) {
-                return error;
-            }
+        auto arguments = argument_chunk(0);
+        auto executor = function_->make_executor(resource(), arguments.types(), nullptr, context_);
+        if (executor.has_error()) {
+            return executor.error();
         }
-        auto result = executor_->finalize();
+        executor_ = std::move(executor.value());
+        return core::error_t::no_error();
+    }
 
-        // Cleanup before next batch
-        executor_.reset();
-        seen_.clear();
-        if (result.has_error()) {
-            return result.error();
+    core::error_t function_node_t::reserve_groups(uint64_t group_count) {
+        assert(reduces_ && "only a reducing node accumulates per group");
+        if (auto error = ensure_executor(); error.contains_error()) {
+            return error;
         }
-        auto& produced = result.value();
-        types::logical_value_t value(resource(), types::logical_type::NA);
-        if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(produced)) {
-            auto& values = std::get<std::pmr::vector<types::logical_value_t>>(produced);
-            if (!values.empty()) {
-                value = std::move(values.front());
+        if (!states_) {
+            auto layout = executor_->state_layout();
+            if (layout.size == 0) {
+                return core::error_t(
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"execution graph: aggregate cannot accumulate its argument type", resource()});
             }
-        } else {
-            auto& chunk = std::get<vector::data_chunk_t>(produced);
-            if (!chunk.data.empty() && chunk.size() > 0) {
-                value = chunk.value(0, 0);
-            }
+            states_.emplace(resource(), layout);
         }
-        output(0).set_value(0, value);
-        // output size is always 1
-        set_output_size(0, 1);
+        states_->reserve(group_count);
+        return core::error_t::no_error();
+    }
+
+    core::error_t function_node_t::emit(uint64_t first, uint64_t count) {
+        assert(reduces_ && "only a reducing node emits accumulators");
+        if (auto error = reserve_groups(first + count); error.contains_error()) {
+            return error;
+        }
+        if (auto error = executor_->finalize(states_->states(), first, count, output(0)); error.contains_error()) {
+            return error;
+        }
+        set_output_size(0, count);
         return core::error_t::no_error();
     }
 
@@ -354,24 +358,37 @@ namespace components::execution_graph {
         , context_(resource)
         , distinct_(distinct)
         , reduces_(reduces)
-        , seen_(resource) {}
+        , distinct_rows_(resource, vector::DEFAULT_VECTOR_CAPACITY)
+        , distinct_groups_(resource) {}
 
     core::error_t function_node_t::process(const graph_execution_context&, uint64_t count) {
         auto arguments = argument_chunk(count);
-        if (distinct_ && !input_indices_.empty() && count > 0) {
-            arguments = deduplicated(arguments, count);
+        // The executor is built once and kept, so the accumulators survive across chunks
+        if (auto error = ensure_executor(); error.contains_error()) {
+            return error;
         }
-        // The executor is built once and kept, so kernel state survives across chunks
-        if (!executor_) {
-            auto executor = function_->make_executor(resource(), arguments.types(), nullptr, context_);
-            if (executor.has_error()) {
-                return executor.error();
-            }
-            executor_ = std::move(executor.value());
-        }
-        // A reduction accumulates here and produces its value in finalize().
+        // A reduction folds the chunk into one accumulator per group here and produces its values
+        // group by group in emit().
         if (reduces_) {
-            return executor_->consume(arguments);
+            if (count == 0) {
+                return core::error_t::no_error();
+            }
+            if (!states_) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"execution graph: the accumulators must be reserved before a chunk", resource()});
+            }
+            if (!distinct_ || input_indices_.empty()) {
+                return executor_->update(arguments, {group_ids_.data(), count}, states_->states());
+            }
+            auto kept = select_distinct(arguments, count);
+            if (kept.has_error()) {
+                return kept.error();
+            }
+            vector::data_chunk_t unique(resource(), arguments.types(), kept.value() > 0 ? kept.value() : 1);
+            arguments.copy(unique, distinct_rows_, kept.value(), 0);
+            unique.set_cardinality(kept.value());
+            return executor_->update(unique, {distinct_groups_.data(), kept.value()}, states_->states());
         }
         auto result = executor_->execute(arguments);
         if (result.has_error()) {
@@ -467,6 +484,7 @@ namespace components::execution_graph {
         , slots_(resource)
         , data_storage_(resource)
         , output_slots_(resource)
+        , reduction_nodes_(resource)
         , nodes_(resource)
         , order_(resource) {}
 
@@ -494,6 +512,12 @@ namespace components::execution_graph {
     }
 
     node_id_t execution_graph_t::add_field(slot_id_t input, const std::pmr::vector<size_t>& path) {
+        for (node_id_t id{0}; id < nodes_.size(); id++) {
+            const auto* field = dynamic_cast<const field_node_t*>(nodes_[id].get());
+            if (field != nullptr && field->input_indices().front() == input && field->path() == path) {
+                return id;
+            }
+        }
         auto output = declare_slot();
         return append(new field_node_t(resource_, std::pmr::vector<size_t>(path, resource_), input, output));
     }
@@ -729,37 +753,93 @@ namespace components::execution_graph {
             // a bound slot is referenced from the input chunk, so it needs no buffer of its own
             data_storage_.emplace_back(resource_, slot.type, !slot.bound, false, capacity_);
         }
-        for (auto& node : nodes_) {
-            node->set_storage(&data_storage_, slot_sizes_.data());
-            node->set_parameters(parameters_);
+        reduction_nodes_.clear();
+        for (node_id_t id{0}; id < nodes_.size(); id++) {
+            nodes_[id]->set_storage(&data_storage_, slot_sizes_.data());
+            nodes_[id]->set_parameters(parameters_);
+            if (nodes_[id]->reduces()) {
+                reduction_nodes_.push_back(id);
+            }
         }
-        split_at_reduction();
+        split_at_group();
+        single_group_.assign(capacity_, 0);
         prepared_ = true;
         return core::error_t::no_error();
     }
 
-    void execution_graph_t::split_at_reduction() {
-        below_reduction_.clear();
-        above_reduction_.clear();
+    void execution_graph_t::split_at_group() {
+        key_nodes_.clear();
+        chunk_nodes_.clear();
+        group_nodes_.clear();
 
-        std::pmr::vector<bool> reduced(slots_.size(), false, resource_);
+        // A slot carries a value per GROUP once it is a grouping key or a reduction's output, and
+        // the property spreads to whatever reads it.
+        std::pmr::vector<bool> grouped(slots_.size(), false, resource_);
+        for (auto slot : key_slots_) {
+            grouped[slot] = true;
+        }
+        std::pmr::vector<bool> reads_grouped(nodes_.size(), false, resource_);
         for (auto id : order_) {
             const auto& node = *nodes_[id];
-            bool reads_reduced = false;
             for (auto slot : node.input_indices()) {
-                reads_reduced = reads_reduced || reduced[slot];
+                reads_grouped[id] = reads_grouped[id] || grouped[slot];
             }
-            // The reduction itself runs BELOW: it is what consumes the per-chunk rows. Its OUTPUT
-            // is reduced, so everything reading it lands above.
             for (auto slot : node.output_indices()) {
-                reduced[slot] = node.reduces() || reads_reduced;
-            }
-            if (reads_reduced) {
-                above_reduction_.push_back(id);
-            } else {
-                below_reduction_.push_back(id);
+                grouped[slot] = grouped[slot] || node.reduces() || reads_grouped[id];
             }
         }
+
+        // Reading a key does not by itself make a node run per group: a reduction reading one
+        // still folds the group's ROWS (sum(k) over three rows is 3k, not k), and so does
+        // anything feeding a reduction. Both directions are settled by walking back from the key
+        // slots and from the reductions' arguments.
+        std::pmr::vector<bool> produces_key(nodes_.size(), false, resource_);
+        std::pmr::vector<bool> feeds_reduction(nodes_.size(), false, resource_);
+        std::pmr::vector<bool> wanted_by_key(slots_.size(), false, resource_);
+        std::pmr::vector<bool> wanted_by_reduction(slots_.size(), false, resource_);
+        for (auto slot : key_slots_) {
+            wanted_by_key[slot] = true;
+        }
+        for (auto id : reduction_nodes_) {
+            for (auto slot : nodes_[id]->input_indices()) {
+                wanted_by_reduction[slot] = true;
+            }
+        }
+        for (auto id = order_.rbegin(); id != order_.rend(); ++id) {
+            const auto& node = *nodes_[*id];
+            for (auto slot : node.output_indices()) {
+                produces_key[*id] = produces_key[*id] || wanted_by_key[slot];
+                feeds_reduction[*id] = feeds_reduction[*id] || wanted_by_reduction[slot];
+            }
+            for (auto slot : node.input_indices()) {
+                wanted_by_key[slot] = wanted_by_key[slot] || produces_key[*id];
+                wanted_by_reduction[slot] = wanted_by_reduction[slot] || feeds_reduction[*id];
+            }
+        }
+
+        for (auto id : order_) {
+            // A key is computed before the caller can group anything, and at finalize its slot is
+            // supplied by the caller instead, so a key node belongs to that pass alone.
+            if (produces_key[id]) {
+                key_nodes_.push_back(id);
+                continue;
+            }
+            const bool reduces = nodes_[id]->reduces();
+            if (!reads_grouped[id] || feeds_reduction[id] || reduces) {
+                chunk_nodes_.push_back(id);
+            }
+            // An expression over a key or a reduction result yields one value per group. The same
+            // node can also sit under a reduction (SELECT k + 1, sum(k + 1)), in which case it
+            // belongs to both passes: per row for the fold, per group for the output.
+            if (reads_grouped[id] && !reduces) {
+                group_nodes_.push_back(id);
+            }
+        }
+    }
+
+    void execution_graph_t::add_key_slot(slot_id_t slot) {
+        prepared_ = false;
+        key_slots_.push_back(slot);
     }
 
     core::error_t
@@ -791,8 +871,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t execution_graph_t::process(const vector::data_chunk_t& input,
-                                             const graph_execution_context& context) {
+    core::error_t execution_graph_t::bind_inputs(const vector::data_chunk_t& input) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: process() before prepare()", resource()});
@@ -822,9 +901,54 @@ namespace components::execution_graph {
             data_storage_[index].reference(column);
             slot_sizes_[index] = count;
         }
+        return core::error_t::no_error();
+    }
 
-        for (auto node : below_reduction_) {
-            auto error = run(nodes_[node].get(), context, count);
+    core::error_t execution_graph_t::process(const vector::data_chunk_t& input,
+                                             const graph_execution_context& context) {
+        // An ungrouped run is a grouped one over the single group 0.
+        if (auto error = reserve_groups(1); error.contains_error()) {
+            return error;
+        }
+        if (auto error = process_keys(input, context); error.contains_error()) {
+            return error;
+        }
+        return process_groups({single_group_.data(), input.size()}, context);
+    }
+
+    core::error_t execution_graph_t::process_keys(const vector::data_chunk_t& input,
+                                                  const graph_execution_context& context) {
+        if (auto error = bind_inputs(input); error.contains_error()) {
+            return error;
+        }
+        bound_rows_ = input.size();
+        for (auto node : key_nodes_) {
+            auto error = run(nodes_[node].get(), context, bound_rows_);
+            if (error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    const vector::vector_t& execution_graph_t::key_values(size_t index) const {
+        assert(index < key_slots_.size());
+        return data_storage_[key_slots_[index]];
+    }
+
+    core::error_t execution_graph_t::process_groups(core::span<const uint32_t> group_ids,
+                                                    const graph_execution_context& context) {
+        if (group_ids.size() < bound_rows_) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"execution graph: one group id per input row is required", resource()});
+        }
+        for (auto id : reduction_nodes_) {
+            static_cast<function_node_t*>(nodes_[id].get())->set_group_ids(group_ids);
+        }
+
+        for (auto node : chunk_nodes_) {
+            auto error = run(nodes_[node].get(), context, bound_rows_);
             if (error.contains_error()) {
                 return error;
             }
@@ -833,41 +957,90 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t execution_graph_t::reduce(const graph_execution_context& context, uint64_t* rows) {
+    core::error_t execution_graph_t::reserve_groups(uint64_t group_count) {
+        if (!prepared_) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"execution graph: reserve_groups() before prepare()", resource()});
+        }
+        for (auto id : reduction_nodes_) {
+            if (auto error = static_cast<function_node_t*>(nodes_[id].get())->reserve_groups(group_count);
+                error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t
+    execution_graph_t::emit_groups(const graph_execution_context& context, uint64_t first, uint64_t count) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: finalize() before prepare()", resource()});
         }
-        for (auto node : order_) {
-            auto error = nodes_[node]->finalize(context, rows);
-            if (error.contains_error()) {
+        for (auto id : reduction_nodes_) {
+            if (auto error = static_cast<function_node_t*>(nodes_[id].get())->emit(first, count);
+                error.contains_error()) {
                 return error;
             }
         }
-        for (auto node : above_reduction_) {
-            auto error = run(nodes_[node].get(), context, *rows);
+        for (auto node : group_nodes_) {
+            auto error = run(nodes_[node].get(), context, count);
             if (error.contains_error()) {
                 return error;
             }
-        }
-        uint64_t emitted = unconstrained_rows;
-        for (auto slot : output_slots_) {
-            emitted = std::min(emitted, slot_sizes_[slot]);
-        }
-        if (emitted != unconstrained_rows) {
-            *rows = emitted;
         }
         return core::error_t::no_error();
+    }
+
+    core::error_t execution_graph_t::finalize_groups(const graph_execution_context& context,
+                                                     core::span<const vector::vector_t* const> keys,
+                                                     uint64_t first,
+                                                     uint64_t count,
+                                                     vector::data_chunk_t* target,
+                                                     uint64_t target_row) {
+        if (keys.size() != key_slots_.size()) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"execution graph: one key vector per declared key slot is required", resource()});
+        }
+        // The key values of THESE groups replace what the last chunk left in the key slots, so the
+        // expressions above them evaluate once per group instead of once per row.
+        for (size_t index = 0; index < keys.size(); index++) {
+            data_storage_[key_slots_[index]].reference(*keys[index]);
+            slot_sizes_[key_slots_[index]] = count;
+        }
+        if (auto error = emit_groups(context, first, count); error.contains_error()) {
+            return error;
+        }
+        return copy_outputs(emitted_rows(count), target, target_row);
     }
 
     core::error_t execution_graph_t::finalize_inplace(const graph_execution_context& context,
                                                       uint64_t count,
                                                       vector::data_chunk_t* target,
                                                       uint64_t target_row) {
-        uint64_t rows = count;
-        if (auto error = reduce(context, &rows); error.contains_error()) {
+        // No grouping: every reduction holds exactly one accumulator, and a graph without one
+        // simply completes the rows it was fed.
+        const uint64_t ambient = reduction_nodes_.empty() ? count : uint64_t{1};
+        if (auto error = emit_groups(context, 0, ambient); error.contains_error()) {
             return error;
         }
+        return copy_outputs(emitted_rows(ambient), target, target_row);
+    }
+
+    // What the outputs actually hold: every node stamped its output size, so the emitted row count
+    // is the narrowest of them. All-unconstrained means every output is constant, which broadcasts
+    // to whatever the caller asked for.
+    uint64_t execution_graph_t::emitted_rows(uint64_t ambient) const {
+        uint64_t emitted = unconstrained_rows;
+        for (auto slot : output_slots_) {
+            emitted = std::min(emitted, slot_sizes_[slot]);
+        }
+        return emitted == unconstrained_rows ? ambient : emitted;
+    }
+
+    core::error_t
+    execution_graph_t::copy_outputs(uint64_t rows, vector::data_chunk_t* target, uint64_t target_row) const {
         if (target->column_count() < output_slots_.size()) {
             return core::error_t(
                 core::error_code_t::schema_error,
@@ -887,10 +1060,11 @@ namespace components::execution_graph {
 
     core::result_wrapper_t<vector::data_chunk_t> execution_graph_t::finalize(const graph_execution_context& context,
                                                                              uint64_t count) {
-        uint64_t rows = count;
-        if (auto error = reduce(context, &rows); error.contains_error()) {
+        const uint64_t ambient = reduction_nodes_.empty() ? count : uint64_t{1};
+        if (auto error = emit_groups(context, 0, ambient); error.contains_error()) {
             return error;
         }
+        const uint64_t rows = emitted_rows(ambient);
         std::pmr::vector<types::complex_logical_type> output_types(resource_);
         output_types.reserve(output_slots_.size());
         for (auto slot : output_slots_) {

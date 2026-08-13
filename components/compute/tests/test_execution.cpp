@@ -44,44 +44,69 @@ static core::error_t vector_finalize(kernel_context& ctx, data_chunk_t&) {
     return core::error_t::no_error();
 }
 
-struct agg_counter : kernel_state {
-    int value;
+struct agg_counter {
+    int value{10};
 };
 
-static core::result_wrapper_t<kernel_state_ptr> agg_init(kernel_context&, kernel_init_args) {
-    auto c = std::make_unique<agg_counter>();
-    c->value = 10;
-    return c;
+static aggregate_state_layout_t agg_layout(const std::pmr::vector<complex_logical_type>&) {
+    return aggregate_state_of<agg_counter>();
 }
 
-static core::error_t agg_consume(kernel_context& ctx, const data_chunk_t& in) {
-    auto* acc = static_cast<agg_counter*>(ctx.state());
+static core::error_t
+agg_update(kernel_context&, const data_chunk_t& in, core::span<const uint32_t> groups, aggregate_states_t states) {
     for (size_t i = 0; i < in.size(); ++i) {
-        acc->value += in.data[0].data<int>()[i];
+        states.at<agg_counter>(groups[i]).value += in.data[0].data<int>()[i];
     }
     return core::error_t::no_error();
 }
 
-static core::error_t agg_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
-    static_cast<agg_counter&>(into).value += static_cast<agg_counter&>(from).value;
-    return core::error_t::no_error();
-}
-
-static core::error_t agg_finalize(aggregate_kernel_context& ctx) {
-    ctx.batch_results.emplace_back(ctx.exec_context().resource(), static_cast<agg_counter*>(ctx.state())->value);
+static core::error_t
+agg_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& out) {
+    for (uint64_t row = 0; row < count; ++row) {
+        out.data<int>()[row] = states.at<agg_counter>(first + row).value;
+    }
     return core::error_t::no_error();
 }
 
 static core::error_t vector_exec_fail(kernel_context&, const data_chunk_t&, vector_t&) { return TEST_ERROR; }
 
-static core::error_t agg_consume_fail(kernel_context&, const data_chunk_t&) { return TEST_ERROR; }
-
-static core::error_t agg_push_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), static_cast<agg_counter&>(from).value);
-    return core::error_t::no_error();
+static core::error_t
+agg_update_fail(kernel_context&, const data_chunk_t&, core::span<const uint32_t>, aggregate_states_t) {
+    return TEST_ERROR;
 }
 
-static core::error_t agg_push_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+// Drives an aggregate the way the engine does: reserve the accumulators, fold the chunks, then
+// emit one value per group.
+static core::result_wrapper_t<std::pmr::vector<int>> run_aggregate(std::pmr::memory_resource* resource,
+                                                                   const aggregate_function& fn,
+                                                                   const std::vector<data_chunk_t>& chunks,
+                                                                   const std::vector<std::vector<uint32_t>>& groups,
+                                                                   uint64_t group_count) {
+    std::pmr::vector<complex_logical_type> in_types(resource);
+    in_types.emplace_back(logical_type::INTEGER);
+    auto executor = fn.make_executor(resource, in_types);
+    if (executor.has_error()) {
+        return executor.error();
+    }
+    aggregate_state_arena_t arena(resource, executor.value()->state_layout());
+    arena.reserve(group_count);
+    for (size_t chunk = 0; chunk < chunks.size(); chunk++) {
+        if (auto error =
+                executor.value()->update(chunks[chunk], {groups[chunk].data(), groups[chunk].size()}, arena.states());
+            error.contains_error()) {
+            return error;
+        }
+    }
+    vector_t out(resource, logical_type::INTEGER, group_count);
+    if (auto error = executor.value()->finalize(arena.states(), 0, group_count, out); error.contains_error()) {
+        return error;
+    }
+    std::pmr::vector<int> values(resource);
+    for (uint64_t group = 0; group < group_count; group++) {
+        values.push_back(out.data<int>()[group]);
+    }
+    return values;
+}
 
 static core::error_t row_double(kernel_context&,
                                 const std::pmr::vector<logical_value_t>& inputs,
@@ -151,87 +176,67 @@ TEST_CASE("components::compute::vector::batch") {
     REQUIRE(std::get<data_chunk_t>(res.value()).data[1].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
-TEST_CASE("components::compute::aggregate::single") {
-    core::pmr::otterbrix_resource resource;
-    auto fn = std::make_unique<aggregate_function>("agg_single", arity::unary(), function_doc{}, 1);
+static data_chunk_t two_ints(std::pmr::memory_resource* resource, int first, int second) {
+    data_chunk_t chunk(resource, {logical_type::INTEGER}, 2);
+    chunk.set_value(0, 0, first);
+    chunk.set_value(0, 1, second);
+    chunk.set_cardinality(2);
+    return chunk;
+}
 
+static std::unique_ptr<aggregate_function> counting_aggregate(std::pmr::memory_resource* resource,
+                                                              const std::string& name,
+                                                              aggregate_update_fn update = agg_update) {
+    auto fn = std::make_unique<aggregate_function>(name, arity::unary(), function_doc{}, 1);
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});
-    aggregate_kernel k(std::move(sig), agg_init, agg_consume, agg_merge, agg_finalize);
-    REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
+    aggregate_kernel k(std::move(sig), agg_layout, update, agg_finalize);
+    REQUIRE_FALSE(fn->add_kernel(resource, std::move(k)).contains_error());
+    return fn;
+}
 
-    data_chunk_t chunk(&resource, {logical_type::INTEGER}, 2);
-    chunk.set_value(0, 0, 2);
-    chunk.set_value(0, 1, 3);
-    chunk.set_cardinality(2);
+TEST_CASE("components::compute::aggregate::single") {
+    core::pmr::otterbrix_resource resource;
+    auto fn = counting_aggregate(&resource, "agg_single");
 
-    auto res = fn->execute(chunk);
+    std::vector<data_chunk_t> chunks;
+    chunks.emplace_back(two_ints(&resource, 2, 3));
+
+    auto res = run_aggregate(&resource, *fn, chunks, {{0, 0}}, 1);
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(std::get<std::pmr::vector<logical_value_t>>(res.value())[0].value<int>() ==
-            25); // 10 (init) + 5 (agg) + 10 (init + merge)
+    REQUIRE(res.value()[0] == 15); // 10 (init) + 2 + 3
 }
 
 TEST_CASE("components::compute::aggregate::batch") {
     core::pmr::otterbrix_resource resource;
-    auto fn = std::make_unique<aggregate_function>("agg_batch", arity::unary(), function_doc{}, 1);
+    auto fn = counting_aggregate(&resource, "agg_batch");
 
-    kernel_signature_t sig(function_type_t::aggregate,
-                           {parameter_type::exact(logical_type::INTEGER)},
-                           {output_type::fixed(logical_type::INTEGER)});
-    aggregate_kernel k(std::move(sig), agg_init, agg_consume, agg_merge, agg_finalize);
-    REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
+    // One group fed by two chunks: the accumulator survives between them.
+    std::vector<data_chunk_t> chunks;
+    chunks.emplace_back(two_ints(&resource, 1, 2));
+    chunks.emplace_back(two_ints(&resource, 3, 4));
 
-    data_chunk_t c1(&resource, {logical_type::INTEGER}, 2);
-    c1.set_value(0, 0, 1);
-    c1.set_value(0, 1, 2);
-    c1.set_cardinality(2);
-
-    data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
-    c2.set_value(0, 0, 3);
-    c2.set_value(0, 1, 4);
-    c2.set_cardinality(2);
-
-    std::vector<data_chunk_t> batch;
-    batch.emplace_back(std::move(c1));
-    batch.emplace_back(std::move(c2));
-
-    auto res = fn->execute(batch);
+    auto res = run_aggregate(&resource, *fn, chunks, {{0, 0}, {0, 0}}, 1);
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(std::get<std::pmr::vector<logical_value_t>>(res.value())[0].value<int>() ==
-            40); // 3 init (1 initial + 2 for each batch, 10 from aggregate)
+    REQUIRE(res.value()[0] == 20); // 10 (init) + 1 + 2 + 3 + 4
 }
 
-TEST_CASE("components::compute::aggregate::batch_per_group") {
+TEST_CASE("components::compute::aggregate::per_group") {
     core::pmr::otterbrix_resource resource;
-    auto fn = std::make_unique<aggregate_function>("agg_per_group", arity::unary(), function_doc{}, 1);
+    auto fn = counting_aggregate(&resource, "agg_per_group");
 
-    kernel_signature_t sig(function_type_t::aggregate,
-                           {parameter_type::exact(logical_type::INTEGER)},
-                           {output_type::fixed(logical_type::INTEGER)});
-    aggregate_kernel k(std::move(sig), agg_init, agg_consume, agg_push_merge, agg_push_finalize);
-    REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
+    // Rows of one chunk scatter into different accumulators, and a group discovered in the
+    // second chunk keeps accumulating into its own.
+    std::vector<data_chunk_t> chunks;
+    chunks.emplace_back(two_ints(&resource, 1, 2));
+    chunks.emplace_back(two_ints(&resource, 3, 4));
 
-    data_chunk_t c1(&resource, {logical_type::INTEGER}, 2);
-    c1.set_value(0, 0, 1);
-    c1.set_value(0, 1, 2);
-    c1.set_cardinality(2);
-
-    data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
-    c2.set_value(0, 0, 3);
-    c2.set_value(0, 1, 4);
-    c2.set_cardinality(2);
-
-    std::vector<data_chunk_t> batch;
-    batch.emplace_back(std::move(c1));
-    batch.emplace_back(std::move(c2));
-
-    auto res = fn->execute(batch);
+    auto res = run_aggregate(&resource, *fn, chunks, {{0, 1}, {1, 0}}, 2);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 2);
-    REQUIRE(vals[0].value<int>() == 13); // 10 (init) + 1 + 2
-    REQUIRE(vals[1].value<int>() == 17); // 10 (init) + 3 + 4
+    REQUIRE(res.value().size() == 2);
+    REQUIRE(res.value()[0] == 15); // 10 (init) + 1 + 4
+    REQUIRE(res.value()[1] == 15); // 10 (init) + 2 + 3
 }
 
 TEST_CASE("components::compute::row::single") {
@@ -425,16 +430,13 @@ TEST_CASE("components::compute::errors") {
         REQUIRE(status == core::error_code_t::kernel_error);
     }
 
-    SECTION("faulty consume") {
-        auto fn = std::make_unique<aggregate_function>("agg", arity::unary(), function_doc{}, 1);
+    SECTION("faulty update") {
+        auto fn = counting_aggregate(&resource, "agg", agg_update_fail);
 
-        kernel_signature_t sig(function_type_t::aggregate,
-                               {parameter_type::exact(logical_type::INTEGER)},
-                               {output_type::fixed(logical_type::INTEGER)});
-        aggregate_kernel k(std::move(sig), agg_init, agg_consume_fail, agg_merge, agg_finalize);
-        REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
+        std::vector<data_chunk_t> chunks;
+        chunks.emplace_back(two_ints(&resource, 1, 2));
 
-        auto status = fn->execute(chunk).error().type;
+        auto status = run_aggregate(&resource, *fn, chunks, {{0, 0}}, 1).error().type;
         REQUIRE(status == core::error_code_t::kernel_error);
     }
 

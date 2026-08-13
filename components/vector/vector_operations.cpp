@@ -1271,6 +1271,39 @@ namespace components::vector::vector_ops {
         return result;
     }
 
+    // Mirrors the dispatch in hash_type_switch
+    bool is_hashable(const types::complex_logical_type& type) {
+        switch (type.to_physical_type()) {
+            case types::physical_type::BOOL:
+            case types::physical_type::INT8:
+            case types::physical_type::INT16:
+            case types::physical_type::INT32:
+            case types::physical_type::INT64:
+            case types::physical_type::UINT8:
+            case types::physical_type::UINT16:
+            case types::physical_type::UINT32:
+            case types::physical_type::UINT64:
+            case types::physical_type::INT128:
+            case types::physical_type::UINT128:
+            case types::physical_type::FLOAT:
+            case types::physical_type::DOUBLE:
+            case types::physical_type::STRING:
+                return true;
+            case types::physical_type::STRUCT:
+                for (const auto& field : type.child_types()) {
+                    if (!is_hashable(field)) {
+                        return false;
+                    }
+                }
+                return true;
+            case types::physical_type::LIST:
+            case types::physical_type::ARRAY:
+                return is_hashable(type.child_type());
+            default:
+                return false;
+        }
+    }
+
     void hash(vector_t& input, vector_t& result, uint64_t count) {
         impl::hash_type_switch<false>(input, result, nullptr, count);
     }

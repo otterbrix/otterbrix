@@ -10,6 +10,7 @@
 #include <components/vector/vector.hpp>
 #include <core/parameter_id.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/span.hpp>
 #include <core/strong_typedef.hpp>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
@@ -42,10 +43,7 @@ namespace components::execution_graph {
         virtual ~execution_node_t() = default;
 
         virtual core::error_t process(const graph_execution_context& context, uint64_t count) = 0;
-        virtual core::error_t finalize(const graph_execution_context& context, uint64_t* row_count);
 
-        // True when the node reduces its input to a single row, so its output is read above the
-        // reduction (see execution_graph_t::split_at_reduction).
         [[nodiscard]] virtual bool reduces() const noexcept { return false; }
 
         const slot_list_t& input_indices() const noexcept { return input_indices_; }
@@ -135,15 +133,22 @@ namespace components::execution_graph {
                         bool distinct = false);
 
         core::error_t process(const graph_execution_context& context, uint64_t count) override;
-        core::error_t finalize(const graph_execution_context& context, uint64_t* row_count) override;
 
         [[nodiscard]] bool reduces() const noexcept override { return reduces_; }
 
+        // -- reducing nodes only -----------------------------------------------------------
+        // Reserves space for aggregators arena
+        [[nodiscard]] core::error_t reserve_groups(uint64_t group_count);
+        void set_group_ids(core::span<const uint32_t> group_ids) noexcept { group_ids_ = group_ids; }
+        [[nodiscard]] core::error_t emit(uint64_t first, uint64_t count);
+
     private:
         [[nodiscard]] core::error_t validate() const override;
+        [[nodiscard]] core::error_t ensure_executor();
+        [[nodiscard]] core::result_wrapper_t<uint64_t> select_distinct(const vector::data_chunk_t& arguments,
+                                                                       uint64_t count);
 
         vector::data_chunk_t argument_chunk(uint64_t count) const;
-        vector::data_chunk_t deduplicated(const vector::data_chunk_t& arguments, uint64_t count);
 
         const compute::function* function_{nullptr};
         compute::exec_context_t context_;
@@ -151,10 +156,17 @@ namespace components::execution_graph {
         // aggregate specifics:
         bool distinct_{false};
         bool reduces_{false};
+        std::optional<compute::aggregate_state_arena_t> states_;
+        core::span<const uint32_t> group_ids_;
+        // DISTINCT is per group: one seen-set per group, in an arena beside the accumulators.
         struct value_hash_t {
             size_t operator()(const types::logical_value_t& value) const noexcept { return value.hash(); }
         };
-        std::pmr::unordered_set<types::logical_value_t, value_hash_t, std::equal_to<>> seen_;
+        using value_set_t = std::pmr::unordered_set<types::logical_value_t, value_hash_t, std::equal_to<>>;
+        std::optional<compute::aggregate_state_arena_t> distinct_states_;
+        // Rows of the current chunk that survived the DISTINCT filter, and their group ids.
+        vector::indexing_vector_t distinct_rows_;
+        std::pmr::vector<uint32_t> distinct_groups_;
     };
 
     // [1, N] inputs, [1] output
@@ -293,6 +305,24 @@ namespace components::execution_graph {
                                        vector::data_chunk_t* target,
                                        uint64_t target_row);
 
+        // -- grouped aggregation ---------------------------------------------------------------
+        void add_key_slot(slot_id_t slot);
+        [[nodiscard]] const slot_list_t& key_slots() const noexcept { return key_slots_; }
+
+        // Sizes every accumulator table to `group_count` groups
+        [[nodiscard]] core::error_t reserve_groups(uint64_t group_count);
+        [[nodiscard]] core::error_t process_keys(const vector::data_chunk_t& input,
+                                                 const graph_execution_context& context);
+        [[nodiscard]] const vector::vector_t& key_values(size_t index) const;
+        [[nodiscard]] core::error_t process_groups(core::span<const uint32_t> group_ids,
+                                                   const graph_execution_context& context);
+        [[nodiscard]] core::error_t finalize_groups(const graph_execution_context& context,
+                                                    core::span<const vector::vector_t* const> keys,
+                                                    uint64_t first,
+                                                    uint64_t count,
+                                                    vector::data_chunk_t* target,
+                                                    uint64_t target_row);
+
         // -- inspection ------------------------------------------------------------------------
 
         const execution_node_t& node_at(node_id_t id) const { return *nodes_[id]; }
@@ -331,12 +361,19 @@ namespace components::execution_graph {
         node_id_t append(execution_node_ptr node);
         // Drives one node: settles its row count from its inputs, and processes the node
         core::error_t run(execution_node_t* node, const graph_execution_context& context, uint64_t ambient);
-        core::error_t reduce(const graph_execution_context& context, uint64_t* rows);
+        // Points every bound slot at `input`
+        core::error_t bind_inputs(const vector::data_chunk_t& input);
+        // Emits `count` groups from every accumulator, then runs the group-cardinality nodes.
+        core::error_t emit_groups(const graph_execution_context& context, uint64_t first, uint64_t count);
+        // Row count the outputs actually hold after a pass
+        uint64_t emitted_rows(uint64_t ambient) const;
+        core::error_t copy_outputs(uint64_t rows, vector::data_chunk_t* target, uint64_t target_row) const;
         // order nodes to be executed based on their data dependency
         core::error_t order_nodes();
-        // processing after reduction node is meaningless, since count will be 0 until finalize is called
-        // There could be multiple reduction seems in parallel, but not in sequence
-        void split_at_reduction();
+        // A value is at ROW cardinality until it passes a reduction or is a group key; from there
+        // on it is at GROUP cardinality. That splits the nodes in two: those driven per input
+        // chunk, and those driven once per batch of groups.
+        void split_at_group();
 
         std::pmr::memory_resource* resource_;
         uint64_t capacity_;
@@ -347,14 +384,24 @@ namespace components::execution_graph {
         std::pmr::vector<uint64_t> slot_sizes_;
         const parameter_map_t* parameters_{nullptr};
         slot_list_t output_slots_;
+        // Slots holding a grouping key, in the caller's key order
+        slot_list_t key_slots_;
+        // Reducing nodes, resolved once in prepare()
+        std::pmr::vector<node_id_t> reduction_nodes_;
         bool prepared_{false};
         std::pmr::vector<execution_node_ptr> nodes_;
         // TODO: make it parallelizable
         std::pmr::vector<node_id_t> order_;
-        // partitioned by split_at_reduction()
-        // process() runs below_reduction_ per chunk; finalize() runs above_reduction_ once.
-        std::pmr::vector<node_id_t> below_reduction_{resource_};
-        std::pmr::vector<node_id_t> above_reduction_{resource_};
+        // partitioned by split_at_group().
+        // Per input chunk the key nodes run first (their values are what the caller groups by), then the rest
+        std::pmr::vector<node_id_t> key_nodes_{resource_};
+        std::pmr::vector<node_id_t> chunk_nodes_{resource_};
+        std::pmr::vector<node_id_t> group_nodes_{resource_};
+        // Rows of the chunk process_keys() bound, carried to process_groups()
+        uint64_t bound_rows_{0};
+        // One group id per row, all zero: an ungrouped aggregate is a grouped one over a single
+        // group, so process() always has ids to hand the kernels.
+        std::pmr::vector<uint32_t> single_group_{resource_};
     };
 
 } // namespace components::execution_graph

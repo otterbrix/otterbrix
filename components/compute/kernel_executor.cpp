@@ -27,9 +27,16 @@ namespace components::compute::detail {
             return core::error_t::no_error();
         }
 
-        [[nodiscard]] core::error_t consume(const data_chunk_t&) override { return not_accumulating(); }
+        [[nodiscard]] aggregate_state_layout_t state_layout() const override { return {}; }
 
-        [[nodiscard]] core::result_wrapper_t<datum_t> finalize() override { return not_accumulating(); }
+        [[nodiscard]] core::error_t
+        update(const data_chunk_t&, core::span<const uint32_t>, aggregate_states_t) override {
+            return not_accumulating();
+        }
+
+        [[nodiscard]] core::error_t finalize(aggregate_states_t, uint64_t, uint64_t, vector_t&) override {
+            return not_accumulating();
+        }
 
     protected:
         [[nodiscard]] core::error_t not_accumulating() const {
@@ -183,96 +190,58 @@ namespace components::compute::detail {
             if (auto st = kernel_executor_impl<aggregate_kernel>::init(kernel_ctx, args); st.contains_error()) {
                 return st;
             }
-            // wrap provided context with an aggregate-specific one
-            agg_ctx_.emplace(kernel_ctx.exec_context(), kernel_ctx.kernel());
-            agg_ctx_->set_state(kernel_ctx.state());
-            kernel_ctx_ = &*agg_ctx_;
             input_types_ = &args.inputs;
-            options_ = args.options;
             return core::error_t::no_error();
         }
 
-        core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
-            if (auto st = consume(inputs); st.contains_error()) {
-                return st;
+        aggregate_state_layout_t state_layout() const override {
+            if (!kernel_ || input_types_ == nullptr) {
+                return {};
             }
-            return finalize();
+            return kernel().state_layout(*input_types_);
         }
 
-        core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) override {
-            // All chunks belong to one logical group: consume folds each chunk's partial
-            // into the running state, finalize emits the group's result. An accumulating
-            // kernel (sum/min/max/count/avg) yields exactly one value — even for an empty
-            // batch it emits the identity. A push-style kernel emits one value per chunk
-            // in merge instead. The kernel therefore decides the result count; the executor
-            // does not pad.
-            for (const auto& in : inputs) {
-                if (auto st = consume(in); st.contains_error()) {
-                    return st;
-                }
-            }
-            return finalize();
-        }
-
-        core::result_wrapper_t<datum_t> finalize() override {
+        core::error_t
+        update(const data_chunk_t& inputs, core::span<const uint32_t> groups, aggregate_states_t states) override {
             if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
-            if (auto st = kernel().finalize(*agg_ctx_); st.contains_error()) {
+            if (groups.size() != inputs.size()) {
+                return core::error_t(
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"an aggregate update needs one group id per input row", exec_ctx().resource()});
+            }
+            return kernel().update(kernel_ctx(), inputs, groups, states);
+        }
+
+        core::error_t finalize(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
-            return agg_ctx_->batch_results;
+            return kernel().finalize(kernel_ctx(), states, first, count, output);
+        }
+
+        core::result_wrapper_t<datum_t> execute(const data_chunk_t&) override { return not_directly_executable(); }
+
+        core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>&) override {
+            return not_directly_executable();
         }
 
         core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
-            return core::error_t(core::error_code_t::kernel_error,
-
-                                 std::pmr::string{"vector_executor does not support row operations",
-                                                  kernel_ctx_->exec_context().resource()});
-        }
-
-        core::error_t consume(const data_chunk_t& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-            // TODO: find another way of getting memory_resource
-            if (state() == nullptr) {
-                core::error_t(core::error_code_t::kernel_error,
-
-                              std::pmr::string{"Aggregation requires non-null kernel state, init returned null state!",
-                                               std::pmr::get_default_resource()});
-            }
-
-            auto batch_state = kernel().init(*agg_ctx_, {kernel(), *input_types_, options_});
-            if (batch_state.has_error()) {
-                return batch_state.error();
-            }
-
-            if (batch_state.value() == nullptr) {
-                core::error_t(core::error_code_t::kernel_error,
-
-                              std::pmr::string{"Aggregation requires non-null kernel state, init returned null state!",
-                                               kernel_ctx_->exec_context().resource()});
-            }
-
-            kernel_context batch_ctx(exec_ctx(), kernel());
-            batch_ctx.set_state(batch_state.value().get());
-            if (auto st = kernel().consume(batch_ctx, inputs); st.contains_error()) {
-                return st;
-            }
-
-            auto state_ptr = std::move(batch_state.value());
-            if (auto st = kernel().merge(*agg_ctx_, std::move(*state_ptr), *state()); st.contains_error()) {
-                return st;
-            }
-
-            return core::error_t::no_error();
+            return not_directly_executable();
         }
 
     private:
-        std::optional<aggregate_kernel_context> agg_ctx_;
+        // An aggregate reduces many rows into per-group accumulators, so it is driven by
+        // update()/finalize() and never produces a value straight out of one call.
+        [[nodiscard]] core::error_t not_directly_executable() const {
+            return core::error_t(core::error_code_t::kernel_error,
+                                 std::pmr::string{"an aggregate is driven by update()/finalize(), not execute()",
+                                                  kernel_ctx_ ? kernel_ctx_->exec_context().resource()
+                                                              : std::pmr::get_default_resource()});
+        }
+
         const std::pmr::vector<types::complex_logical_type>* input_types_ = nullptr;
-        const function_options* options_ = nullptr;
     };
 
     class row_executor final : public kernel_executor_impl<row_kernel> {

@@ -1,10 +1,12 @@
 #pragma once
 
+#include "aggregate_state.hpp"
 #include "kernel_signature.hpp"
 #include "kernel_utils.hpp"
 
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/span.hpp>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -45,17 +47,6 @@ namespace components::compute {
         kernel_state* state_;
     };
 
-    // merge and finalize receive aggregate_kernel_context — results go into ctx.batch_results
-    // note: consume still gets base kernel_context to avoid batch result copying
-    class aggregate_kernel_context : public kernel_context {
-    public:
-        aggregate_kernel_context(exec_context_t& exec_ctx, const compute_kernel& kernel)
-            : kernel_context(exec_ctx, kernel)
-            , batch_results(exec_ctx.resource()) {}
-
-        std::pmr::vector<types::logical_value_t> batch_results;
-    };
-
     using kernel_init_fn = core::result_wrapper_t<kernel_state_ptr> (*)(kernel_context&, kernel_init_args);
 
     class compute_kernel {
@@ -93,27 +84,46 @@ namespace components::compute {
         vector_finalize_fn finalize_;
     };
 
-    using aggregate_consume_fn = core::error_t (*)(kernel_context& ctx, const vector::data_chunk_t& input);
-    using aggregate_merge_fn = core::error_t (*)(aggregate_kernel_context& ctx,
-                                                 kernel_state&& next_state,
-                                                 kernel_state& prev_state);
-    using aggregate_finalize_fn = core::error_t (*)(aggregate_kernel_context& ctx);
+    // An aggregate accumulates into one state PER GROUP, addressed by group id. An ungrouped
+    // aggregate is the same thing over a single group, so there is one shape, not two.
+    //
+    // state_layout answers how big one accumulator is for the resolved argument types;
+    // update folds a whole chunk, row i into the accumulator groups[i] selects;
+    // finalize emits one value per group into `output`, for groups [first, first + count).
+    using aggregate_layout_fn =
+        aggregate_state_layout_t (*)(const std::pmr::vector<types::complex_logical_type>& inputs);
+    using aggregate_update_fn = core::error_t (*)(kernel_context& ctx,
+                                                  const vector::data_chunk_t& input,
+                                                  core::span<const uint32_t> groups,
+                                                  aggregate_states_t states);
+    using aggregate_finalize_fn = core::error_t (*)(kernel_context& ctx,
+                                                    aggregate_states_t states,
+                                                    uint64_t first,
+                                                    uint64_t count,
+                                                    vector::vector_t& output);
 
     class aggregate_kernel : public compute_kernel {
     public:
         aggregate_kernel(kernel_signature_t signature,
-                         kernel_init_fn init,
-                         aggregate_consume_fn consume,
-                         aggregate_merge_fn merge,
+                         aggregate_layout_fn layout,
+                         aggregate_update_fn update,
                          aggregate_finalize_fn finalize);
 
-        core::error_t consume(kernel_context& ctx, const vector::data_chunk_t& input) const;
-        core::error_t merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state& into) const;
-        core::error_t finalize(aggregate_kernel_context& ctx) const;
+        [[nodiscard]] aggregate_state_layout_t
+        state_layout(const std::pmr::vector<types::complex_logical_type>& inputs) const;
+        core::error_t update(kernel_context& ctx,
+                             const vector::data_chunk_t& input,
+                             core::span<const uint32_t> groups,
+                             aggregate_states_t states) const;
+        core::error_t finalize(kernel_context& ctx,
+                               aggregate_states_t states,
+                               uint64_t first,
+                               uint64_t count,
+                               vector::vector_t& output) const;
 
     private:
-        aggregate_consume_fn consume_;
-        aggregate_merge_fn merge_;
+        aggregate_layout_fn layout_;
+        aggregate_update_fn update_;
         aggregate_finalize_fn finalize_;
     };
 

@@ -125,21 +125,24 @@ namespace components::compute {
             return executor_->execute(inputs);
         }
 
-        core::error_t consume(const data_chunk_t& args) override {
+        aggregate_state_layout_t state_layout() const override { return executor_->state_layout(); }
+
+        core::error_t
+        update(const data_chunk_t& args, core::span<const uint32_t> groups, aggregate_states_t states) override {
             if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
             if (auto st = check_args(kernel_ctx_.value().exec_context().resource(), args); st.contains_error()) {
                 return st;
             }
-            return executor_->consume(args);
+            return executor_->update(args, groups, states);
         }
 
-        core::result_wrapper_t<datum_t> finalize() override {
+        core::error_t finalize(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) override {
             if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
-            return executor_->finalize();
+            return executor_->finalize(states, first, count, output);
         }
 
         static core::result_wrapper_t<function_executor_impl_t>

@@ -52,9 +52,13 @@ namespace components::compute {
         virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
         virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
 
-        // some kernels have to be run in stages
-        virtual core::error_t consume(const vector::data_chunk_t& args) = 0;
-        virtual core::result_wrapper_t<datum_t> finalize() = 0;
+        // Aggregates only: fold a chunk into one accumulator per group, then emit one value per
+        // group. The caller owns the accumulators and says how big one is by asking state_layout.
+        virtual aggregate_state_layout_t state_layout() const = 0;
+        virtual core::error_t
+        update(const vector::data_chunk_t& args, core::span<const uint32_t> groups, aggregate_states_t states) = 0;
+        virtual core::error_t
+        finalize(aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& output) = 0;
     };
 
     class function_visitor {

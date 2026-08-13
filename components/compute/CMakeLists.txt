@@ -1,6 +1,7 @@
 project(compute)
 
 set(${PROJECT_NAME}_SOURCES
+        aggregate_state.cpp
         compute_kernel.cpp
         function.cpp
         kernel_executor.cpp

@@ -115,11 +115,11 @@ TEST_CASE("integration::cpp::host_tables::restart_readback") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO __otterstax.meta_connections (uid, backend_kind, dsn) VALUES "
-                "('uid_pg1', 'postgresql', 'host=pg1 port=5432 dbname=db1'), "
-                "('uid_my1', 'mysql', 'host=my1 port=3306 dbname=db2');");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO __otterstax.meta_connections (uid, backend_kind, dsn) VALUES "
+                                        "('uid_pg1', 'postgresql', 'host=pg1 port=5432 dbname=db1'), "
+                                        "('uid_my1', 'mysql', 'host=my1 port=3306 dbname=db2');");
             REQUIRE(cur->is_success());
         }
         {
@@ -142,19 +142,19 @@ TEST_CASE("integration::cpp::host_tables::restart_readback") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "SELECT uid FROM __otterstax.meta_connections WHERE backend_kind = 'mysql';");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT uid FROM __otterstax.meta_connections WHERE backend_kind = 'mysql';");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
         {
             // The cache-rebuild write path stays usable after restart too.
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO __otterstax.meta_connections (uid, backend_kind, dsn) VALUES "
-                "('uid_ch1', 'clickhouse', 'host=ch1 port=9000 dbname=db3');");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO __otterstax.meta_connections (uid, backend_kind, dsn) VALUES "
+                                        "('uid_ch1', 'clickhouse', 'host=ch1 port=9000 dbname=db3');");
             REQUIRE(cur->is_success());
         }
         {

@@ -399,8 +399,7 @@ namespace components::types {
             if (lhs == logical_type::INTERVAL && is_arithmetic_numeric(rhs)) {
                 return logical_type::INTERVAL;
             }
-            if (op == vector::arithmetic_op::multiply && is_arithmetic_numeric(lhs) &&
-                rhs == logical_type::INTERVAL) {
+            if (op == vector::arithmetic_op::multiply && is_arithmetic_numeric(lhs) && rhs == logical_type::INTERVAL) {
                 return logical_type::INTERVAL;
             }
         }

@@ -114,14 +114,14 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
         auto cur = dispatcher->execute_sql(session, "SELECT b + 1 FROM t.bad_arith;");
         INFO("BOOLEAN arithmetic error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
+        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
     }
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT -s FROM t.bad_arith;");
         INFO("TEXT unary-minus error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
+        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
     }
 
     // Invalid expressions must not corrupt the engine process or session state.

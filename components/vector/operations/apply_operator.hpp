@@ -13,7 +13,10 @@ namespace components::vector::operations {
                                              const vector_t& right,
                                              vector_t* output,
                                              const graph_execution_context& context,
-                                             uint64_t count);
+                                             uint64_t count,
+                                             // One bool per row, or null for "every row". A false
+                                             // row is left untouched: the count never changes.
+                                             const bool* active_rows = nullptr);
 
     [[nodiscard]] core::error_t apply_unary(operators::operator_code code,
                                             const vector_t& operand,

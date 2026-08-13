@@ -2,11 +2,11 @@
 
 #include "wrapper_dispatcher.hpp"
 
-#include <components/physical_plan_generator/create_plan.hpp>
-#include <components/planner/optimizer.hpp>
 #include <actor-zeta/detail/memory.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
+#include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer.hpp>
 #include <core/executor.hpp>
 
 #include <core/config.hpp>
@@ -56,9 +56,7 @@ namespace otterbrix {
         // CLOSED default surface: normal (non-federation) embeddings get the
         // Null-Object hooks, hardcoded here — base_spaces exposes no customization.
         explicit base_otterbrix_t(const configuration::config& config)
-            : base_otterbrix_t(config,
-                               &services::planner::no_custom_lowering,
-                               &components::planner::no_op_pass) {}
+            : base_otterbrix_t(config, &services::planner::no_custom_lowering, &components::planner::no_op_pass) {}
 
         // Federation seam: a subclass injects host customization EXPLICITLY (no
         // defaults) — threaded on through manager_dispatcher_t -> executor_t ctors:

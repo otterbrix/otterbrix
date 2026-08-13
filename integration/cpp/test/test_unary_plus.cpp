@@ -20,10 +20,10 @@ namespace {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session,
-                                      "INSERT INTO db.t (id, v, s) VALUES (1, 7, 'a'), (2, 3, 'b'), (3, 10, 'c');")
-                        ->is_success());
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(session, "INSERT INTO db.t (id, v, s) VALUES (1, 7, 'a'), (2, 3, 'b'), (3, 10, 'c');")
+                    ->is_success());
         }
     }
 

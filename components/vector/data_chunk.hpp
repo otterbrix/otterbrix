@@ -48,8 +48,9 @@ namespace components::vector {
         // Forwards plain values, optionals and (optional-of-)struct-tuples to the column vector, which
         // deduces and routes them. logical_value_t is excluded so it keeps hitting the runtime overload.
         template<typename Arg>
-            requires(!std::is_same_v<std::remove_cvref_t<Arg>, types::logical_value_t>)
-        void set_value(uint64_t col_idx, uint64_t index, Arg&& value) {
+        requires(!std::is_same_v<std::remove_cvref_t<Arg>, types::logical_value_t>) void set_value(uint64_t col_idx,
+                                                                                                   uint64_t index,
+                                                                                                   Arg&& value) {
             data[col_idx].set_value(index, std::forward<Arg>(value));
         }
 

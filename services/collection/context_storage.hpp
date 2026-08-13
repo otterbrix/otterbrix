@@ -32,10 +32,10 @@ namespace services {
         // Plain fn-ptr (no std::function). NEVER null — defaults to no_custom_lowering
         // (a Null Object returning {}); the returned operator MAY be null, meaning
         // "no host lowering for this node".
-        using create_plan_rule_t = boost::intrusive_ptr<components::operators::operator_t> (*)(
-            const context_storage_t&,
-            const components::compute::function_registry_t&,
-            const components::logical_plan::node_ptr&);
+        using create_plan_rule_t =
+            boost::intrusive_ptr<components::operators::operator_t> (*)(const context_storage_t&,
+                                                                        const components::compute::function_registry_t&,
+                                                                        const components::logical_plan::node_ptr&);
 
         boost::intrusive_ptr<components::operators::operator_t>
         no_custom_lowering(const context_storage_t&,

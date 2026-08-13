@@ -41,8 +41,8 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_create_database.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_transaction.hpp>
@@ -355,7 +355,6 @@ namespace services::collection::executor {
                                                        false,
                                                        std::move(captured_subplans))};
         }
-
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.analyze = explain_analyze;

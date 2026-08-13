@@ -116,6 +116,26 @@ namespace components::vector::vector_ops {
             }
         }
 
+        // An NA vector is CONSTANT, carries no data and is null in every row, so the whole
+        // column hashes as the one NULL_HASH.
+        static void na_loop_hash(vector_t& result) {
+            result.set_vector_type(vector_type::CONSTANT);
+            *result.data<uint64_t>() = hasher_t::NULL_HASH;
+        }
+
+        template<bool HAS_RINDEXING>
+        static void na_loop_combine_hash(vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
+            auto hash_data = hashes.data<uint64_t>();
+            if (hashes.get_vector_type() == vector_type::CONSTANT) {
+                *hash_data = combine_hash_scalar(*hash_data, hasher_t::NULL_HASH);
+                return;
+            }
+            for (uint64_t i = 0; i < count; i++) {
+                auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
+                hash_data[ridx] = combine_hash_scalar(hash_data[ridx], hasher_t::NULL_HASH);
+            }
+        }
+
         // 128-bit hash: std::hash is not portably specialised for absl::[u]int128, so
         // hash the two 64-bit halves of the two's-complement representation and combine
         // them. The bit pattern is sign-independent (int128 -> uint128 preserves the raw
@@ -430,6 +450,9 @@ namespace components::vector::vector_ops {
                 case types::physical_type::ARRAY:
                     array_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
                     break;
+                case types::physical_type::NA:
+                    na_loop_hash(result);
+                    break;
                 default:
                     throw std::logic_error("Invalid type for hash");
             }
@@ -579,6 +602,9 @@ namespace components::vector::vector_ops {
                 case types::physical_type::ARRAY:
                     array_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
                     break;
+                case types::physical_type::NA:
+                    na_loop_combine_hash<HAS_RINDEXING>(hashes, rindexing, count);
+                    break;
                 default:
                     throw std::logic_error("Invalid type for hash");
             }
@@ -635,6 +661,19 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset,
               uint64_t copy_count) {
+        // An NA vector holds no data at all: it is CONSTANT, unallocated, and null at every row.
+        // So copying INTO one has nothing to write, and copying one OUT is exactly "every target
+        // row is null".
+        if (target.type().type() == types::logical_type::NA) {
+            return;
+        }
+        if (source.type().type() == types::logical_type::NA) {
+            for (uint64_t row = 0; row < copy_count; row++) {
+                target.set_null(target_offset + row, true);
+            }
+            return;
+        }
+
         // A projected-out (placeholder) source column carries type info but NO data buffer:
         // data_chunk_t's projected constructor allocates real buffers only for the
         // column_pruning-selected storage columns and leaves the rest as placeholders

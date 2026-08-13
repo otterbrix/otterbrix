@@ -21,8 +21,7 @@ namespace {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session, "INSERT INTO db.t (id, s) VALUES (1, '1a'), (2, '2b');")
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.t (id, s) VALUES (1, '1a'), (2, '2b');")
                         ->is_success());
         }
     }

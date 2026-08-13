@@ -49,11 +49,17 @@ namespace components::execution_graph {
         const slot_list_t& input_indices() const noexcept { return input_indices_; }
         const slot_list_t& output_indices() const noexcept { return output_indices_; }
 
+        // The BOOLEAN slot restricting which rows this node may touch
+        [[nodiscard]] slot_id_t constraint_slot() const noexcept { return constraint_slot_; }
+
     protected:
         execution_node_t(std::pmr::memory_resource* resource, slot_list_t inputs, slot_list_t outputs);
 
         const vector::vector_t& input(size_t n) const;
         vector::vector_t& output(size_t n) const;
+
+        // One bool per row. Null when unconstrained.
+        [[nodiscard]] const bool* active_rows() const;
 
         uint64_t input_size(size_t input_index) const;
         void set_output_size(size_t output_index, uint64_t rows) const;
@@ -66,6 +72,7 @@ namespace components::execution_graph {
         uint64_t* sizes_{nullptr};
         slot_list_t input_indices_;
         slot_list_t output_indices_;
+        slot_id_t constraint_slot_{invalid_slot};
 
     private:
         void set_storage(execution_storage_t* storage, uint64_t* sizes) noexcept {
@@ -74,6 +81,7 @@ namespace components::execution_graph {
         }
         // repoint input slot
         void set_input(size_t position, slot_id_t slot);
+        void set_constraint(slot_id_t mask) noexcept { constraint_slot_ = mask; }
 
         // only parameter_node_t actually needs it, but it is convenient to have
         virtual void set_parameters(const parameter_map_t*) noexcept {}
@@ -192,6 +200,37 @@ namespace components::execution_graph {
         blend_kind kind_;
     };
 
+    // [N] conditions -> [N + 1] BOOLEAN masks, one per WHEN plus a trailing DEFAULT
+    class case_when_node_t final : public execution_node_t {
+        friend class execution_graph_t;
+
+    public:
+        case_when_node_t(std::pmr::memory_resource* resource, slot_list_t conditions, slot_list_t masks);
+
+        core::error_t process(const graph_execution_context& context, uint64_t count) override;
+
+    private:
+        [[nodiscard]] core::error_t validate() const override;
+    };
+
+    // [N] values + [N] masks -> [1] output. Takes each row from the arm whose mask is set; a row no
+    // mask claims is NULL. The arms ran under those same masks, so a row only reads a value its own
+    // arm produced.
+    class case_then_node_t final : public execution_node_t {
+        friend class execution_graph_t;
+
+    public:
+        case_then_node_t(std::pmr::memory_resource* resource, slot_list_t values, slot_list_t masks, slot_id_t output);
+
+        core::error_t process(const graph_execution_context& context, uint64_t count) override;
+
+    private:
+        [[nodiscard]] core::error_t validate() const override;
+
+        // Values occupy input positions [0, arm_count_), masks [arm_count_, 2 * arm_count_].
+        size_t arm_count_;
+    };
+
     // [1] input, [1] output.
     // Not all nested values are easily reachable
     class field_node_t final : public execution_node_t {
@@ -259,6 +298,11 @@ namespace components::execution_graph {
         node_id_t add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count);
         node_id_t add_parameter(core::parameter_id_t id);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
+        // Declares and returns N + 1 BOOLEAN mask slots (one per condition, plus the DEFAULT).
+        node_id_t add_case_when(const slot_list_t& conditions, slot_list_t& masks);
+        node_id_t add_case_then(const slot_list_t& values, const slot_list_t& masks);
+        // Restricts `node` to the rows `mask` marks. The graph orders it after the mask's producer.
+        void set_constraint(node_id_t node, slot_id_t mask);
         // `path` is the steps BELOW the input column;
         // the output slot references the nested vector they reach, so it owns no storage of its own.
         node_id_t add_field(slot_id_t input, const std::pmr::vector<size_t>& path);

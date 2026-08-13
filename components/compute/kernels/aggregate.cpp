@@ -9,11 +9,17 @@ using namespace components::vector;
 
 namespace {
     template<typename T>
-    concept addable = requires(T& a, const T& b) { a += b; };
+    concept addable = requires(T& a, const T& b) {
+        a += b;
+    };
     template<typename T>
-    concept comparable = requires(const T& a, const T& b) { a < b; };
+    concept comparable = requires(const T& a, const T& b) {
+        a < b;
+    };
     template<typename T>
-    concept dividable = requires(const T& a, const T& b) { a / b; };
+    concept dividable = requires(const T& a, const T& b) {
+        a / b;
+    };
 
     // An aggregate accumulates into one state per group, addressed by group id
 

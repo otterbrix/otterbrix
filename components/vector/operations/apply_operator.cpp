@@ -41,6 +41,12 @@ namespace components::vector::operations {
             }
         }
 
+        // A CASE arm runs only over the rows its WHEN selected. `active` is one bool per row, or
+        // null when unconstrained; a skipped row is left exactly as it was, so cardinality never
+        // changes. This is what keeps a guarded `10 / x` from dividing on the rows the guard
+        // excluded, while the rows that DO select the arm still raise on a zero divisor.
+        inline bool skip_row(const bool* active, uint64_t row) noexcept { return active != nullptr && !active[row]; }
+
         // SQL equality on floats is exact comparison; so we explicitly suppress warning here
         template<typename T>
         bool equals(const T& lhs, const T& rhs) {
@@ -61,8 +67,12 @@ namespace components::vector::operations {
                                       const vector_t& left,
                                       const vector_t& right,
                                       vector_t* output,
-                                      uint64_t count) {
+                                      uint64_t count,
+                                      const bool* active) {
             for (uint64_t row = 0; row < count; row++) {
+                if (skip_row(active, row)) {
+                    continue;
+                }
                 if (left.is_null(row) || right.is_null(row)) {
                     output->set_null(row, true);
                     continue;
@@ -79,14 +89,10 @@ namespace components::vector::operations {
                     case operator_code::multiply:
                         write<T>(output, row, static_cast<T>(lhs * rhs));
                         break;
-                    // A zero divisor yields NULL rather than an error, mirroring try_cast: the
-                    // failure is DATA-dependent, and CASE evaluates every arm for every row before
-                    // selecting one, so `CASE WHEN x <> 0 THEN 10 / x ELSE 0 END` would otherwise
-                    // fail on the rows its own guard excludes.
                     case operator_code::divide:
                         if (is_zero(rhs)) {
-                            output->set_null(row, true);
-                            break;
+                            return core::error_t(core::error_code_t::invalid_parameter,
+                                                 std::pmr::string{"division by zero", output->resource()});
                         }
                         write<T>(output, row, static_cast<T>(lhs / rhs));
                         break;
@@ -99,8 +105,8 @@ namespace components::vector::operations {
                                                  output->resource()});
                         } else {
                             if (is_zero(rhs)) {
-                                output->set_null(row, true);
-                                break;
+                                return core::error_t(core::error_code_t::invalid_parameter,
+                                                     std::pmr::string{"division by zero", output->resource()});
                             }
                             write<T>(output, row, static_cast<T>(lhs % rhs));
                         }
@@ -119,8 +125,12 @@ namespace components::vector::operations {
                                    const vector_t& left,
                                    const vector_t& right,
                                    vector_t* output,
-                                   uint64_t count) {
+                                   uint64_t count,
+                                   const bool* active) {
             for (uint64_t row = 0; row < count; row++) {
+                if (skip_row(active, row)) {
+                    continue;
+                }
                 // Comparing against a null is UNKNOWN (encoded as null value)
                 if (left.is_null(row) || right.is_null(row)) {
                     output->set_null(row, true);
@@ -160,13 +170,17 @@ namespace components::vector::operations {
                                    const vector_t& left,
                                    const vector_t& right,
                                    vector_t* output,
-                                   uint64_t count) {
+                                   uint64_t count,
+                                   const bool* active) {
             if (left.type().to_physical_type() != types::physical_type::BOOL ||
                 right.type().to_physical_type() != types::physical_type::BOOL) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"compare_rows encountered unsupported type", output->resource()});
             }
             for (uint64_t row = 0; row < count; row++) {
+                if (skip_row(active, row)) {
+                    continue;
+                }
                 const bool left_unknown = left.is_null(row);
                 const bool right_unknown = right.is_null(row);
                 const bool lhs = !left_unknown && left.get_value<bool>(row);
@@ -194,9 +208,16 @@ namespace components::vector::operations {
         }
 
         template<typename Fn>
-        core::error_t
-        each_row(const vector_t& left, const vector_t& right, vector_t* output, uint64_t count, Fn&& compute) {
+        core::error_t each_row(const vector_t& left,
+                               const vector_t& right,
+                               vector_t* output,
+                               uint64_t count,
+                               const bool* active,
+                               Fn&& compute) {
             for (uint64_t row = 0; row < count; row++) {
+                if (skip_row(active, row)) {
+                    continue;
+                }
                 if (left.is_null(row) || right.is_null(row)) {
                     output->set_null(row, true);
                     continue;
@@ -212,13 +233,14 @@ namespace components::vector::operations {
                                    const vector_t& left,
                                    const vector_t& right,
                                    vector_t* output,
-                                   uint64_t count) {
+                                   uint64_t count,
+                                   const bool* active) {
             if constexpr (!is_integral_value<T>) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"bitwise_rows encountered unsupported type", output->resource()});
             } else {
                 core::error_t failure = core::error_t::no_error();
-                auto error = each_row(left, right, output, count, [&](uint64_t row) {
+                auto error = each_row(left, right, output, count, active, [&](uint64_t row) {
                     if (failure.contains_error()) {
                         return;
                     }
@@ -301,7 +323,8 @@ namespace components::vector::operations {
                                           vector_t* output,
                                           uint8_t width,
                                           uint8_t scale,
-                                          uint64_t count) {
+                                          uint64_t count,
+                                          const bool* active) {
             if constexpr (!is_decimal_storage<T>) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
@@ -310,7 +333,7 @@ namespace components::vector::operations {
                 types::int128_t factor = types::POWERS_OF_TEN[scale];
                 types::int128_t limit = types::POWERS_OF_TEN[width];
                 core::error_t failure = core::error_t::no_error();
-                auto error = each_row(left, right, output, count, [&](uint64_t row) {
+                auto error = each_row(left, right, output, count, active, [&](uint64_t row) {
                     if (failure.contains_error()) {
                         return;
                     }
@@ -326,8 +349,8 @@ namespace components::vector::operations {
                         scaled = lhs * rhs / factor;
                     } else {
                         if (rhs == 0) {
-                            // Data-dependent, like the integer/float path above: NULL, not an error.
-                            output->set_null(row, true);
+                            failure = core::error_t(core::error_code_t::invalid_parameter,
+                                                    std::pmr::string{"division by zero", output->resource()});
                             return;
                         }
                         if (multiplication_overflows(lhs, factor)) {
@@ -357,8 +380,9 @@ namespace components::vector::operations {
                                      vector_t* output,
                                      uint8_t width,
                                      uint8_t scale,
-                                     uint64_t count) {
-                return decimal_scaled_rows<T>(code, left, right, output, width, scale, count);
+                                     uint64_t count,
+                                     const bool* active) {
+                return decimal_scaled_rows<T>(code, left, right, output, width, scale, count, active);
             }
         };
 
@@ -451,7 +475,8 @@ namespace components::vector::operations {
                                           const vector_t& left,
                                           const vector_t& right,
                                           vector_t* output,
-                                          uint64_t count) {
+                                          uint64_t count,
+                                          const bool* active) {
             using lt = types::logical_type;
             namespace date = core::date;
             const auto lhs = left.type().type();
@@ -470,7 +495,7 @@ namespace components::vector::operations {
                 const vector_t& interval = interval_left ? left : right;
                 const vector_t& factor = interval_left ? right : left;
                 const bool divide = code == operator_code::divide;
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     const double scale = numeric_at(factor, row);
                     output->set_value(
                         row,
@@ -488,7 +513,7 @@ namespace components::vector::operations {
                 const vector_t& dates = lhs == lt::DATE ? left : right;
                 const vector_t& intervals = lhs == lt::DATE ? right : left;
                 const int applied = lhs == lt::DATE ? sign : 1;
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     output->set_value(row,
                                       date::date_t{add_interval_to_date(dates.get_value<date::date_t>(row).value,
                                                                         intervals.get_value<date::interval_t>(row),
@@ -502,7 +527,7 @@ namespace components::vector::operations {
                 const vector_t& stamps = timestamp_left ? left : right;
                 const vector_t& intervals = timestamp_left ? right : left;
                 const int applied = timestamp_left ? sign : 1;
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     output->set_value(
                         row,
                         date::timestamp_t{add_interval_to_timestamp(stamps.get_value<date::timestamp_t>(row).value,
@@ -515,7 +540,7 @@ namespace components::vector::operations {
                 const vector_t& times = lhs == lt::TIME ? left : right;
                 const vector_t& intervals = lhs == lt::TIME ? right : left;
                 const int applied = lhs == lt::TIME ? sign : 1;
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     const auto shifted = times.get_value<date::time_t>(row).value +
                                          applied * intervals.get_value<date::interval_t>(row).time;
                     output->set_value(row, date::time_t{wrap_time_of_day(shifted)});
@@ -526,7 +551,7 @@ namespace components::vector::operations {
                 const vector_t& times = lhs == lt::TIME_TZ ? left : right;
                 const vector_t& intervals = lhs == lt::TIME_TZ ? right : left;
                 const int applied = lhs == lt::TIME_TZ ? sign : 1;
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     const auto zoned = times.get_value<date::timetz_t>(row);
                     const auto shifted = zoned.time + applied * intervals.get_value<date::interval_t>(row).time;
                     output->set_value(row, date::timetz_t{wrap_time_of_day(shifted), zoned.zone});
@@ -534,7 +559,7 @@ namespace components::vector::operations {
             }
 
             if (lhs == lt::INTERVAL && rhs == lt::INTERVAL) {
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     const auto first = left.get_value<date::interval_t>(row);
                     const auto second = right.get_value<date::interval_t>(row);
                     output->set_value(row,
@@ -551,7 +576,7 @@ namespace components::vector::operations {
             }
 
             if (lhs == lt::DATE && rhs == lt::DATE) {
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     output->set_value(row,
                                       date::interval_t{date::microseconds{0},
                                                        left.get_value<date::date_t>(row).value -
@@ -560,7 +585,7 @@ namespace components::vector::operations {
                 });
             }
             if (timestamp_left && timestamp_right) {
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     output->set_value(row,
                                       date::interval_t{left.get_value<date::timestamp_t>(row).value -
                                                            right.get_value<date::timestamp_t>(row).value,
@@ -569,7 +594,7 @@ namespace components::vector::operations {
                 });
             }
             if (lhs == lt::TIME && rhs == lt::TIME) {
-                return each_row(left, right, output, count, [&](uint64_t row) {
+                return each_row(left, right, output, count, active, [&](uint64_t row) {
                     output->set_value(row,
                                       date::interval_t{left.get_value<date::time_t>(row).value -
                                                            right.get_value<date::time_t>(row).value,
@@ -586,13 +611,14 @@ namespace components::vector::operations {
                                      const vector_t& left,
                                      const vector_t& right,
                                      vector_t* output,
-                                     uint64_t count) {
+                                     uint64_t count,
+                                     const bool* active) {
             namespace date = core::date;
             const bool interval = left.type().type() == types::logical_type::INTERVAL;
             assert(left.type().type() == right.type().type() && "comparison operands must share a type");
             assert((interval || left.type().type() == types::logical_type::TIME_TZ) &&
                    "only INTERVAL and TIME_TZ compare as structs");
-            return each_row(left, right, output, count, [&](uint64_t row) {
+            return each_row(left, right, output, count, active, [&](uint64_t row) {
                 std::strong_ordering ordering = std::strong_ordering::equal;
                 if (interval) {
                     const auto lhs = left.get_value<date::interval_t>(row);
@@ -724,8 +750,12 @@ namespace components::vector::operations {
                                         const vector_t& left,
                                         const vector_t& right,
                                         vector_t* output,
-                                        uint64_t count) {
+                                        uint64_t count,
+                                        const bool* active) {
             for (uint64_t row = 0; row < count; row++) {
+                if (skip_row(active, row)) {
+                    continue;
+                }
                 if (left.is_null(row) || right.is_null(row)) {
                     output->set_null(row, true);
                     continue;
@@ -771,15 +801,16 @@ namespace components::vector::operations {
                                      const vector_t& left,
                                      const vector_t& right,
                                      vector_t* output,
-                                     uint64_t count) {
+                                     uint64_t count,
+                                     const bool* active) {
                 if (is_comparison(code)) {
-                    return compare_rows<T>(code, left, right, output, count);
+                    return compare_rows<T>(code, left, right, output, count, active);
                 }
                 if (is_bitwise(code)) {
-                    return bitwise_rows<T>(code, left, right, output, count);
+                    return bitwise_rows<T>(code, left, right, output, count, active);
                 }
                 if constexpr (is_number<T>) {
-                    return arithmetic_rows<T>(code, left, right, output, count);
+                    return arithmetic_rows<T>(code, left, right, output, count, active);
                 } else {
                     return core::error_t(
                         core::error_code_t::invalid_parameter,
@@ -864,12 +895,13 @@ namespace components::vector::operations {
                                const vector_t& right,
                                vector_t* output,
                                const graph_execution_context& context,
-                               uint64_t count) {
+                               uint64_t count,
+                               const bool* active_rows) {
         if (code == operator_code::logical_and || code == operator_code::logical_or) {
-            return logical_rows(code, left, right, output, count);
+            return logical_rows(code, left, right, output, count, active_rows);
         }
         if (code == operator_code::strict_equal) {
-            if (auto error = apply_binary(operator_code::equal, left, right, output, context, count);
+            if (auto error = apply_binary(operator_code::equal, left, right, output, context, count, active_rows);
                 error.contains_error()) {
                 return error;
             }
@@ -886,14 +918,14 @@ namespace components::vector::operations {
         // Special cases
         if (is_comparison(code)) {
             if (left.type().to_physical_type() == types::physical_type::STRUCT) {
-                return struct_compare(code, left, right, output, count);
+                return struct_compare(code, left, right, output, count, active_rows);
             }
             const auto physical = left.type().to_physical_type();
             if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
-                return container_compare(code, left, right, output, count);
+                return container_compare(code, left, right, output, count, active_rows);
             }
         } else if (is_temporal_arithmetic(left, right)) {
-            return temporal_arithmetic(code, left, right, output, count);
+            return temporal_arithmetic(code, left, right, output, count, active_rows);
         }
         // If casts were applied correctly, left and right should be the same
         assert(left.type().to_physical_type() == right.type().to_physical_type() &&
@@ -908,14 +940,16 @@ namespace components::vector::operations {
                                                                         output,
                                                                         decimal_width(*output),
                                                                         decimal_scale(left),
-                                                                        count);
+                                                                        count,
+                                                                        active_rows);
         }
         return types::simple_physical_type_switch<binary_dispatch>(left.type().to_physical_type(),
                                                                    code,
                                                                    left,
                                                                    right,
                                                                    output,
-                                                                   count);
+                                                                   count,
+                                                                   active_rows);
     }
 
     core::error_t apply_unary(operator_code code,
@@ -923,6 +957,10 @@ namespace components::vector::operations {
                               vector_t* output,
                               const graph_execution_context&,
                               uint64_t count) {
+        if (operand.type().type() == types::logical_type::NA && code != operator_code::is_null &&
+            code != operator_code::is_not_null) {
+            return core::error_t::no_error();
+        }
         switch (code) {
             case operator_code::is_null:
                 for (uint64_t row = 0; row < count; row++) {

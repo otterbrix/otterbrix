@@ -35,6 +35,11 @@ namespace components::operators {
     } // namespace
 
     std::optional<resolved_operator_t> resolve_operator(operator_code code, const complex_logical_type& operand) {
+        // Every unary operator over NULL is NULL
+        if (operand.type() == logical_type::NA && code != operator_code::is_null &&
+            code != operator_code::is_not_null) {
+            return resolved_operator_t{operand};
+        }
         switch (code) {
             case operator_code::negate:
                 if (types::is_numeric(operand.type()) || operand.type() == logical_type::DECIMAL ||

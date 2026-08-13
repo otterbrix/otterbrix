@@ -114,35 +114,6 @@ namespace services::dispatcher {
                                                               components::casts::cast_kind::cast)}};
         }
 
-        [[nodiscard]] core::error_t request_projection_type(std::pmr::memory_resource* resource,
-                                                            const components::casts::cast_registry_t* cast_registry,
-                                                            components::expressions::expression_ptr* expression) {
-            const auto& source = (*expression)->result_type();
-            if (source.type() != logical_type::NA) {
-                return core::error_t::no_error();
-            }
-            const components::types::complex_logical_type text{logical_type::STRING_LITERAL};
-            auto cast = cast_registry->resolve(source, text, components::casts::cast_type::implicit);
-            if (!cast.has_value()) {
-                return core::error_t(core::error_code_t::conversion_failure,
-                                     std::pmr::string{"no cast from a NULL literal to text", resource});
-            }
-            auto conversion = components::expressions::make_cast_expression(resource,
-                                                                            param_storage{*expression},
-                                                                            text,
-                                                                            cast.value(),
-                                                                            components::casts::cast_kind::cast);
-            // The projected column is addressed by its key, so the wrapper takes it over.
-            conversion->key() = (*expression)->key();
-            conversion->set_result_alias((*expression)->result_alias());
-            *expression = components::expressions::expression_ptr{conversion.get()};
-            return core::error_t::no_error();
-        }
-        // plan_resolve_index_t + helpers live in
-        // services/dispatcher/plan_resolve_index.hpp so
-        // enrich_logical_plan.cpp can use the same probe-then-fallback
-        // pattern.
-
         struct type_match_t {
             column_path path;
             const complex_logical_type* type;
@@ -707,6 +678,7 @@ namespace services::dispatcher {
 
         // An untyped NULL literal has no type of its own: it adopts the type of whatever it meets
         void adopt_untyped_literals(std::pmr::memory_resource* resource,
+                                    const components::casts::cast_registry_t* cast_registry,
                                     const storage_parameters& parameters,
                                     std::span<param_storage* const> operands,
                                     std::span<components::types::complex_logical_type> types) {
@@ -728,11 +700,18 @@ namespace services::dispatcher {
                 if (bound == parameters.parameters.end() || !bound->second.is_null()) {
                     continue;
                 }
-                auto literal = make_scalar_expression(resource, scalar_type::constant);
-                literal->append_param(*operands[index]);
-                literal->set_result_type(*adopted);
+                auto conversion =
+                    cast_registry->resolve(types[index], *adopted, components::casts::cast_type::implicit);
+                if (!conversion.has_value()) {
+                    continue;
+                }
+                *operands[index] = param_storage{
+                    expression_ptr{components::expressions::make_cast_expression(resource,
+                                                                                 *operands[index],
+                                                                                 *adopted,
+                                                                                 *conversion,
+                                                                                 components::casts::cast_kind::cast)}};
                 types[index] = *adopted;
-                *operands[index] = param_storage{expression_ptr{literal}};
             }
         }
 
@@ -757,6 +736,7 @@ namespace services::dispatcher {
         }
 
         void adopt_untyped_binary_operands(std::pmr::memory_resource* resource,
+                                           const components::casts::cast_registry_t* cast_registry,
                                            const storage_parameters& parameters,
                                            scalar_expression_t* expression,
                                            components::types::complex_logical_type* left,
@@ -766,7 +746,7 @@ namespace services::dispatcher {
             }
             param_storage* operands[] = {&expression->params()[0], &expression->params()[1]};
             components::types::complex_logical_type types[] = {*left, *right};
-            adopt_untyped_literals(resource, parameters, operands, types);
+            adopt_untyped_literals(resource, cast_registry, parameters, operands, types);
             *left = types[0];
             *right = types[1];
         }
@@ -779,7 +759,7 @@ namespace services::dispatcher {
                        std::span<components::types::complex_logical_type> types,
                        core::error_t* error,
                        std::string_view what) {
-            adopt_untyped_literals(resource, parameters, operands, types);
+            adopt_untyped_literals(resource, cast_registry, parameters, operands, types);
             auto common = cast_registry->find_best_common_type(types);
             if (!common.has_value()) {
                 *error = core::error_t(core::error_code_t::invalid_parameter,
@@ -923,6 +903,50 @@ namespace services::dispatcher {
                                 }
                                 break;
                             }
+                            case compare_type::union_and:
+                            case compare_type::union_or:
+                            case compare_type::union_not: {
+                                // Resolve each child type and verify that it is BOOL or convertable to it
+                                const components::types::complex_logical_type boolean{logical_type::BOOLEAN};
+                                auto resolve_operand = [&](param_storage& operand) {
+                                    const auto operand_type = (*this)(operand);
+                                    if (resolve_error.contains_error()) {
+                                        return false;
+                                    }
+                                    if (operand_type.type() == logical_type::BOOLEAN) {
+                                        return true;
+                                    }
+                                    // Trying to cast it
+                                    auto cast = cast_registry->resolve(operand_type,
+                                                                       boolean,
+                                                                       components::casts::cast_type::implicit);
+                                    if (!cast.has_value()) {
+                                        resolve_error =
+                                            core::error_t(core::error_code_t::schema_error,
+                                                          std::pmr::string{"operand of " + to_string(cmp->type()) +
+                                                                               " must be BOOLEAN",
+                                                                           resource});
+                                        return false;
+                                    }
+                                    operand =
+                                        param_storage{expression_ptr{components::expressions::make_cast_expression(
+                                            resource,
+                                            operand,
+                                            boolean,
+                                            *cast,
+                                            components::casts::cast_kind::cast)}};
+                                    return true;
+                                };
+                                // A union node holds every operand as a child
+                                for (auto& child : cmp->children()) {
+                                    param_storage nested{child};
+                                    if (!resolve_operand(nested)) {
+                                        return components::types::complex_logical_type(logical_type::INVALID);
+                                    }
+                                    child = std::get<expression_ptr>(nested);
+                                }
+                                break;
+                            }
                             default:
                                 break;
                         }
@@ -1033,7 +1057,7 @@ namespace services::dispatcher {
                             if (resolve_error.contains_error()) {
                                 return components::types::complex_logical_type(logical_type::INVALID);
                             }
-                            adopt_untyped_binary_operands(resource, parameters, s, &lt, &rt);
+                            adopt_untyped_binary_operands(resource, cast_registry, parameters, s, &lt, &rt);
                             auto resolved =
                                 resolve_arithmetic(*cast_registry, scalar_to_operator_code(s->type()), lt, rt);
                             if (!resolved.has_value()) {
@@ -1222,6 +1246,16 @@ namespace services::dispatcher {
             }
         };
 
+        // Defined below; a CASE condition is validated exactly like a WHERE predicate.
+        [[nodiscard]] core::result_wrapper_t<named_schema>
+        validate_schema(std::pmr::memory_resource* resource,
+                        const components::casts::cast_registry_t* cast_registry,
+                        compare_expression_t* expr,
+                        const storage_parameters& parameters,
+                        const named_schema& schema_left,
+                        const named_schema& schema_right,
+                        bool same_schema);
+
         [[nodiscard]] core::error_t
         resolve_scalar_output_type(std::pmr::memory_resource* resource,
                                    const components::casts::cast_registry_t* cast_registry,
@@ -1299,6 +1333,40 @@ namespace services::dispatcher {
                         return core::error_t(core::error_code_t::invalid_parameter,
                                              std::pmr::string{"CASE expression with no THEN branch", resource});
                     }
+                    // Every condition still has to be RESOLVED — the graph is built over it — but a
+                    // condition takes no part in the common type below: whatever expression it is,
+                    // the only requirement is that it answers BOOLEAN.
+                    for (size_t position = 0; position + 1 < scalar_expr->params().size(); position += 2) {
+                        auto& condition = scalar_expr->params()[position];
+                        components::types::complex_logical_type condition_type{logical_type::INVALID};
+                        const bool is_comparison =
+                            std::holds_alternative<expression_ptr>(condition) &&
+                            std::get<expression_ptr>(condition)->group() == expression_group::compare;
+                        if (is_comparison) {
+                            auto resolved = validate_schema(
+                                resource,
+                                cast_registry,
+                                static_cast<compare_expression_t*>(std::get<expression_ptr>(condition).get()),
+                                parameters,
+                                schema,
+                                schema_right != nullptr ? *schema_right : schema,
+                                same_schema);
+                            if (resolved.has_error()) {
+                                return resolved.error();
+                            }
+                            condition_type = resolved.value().front().type;
+                        } else {
+                            condition_type = resolve(condition);
+                            if (resolve_error.contains_error()) {
+                                return resolve_error;
+                            }
+                        }
+                        if (condition_type.type() != logical_type::BOOLEAN) {
+                            return core::error_t(core::error_code_t::schema_error,
+                                                 std::pmr::string{"CASE WHEN condition must be BOOLEAN", resource});
+                        }
+                    }
+
                     std::pmr::vector<size_t> arms(resource);
                     for (size_t position = 1; position < scalar_expr->params().size(); position += 2) {
                         arms.push_back(position);
@@ -1369,7 +1437,7 @@ namespace services::dispatcher {
                     auto lt = resolve(scalar_expr->params()[0]);
                     auto rt = scalar_expr->params().size() > 1 ? resolve(scalar_expr->params()[1]) : lt;
                     if (!resolve_error.contains_error()) {
-                        adopt_untyped_binary_operands(resource, parameters, scalar_expr, &lt, &rt);
+                        adopt_untyped_binary_operands(resource, cast_registry, parameters, scalar_expr, &lt, &rt);
                         auto resolved =
                             resolve_arithmetic(*cast_registry, scalar_to_operator_code(scalar_expr->type()), lt, rt);
                         if (!resolved.has_value()) {
@@ -2296,8 +2364,7 @@ namespace services::dispatcher {
                         core::error_code_t::table_not_exists,
                         std::pmr::string{"extension table is not registered in the catalog", resource});
                 }
-                const std::string& visible_alias =
-                    node->result_alias().empty() ? ext->relname() : node->result_alias();
+                const std::string& visible_alias = node->result_alias().empty() ? ext->relname() : node->result_alias();
                 for (const auto& column : tbl->columns) {
                     type_from_t entry;
                     entry.result_alias = visible_alias;
@@ -2925,10 +2992,6 @@ namespace services::dispatcher {
                                         components::expressions::as_parameter(scalar_expr->params().front()));
                                     from_null = (pit != parameters.parameters.end() && pit->second.is_null());
                                 }
-                                auto projected_error = impl::request_projection_type(resource, cast_registry, &expr);
-                                if (projected_error.contains_error()) {
-                                    return projected_error;
-                                }
                                 complex_logical_type out_type = expr->result_type();
                                 if (!expr->key().is_null()) {
                                     out_type.set_alias(expr->key().as_string());
@@ -3062,7 +3125,12 @@ namespace services::dispatcher {
                         } else {
                             auto lt = resolve_type(scalar_expr->params()[0]);
                             auto rt = scalar_expr->params().size() > 1 ? resolve_type(scalar_expr->params()[1]) : lt;
-                            impl::adopt_untyped_binary_operands(resource, parameters, scalar_expr, &lt, &rt);
+                            impl::adopt_untyped_binary_operands(resource,
+                                                                cast_registry,
+                                                                parameters,
+                                                                scalar_expr,
+                                                                &lt,
+                                                                &rt);
                             auto resolved = resolve_arithmetic(*cast_registry,
                                                                impl::scalar_to_operator_code(scalar_expr->type()),
                                                                lt,

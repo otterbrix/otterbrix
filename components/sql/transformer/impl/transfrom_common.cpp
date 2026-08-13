@@ -13,6 +13,93 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     namespace {
+        // The aggregate a HAVING names may sit ANYWHERE inside a target-list entry — as the entry
+        // itself, under a CAST, inside a CASE arm, or as an operand of arithmetic — so matching it
+        // means descending the whole expression rather than inspecting its top node. A call matches
+        // on name AND arguments: two aggregates of the same name are different aggregates.
+        const expressions::expression_i* find_call(const expressions::expression_i* expr,
+                                                   const std::string& name,
+                                                   const std::pmr::vector<expressions::param_storage>& args,
+                                                   bool args_comparable);
+
+        const expressions::expression_i* find_call_in(const expressions::param_storage& param,
+                                                      const std::string& name,
+                                                      const std::pmr::vector<expressions::param_storage>& args,
+                                                      bool args_comparable) {
+            if (!std::holds_alternative<expressions::expression_ptr>(param)) {
+                return nullptr;
+            }
+            const auto& nested = std::get<expressions::expression_ptr>(param);
+            return nested ? find_call(nested.get(), name, args, args_comparable) : nullptr;
+        }
+
+        const expressions::expression_i* find_call(const expressions::expression_i* expr,
+                                                   const std::string& name,
+                                                   const std::pmr::vector<expressions::param_storage>& args,
+                                                   bool args_comparable) {
+            if (expr == nullptr) {
+                return nullptr;
+            }
+            switch (expr->group()) {
+                case expression_group::aggregate: {
+                    const auto* agg = static_cast<const aggregate_expression_t*>(expr);
+                    if (agg->function_name() == name && (!args_comparable || agg->params() == args)) {
+                        return expr;
+                    }
+                    for (const auto& param : agg->params()) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                case expression_group::function: {
+                    const auto* call = static_cast<const function_expression_t*>(expr);
+                    if (call->name() == name && (!args_comparable || call->args() == args)) {
+                        return expr;
+                    }
+                    for (const auto& param : call->args()) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                case expression_group::cast:
+                    return find_call_in(static_cast<const expressions::cast_expression_t*>(expr)->child(),
+                                        name,
+                                        args,
+                                        args_comparable);
+                case expression_group::scalar: {
+                    for (const auto& param : static_cast<const scalar_expression_t*>(expr)->params()) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                case expression_group::compare: {
+                    const auto* cmp = static_cast<const compare_expression_t*>(expr);
+                    if (const auto* found = find_call_in(cmp->left(), name, args, args_comparable)) {
+                        return found;
+                    }
+                    if (const auto* found = find_call_in(cmp->right(), name, args, args_comparable)) {
+                        return found;
+                    }
+                    for (const auto& child : cmp->children()) {
+                        if (const auto* found = find_call(child.get(), name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                default:
+                    return nullptr;
+            }
+        }
+    } // namespace
+
+    namespace {
         // Logical negation (complement) of a scalar comparison operator: eq<->ne, lt<->gte, gt<->lte.
         // NOT distributes over an ANY/ALL membership by De Morgan only when the per-element comparison
         // is itself flipped to its complement (see the AEXPR_NOT membership rewrite below). Returns
@@ -1634,22 +1721,9 @@ namespace components::sql::transform {
             case T_FuncCall: {
                 auto func = pg_ptr_cast<FuncCall>(node);
                 auto funcname = std::string{strVal(linitial(func->funcname))};
-                // Find a matching aggregate already registered by SELECT
-                for (const auto& expr : group->expressions()) {
-                    if (expr->group() == expression_group::aggregate) {
-                        auto* agg = static_cast<const aggregate_expression_t*>(expr.get());
-                        if (agg->function_name() == funcname) {
-                            return agg->key();
-                        }
-                    } else if (expr->group() == expression_group::function) {
-                        auto* call = static_cast<const function_expression_t*>(expr.get());
-                        if (call->name() == funcname) {
-                            return call->key();
-                        }
-                    }
-                }
-                // Not in SELECT — add to group so operator_group_t computes it for HAVING
-                // (mirrors PostgreSQL: aggregates in HAVING need not appear in SELECT).
+                // The arguments have to be built before anything can be matched: two aggregates of
+                // the same name are different aggregates. Binding HAVING sum(g) to a projected
+                // sum(v) on the name alone made the group answer about the wrong column.
                 std::pmr::vector<param_storage> args(resource_);
                 if (func->args) {
                     for (const auto& arg : func->args->lst) {
@@ -1673,14 +1747,8 @@ namespace components::sql::transform {
                     return std::holds_alternative<expressions::expression_ptr>(p);
                 });
                 for (const auto& expr : group->expressions()) {
-                    if (expr->group() == expression_group::aggregate) {
-                        auto* agg = static_cast<const aggregate_expression_t*>(expr.get());
-                        if (agg->function_name() != funcname) {
-                            continue;
-                        }
-                        if (!args_comparable || agg->params() == args) {
-                            return agg->key();
-                        }
+                    if (const auto* found = find_call(expr.get(), funcname, args, args_comparable)) {
+                        return found->key();
                     }
                 }
                 // Not in SELECT — add to group so operator_group_t computes it for HAVING

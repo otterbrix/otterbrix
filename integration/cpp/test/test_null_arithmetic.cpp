@@ -92,9 +92,9 @@ TEST_CASE("integration::cpp::null_arith::division_by_null_does_not_crash") {
     REQUIRE(ok(d, "CREATE DATABASE na;"));
     seed(d, "na.t");
 
-    // 10 / x : x=5 -> 2 ; x NULL -> NULL ; x=0 -> NULL (division by zero yields NULL here).
-    CHECK(read_col(d, "SELECT 10 / x FROM na.t ORDER BY id;") == std::vector<opt>{2, {}, {}});
-    CHECK(read_col(d, "SELECT 10 % x FROM na.t ORDER BY id;") == std::vector<opt>{0, {}, {}});
+    // Division by zero is an ERROR, not a NULL
+    CHECK_FALSE(ok(d, "SELECT 10 / x FROM na.t ORDER BY id;"));
+    CHECK_FALSE(ok(d, "SELECT 10 % x FROM na.t ORDER BY id;"));
     // x / <non-null> keeps the NULL operand NULL.
     CHECK(read_col(d, "SELECT x / 2 FROM na.t ORDER BY id;") == std::vector<opt>{2, {}, 0});
 }

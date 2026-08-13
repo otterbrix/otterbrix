@@ -673,7 +673,8 @@ namespace components::sql::transform {
                     if (nodeTag(sortby->node) == T_ColumnRef) {
                         field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
                     } else if (nodeTag(sortby->node) == T_A_Indirection) {
-                        auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
+                        auto res =
+                            indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
                         if (res.has_error()) {
                             error_ = res.error();
                             return nullptr;

@@ -484,7 +484,7 @@ namespace components::operators {
                     // operand, even under NOT — permits the row: SQL rejects only definitely-FALSE
                     // checks, unlike WHERE, which drops everything that is not definitely TRUE.
                     const bool passed =
-                        decisions == nullptr || decisions->is_null(row) || decisions->get_value<bool>(row);
+                        decisions != nullptr && (decisions->is_null(row) || decisions->get_value<bool>(row));
                     if (!passed) {
                         set_error(core::error_t{
                             core::error_code_t::other_error,

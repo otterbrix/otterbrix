@@ -24,6 +24,15 @@ namespace components::execution_graph {
         return (*storage_)[output_indices_[n]];
     }
 
+    const bool* execution_node_t::active_rows() const {
+        if (constraint_slot_ == invalid_slot) {
+            return nullptr;
+        }
+        assert(storage_ && "execution node is not attached to a graph storage");
+        assert(constraint_slot_ < storage_->size());
+        return (*storage_)[constraint_slot_].data<bool>();
+    }
+
     uint64_t execution_node_t::input_size(size_t n) const {
         assert(sizes_ && "execution node is not attached to a graph storage");
         return sizes_[input_indices_[n]];
@@ -240,7 +249,7 @@ namespace components::execution_graph {
 
     core::error_t operator_node_t::process(const graph_execution_context& context, uint64_t count) {
         if (input_indices_.size() == 2) {
-            return vector::operations::apply_binary(op_, input(0), input(1), &output(0), context, count);
+            return vector::operations::apply_binary(op_, input(0), input(1), &output(0), context, count, active_rows());
         }
         return vector::operations::apply_unary(op_, input(0), &output(0), context, count);
     }
@@ -325,6 +334,103 @@ namespace components::execution_graph {
             }
             result.set_null(row, false);
             vector::vector_ops::copy(input(chosen), result, row + 1, row, row);
+        }
+        return core::error_t::no_error();
+    }
+
+    case_when_node_t::case_when_node_t(std::pmr::memory_resource* resource, slot_list_t conditions, slot_list_t masks)
+        : execution_node_t(resource, std::move(conditions), std::move(masks)) {}
+
+    core::error_t case_when_node_t::process(const graph_execution_context&, uint64_t count) {
+        const size_t arms = input_indices_.size();
+        for (uint64_t row = 0; row < count; row++) {
+            // Walk the conditions in order and let the first definitely-TRUE one claim the row.
+            // An UNKNOWN condition claims nothing but does not stop the search, exactly as a
+            // false one does not: SQL only takes the arm whose WHEN is TRUE.
+            size_t chosen = arms;
+            for (size_t arm = 0; arm < arms; arm++) {
+                const vector::vector_t& condition = input(arm);
+                if (!condition.is_null(row) && condition.get_value<bool>(row)) {
+                    chosen = arm;
+                    break;
+                }
+            }
+            for (size_t arm = 0; arm <= arms; arm++) {
+                vector::vector_t& mask = output(arm);
+                mask.set_null(row, false);
+                mask.set_value(row, arm == chosen);
+            }
+        }
+        for (size_t arm = 0; arm <= arms; arm++) {
+            set_output_size(arm, count);
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t case_when_node_t::validate() const {
+        auto error = execution_node_t::validate();
+        if (error.contains_error()) {
+            return error;
+        }
+        if (input_indices_.empty()) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"execution graph: case_when node has no condition", resource()});
+        }
+        // One mask per condition, plus the DEFAULT arm's.
+        if (output_indices_.size() != input_indices_.size() + 1) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"execution graph: case_when node needs one mask per condition "
+                                                  "plus a default",
+                                                  resource()});
+        }
+        return core::error_t::no_error();
+    }
+
+    case_then_node_t::case_then_node_t(std::pmr::memory_resource* resource,
+                                       slot_list_t values,
+                                       slot_list_t masks,
+                                       slot_id_t output)
+        : execution_node_t(resource, std::move(values), slot_list_t({output}, resource))
+        , arm_count_(input_indices_.size()) {
+        input_indices_.insert(input_indices_.end(), masks.begin(), masks.end());
+    }
+
+    core::error_t case_then_node_t::process(const graph_execution_context&, uint64_t count) {
+        vector::vector_t& result = output(0);
+        for (uint64_t row = 0; row < count; row++) {
+            size_t chosen = arm_count_;
+            for (size_t arm = 0; arm < arm_count_; arm++) {
+                const vector::vector_t& mask = input(arm_count_ + arm);
+                if (!mask.is_null(row) && mask.get_value<bool>(row)) {
+                    chosen = arm;
+                    break;
+                }
+            }
+            // No arm claimed the row: no WHEN matched and there was no ELSE.
+            if (chosen == arm_count_) {
+                result.set_null(row, true);
+                continue;
+            }
+            const vector::vector_t& value = input(chosen);
+            if (value.is_null(row)) {
+                result.set_null(row, true);
+                continue;
+            }
+            vector::vector_ops::copy(value, result, row + 1, row, row);
+        }
+        set_output_size(0, count);
+        return core::error_t::no_error();
+    }
+
+    core::error_t case_then_node_t::validate() const {
+        auto error = execution_node_t::validate();
+        if (error.contains_error()) {
+            return error;
+        }
+        if (arm_count_ == 0 || input_indices_.size() != arm_count_ * 2) {
+            return core::error_t(
+                core::error_code_t::schema_error,
+                std::pmr::string{"execution graph: case_then node needs one mask per value", resource()});
         }
         return core::error_t::no_error();
     }
@@ -557,6 +663,31 @@ namespace components::execution_graph {
         return append(new blend_node_t(resource_, kind, slot_list_t(inputs, resource_), output));
     }
 
+    node_id_t execution_graph_t::add_case_when(const slot_list_t& conditions, slot_list_t& masks) {
+        masks.clear();
+        masks.reserve(conditions.size() + 1);
+        // One mask per condition plus the DEFAULT arm's. They are BOOLEAN and always written, so
+        // they are typed here rather than left for validation to stamp.
+        for (size_t arm = 0; arm <= conditions.size(); arm++) {
+            auto mask = declare_slot();
+            set_slot_type(mask, types::complex_logical_type{types::logical_type::BOOLEAN});
+            masks.push_back(mask);
+        }
+        return append(
+            new case_when_node_t(resource_, slot_list_t(conditions, resource_), slot_list_t(masks, resource_)));
+    }
+
+    node_id_t execution_graph_t::add_case_then(const slot_list_t& values, const slot_list_t& masks) {
+        auto output = declare_slot();
+        return append(
+            new case_then_node_t(resource_, slot_list_t(values, resource_), slot_list_t(masks, resource_), output));
+    }
+
+    void execution_graph_t::set_constraint(node_id_t node, slot_id_t mask) {
+        prepared_ = false;
+        nodes_[node]->set_constraint(mask);
+    }
+
     void execution_graph_t::connect(node_id_t consumer, size_t position, slot_id_t producer) {
         prepared_ = false;
         nodes_[consumer]->set_input(position, producer);
@@ -660,16 +791,23 @@ namespace components::execution_graph {
                 reached.push_back(producer[slot]);
             }
         }
+        auto reach = [&](slot_id_t slot) {
+            auto from = producer[slot];
+            if (from != invalid_node && live[from] == 0) {
+                live[from] = 1;
+                live_count++;
+                reached.push_back(from);
+            }
+        };
         while (!reached.empty()) {
             auto node = reached.back();
             reached.pop_back();
             for (auto slot : nodes_[node]->input_indices()) {
-                auto from = producer[slot];
-                if (from != invalid_node && live[from] == 0) {
-                    live[from] = 1;
-                    live_count++;
-                    reached.push_back(from);
-                }
+                reach(slot);
+            }
+            // A constrained node needs its mask, so the mask's producer is live too.
+            if (nodes_[node]->constraint_slot() != invalid_slot) {
+                reach(nodes_[node]->constraint_slot());
             }
         }
 
@@ -680,13 +818,20 @@ namespace components::execution_graph {
             if (live[index] == 0) {
                 continue;
             }
-            for (auto slot : nodes_[index]->input_indices()) {
+            auto depend_on = [&](slot_id_t slot) {
                 auto from = producer[slot];
                 if (from == invalid_node) {
-                    continue;
+                    return;
                 }
                 pending[index]++;
                 consumers[from].push_back(node_id_t{index});
+            };
+            for (auto slot : nodes_[index]->input_indices()) {
+                depend_on(slot);
+            }
+            // The mask is an edge like any other: a CASE arm cannot run before case_when wrote it.
+            if (nodes_[index]->constraint_slot() != invalid_slot) {
+                depend_on(nodes_[index]->constraint_slot());
             }
         }
 

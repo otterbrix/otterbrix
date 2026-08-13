@@ -18,12 +18,12 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
-#include <components/physical_plan_generator/create_plan.hpp>
-#include <components/planner/optimizer.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
 #include <stack>
 #include <string>

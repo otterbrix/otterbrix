@@ -34,6 +34,7 @@ namespace components::expressions {
             core::result_wrapper_t<slot_id_t> function_slot(const function_expression_t* expression);
             core::result_wrapper_t<slot_id_t> aggregate_slot(const aggregate_expression_t* expression);
             core::result_wrapper_t<slot_id_t> blend_slot(const scalar_expression_t* expression);
+            core::result_wrapper_t<slot_id_t> case_slot(const scalar_expression_t* expression);
             core::result_wrapper_t<slot_id_t> compare_slot(const compare_expression_t* expression);
             core::result_wrapper_t<slot_id_t> quantified_slot(const compare_expression_t* expression);
             core::result_wrapper_t<slot_id_t>
@@ -168,6 +169,9 @@ namespace components::expressions {
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: blend was not stamped by validation", resource()});
             }
+            if (!is_coalesce) {
+                return case_slot(expression);
+            }
             execution_graph::slot_list_t inputs(resource());
             inputs.reserve(expression->params().size());
             for (const auto& param : expression->params()) {
@@ -177,9 +181,66 @@ namespace components::expressions {
                 }
                 inputs.push_back(slot.value());
             }
-            auto node = graph_->add_blend(is_coalesce ? execution_graph::blend_node_t::blend_kind::coalesce
-                                                      : execution_graph::blend_node_t::blend_kind::case_when,
-                                          inputs);
+            auto node = graph_->add_blend(execution_graph::blend_node_t::blend_kind::coalesce, inputs);
+            graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
+            return graph_->output_slot(node);
+        }
+
+        // CASE runs as two nodes with the arms in between
+        core::result_wrapper_t<slot_id_t> builder_t::case_slot(const scalar_expression_t* expression) {
+            const auto& params = expression->params();
+            // [cond, value]... with an optional trailing ELSE.
+            const size_t arm_count = params.size() / 2;
+            const bool has_else = params.size() % 2 == 1;
+
+            execution_graph::slot_list_t conditions(resource());
+            conditions.reserve(arm_count);
+            for (size_t arm = 0; arm < arm_count; arm++) {
+                auto slot = slot_of(params[arm * 2]);
+                if (slot.has_error()) {
+                    return slot;
+                }
+                conditions.push_back(slot.value());
+            }
+
+            execution_graph::slot_list_t masks(resource());
+            graph_->add_case_when(conditions, masks);
+
+            execution_graph::slot_list_t values(resource());
+            execution_graph::slot_list_t claimed(resource());
+            values.reserve(arm_count + 1);
+            claimed.reserve(arm_count + 1);
+            auto build_arm = [&](const param_storage& param,
+                                 execution_graph::slot_id_t mask) -> core::result_wrapper_t<slot_id_t> {
+                const size_t first = graph_->node_count();
+                auto slot = slot_of(param);
+                if (slot.has_error()) {
+                    return slot;
+                }
+                for (size_t node = first; node < graph_->node_count(); node++) {
+                    graph_->set_constraint(execution_graph::node_id_t{node}, mask);
+                }
+                return slot;
+            };
+
+            for (size_t arm = 0; arm < arm_count; arm++) {
+                auto slot = build_arm(params[arm * 2 + 1], masks[arm]);
+                if (slot.has_error()) {
+                    return slot;
+                }
+                values.push_back(slot.value());
+                claimed.push_back(masks[arm]);
+            }
+            if (has_else) {
+                auto slot = build_arm(params.back(), masks[arm_count]);
+                if (slot.has_error()) {
+                    return slot;
+                }
+                values.push_back(slot.value());
+                claimed.push_back(masks[arm_count]);
+            }
+            // Without an ELSE the default mask goes unused, and a row no mask claims is NULL.
+            auto node = graph_->add_case_then(values, claimed);
             graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
             return graph_->output_slot(node);
         }

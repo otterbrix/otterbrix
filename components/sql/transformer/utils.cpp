@@ -65,13 +65,40 @@ namespace components::sql::transform {
         return name == right_name.relname || name == right_alias;
     }
 
+    bool name_collection_t::is_left_table(const std::string& dbname, const std::string& name) const {
+        if (dbname.empty()) {
+            return is_left_table(name);
+        }
+        if (name == left_name.relname && (left_name.dbname.empty() || left_name.dbname == dbname)) {
+            return true;
+        }
+        for (const auto& nm : extra_left_names) {
+            if (nm.relname == name && (nm.dbname.empty() || nm.dbname == dbname)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool name_collection_t::is_right_table(const std::string& dbname, const std::string& name) const {
+        if (dbname.empty()) {
+            return is_right_table(name);
+        }
+        return name == right_name.relname && (right_name.dbname.empty() || right_name.dbname == dbname);
+    }
+
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
+        return deduce_side(names, std::string{}, target_name);
+    }
+
+    expressions::side_t
+    deduce_side(const name_collection_t& names, const std::string& dbname, const std::string& target_name) {
         if (target_name.empty()) {
             return expressions::side_t::undefined;
         }
-        if (names.is_left_table(target_name)) {
+        if (names.is_left_table(dbname, target_name)) {
             return expressions::side_t::left;
-        } else if (names.right_name.relname == target_name || names.right_alias == target_name) {
+        } else if (names.is_right_table(dbname, target_name)) {
             return expressions::side_t::right;
         } else {
             return expressions::side_t::undefined;
@@ -79,7 +106,7 @@ namespace components::sql::transform {
     }
 
     void column_ref_t::deduce_side(const name_collection_t& names) {
-        field.set_side(transform::deduce_side(names, table));
+        field.set_side(transform::deduce_side(names, db, table));
     }
 
     column_ref_t
@@ -91,6 +118,7 @@ namespace components::sql::transform {
             return column_ref_t{{}, expressions::key_t(resource, strVal(lst.back().data))};
         } else {
             auto it = lst.begin();
+            std::string db_name;
             std::string table_name;
             std::pmr::vector<std::pmr::string> field_path(resource);
             expressions::side_t side = expressions::side_t::undefined;
@@ -105,18 +133,23 @@ namespace components::sql::transform {
                 side = expressions::side_t::right;
             } else if (lst.size() >= 3) {
                 // db.table.x style: first elem is database; check if second elem matches a known table.
+                // Matched WITH the database, so two same-named tables from different databases do not
+                // both answer to the bare relname and collapse onto the same side.
+                db_name = strVal(it->data);
                 auto second_it = std::next(it);
                 const char* second_name = strVal(second_it->data);
-                if (names.is_left_table(second_name)) {
+                if (names.is_left_table(db_name, second_name)) {
                     ++it;
                     table_name = strVal(it->data);
                     ++it;
                     side = expressions::side_t::left;
-                } else if (names.is_right_table(second_name)) {
+                } else if (names.is_right_table(db_name, second_name)) {
                     ++it;
                     table_name = strVal(it->data);
                     ++it;
                     side = expressions::side_t::right;
+                } else {
+                    db_name.clear();
                 }
             }
             for (; it != lst.end(); ++it) {
@@ -126,18 +159,27 @@ namespace components::sql::transform {
                     field_path.emplace_back(pmrStrVal(it->data, resource));
                 }
             }
-            return {std::move(table_name), expressions::key_t{std::move(field_path), side}};
+            expressions::key_t field{std::move(field_path), side};
+            field.set_qualifier(table_name);
+            return {std::move(db_name), std::move(table_name), std::move(field)};
         }
     }
 
-    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
-                                      A_Indirection* indirection,
-                                      const name_collection_t& names) {
+    core::result_wrapper_t<column_ref_t> indirection_to_field(std::pmr::memory_resource* resource,
+                                                              A_Indirection* indirection,
+                                                              const name_collection_t& names) {
         column_ref_t ref(resource);
         if (nodeTag(indirection->arg) == T_ColumnRef) {
             ref = columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names);
+        } else if (nodeTag(indirection->arg) == T_A_Indirection) {
+            auto base = indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names);
+            if (base.has_error()) {
+                return base.error();
+            }
+            ref = std::move(base.value());
         } else {
-            ref = indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names);
+            return core::error_t{core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"field selection is supported only on a column reference", resource}};
         }
         auto key = indirection->indirection->lst.back().data;
         if (nodeTag(key) == T_A_Indices) {
@@ -146,6 +188,18 @@ namespace components::sql::transform {
             ref.field.storage().emplace_back(pmrStrVal(key, resource));
         }
         return ref;
+    }
+
+    core::result_wrapper_t<column_ref_t>
+    node_to_field(std::pmr::memory_resource* resource, Node* node, const name_collection_t& names) {
+        if (nodeTag(node) == T_ColumnRef) {
+            return columnref_to_field(resource, pg_ptr_cast<ColumnRef>(node), names);
+        }
+        if (nodeTag(node) == T_A_Indirection) {
+            return indirection_to_field(resource, pg_ptr_cast<A_Indirection>(node), names);
+        }
+        return core::error_t{core::error_code_t::sql_parse_error,
+                             std::pmr::string{"expected a column reference", resource}};
     }
 
     bool is_jsonb_nav_operator(std::string_view op) { return op == "->" || op == "->>" || op == "#>" || op == "#>>"; }
@@ -276,7 +330,16 @@ namespace components::sql::transform {
             return column;
         }
         if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
-            if (auto col = get_logical_type(strVal(lsecond(type->names))); col != types::logical_type::DECIMAL) {
+            const char* builtin_name = strVal(lsecond(type->names));
+            auto col = get_logical_type(builtin_name);
+            if (col == types::logical_type::UNKNOWN) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"type '", resource} + builtin_name + "' is not supported");
+            } else if (col == types::logical_type::STRING_LITERAL && list_length(type->typmods) > 0) {
+                // Engine has only unbounded strings, reject char/varchar(n) length rather than silently dropping it
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"string length modifier is not supported", resource});
+            } else if (col != types::logical_type::DECIMAL) {
                 column = col;
             } else {
                 if (list_length(type->typmods) != 2) {
@@ -481,14 +544,26 @@ namespace components::sql::transform {
                                                         types::complex_logical_type{types::logical_type::NA},
                                                         std::move(values));
         }
-        auto fist_type = values.front().type();
-        for (auto it = ++values.begin(); it != values.end(); ++it) {
-            if (fist_type != it->type()) {
+        // The element type comes from the first NON-NULL element. A NULL element (logical_type NA)
+        // is a valid null slot compatible with any element type, so it is skipped both when inferring
+        // the element type and when checking element-type consistency. An all-NULL array leaves the
+        // element type indeterminate (UNKNOWN), resolved against the target column's element type
+        // when the value is cast/reconciled on the INSERT path.
+        types::complex_logical_type element_type{types::logical_type::UNKNOWN};
+        bool element_type_found = false;
+        for (const auto& value : values) {
+            if (value.type().type() == types::logical_type::NA) {
+                continue;
+            }
+            if (!element_type_found) {
+                element_type = value.type();
+                element_type_found = true;
+            } else if (element_type != value.type()) {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"array has inconsistent element types", resource});
             }
         }
-        return types::logical_value_t::create_array(resource, fist_type, std::move(values));
+        return types::logical_value_t::create_array(resource, element_type, std::move(values));
     }
 
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
@@ -725,6 +800,16 @@ namespace components::sql::transform {
                         return right;
                     }
                     return "(" + std::move(left.value()) + ")" + sep + "(" + std::move(right.value()) + ")";
+                }
+                if (e->kind == AEXPR_NOT) {
+                    // Unary NOT in A_Expr form: the operand is rexpr (lexpr is null). Emit the same
+                    // "NOT (...)" shape that the BoolExpr NOT branch produces so build_check_predicate
+                    // recognises it.
+                    auto inner = deparse_check_expr(resource, e->rexpr);
+                    if (inner.has_error() || inner.value().empty()) {
+                        return inner;
+                    }
+                    return "NOT (" + std::move(inner.value()) + ")";
                 }
                 return "";
             }

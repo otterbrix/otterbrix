@@ -96,11 +96,15 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
-                                               log_t& log)
+                                               log_t& log,
+                                               planner::create_plan_rule_t create_plan_rule,
+                                               components::planner::optimizer_pass_t optimizer_pass)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
         , resource_(resource_ptr)
         , scheduler_(scheduler)
         , log_(log.clone())
+        , create_plan_rule_(create_plan_rule)
+        , optimizer_pass_(optimizer_pass)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
         , txn_manager_(resource_ptr)
@@ -378,7 +382,9 @@ namespace services::dispatcher {
                                                                             disk_address_,
                                                                             index_address_,
                                                                             log_.clone(),
-                                                                            pack.dml_flush_row_threshold);
+                                                                            pack.dml_flush_row_threshold,
+                                                                            create_plan_rule_,
+                                                                            optimizer_pass_);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
         }

@@ -7,20 +7,38 @@
 
 namespace components::table {
 
+    namespace {
+        // Downstream readers (scans, DML operators, the validator) take a column's
+        // name from its chunk type's alias(), and alias() asserts on an alias-less
+        // type — so a table column's type MUST carry a name. But alias() is
+        // OVERLOADED: for a self-naming complex type (STRUCT / UNION) it holds the
+        // TYPE's own name (e.g. "test_struct"), NOT the column name. So set the
+        // column name only when the type does not already name itself; clobbering a
+        // struct's type-name with the column name loses it (test_table.cpp:255).
+        // This is type-name preservation, not a fallback — the real fix is to stop
+        // overloading one field for two names (otterbrix#583).
+        types::complex_logical_type with_name_alias(types::complex_logical_type type, const std::string& name) {
+            if (!type.has_alias() && !name.empty()) {
+                type.set_alias(name);
+            }
+            return type;
+        }
+    } // namespace
+
     column_definition_t::column_definition_t(std::string name, types::complex_logical_type type)
         : name_(std::move(name))
-        , type_(std::move(type)) {}
+        , type_(with_name_alias(std::move(type), name_)) {}
 
     column_definition_t::column_definition_t(std::string name,
                                              types::complex_logical_type type,
                                              std::optional<types::logical_value_t> default_value)
         : name_(std::move(name))
-        , type_(std::move(type))
+        , type_(with_name_alias(std::move(type), name_))
         , default_value_(std::move(default_value)) {}
 
     column_definition_t::column_definition_t(std::string name, types::complex_logical_type type, bool not_null)
         : name_(std::move(name))
-        , type_(std::move(type))
+        , type_(with_name_alias(std::move(type), name_))
         , not_null_(not_null) {}
 
     column_definition_t::column_definition_t(std::string name,
@@ -28,7 +46,7 @@ namespace components::table {
                                              bool not_null,
                                              std::optional<types::logical_value_t> default_value)
         : name_(std::move(name))
-        , type_(std::move(type))
+        , type_(with_name_alias(std::move(type), name_))
         , not_null_(not_null)
         , default_value_(std::move(default_value)) {}
 

@@ -79,23 +79,28 @@ namespace components::vector::operations {
                     case operator_code::multiply:
                         write<T>(output, row, static_cast<T>(lhs * rhs));
                         break;
+                    // A zero divisor yields NULL rather than an error, mirroring try_cast: the
+                    // failure is DATA-dependent, and CASE evaluates every arm for every row before
+                    // selecting one, so `CASE WHEN x <> 0 THEN 10 / x ELSE 0 END` would otherwise
+                    // fail on the rows its own guard excludes.
                     case operator_code::divide:
                         if (is_zero(rhs)) {
-                            return core::error_t(core::error_code_t::invalid_parameter,
-                                                 std::pmr::string{"division by zero", output->resource()});
+                            output->set_null(row, true);
+                            break;
                         }
                         write<T>(output, row, static_cast<T>(lhs / rhs));
                         break;
                     case operator_code::mod:
                         if constexpr (std::is_floating_point_v<T>) {
+                            // Not data-dependent: no float value of the operand makes % meaningful.
                             return core::error_t(
                                 core::error_code_t::invalid_parameter,
                                 std::pmr::string{"operator does not accept modulus on floating point types",
                                                  output->resource()});
                         } else {
                             if (is_zero(rhs)) {
-                                return core::error_t(core::error_code_t::invalid_parameter,
-                                                     std::pmr::string{"division by zero", output->resource()});
+                                output->set_null(row, true);
+                                break;
                             }
                             write<T>(output, row, static_cast<T>(lhs % rhs));
                         }
@@ -321,8 +326,8 @@ namespace components::vector::operations {
                         scaled = lhs * rhs / factor;
                     } else {
                         if (rhs == 0) {
-                            failure = core::error_t(core::error_code_t::invalid_parameter,
-                                                    std::pmr::string{"division by zero", output->resource()});
+                            // Data-dependent, like the integer/float path above: NULL, not an error.
+                            output->set_null(row, true);
                             return;
                         }
                         if (multiplication_overflows(lhs, factor)) {

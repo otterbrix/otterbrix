@@ -204,6 +204,13 @@ namespace components::types {
         }
     }
 
+    // BOOLEAN has a numeric physical representation, but SQL arithmetic does not
+    // accept it as a number. Keep is_numeric() broad for existing comparison and
+    // storage code while giving arithmetic type resolution a SQL-level predicate.
+    constexpr bool is_arithmetic_numeric(logical_type type) {
+        return type != logical_type::BOOLEAN && is_numeric(type);
+    }
+
     constexpr bool is_string(logical_type type) {
         switch (type) {
             case logical_type::STRING_LITERAL:
@@ -367,7 +374,7 @@ namespace components::types {
     // Handles numeric promotion and temporal arithmetic rules (date/time ± interval, etc.).
     // Returns logical_type::NA for unsupported combinations.
     constexpr logical_type arithmetic_result_type(logical_type lhs, logical_type rhs, vector::arithmetic_op op) {
-        if (is_numeric(lhs) && is_numeric(rhs)) {
+        if (is_arithmetic_numeric(lhs) && is_arithmetic_numeric(rhs)) {
             return promote_type(lhs, rhs);
         }
         auto is_temporal = [](logical_type t) constexpr {
@@ -389,10 +396,11 @@ namespace components::types {
             }
         }
         if (op == vector::arithmetic_op::multiply || op == vector::arithmetic_op::divide) {
-            if (lhs == logical_type::INTERVAL && is_numeric(rhs)) {
+            if (lhs == logical_type::INTERVAL && is_arithmetic_numeric(rhs)) {
                 return logical_type::INTERVAL;
             }
-            if (op == vector::arithmetic_op::multiply && is_numeric(lhs) && rhs == logical_type::INTERVAL) {
+            if (op == vector::arithmetic_op::multiply && is_arithmetic_numeric(lhs) &&
+                rhs == logical_type::INTERVAL) {
                 return logical_type::INTERVAL;
             }
         }

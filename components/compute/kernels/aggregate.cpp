@@ -1,11 +1,19 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
 
+#include <string_view>
+
 using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
 
 namespace {
+    template<typename T>
+    concept addable = requires(T& a, const T& b) { a += b; };
+    template<typename T>
+    concept comparable = requires(const T& a, const T& b) { a < b; };
+    template<typename T>
+    concept dividable = requires(const T& a, const T& b) { a / b; };
 
     // An aggregate accumulates into one state per group, addressed by group id
 
@@ -132,9 +140,22 @@ namespace {
         return arithmetic_dispatch<numeric_layout_t>(inputs.front(), no_layout);
     }
 
+    // MIN/MAX over text. A vector stores its strings as string_view into an auxiliary buffer that
+    // belongs to the input chunk, so the accumulator must own its copy: the winning row's chunk is
+    // long gone by the time finalize runs.
+    struct string_state_t {
+        explicit string_state_t(std::pmr::memory_resource* resource)
+            : value(resource) {}
+        std::pmr::string value;
+        bool has_value{false};
+    };
+
     aggregate_state_layout_t min_max_layout(const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
             return {};
+        }
+        if (inputs.front().to_physical_type() == physical_type::STRING) {
+            return aggregate_state_of<string_state_t>();
         }
         return ordered_dispatch<numeric_layout_t>(inputs.front(), no_layout);
     }
@@ -241,11 +262,35 @@ namespace {
             states);
     }
 
+    // Shared by min and max: `keep` decides whether the incoming string replaces the accumulator.
+    template<typename keep_t>
+    core::error_t
+    string_min_max_update(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) {
+        const auto* data = input.data<std::string_view>();
+        const bool all_valid = input.validity().all_valid();
+        const keep_t keep{};
+        for (uint64_t row = 0; row < groups.size(); row++) {
+            if (!all_valid && input.is_null(row)) {
+                continue;
+            }
+            auto& accumulator = states.at<string_state_t>(groups[row]);
+            const std::string_view candidate = data[row];
+            if (!accumulator.has_value || keep(candidate, std::string_view{accumulator.value})) {
+                accumulator.value.assign(candidate);
+                accumulator.has_value = true;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     core::error_t min_update(kernel_context& ctx,
                              const data_chunk_t& input,
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
         const auto& column = input.data.front();
+        if (column.type().to_physical_type() == physical_type::STRING) {
+            return string_min_max_update<std::less<std::string_view>>(column, groups, states);
+        }
         return ordered_dispatch<min_update_t>(
             column.type(),
             [&ctx] { return unsupported_argument(ctx, "min"); },
@@ -259,6 +304,9 @@ namespace {
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
         const auto& column = input.data.front();
+        if (column.type().to_physical_type() == physical_type::STRING) {
+            return string_min_max_update<std::greater<std::string_view>>(column, groups, states);
+        }
         return ordered_dispatch<max_update_t>(
             column.type(),
             [&ctx] { return unsupported_argument(ctx, "max"); },
@@ -350,6 +398,19 @@ namespace {
 
     core::error_t
     min_max_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        if (output.type().to_physical_type() == physical_type::STRING) {
+            // set_value copies the bytes into the output vector's own string buffer, so the
+            // accumulator's storage is free to die with the arena.
+            for (uint64_t row = 0; row < count; row++) {
+                const auto& accumulator = states.at<string_state_t>(first + row);
+                if (!accumulator.has_value) {
+                    output.set_null(row, true);
+                    continue;
+                }
+                output.set_value(row, std::string_view{accumulator.value});
+            }
+            return core::error_t::no_error();
+        }
         return ordered_dispatch<numeric_finalize_t>(
             output.type(),
             [&ctx] { return unsupported_argument(ctx, "min/max"); },

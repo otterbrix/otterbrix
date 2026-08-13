@@ -36,6 +36,7 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_fk_check.hpp>
 #include <components/logical_plan/node_function.hpp>
@@ -208,7 +209,25 @@ namespace services::dispatcher {
             // First key is either table name or type name
             // Also we store number of keys used to get there and path
             std::pmr::list<type_match_t> matches(resource);
-            for (size_t i = 0; i < schema.size(); i++) {
+            // A qualified reference (m.v) names one table, so resolve it against that
+            // table's columns. side cannot do this: it is binary, and a chained JOIN puts
+            // three tables on two sides, so the qualifier is the only thing that tells
+            // the middle table from the leftmost one.
+            if (truncated_key.has_qualifier()) {
+                for (size_t i = 0; i < schema.size(); i++) {
+                    if (core::pmr::operator==(schema[i].result_alias, truncated_key.qualifier()) &&
+                        core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
+                        matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
+                    }
+                }
+            }
+            // Either unqualified, or the qualifier matched nothing because this schema
+            // carries no alias for it (raw node_data inputs have an empty result_alias):
+            // fall back to the by-name rules, which is what every key used to get. Decided
+            // once, before the loop: testing matches.empty() per iteration would stop at
+            // the first hit and hide the ambiguity that collecting every match detects.
+            const bool match_by_name = matches.empty();
+            for (size_t i = 0; match_by_name && i < schema.size(); i++) {
                 if (truncated_key.storage().size() > 2 &&
                     core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
                     core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(2))) {
@@ -637,6 +656,12 @@ namespace services::dispatcher {
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
+                if (!sub) {
+                    // A null operand slot -- e.g. the unused right() of a unary IS NULL, or the
+                    // left()/right() sentinels of a union node whose operands live in children_.
+                    // Nothing to resolve, and dereferencing sub->group() below would crash.
+                    return type_paths{resource};
+                }
                 if (sub->group() == expression_group::scalar) {
                     auto* scalar = static_cast<scalar_expression_t*>(sub.get());
                     auto res = resolve_key_paths_in_group(resource, scalar->params(), schema);
@@ -645,25 +670,26 @@ namespace services::dispatcher {
                     }
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
-                    auto res = resolve_key_path(resource, cmp->left(), schema);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                    res = resolve_key_path(resource, cmp->right(), schema);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                    for (auto& child : cmp->children()) {
-                        if (child->group() == expression_group::compare) {
-                            auto* child_cmp = static_cast<compare_expression_t*>(child.get());
-                            res = resolve_key_path(resource, child_cmp->left(), schema);
+                    if (cmp->is_union()) {
+                        // Union compares (AND/OR/NOT — e.g. from IN, or the union_and(is_not_null,
+                        // union_not(regex)) that NOT LIKE expands into) carry their operands as CHILDREN
+                        // and have no left/right, so recurse into each child instead of touching left/right
+                        // (which are null for a union and would be dereferenced blindly).
+                        for (auto& child : cmp->children()) {
+                            param_storage child_param{child};
+                            auto res = resolve_key_path(resource, child_param, schema);
                             if (res.has_error()) {
                                 return res;
                             }
-                            res = resolve_key_path(resource, child_cmp->right(), schema);
-                            if (res.has_error()) {
-                                return res;
-                            }
+                        }
+                    } else {
+                        auto res = resolve_key_path(resource, cmp->left(), schema);
+                        if (res.has_error()) {
+                            return res;
+                        }
+                        res = resolve_key_path(resource, cmp->right(), schema);
+                        if (res.has_error()) {
+                            return res;
                         }
                     }
                 }
@@ -2244,6 +2270,42 @@ namespace services::dispatcher {
         named_schema result{resource};
 
         switch (node->type()) {
+            // Host-extension: a REGISTERED CATALOG TABLE lowered by a host operator.
+            //   - SINK (has a child): a federated WRITE (INSERT..SELECT into a
+            //     backend). Validate the child (the rows to write) so they are
+            //     typed; the statement returns an affected-count, so its output
+            //     schema is empty (NoData) — like a plain DML without RETURNING.
+            //   - SOURCE (leaf): typed exactly like any table — from the catalog by
+            //     its (db, rel), resolved into the plan-tree idx by the standard
+            //     catalog-resolve wrap. Surfacing the columns lets parents (JOIN /
+            //     GROUP BY / SELECT) type normally and the wrapper stamp output_types().
+            // An unregistered target/source (missing tbl_md) is a host bug.
+            case node_type::extension_t: {
+                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
+                if (!node->children().empty()) {
+                    auto child =
+                        validate_schema(resource, idx, cast_registry, node->children().front().get(), parameters);
+                    if (child.has_error()) {
+                        return child;
+                    }
+                    return result; // empty = affected-count / NoData
+                }
+                const auto* tbl = impl::tbl_md_for(idx, ext->dbname(), ext->relname());
+                if (!tbl) {
+                    return core::error_t(
+                        core::error_code_t::table_not_exists,
+                        std::pmr::string{"extension table is not registered in the catalog", resource});
+                }
+                const std::string& visible_alias =
+                    node->result_alias().empty() ? ext->relname() : node->result_alias();
+                for (const auto& column : tbl->columns) {
+                    type_from_t entry;
+                    entry.result_alias = visible_alias;
+                    entry.type = column.type;
+                    result.push_back(std::move(entry));
+                }
+                return result;
+            }
             // SQL transaction-control leaf (BEGIN/COMMIT/ROLLBACK): no table
             // schema to validate — empty schema, like an all-resolve sequence_t.
             // Defensive mirror of the executor's validate break-group; without
@@ -3305,6 +3367,12 @@ namespace services::dispatcher {
                 if (node_sort) {
                     // Add hidden columns for sort keys not in the GROUP output
                     for (auto& sort_child : node_sort->expressions()) {
+                        if (sort_child->group() != expression_group::sort) {
+                            // A computed (scalar) sort key has no column of its own — its key
+                            // carries the direction encoding, not a name. Its operands are
+                            // resolved against the GROUP output by validate_schema below.
+                            continue;
+                        }
                         auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
                         auto& skey = sort_expr->key();
                         // Try resolving in the GROUP result schema first

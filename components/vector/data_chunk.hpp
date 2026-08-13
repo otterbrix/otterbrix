@@ -3,9 +3,9 @@
 
 #include <components/types/logical_value.hpp>
 #include <core/result_wrapper.hpp>
+#include <optional>
 
 namespace components::vector {
-
     class data_chunk_t {
     public:
         data_chunk_t(std::pmr::memory_resource* resource,
@@ -39,8 +39,8 @@ namespace components::vector {
         void set_value(const std::pmr::vector<size_t>& col_path, uint64_t index, const types::logical_value_t& val);
 
         bool is_null(uint64_t col_idx, uint64_t index) const;
-        bool is_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path) const;
-        void set_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path, bool value);
+        bool is_null(uint64_t col_idx, const std::pmr::vector<size_t>& path) const;
+        void set_null(uint64_t col_idx, const std::pmr::vector<size_t>& path, bool value);
         template<typename T>
         T get_value(uint64_t col_idx, uint64_t index) const {
             return data[col_idx].get_value<T>(index);
@@ -48,14 +48,39 @@ namespace components::vector {
         // Forwards plain values, optionals and (optional-of-)struct-tuples to the column vector, which
         // deduces and routes them. logical_value_t is excluded so it keeps hitting the runtime overload.
         template<typename Arg>
-        requires(!std::is_same_v<std::remove_cvref_t<Arg>, types::logical_value_t>) void set_value(uint64_t col_idx,
-                                                                                                   uint64_t index,
-                                                                                                   Arg&& value) {
+            requires(!std::is_same_v<std::remove_cvref_t<Arg>, types::logical_value_t>)
+        void set_value(uint64_t col_idx, uint64_t index, Arg&& value) {
             data[col_idx].set_value(index, std::forward<Arg>(value));
         }
 
-        vector_t* at(const std::pmr::vector<size_t>& col_indices);
-        const vector_t* at(const std::pmr::vector<size_t>& col_indices) const;
+        vector_t* at(const std::pmr::vector<size_t>& col_path);
+        const vector_t* at(const std::pmr::vector<size_t>& col_path) const;
+
+        class at_aligned_t {
+        public:
+            at_aligned_t() = default;
+            explicit at_aligned_t(const vector_t* borrowed)
+                : borrowed_(borrowed) {}
+            explicit at_aligned_t(vector_t&& gathered)
+                : gathered_(std::move(gathered)) {}
+
+            at_aligned_t(const at_aligned_t&) = delete;
+            at_aligned_t& operator=(const at_aligned_t&) = delete;
+            at_aligned_t(at_aligned_t&&) noexcept = default;
+            at_aligned_t& operator=(at_aligned_t&&) noexcept = default;
+
+            const vector_t* get() const noexcept { return gathered_ ? &gathered_.value() : borrowed_; }
+            const vector_t& operator*() const noexcept { return *get(); }
+            const vector_t* operator->() const noexcept { return get(); }
+            explicit operator bool() const noexcept { return get() != nullptr; }
+
+        private:
+            const vector_t* borrowed_ = nullptr;
+            std::optional<vector_t> gathered_;
+        };
+
+        // at(), row-aligned index i is row i
+        at_aligned_t at_aligned(const std::pmr::vector<size_t>& col_path, std::pmr::memory_resource* resource) const;
 
         uint64_t allocation_size() const;
 

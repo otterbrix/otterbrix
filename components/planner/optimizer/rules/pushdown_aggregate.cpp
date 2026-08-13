@@ -23,8 +23,8 @@ namespace components::planner::optimizer {
         // owned base table (join = multi-table; nested aggregate = a sub-aggregate
         // reduce; data = client-injected raw chunk with no owning agent; cte_scan /
         // union / intersect / recursive_cte = multi-source). Any of these => skip (a).
-        bool is_shape_breaking_child(lp::node_type t) noexcept {
-            switch (t) {
+        bool is_shape_breaking_child(const lp::node_ptr& child) noexcept {
+            switch (child->type()) {
                 case lp::node_type::join_t:
                 case lp::node_type::aggregate_t:
                 case lp::node_type::data_t:
@@ -104,7 +104,7 @@ namespace components::planner::optimizer {
             }
             // Skip (a): any shape-breaking child means it is not one owned table.
             for (const auto& child : node->children()) {
-                if (child && is_shape_breaking_child(child->type())) {
+                if (child && is_shape_breaking_child(child)) {
                     return;
                 }
             }

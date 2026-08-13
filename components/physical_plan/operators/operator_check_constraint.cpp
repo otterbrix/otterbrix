@@ -480,8 +480,11 @@ namespace components::operators {
                     decisions = &produced->data.front();
                 }
                 for (uint64_t row = 0; row < chunk.size(); ++row) {
+                    // A CHECK is violated only by a definitely-FALSE result. UNKNOWN — a NULL
+                    // operand, even under NOT — permits the row: SQL rejects only definitely-FALSE
+                    // checks, unlike WHERE, which drops everything that is not definitely TRUE.
                     const bool passed =
-                        decisions != nullptr && !decisions->is_null(row) && decisions->get_value<bool>(row);
+                        decisions == nullptr || decisions->is_null(row) || decisions->get_value<bool>(row);
                     if (!passed) {
                         set_error(core::error_t{
                             core::error_code_t::other_error,

@@ -5,6 +5,7 @@ add_definitions(-DDEV_MODE)
 set( ${PROJECT_NAME}_SOURCES
         test_types.cpp
         test_type_switch.cpp
+        test_tri_bool.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -518,6 +518,12 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(src.size());
             for (const auto& child : src) {
+                // A NULL element (logical_type NA) stays a NULL slot; the scalar cast can not convert
+                // a NA source, and a NULL is representable only as NA (is_null() == (type == NA)).
+                if (child.type().type() == logical_type::NA) {
+                    elems.emplace_back(child);
+                    continue;
+                }
                 auto casted = child.cast_as(target_elem_type, session_tz);
                 if (casted.has_error()) {
                     return casted.error();
@@ -533,6 +539,12 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(children().size());
             for (const auto& child : children()) {
+                // A NULL element (logical_type NA) stays a NULL slot; the scalar cast can not convert
+                // a NA source, and a NULL is representable only as NA (is_null() == (type == NA)).
+                if (child.type().type() == logical_type::NA) {
+                    elems.emplace_back(child);
+                    continue;
+                }
                 auto casted = child.cast_as(target_elem_type, session_tz);
                 if (casted.has_error()) {
                     return casted.error();
@@ -676,6 +688,13 @@ namespace components::types {
     }
 
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
+        // Structural equality, for container keys / DISTINCT / sort: two NULLs are equal, and a
+        // NULL equals no value. (SQL value equality over a NULL is UNKNOWN, not FALSE -- that is
+        // compare_sql(), which the predicate evaluators use.) Guarded first so a NULL operand never
+        // reaches the type switch below with a mismatched type.
+        if (is_null() || rhs.is_null()) {
+            return is_null() && rhs.is_null();
+        }
         // Array/list equality is length-aware (PostgreSQL): arrays of different length are simply unequal —
         // never reconciled, never an assert. Element types are coerced by cast_as before comparison; a
         // residual per-element type mismatch (e.g. an NA pad against a typed element) also counts as
@@ -690,8 +709,6 @@ namespace components::types {
         }
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
-            case logical_type::NA:
-                return true;
             case logical_type::BOOLEAN:
             case logical_type::TINYINT:
             case logical_type::SMALLINT:
@@ -745,6 +762,23 @@ namespace components::types {
     bool logical_value_t::operator!=(const logical_value_t& rhs) const { return !(*this == rhs); }
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
+        // A NULL carries logical_type::NA, not the column's type, so the type-directed switch below
+        // cannot order it: it would fall to `default: return false` for an NA on the left, and for
+        // an NA on the RIGHT it would read the NA's payload as if it were the left type — which
+        // dereferences a null pointer for STRING/LIST/STRUCT/MAP.
+        //
+        // Worse, returning false in both directions makes a NULL "equivalent" to every value while
+        // the values stay ordered among themselves (less(NA,5) and less(5,NA) are both false, yet
+        // less(5,7) is true). Equivalence is then not transitive, so this is not a strict weak
+        // ordering, and every std::sort / std::map / b-tree keyed on it is undefined behaviour.
+        //
+        // Order NULLs LAST, matching the ORDER BY convention already used by sort.cpp, so the
+        // engine has one NULL-ordering rule rather than two.
+        const bool lhs_null = is_null();
+        const bool rhs_null = rhs.is_null();
+        if (lhs_null || rhs_null) {
+            return !lhs_null && rhs_null; // value < NULL; NULL < anything is false
+        }
         // Array/list ordering is length-aware: compare element-wise, a shorter array that is a prefix sorts
         // first (lexicographic). Handled before the size-inclusive type assert so different-length arrays
         // do not trip it.
@@ -834,6 +868,15 @@ namespace components::types {
         } else {
             return compare_t::more;
         }
+    }
+
+    std::optional<compare_t> logical_value_t::compare_sql(const logical_value_t& rhs) const {
+        // A comparison with a NULL operand is UNKNOWN in SQL three-valued logic; there is no
+        // TRUE/FALSE answer to map an ordering onto.
+        if (is_null() || rhs.is_null()) {
+            return std::nullopt;
+        }
+        return compare(rhs);
     }
 
     const std::vector<logical_value_t>& logical_value_t::children() const {
@@ -1046,24 +1089,27 @@ namespace components::types {
     * TODO: absl::int128 does not have implementations for all operations
     * Add them in operations_helper.hpp
     */
+    // SQL three-valued logic: an arithmetic operation with any NULL operand is NULL. This is
+    // the single chokepoint every scalar sum/subtract/mult/divide/modulus dispatches through,
+    // so guarding NULL here keeps a NULL operand from being read as a zero payload — which is
+    // both wrong (NULL + 1 would be 1) and unsafe (NULL used as a divisor would divide by zero).
     template<typename OP, typename GET>
     logical_value_t op(const logical_value_t& value, GET getter_function) {
+        if (value.is_null()) {
+            return logical_value_t{value.resource(), complex_logical_type{logical_type::NA}};
+        }
         OP operation{};
         return logical_value_t{value.resource(), operation((value.*getter_function)())};
     }
 
     template<typename OP, typename GET>
     logical_value_t op(const logical_value_t& value1, const logical_value_t& value2, GET getter_function) {
-        using T = typename std::invoke_result<decltype(getter_function), logical_value_t>::type;
-        OP operation{};
         auto* r = value1.resource() ? value1.resource() : value2.resource();
-        if (value1.is_null()) {
-            return logical_value_t{r, operation(T{}, (value2.*getter_function)())};
-        } else if (value2.is_null()) {
-            return logical_value_t{r, operation((value1.*getter_function)(), T{})};
-        } else {
-            return logical_value_t{r, operation((value1.*getter_function)(), (value2.*getter_function)())};
+        if (value1.is_null() || value2.is_null()) {
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
+        OP operation{};
+        return logical_value_t{r, operation((value1.*getter_function)(), (value2.*getter_function)())};
     }
 
     // session timezone cancels out in arithmetics, so we don't have to pass it
@@ -1093,8 +1139,9 @@ namespace components::types {
     } // namespace
 
     logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1208,8 +1255,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::subtract(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1334,8 +1382,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::mult(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1422,8 +1471,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::divide(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         // Division by zero: return 0 of the appropriate type
@@ -1516,8 +1566,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1555,8 +1606,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::exponent(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1720,8 +1772,9 @@ namespace components::types {
         }
     }
     logical_value_t logical_value_t::bit_and(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1754,8 +1807,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_or(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1788,8 +1842,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_xor(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1855,8 +1910,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_shift_l(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1889,8 +1945,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_shift_r(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();

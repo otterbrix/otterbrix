@@ -4,9 +4,69 @@
 #include <algorithm>
 #include <charconv>
 #include <stdexcept>
+#include <utility>
+
+namespace {
+    using namespace components;
+    using namespace components::vector;
+
+    struct resolved_path_t {
+        const vector_t* array; // ARRAY/LIST the path ends up indexing; null unless it does
+        size_t index;          // which of its elements, meaningful only alongside `array`
+        const vector_t* leaf;
+    };
+
+    resolved_path_t resolve_path(const std::vector<vector_t>& data, const std::pmr::vector<size_t>& col_path) {
+        if (col_path.front() >= data.size()) {
+            return {.array = nullptr, .index = 0, .leaf = nullptr};
+        }
+        const vector_t* sub_column = &data[col_path.front()];
+        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
+            auto t = sub_column->type().type();
+            if (t == types::logical_type::ARRAY || t == types::logical_type::LIST) {
+                // Only a trailing subscript resolves. Anything after it (arr[i].field) would
+                // have to index a vector that does not exist: the field lives once per
+                // element, not once per row.
+                if (std::next(it) != col_path.end()) {
+                    return {.array = nullptr, .index = 0, .leaf = nullptr};
+                }
+                return {.array = sub_column, .index = *it, .leaf = &sub_column->entry()};
+            }
+            sub_column = sub_column->entries()[*it].get();
+        }
+        return {.array = nullptr, .index = 0, .leaf = sub_column};
+    }
+
+    // Copy element `index` of every row out of an ARRAY/LIST into a contiguous vector, so
+    // that index i means row i. Those values are strided in the flat child, hence the gather —
+    // typed copies through vector_ops::copy, no per-element logical_value_t round-trip.
+    vector_t
+    align_to_rows(const vector_t& array, size_t index, uint64_t count, std::pmr::memory_resource* resource) {
+        const vector_t& child = array.entry();
+        const bool is_list = array.type().type() == types::logical_type::LIST;
+        const size_t stride =
+            is_list ? 0 : static_cast<const types::array_logical_type_extension*>(array.type().extension())->size();
+
+        vector_t out(resource, child.type(), count);
+        for (uint64_t i = 0; i < count; ++i) {
+            uint64_t pos;
+            if (is_list) {
+                const auto& offlen = array.data<types::list_entry_t>()[i];
+                if (index >= offlen.length) {
+                    out.validity().set_invalid(i);
+                    continue;
+                }
+                pos = offlen.offset + index;
+            } else {
+                pos = i * stride + index;
+            }
+            vector_ops::copy(child, out, pos + 1, pos, i);
+        }
+        return out;
+    }
+} // namespace
 
 namespace components::vector {
-
     data_chunk_t::data_chunk_t(std::pmr::memory_resource* resource,
                                const std::pmr::vector<types::complex_logical_type>& types,
                                uint64_t capacity)
@@ -103,30 +163,12 @@ namespace components::vector {
     }
 
     types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_path, uint64_t index) const {
-        const vector_t* sub_column = &data[col_path.front()];
-        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            if (std::next(it) == col_path.end()) {
-                if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    auto stride =
-                        static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
-                    return sub_column->entry().value(index * stride + *it);
-                } else if (sub_column->type().type() == types::logical_type::LIST) {
-                    // LIST elements live in a single flat child vector addressed by a
-                    // per-row (offset,length) entry; *it is the 0-based element index.
-                    const auto& offlen = sub_column->data<types::list_entry_t>()[index];
-                    if (*it >= offlen.length) {
-                        return types::logical_value_t{sub_column->resource(),
-                                                      types::complex_logical_type{types::logical_type::NA}};
-                    }
-                    return sub_column->entry().value(offlen.offset + *it);
-                } else {
-                    return sub_column->entries()[*it]->value(index);
-                }
-            } else {
-                sub_column = sub_column->entries()[*it].get();
-            }
+        auto element = data[col_path.front()].resolve_nested_element(index, col_path, 1);
+        if (element.is_null) {
+            return types::logical_value_t{element.leaf->resource(),
+                                          types::complex_logical_type{types::logical_type::NA}};
         }
-        return sub_column->value(index);
+        return element.leaf->value(element.index);
     }
 
     void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val) {
@@ -163,46 +205,28 @@ namespace components::vector {
     }
 
     bool data_chunk_t::is_null(uint64_t col_idx, uint64_t index) const { return data[col_idx].is_null(index); }
-    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path) const {
+    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<size_t>& path) const {
         return data[col_idx].is_null(path);
     }
-    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path, bool value) {
+    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<size_t>& path, bool value) {
         data[col_idx].set_null(path, value);
     }
 
-    vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
-        // A top-level ordinal past the chunk's width is "column not found" — the same
-        // nullptr contract callers already handle for unresolvable nested paths.
-        if (col_path.front() >= data.size()) {
-            return nullptr;
-        }
-        vector_t* sub_column = &data[col_path.front()];
-        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            if (sub_column->type().type() == types::logical_type::ARRAY ||
-                sub_column->type().type() == types::logical_type::LIST) {
-                sub_column = &sub_column->entry();
-            } else {
-                sub_column = sub_column->entries()[*it].get();
-            }
-        }
-        return sub_column;
+    const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
+        return resolve_path(data, col_path).leaf;
     }
 
-    const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
-        // Same "column not found" -> nullptr contract as the non-const overload.
-        if (col_path.front() >= data.size()) {
-            return nullptr;
+    vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
+        return const_cast<vector_t*>(std::as_const(*this).at(col_path));
+    }
+
+    data_chunk_t::at_aligned_t data_chunk_t::at_aligned(const std::pmr::vector<size_t>& col_path,
+                                                        std::pmr::memory_resource* resource) const {
+        auto resolved = resolve_path(data, col_path);
+        if (resolved.array) {
+            return at_aligned_t{align_to_rows(*resolved.array, resolved.index, size(), resource)};
         }
-        const vector_t* sub_column = &data[col_path.front()];
-        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            if (sub_column->type().type() == types::logical_type::ARRAY ||
-                sub_column->type().type() == types::logical_type::LIST) {
-                sub_column = &sub_column->entry();
-            } else {
-                sub_column = sub_column->entries()[*it].get();
-            }
-        }
-        return sub_column;
+        return at_aligned_t{resolved.leaf};
     }
 
     bool data_chunk_t::all_constant() const {

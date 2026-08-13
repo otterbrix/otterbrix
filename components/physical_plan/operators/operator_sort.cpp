@@ -3,19 +3,34 @@
 #include <algorithm>
 #include <components/vector/vector_operations.hpp>
 #include <numeric>
+#include <optional>
 #include <queue>
 
 namespace components::operators {
 
     operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t log)
         : read_only_operator_t(resource, log, operator_type::sort)
-        , computed_keys_(resource) {}
+        , key_specs_(resource) {}
 
-    void operator_sort_t::add(size_t index, operator_sort_t::order order_) { sorter_.add(index, order_); }
+    void operator_sort_t::add(size_t index, operator_sort_t::order order_, operator_sort_t::null_order null_order_) {
+        sort_key_spec_t spec(resource_);
+        spec.col_path.push_back(index);
+        spec.order_ = order_;
+        spec.null_order_ = null_order_;
+        key_specs_.push_back(std::move(spec));
+    }
 
-    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path, order order_) { sorter_.add(col_path, order_); }
+    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path,
+                              order order_,
+                              operator_sort_t::null_order null_order_) {
+        sort_key_spec_t spec(resource_);
+        spec.col_path.assign(col_path.begin(), col_path.end());
+        spec.order_ = order_;
+        spec.null_order_ = null_order_;
+        key_specs_.push_back(std::move(spec));
+    }
 
-    void operator_sort_t::add_computed(computed_sort_key_t&& key) { computed_keys_.push_back(std::move(key)); }
+    void operator_sort_t::add_computed(sort_key_spec_t&& key) { key_specs_.push_back(std::move(key)); }
 
     core::error_t operator_sort_t::build_computed_graph(pipeline::context_t* pipeline_context,
                                                         const vector::data_chunk_t& probe) {
@@ -23,9 +38,11 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         std::pmr::vector<const expressions::expression_i*> key_expressions(resource_);
-        key_expressions.reserve(computed_keys_.size());
-        for (const auto& key : computed_keys_) {
-            key_expressions.push_back(key.expression.get());
+        key_expressions.reserve(key_specs_.size());
+        for (const auto& spec : key_specs_) {
+            if (spec.expression) {
+                key_expressions.push_back(spec.expression.get());
+            }
         }
 
         auto built = expressions::build_graph(resource_,
@@ -69,36 +86,55 @@ namespace components::operators {
         std::vector<std::vector<uint32_t>> sorted_indices;
         sorted_indices.reserve(in_chunks.size());
 
-        bool computed_added = false;
+        bool keys_registered = false;
+        bool has_computed = false;
         for (auto& chunk : in_chunks) {
             if (chunk.size() == 0) {
                 sorted_indices.emplace_back();
                 continue;
             }
-            if (!computed_keys_.empty()) {
+            // Every computed key of this chunk comes out of ONE graph run, in key order.
+            std::optional<vector::data_chunk_t> computed;
+            if (std::any_of(key_specs_.begin(), key_specs_.end(), [](const sort_key_spec_t& spec) {
+                    return spec.expression != nullptr;
+                })) {
                 if (auto error = build_computed_graph(pipeline_context, chunk); error.contains_error()) {
                     return error;
                 }
-                auto computed = expressions::run_graph(computed_graph_.get(),
+                auto produced = expressions::run_graph(computed_graph_.get(),
                                                        pipeline_context->parameters.parameters,
                                                        chunk,
                                                        pipeline_context->execution_context);
-                if (computed.has_error()) {
-                    return computed.error();
+                if (produced.has_error()) {
+                    return produced.error();
                 }
+                computed = std::move(produced.value());
+            }
+
+            // Walk the specs in ORDER BY position: a computed key materializes into a temp
+            // column, a plain key references its input column — and each is registered with
+            // the sorter at exactly its spec position, so priority follows the ORDER BY
+            // list, never the plain-before-computed registration order.
+            size_t computed_column = 0;
+            for (const auto& spec : key_specs_) {
+                if (!spec.expression) {
+                    if (!keys_registered) {
+                        sorter_.add(spec.col_path, spec.order_, spec.null_order_);
+                    }
+                    continue;
+                }
+                has_computed = true;
                 // The graph's columns reference its slots, which the next chunk overwrites, and
                 // every chunk stays live until the merge below — so each key is copied out.
-                for (size_t key = 0; key < computed_keys_.size(); key++) {
-                    const vector::vector_t& source_vec = computed.value().data[key];
-                    vector::vector_t vec(resource_, source_vec.type(), chunk.size());
-                    vector::vector_ops::copy(source_vec, vec, chunk.size(), 0, 0);
-                    if (!computed_added) {
-                        sorter_.add(chunk.data.size(), computed_keys_[key].order_);
-                    }
-                    chunk.data.emplace_back(std::move(vec));
+                const vector::vector_t& source_vec = computed.value().data[computed_column++];
+                vector::vector_t vec(resource_, source_vec.type(), chunk.size());
+                vector::vector_ops::copy(source_vec, vec, chunk.size(), 0, 0);
+                if (!keys_registered) {
+                    sorter_.add(chunk.data.size(), spec.order_, spec.null_order_);
                 }
-                computed_added = true;
+                chunk.data.emplace_back(std::move(vec));
             }
+            keys_registered = true;
 
             std::vector<uint32_t> idx(chunk.size());
             std::iota(idx.begin(), idx.end(), uint32_t{0});
@@ -109,7 +145,7 @@ namespace components::operators {
 
         // Output column count (drop computed sort-key columns).
         size_t out_cols_effective = expected_output_count_ > 0 ? expected_output_count_ : first_computed_col;
-        if (!computed_keys_.empty() && out_cols_effective > first_computed_col) {
+        if (has_computed && out_cols_effective > first_computed_col) {
             out_cols_effective = first_computed_col;
         }
         if (out_types.size() > out_cols_effective) {
@@ -187,7 +223,7 @@ namespace components::operators {
         flush_cur();
 
         // Restore input chunks: strip the temporary computed-key columns.
-        if (!computed_keys_.empty()) {
+        if (has_computed) {
             for (auto& chunk : in_chunks) {
                 if (chunk.data.size() > first_computed_col) {
                     chunk.data.erase(chunk.data.begin() + static_cast<ptrdiff_t>(first_computed_col), chunk.data.end());

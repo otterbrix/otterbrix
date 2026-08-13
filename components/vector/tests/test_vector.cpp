@@ -355,8 +355,8 @@ TEST_CASE("components::vector::nested_null_access") {
         }
 
         // Freshly set elements are all present.
-        for (uint64_t i = 0; i < rows; i++) {
-            for (uint64_t j = 0; j < arr_len; j++) {
+        for (size_t i = 0; i < rows; i++) {
+            for (size_t j = 0; j < arr_len; j++) {
                 REQUIRE_FALSE(v.is_null({i, j}));
             }
         }
@@ -397,8 +397,8 @@ TEST_CASE("components::vector::nested_null_access") {
             v.set_value(i, list);
         }
 
-        for (uint64_t i = 0; i < rows; i++) {
-            for (uint64_t j = 0; j < length(i); j++) {
+        for (size_t i = 0; i < rows; i++) {
+            for (size_t j = 0; j < length(i); j++) {
                 REQUIRE_FALSE(v.is_null({i, j}));
             }
         }

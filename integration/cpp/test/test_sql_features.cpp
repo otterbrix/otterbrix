@@ -508,7 +508,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     }
 }
 
-TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors") {
+TEST_CASE("integration::cpp::test_sql_features::like_non_string_operand_errors") {
     // The RE2 migration dropped the old std::regex dispatcher's operand type guard: a non-string
     // LIKE subject reached value<std::string_view>() — *reinterpret_cast<std::string*> over an
     // integer payload — and SEGFAULTED (in-memory regex_predicate::check_impl) or reinterpreted the
@@ -560,6 +560,13 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors")
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT t.id FROM regexdb.t t JOIN regexdb.d d ON t.id = d.id "
                                            "WHERE t.id LIKE '1%' OR d.k = 999;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("non-string LIKE pattern must error before regex conversion, not crash");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM regexdb.t WHERE s LIKE 1;");
         REQUIRE(cur->is_error());
     }
 
@@ -1540,6 +1547,69 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
+    }
+}
+
+// Searched CASE with IS NULL / IS NOT NULL and LIKE / ILIKE / NOT LIKE WHEN conditions. These used to
+// error (IS NULL: unsupported WHEN condition) or be silently ignored (LIKE: the WHEN never matched), and
+// NOT LIKE crashed the schema validator on the union_and(is_not_null, union_not(regex)) it expands into.
+TEST_CASE("integration::cpp::test_sql_features::case_when_null_and_like") {
+    auto config = test_create_config("/tmp/test_sql_features/case_when_null_and_like");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, sql);
+        REQUIRE(cur->is_success());
+        return cur;
+    };
+
+    run("CREATE DATABASE db;");
+    run("CREATE TABLE db.t (id int, v int, s text);");
+    run("INSERT INTO db.t (id, v, s) VALUES (1, 10, 'apple'), (2, NULL, 'banana');");
+
+    // Column 1 is the CASE result; row 0 is id=1 (v=10,'apple'), row 1 is id=2 (v=NULL,'banana').
+    auto result_of = [](const components::cursor::cursor_t_ptr& cur, uint64_t row) {
+        return std::string(cur->value(1, row).value<std::string_view>());
+    };
+
+    SECTION("IS NULL selects the NULL row") {
+        auto cur = run("SELECT id, CASE WHEN v IS NULL THEN 'isnull' ELSE 'notnull' END FROM db.t ORDER BY id;");
+        REQUIRE(cur->size() == 2);
+        REQUIRE(result_of(cur, 0) == "notnull");
+        REQUIRE(result_of(cur, 1) == "isnull");
+    }
+    SECTION("IS NOT NULL selects the non-NULL row") {
+        auto cur = run("SELECT id, CASE WHEN v IS NOT NULL THEN 'notnull' ELSE 'isnull' END FROM db.t ORDER BY id;");
+        REQUIRE(cur->size() == 2);
+        REQUIRE(result_of(cur, 0) == "notnull");
+        REQUIRE(result_of(cur, 1) == "isnull");
+    }
+    SECTION("LIKE condition actually matches") {
+        auto cur = run("SELECT id, CASE WHEN s LIKE 'a%' THEN 'a' ELSE 'other' END FROM db.t ORDER BY id;");
+        REQUIRE(result_of(cur, 0) == "a");     // 'apple' matches 'a%'
+        REQUIRE(result_of(cur, 1) == "other"); // 'banana' does not
+    }
+    SECTION("ILIKE condition is case-insensitive") {
+        auto cur = run("SELECT id, CASE WHEN s ILIKE 'A%' THEN 'a' ELSE 'other' END FROM db.t ORDER BY id;");
+        REQUIRE(result_of(cur, 0) == "a");
+        REQUIRE(result_of(cur, 1) == "other");
+    }
+    SECTION("NOT LIKE condition (union_not) matches and does not crash validation") {
+        auto cur = run("SELECT id, CASE WHEN s NOT LIKE 'a%' THEN 'notA' ELSE 'a' END FROM db.t ORDER BY id;");
+        REQUIRE(result_of(cur, 0) == "a");    // 'apple' LIKE 'a%' -> NOT LIKE false
+        REQUIRE(result_of(cur, 1) == "notA"); // 'banana' NOT LIKE 'a%'
+    }
+    SECTION("IS NULL combined with a later comparison WHEN") {
+        auto cur = run(
+            "SELECT id, CASE WHEN v IS NULL THEN 'n' WHEN v > 5 THEN 'big' ELSE 'small' END FROM db.t ORDER BY id;");
+        REQUIRE(result_of(cur, 0) == "big");
+        REQUIRE(result_of(cur, 1) == "n");
     }
 }
 

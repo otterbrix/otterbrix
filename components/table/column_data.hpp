@@ -5,6 +5,7 @@
 #include "column_state.hpp"
 #include "segment_tree.hpp"
 #include "update_segment.hpp"
+#include <components/types/tri_bool.hpp>
 
 namespace components::table {
 
@@ -23,6 +24,13 @@ namespace components::table {
         TRUE_OR_NULL = 3,
         FALSE_OR_NULL = 4
     };
+    // The storage-scan filter answers in SQL three-valued logic. filter_match_t is the table
+    // component's spelling of the shared types::tri_bool_t vocabulary (tri_bool.hpp), so the scan
+    // filter and the in-memory predicate evaluator share one definition of TRUE/FALSE/UNKNOWN and
+    // cannot drift. A value comparison against a NULL operand is UNKNOWN, not FALSE: the two differ
+    // under NOT, so collapsing UNKNOWN into FALSE would let NOT resurrect NULL rows.
+    using filter_match_t = types::tri_bool_t;
+
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 
     class column_data_t {

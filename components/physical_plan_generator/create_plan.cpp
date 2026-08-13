@@ -47,6 +47,16 @@ namespace services::planner {
 
     using components::logical_plan::node_type;
 
+    // Null-Object default for context_storage_t::create_plan_rule (see
+    // context_storage.hpp): no host lowering registered -> a node_extension leaf
+    // has no host operator, so its plan errors downstream. Defined here (operator_t
+    // complete) so the returned intrusive_ptr<operator_t> temporary is destructible.
+    components::operators::operator_ptr no_custom_lowering(const context_storage_t&,
+                                                          const components::compute::function_registry_t&,
+                                                          const components::logical_plan::node_ptr&) {
+        return {};
+    }
+
     components::operators::operator_ptr create_plan(const context_storage_t& context,
                                                     const components::compute::function_registry_t& function_registry,
                                                     const components::logical_plan::node_ptr& node,
@@ -163,6 +173,24 @@ namespace services::planner {
                 return impl::create_plan_allocate_oids(context, node);
             case node_type::function_t:
                 return impl::create_plan_function(context, node);
+            case node_type::extension_t: {
+                // Host-custom node (node_extension): the engine cannot lower it — the
+                // host-injected create_plan rule (stamped on context_storage, see
+                // context_storage.hpp) builds the host operator. A SOURCE is a childless
+                // leaf; a SINK is a node WITH a child (e.g. INSERT..SELECT into a
+                // backend) whose child sub-plan the engine wires. The rule is never null
+                // (Null Object default); the operator it RETURNS may be null ("no host
+                // lowering"), and the plan then errors downstream (create_physical_plan_error).
+                auto op = context.create_plan_rule(context, function_registry, node);
+                if (op && !node->children().empty()) {
+                    op->set_children(create_plan(context,
+                                                 function_registry,
+                                                 node->children().front(),
+                                                 components::logical_plan::limit_t::unlimit(),
+                                                 params));
+                }
+                return op;
+            }
             default:
                 break;
         }

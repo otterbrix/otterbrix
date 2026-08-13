@@ -17,10 +17,28 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp
         test_correctness_bugs.cpp
+        test_order_by_expressions.cpp
+        test_order_by_nulls.cpp
+        test_arithmetic_type_guards.cpp
+        test_like_type_guards.cpp
+        test_unary_plus.cpp
         test_multi_database_isolation.cpp
+        test_index_null_correctness.cpp
+        test_aggregate_filter.cpp
         test_dispatcher_watchdog_log.cpp
+        test_null_three_valued_logic.cpp
+        test_null_arithmetic.cpp
+        test_null_aggregates.cpp
+        test_null_deep_path.cpp
+        test_null_array_element.cpp
+        test_null_comparison.cpp
+        test_null_predicate_3vl.cpp
+        test_null_case_3vl.cpp
+        test_null_semantics_matrix.cpp
         test_production_scenarios.cpp
         test_join.cpp
+        test_extension_source.cpp
+        test_host_tables.cpp
         test_join_raw.cpp
         test_connections.cpp
         test_udfs.cpp

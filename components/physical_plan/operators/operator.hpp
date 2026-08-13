@@ -164,6 +164,11 @@ namespace components::operators {
         // oid_generator and stamps the resulting vector on the back-pointed node
         // so the DDL planner can read it via oids().
         allocate_oids,
+        // Host-extension operator: an operator_t subclass owned by embedding-host
+        // code, delivered into the plan via node_extension_t's payload factory
+        // (see logical_plan/node_extension.hpp). The engine drives it purely
+        // through the polymorphic operator interface.
+        extension,
         batch
     };
 

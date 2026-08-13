@@ -85,6 +85,15 @@ namespace components::expressions {
         asc = 1
     };
 
+    // `default` -> placement was not specified and must be resolved from the
+    // sort direction per the SQL standard: ASC -> nulls last, DESC -> nulls first.
+    enum class sort_null_order : std::int8_t
+    {
+        nulls_default = 0,
+        nulls_first = 1,
+        nulls_last = 2
+    };
+
     enum class side_t : uint8_t
     {
         undefined = 0,

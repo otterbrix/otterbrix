@@ -803,6 +803,10 @@ namespace components::catalog {
                 return LT::TIME_TZ;
             case ns::interval_type:
                 return LT::INTERVAL;
+            case ns::blob_type:
+                return LT::BLOB;
+            case ns::uuid_type:
+                return LT::UUID;
             default:
                 return LT::UNKNOWN;
         }
@@ -840,6 +844,10 @@ namespace components::catalog {
                 return ns::time_tz_type;
             case LT::INTERVAL:
                 return ns::interval_type;
+            case LT::BLOB:
+                return ns::blob_type;
+            case LT::UUID:
+                return ns::uuid_type;
             default:
                 return INVALID_OID;
         }

@@ -13,43 +13,57 @@ namespace components::sort {
         ascending = 1
     };
 
+    // NULL placement, independent of ascending/descending: `first` always before non-NULLs, `last` after.
+    enum class null_order
+    {
+        first,
+        last
+    };
+
     class columnar_sorter_t {
         struct sort_key {
             std::pmr::vector<size_t> col_path;
             order order_ = order::ascending;
-            const vector::vector_t* vec = nullptr; // cached pointer set in set_chunk()
+            null_order null_order_ = null_order::last;
         };
 
     public:
         explicit columnar_sorter_t() = default;
-        explicit columnar_sorter_t(size_t index, order order_ = order::ascending);
+        explicit columnar_sorter_t(size_t index,
+                                   order order_ = order::ascending,
+                                   null_order null_order_ = null_order::last);
 
-        void add(size_t index, order order_ = order::ascending);
-        void add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending);
+        void add(size_t index, order order_ = order::ascending, null_order null_order_ = null_order::last);
+        void add(const std::pmr::vector<size_t>& col_path,
+                 order order_ = order::ascending,
+                 null_order null_order_ = null_order::last);
 
         void set_chunk(const vector::data_chunk_t& chunk);
 
         bool operator()(size_t row_a, size_t row_b) const {
             for (const auto& k : keys_) {
-                if (!k.vec)
-                    continue;
-                int cmp = compare_raw(*k.vec, row_a, *k.vec, row_b);
+                int cmp = compare_key(*chunk_, row_a, *chunk_, row_b, k);
                 if (cmp == 0)
                     continue;
-                return (k.order_ == order::ascending) ? (cmp < 0) : (cmp > 0);
+                return cmp < 0;
             }
             return false;
         }
 
-        // Compare a row from one chunk against a row from a (possibly different) chunk.
-        // Does not use cached k.vec pointers; resolves col_path on each side per comparison.
-        // Returns <0 if (a,ra) should sort before (b,rb), >0 if after, 0 if equal under the
-        // configured sort keys and orders.
+        // Compare a row from one chunk against a row from a (possibly different) chunk under the configured
+        // sort keys. Returns <0 if (a,ra) sorts before (b,rb), >0 if after, 0 if equal.
         int
         compare_cross(const vector::data_chunk_t& a, size_t row_a, const vector::data_chunk_t& b, size_t row_b) const;
 
     private:
-        static int compare_raw(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b);
+        // One sort key between (a,row_a) and (b,row_b). Resolves each side through col_path — so a plain
+        // column, a struct field and an ARRAY/LIST element subscript (v[i]) all read the correct leaf — and
+        // compares raw. NULL placement (null_order_) is independent of the ascending/descending sign.
+        static int compare_key(const vector::data_chunk_t& a,
+                               size_t row_a,
+                               const vector::data_chunk_t& b,
+                               size_t row_b,
+                               const sort_key& key);
 
         std::vector<sort_key> keys_;
         const vector::data_chunk_t* chunk_ = nullptr;

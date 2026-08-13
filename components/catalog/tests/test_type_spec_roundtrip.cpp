@@ -19,6 +19,68 @@ TEST_CASE("catalog::type_spec::scalars_encode_empty") {
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::TIMESTAMP}) == "");
 }
 
+// The real persisted read-back path (operator_resolve_table / bootstrap):
+// non-empty atttypspec wins, else decode from atttypid. Mirror it here.
+static logical_type persisted_readback(const complex_logical_type& t) {
+    auto spec = encode_type_spec(t);
+    if (!spec.empty()) {
+        return decode_type_spec(g_resource, spec).type();
+    }
+    return oid_to_builtin_type(builtin_type_to_oid(t.type()));
+}
+
+TEST_CASE("catalog::type_spec::empty_spec_scalars_must_have_oid_mapping") {
+    // INVARIANT: every type that encodes an EMPTY spec relies on atttypid for
+    // read-back — so builtin_type_to_oid MUST map it, else a persisted column
+    // of that type silently rehydrates as UNKNOWN (the BLOB/UUID bug).
+    const logical_type empty_spec_scalars[] = {
+        logical_type::BOOLEAN,
+        logical_type::TINYINT,
+        logical_type::SMALLINT,
+        logical_type::INTEGER,
+        logical_type::BIGINT,
+        logical_type::FLOAT,
+        logical_type::DOUBLE,
+        logical_type::STRING_LITERAL,
+        logical_type::TIMESTAMP,
+        logical_type::TIMESTAMP_TZ,
+        logical_type::DATE,
+        logical_type::TIME,
+        logical_type::TIME_TZ,
+        logical_type::INTERVAL,
+        logical_type::BLOB,
+        logical_type::UUID,
+    };
+    for (auto lt : empty_spec_scalars) {
+        INFO("logical_type = " << static_cast<int>(lt));
+        REQUIRE(encode_type_spec(complex_logical_type{lt}) == "");
+        REQUIRE(builtin_type_to_oid(lt) != INVALID_OID);
+        REQUIRE(oid_to_builtin_type(builtin_type_to_oid(lt)) == lt);
+        REQUIRE(persisted_readback(complex_logical_type{lt}) == lt);
+    }
+}
+
+TEST_CASE("catalog::type_spec::unsigned_ints_roundtrip_via_spec") {
+    // Unsigned ints have no well-known pg_type oid — they must encode a
+    // NON-empty flat-text spec ("uint1".."uint8") and decode back exactly.
+    REQUIRE(encode_type_spec(complex_logical_type{logical_type::UTINYINT}) == "uint1");
+    REQUIRE(encode_type_spec(complex_logical_type{logical_type::USMALLINT}) == "uint2");
+    REQUIRE(encode_type_spec(complex_logical_type{logical_type::UINTEGER}) == "uint4");
+    REQUIRE(encode_type_spec(complex_logical_type{logical_type::UBIGINT}) == "uint8");
+    for (auto lt :
+         {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
+        INFO("logical_type = " << static_cast<int>(lt));
+        REQUIRE(persisted_readback(complex_logical_type{lt}) == lt);
+    }
+}
+
+TEST_CASE("catalog::type_spec::blob_uuid_oid_roundtrip") {
+    REQUIRE(builtin_type_to_oid(logical_type::BLOB) == well_known_oid::blob_type);
+    REQUIRE(builtin_type_to_oid(logical_type::UUID) == well_known_oid::uuid_type);
+    REQUIRE(oid_to_builtin_type(well_known_oid::blob_type) == logical_type::BLOB);
+    REQUIRE(oid_to_builtin_type(well_known_oid::uuid_type) == logical_type::UUID);
+}
+
 TEST_CASE("catalog::type_spec::decimal_roundtrip") {
     auto t = complex_logical_type::create_decimal(10, 2);
     auto spec = encode_type_spec(t);

@@ -92,11 +92,16 @@ namespace components::sql::transform {
 
         bool is_left_table(const std::string& name) const;
         bool is_right_table(const std::string& name) const;
+        bool is_left_table(const std::string& dbname, const std::string& name) const;
+        bool is_right_table(const std::string& dbname, const std::string& name) const;
     };
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name);
+    expressions::side_t
+    deduce_side(const name_collection_t& names, const std::string& dbname, const std::string& target_name);
 
     struct column_ref_t {
+        std::string db;
         std::string table;
         expressions::key_t field;
 
@@ -105,14 +110,20 @@ namespace components::sql::transform {
         column_ref_t(std::string table, expressions::key_t field)
             : table(std::move(table))
             , field(std::move(field)) {}
+        column_ref_t(std::string db, std::string table, expressions::key_t field)
+            : db(std::move(db))
+            , table(std::move(table))
+            , field(std::move(field)) {}
         void deduce_side(const name_collection_t& names);
     };
 
     column_ref_t
     columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names);
-    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
-                                      A_Indirection* indirection,
-                                      const name_collection_t& names);
+    core::result_wrapper_t<column_ref_t> indirection_to_field(std::pmr::memory_resource* resource,
+                                                              A_Indirection* indirection,
+                                                              const name_collection_t& names);
+    core::result_wrapper_t<column_ref_t>
+    node_to_field(std::pmr::memory_resource* resource, Node* node, const name_collection_t& names);
 
     inline logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {
@@ -180,6 +191,9 @@ namespace components::sql::transform {
             {"pointer", types::logical_type::POINTER},
             {"uuid", types::logical_type::UUID},
             {"string", types::logical_type::STRING_LITERAL},
+            {"varchar", types::logical_type::STRING_LITERAL},
+            {"text", types::logical_type::STRING_LITERAL},
+            {"bpchar", types::logical_type::STRING_LITERAL},
         };
 
         if (auto it = lookup.find(str); it != lookup.end()) {
@@ -192,6 +206,22 @@ namespace components::sql::transform {
     inline bool is_arithmetic_operator(std::string_view op) {
         return op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "&" || op == "|" || op == "#" ||
                op == "~" || op == "<<" || op == ">>";
+    }
+
+    // Unary plus is the identity (SQLite semantics: "+X is equivalent to X"): peel every
+    // `+`-layer off an expression and return what remains. A unary operator parses as
+    // A_Expr{op, lexpr = NULL, rexpr = operand}. Returns nullptr for a malformed `+` with
+    // no operand — callers must reject that.
+    inline Node* strip_unary_plus(Node* node) {
+        while (node && nodeTag(node) == T_A_Expr) {
+            auto* plus = pg_ptr_cast<A_Expr>(node);
+            if (plus->lexpr != nullptr || !plus->name || plus->name->lst.empty() ||
+                std::string_view(strVal(plus->name->lst.front().data)) != "+") {
+                break;
+            }
+            node = plus->rexpr;
+        }
+        return node;
     }
 
     inline expressions::scalar_type get_arithmetic_scalar_type(std::string_view op) {

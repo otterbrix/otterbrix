@@ -1,4 +1,5 @@
 #pragma once
+#include <components/types/tri_bool.hpp>
 #include <components/types/types.hpp>
 #include <core/date/date_types.hpp>
 #include <core/operations_helper.hpp>

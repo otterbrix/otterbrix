@@ -76,7 +76,15 @@ namespace components::expressions {
         //   jsonb_expand — '->' / '#>' : columns under the prefix, rerooted
         //   jsonb_delete — '-'  / '#-' : all columns EXCEPT those under the prefix
         jsonb_expand,
-        jsonb_delete
+        jsonb_delete,
+
+        // used only by old python integration, but are not processed, because all of them are functions
+        round,
+        ceil,
+        floor,
+        abs,
+        pow,
+        sqrt,
     };
 
     enum class sort_order : std::int8_t

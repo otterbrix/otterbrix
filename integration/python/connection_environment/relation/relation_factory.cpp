@@ -147,10 +147,15 @@ namespace otterbrix {
                         result.push_back(
                             process_aggregate(boost::static_pointer_cast<aggregate_expression_t>(expr), initial));
                         break;
-                    case expression_group::scalar:
-                        result.push_back(
-                            process_scalar(boost::static_pointer_cast<scalar_expression_t>(expr), initial));
+                    case expression_group::scalar: {
+                        auto scalar = boost::static_pointer_cast<scalar_expression_t>(expr);
+                        // A group_field is a reduction key, not an output column
+                        if (scalar->type() == scalar_type::group_field) {
+                            continue;
+                        }
+                        result.push_back(process_scalar(scalar, initial));
                         break;
+                    }
                     default:
                         result.emplace_back(error_str, components::types::logical_type::UNKNOWN);
                 }
@@ -259,17 +264,21 @@ namespace otterbrix {
     built_relation_t relation_factory_t::group_relation(const built_relation_t& relation,
                                                         const std::vector<expression_wrapper_t>& exprs) {
         auto* resource = space->dispatcher()->resource();
-        std::vector<expressions::expression_ptr> fields;
-        fields.reserve(exprs.size());
+        // A grouped column enters the node twice, exactly as the SQL transformer
+        std::vector<expressions::expression_ptr> keys;
+        std::vector<expressions::expression_ptr> outputs;
+        outputs.reserve(exprs.size());
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
                 const auto& field = expr.expression();
                 if (field->group() == expressions::expression_group::aggregate) {
-                    fields.push_back(field);
+                    outputs.push_back(field);
                 } else if (field->group() == expressions::expression_group::scalar) {
                     auto scalar = boost::static_pointer_cast<expressions::scalar_expression_t>(field);
                     if (scalar->type() == expressions::scalar_type::get_field) {
-                        fields.push_back(scalar);
+                        keys.push_back(
+                            make_scalar_expression(resource, expressions::scalar_type::group_field, scalar->key()));
+                        outputs.push_back(scalar);
                     } else {
                         throw std::runtime_error("Could\'t use scalar expression in a group node");
                     }
@@ -277,11 +286,15 @@ namespace otterbrix {
                     throw std::runtime_error("Undefined expression type for group relation");
                 }
             } else if (expr.is_key()) {
-                fields.push_back(make_scalar_expression(resource, expressions::scalar_type::get_field, expr.key()));
+                keys.push_back(make_scalar_expression(resource, expressions::scalar_type::group_field, expr.key()));
+                outputs.push_back(make_scalar_expression(resource, expressions::scalar_type::get_field, expr.key()));
             } else {
                 throw std::runtime_error("The method supports only aggregation expressions and fields");
             }
         }
+        std::vector<expressions::expression_ptr> fields = std::move(keys);
+        fields.reserve(fields.size() + outputs.size());
+        fields.insert(fields.end(), outputs.begin(), outputs.end());
         auto group =
             make_node_group(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(fields));
 

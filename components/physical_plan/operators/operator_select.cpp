@@ -33,7 +33,7 @@ namespace components::operators {
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
                                          size_t right_offset,
-                                         std::unique_ptr<execution_graph::execution_graph_t>* graph) {
+                                         std::unique_ptr<execution_dag::execution_dag_t>* graph) {
         // star_expand copies its columns straight from the input chunk, so it contributes
         // no output slot and the graph's slots line up with the projected columns only.
         std::pmr::vector<const expressions::expression_i*> projected(resource);
@@ -88,7 +88,7 @@ namespace components::operators {
                         vector::data_chunk_t* input,
                         const logical_plan::storage_parameters& parameters,
                         const components::graph_execution_context& context,
-                        std::unique_ptr<execution_graph::execution_graph_t>* graph,
+                        std::unique_ptr<execution_dag::execution_dag_t>* graph,
                         const vector::data_chunk_t* right_input) {
         const auto num_rows = input->size();
         const uint64_t cap = num_rows > 0 ? num_rows : 1;

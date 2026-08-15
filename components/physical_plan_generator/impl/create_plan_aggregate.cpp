@@ -13,8 +13,8 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/physical_plan/operators/operator_distinct.hpp>
-#include <components/physical_plan/operators/operator_group.hpp>
 #include <components/physical_plan/operators/operator_group_merge.hpp>
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 #include <components/physical_plan/operators/operator_limit.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>

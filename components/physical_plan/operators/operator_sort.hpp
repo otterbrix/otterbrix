@@ -1,6 +1,6 @@
 #pragma once
 
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -61,7 +61,7 @@ namespace components::operators {
         // ONE graph computing every computed key, in key order, over an input chunk. All the
         // buffered chunks share a schema, so the first non-empty one builds it and the rest reuse
         // it; null until then.
-        std::unique_ptr<execution_graph::execution_graph_t> computed_graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> computed_graph_;
         size_t expected_output_count_{0};
         logical_plan::limit_t limit_;
         chunks_vector_t buffered_input_{resource_};

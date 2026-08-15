@@ -1,4 +1,4 @@
-#include "operator_group.hpp"
+#include "operator_hash_group.hpp"
 
 #include <cassert>
 #include <components/expressions/scalar_expression.hpp>
@@ -14,7 +14,7 @@ namespace components::operators {
         bool index_is_full(uint64_t group_count, uint64_t capacity) noexcept { return group_count * 2 >= capacity; }
     } // namespace
 
-    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log)
+    operator_hash_group_t::operator_hash_group_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, log, operator_type::aggregate)
         , keys_(resource_)
         , values_(resource_)
@@ -23,33 +23,34 @@ namespace components::operators {
         , key_blocks_(resource_)
         , index_(resource_) {}
 
-    void operator_group_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
+    void operator_hash_group_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
         output_types_.assign(types.begin(), types.end());
     }
 
-    void operator_group_t::set_input_types(const std::pmr::vector<types::complex_logical_type>& types) {
+    void operator_hash_group_t::set_input_types(const std::pmr::vector<types::complex_logical_type>& types) {
         input_types_.assign(types.begin(), types.end());
     }
 
-    void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
+    void operator_hash_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
 
-    void operator_group_t::add_key(const std::pmr::string& name) {
+    void operator_hash_group_t::add_key(const std::pmr::string& name) {
         group_key_t key(resource_);
         key.name = name;
         key.type = group_key_t::kind::column;
         keys_.push_back(std::move(key));
     }
 
-    void operator_group_t::add_value(const std::pmr::string& name, const types::complex_logical_type& result_type) {
+    void operator_hash_group_t::add_value(const std::pmr::string& name,
+                                          const types::complex_logical_type& result_type) {
         values_.push_back({name, result_type});
     }
 
-    void operator_group_t::add_output(const expressions::expression_ptr& output) { outputs_.push_back(output); }
+    void operator_hash_group_t::add_output(const expressions::expression_ptr& output) { outputs_.push_back(output); }
 
-    core::error_t operator_group_t::build_plan(pipeline::context_t* pipeline_context,
-                                               const vector::data_chunk_t& probe) {
+    core::error_t operator_hash_group_t::build_plan(pipeline::context_t* pipeline_context,
+                                                    const vector::data_chunk_t& probe) {
         auto types = probe.types();
-        graph_ = std::make_unique<execution_graph::execution_graph_t>(resource_, vector::DEFAULT_VECTOR_CAPACITY);
+        graph_ = std::make_unique<execution_dag::execution_dag_t>(resource_, vector::DEFAULT_VECTOR_CAPACITY);
 
         // A grouping key is an expression like any other: the graph evaluates it per chunk, and
         // its slot is what the operator hashes and later writes back per group.
@@ -76,7 +77,7 @@ namespace components::operators {
             graph_->add_key_slot(slot.value());
         }
 
-        execution_graph::slot_list_t outputs(resource_);
+        execution_dag::slot_list_t outputs(resource_);
         outputs.reserve(outputs_.size());
         for (const auto& output : outputs_) {
             auto slot = expressions::build_expression(graph_.get(),
@@ -125,7 +126,7 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    bool operator_group_t::keys_equal(const vector::data_chunk_t& keys, uint64_t row, uint32_t group) const {
+    bool operator_hash_group_t::keys_equal(const vector::data_chunk_t& keys, uint64_t row, uint32_t group) const {
         const auto& block = key_blocks_[group / vector::DEFAULT_VECTOR_CAPACITY];
         const uint64_t block_row = group % vector::DEFAULT_VECTOR_CAPACITY;
         for (size_t key = 0; key < keys.column_count(); key++) {
@@ -136,7 +137,7 @@ namespace components::operators {
         return true;
     }
 
-    void operator_group_t::grow_index() {
+    void operator_hash_group_t::grow_index() {
         std::pmr::vector<hash_entry_t> grown(index_.size() * 2, hash_entry_t{}, resource_);
         const uint64_t mask = grown.size() - 1;
         for (const auto& entry : index_) {
@@ -153,7 +154,7 @@ namespace components::operators {
         index_mask_ = mask;
     }
 
-    void operator_group_t::append_group(const vector::data_chunk_t& keys, uint64_t row, uint64_t hash) {
+    void operator_hash_group_t::append_group(const vector::data_chunk_t& keys, uint64_t row, uint64_t hash) {
         if (group_count_ % vector::DEFAULT_VECTOR_CAPACITY == 0) {
             key_blocks_.emplace_back(resource_, keys.types(), vector::DEFAULT_VECTOR_CAPACITY);
             key_blocks_.back().set_cardinality(0);
@@ -176,7 +177,7 @@ namespace components::operators {
         group_count_++;
     }
 
-    core::error_t operator_group_t::resolve_groups(vector::data_chunk_t& keys) {
+    core::error_t operator_hash_group_t::resolve_groups(vector::data_chunk_t& keys) {
         const uint64_t count = keys.size();
         if (keys.column_count() == 0) {
             // No GROUP BY: the whole input is one group, which exists even over zero rows. Every
@@ -220,7 +221,7 @@ namespace components::operators {
     }
 
     core::error_t
-    operator_group_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+    operator_hash_group_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // SINK: fold this batch into the group table and append nothing. What is retained is the
         // group keys and one accumulator per group per aggregate — never the rows.
         if (input.size() > 0) {
@@ -254,7 +255,7 @@ namespace components::operators {
         return graph_->process_groups({row_groups_.data(), input.size()}, ctx->execution_context);
     }
 
-    core::error_t operator_group_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
+    core::error_t operator_hash_group_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
         // GROUP BY over an empty input has no groups, so it emits no rows at all — whereas an
         // implicit GROUP BY () is ONE group that owes its identity row (SELECT COUNT(*) FROM
         // empty) even though nothing arrived.

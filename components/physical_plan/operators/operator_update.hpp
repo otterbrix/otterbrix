@@ -96,11 +96,11 @@ namespace components::operators {
         std::pmr::vector<expressions::expression_ptr> updates_;
         expressions::expression_ptr expr_;
         expressions::condition_kind condition_;
-        std::unique_ptr<execution_graph::execution_graph_t> graph_;
-        std::unique_ptr<execution_graph::execution_graph_t> updates_graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> updates_graph_;
         bool upsert_;
         std::pmr::vector<select_column_t> returning_;
-        std::unique_ptr<execution_graph::execution_graph_t> returning_graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // UPDATE ... FROM RETURNING: the matched FROM rows, gathered in lockstep
         // with the updated rows so a joined RETURNING column reads the right chunk.
         chunks_vector_t returning_from_chunks_;

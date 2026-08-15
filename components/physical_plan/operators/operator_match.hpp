@@ -3,7 +3,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 
@@ -82,7 +82,7 @@ namespace components::operators {
         // capped, never skipped.) It feeds the shared filter core.
         int64_t stream_limit_total_{0};
 
-        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
 
         // Shared filter core (R6): filter ONE input chunk through the predicate +

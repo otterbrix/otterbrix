@@ -5,7 +5,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <memory_resource>
 
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 
@@ -78,9 +78,9 @@ namespace components::operators {
         types::complex_logical_type result_type;
     };
 
-    class operator_group_t final : public read_write_operator_t {
+    class operator_hash_group_t final : public read_write_operator_t {
     public:
-        operator_group_t(std::pmr::memory_resource* resource, log_t log);
+        operator_hash_group_t(std::pmr::memory_resource* resource, log_t log);
 
         void add_key(group_key_t&& key);
         void add_key(const std::pmr::string& name);
@@ -111,10 +111,10 @@ namespace components::operators {
         std::pmr::vector<types::complex_logical_type> output_types_;
         std::pmr::vector<types::complex_logical_type> input_types_{resource_};
 
-        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
         // Slots holding the grouping keys, in key order. The graph writes them per chunk (that is
         // what gets hashed) and reads them back per group at finalize.
-        execution_graph::slot_list_t key_slots_{resource_};
+        execution_dag::slot_list_t key_slots_{resource_};
 
         // The group table. Keys live in fixed DEFAULT_VECTOR_CAPACITY-row blocks, so a group id
         // splits into (block, row), growth appends a block, and no chunk ever exceeds the vector

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 
 #include <memory>
 #include <optional>
@@ -62,7 +62,7 @@ namespace components::operators {
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
                                          size_t right_offset,
-                                         std::unique_ptr<execution_graph::execution_graph_t>* graph);
+                                         std::unique_ptr<execution_dag::execution_dag_t>* graph);
 
     // Evaluate a projection column list against ONE input chunk, producing an
     // output chunk with one column per select_column_t (row count == input row
@@ -76,12 +76,12 @@ namespace components::operators {
                         vector::data_chunk_t* left_input,
                         const logical_plan::storage_parameters& parameters,
                         const components::graph_execution_context& context,
-                        std::unique_ptr<execution_graph::execution_graph_t>* graph,
+                        std::unique_ptr<execution_dag::execution_dag_t>* graph,
                         const vector::data_chunk_t* right_input = nullptr);
 
     // operator_select_t — always the last operator before DISTINCT.
     // Processes rows one-by-one (evaluation mode): output row count equals input row count.
-    // Aggregation is always handled upstream by operator_group_t.
+    // Aggregation is always handled upstream by operator_hash_group_t.
     class operator_select_t final : public read_write_operator_t {
     public:
         operator_select_t(std::pmr::memory_resource* resource, log_t log);
@@ -104,7 +104,7 @@ namespace components::operators {
 
     private:
         std::pmr::vector<select_column_t> columns_;
-        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
     };
 
 } // namespace components::operators

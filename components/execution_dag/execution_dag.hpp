@@ -23,7 +23,7 @@
 STRONG_TYPEDEF(size_t, slot_id_t);
 STRONG_TYPEDEF(size_t, node_id_t);
 
-namespace components::execution_graph {
+namespace components::execution_dag {
 
     using core::node_id_t;
     using core::slot_id_t;
@@ -37,7 +37,7 @@ namespace components::execution_graph {
     using slot_list_t = std::pmr::vector<slot_id_t>;
 
     class execution_node_t : public boost::intrusive_ref_counter<execution_node_t> {
-        friend class execution_graph_t;
+        friend class execution_dag_t;
 
     public:
         virtual ~execution_node_t() = default;
@@ -89,7 +89,7 @@ namespace components::execution_graph {
 
     // [1] input, [1] output
     class cast_node_t final : public execution_node_t {
-        friend class execution_graph_t;
+        friend class execution_dag_t;
 
     public:
         cast_node_t(std::pmr::memory_resource* resource, casts::cast_kind kind, slot_id_t input, slot_id_t output);
@@ -202,7 +202,7 @@ namespace components::execution_graph {
 
     // [N] conditions -> [N + 1] BOOLEAN masks, one per WHEN plus a trailing DEFAULT
     class case_when_node_t final : public execution_node_t {
-        friend class execution_graph_t;
+        friend class execution_dag_t;
 
     public:
         case_when_node_t(std::pmr::memory_resource* resource, slot_list_t conditions, slot_list_t masks);
@@ -217,7 +217,7 @@ namespace components::execution_graph {
     // mask claims is NULL. The arms ran under those same masks, so a row only reads a value its own
     // arm produced.
     class case_then_node_t final : public execution_node_t {
-        friend class execution_graph_t;
+        friend class execution_dag_t;
 
     public:
         case_then_node_t(std::pmr::memory_resource* resource, slot_list_t values, slot_list_t masks, slot_id_t output);
@@ -276,15 +276,17 @@ namespace components::execution_graph {
     using operator_node_ptr = boost::intrusive_ptr<operator_node_t>;
     using function_node_ptr = boost::intrusive_ptr<function_node_t>;
 
-    class execution_graph_t final {
+    // Behaves like traditional DAG, the only difference is that we do not store edges explicitly,
+    // But store data dependency
+    class execution_dag_t final {
     public:
-        explicit execution_graph_t(std::pmr::memory_resource* resource,
-                                   uint64_t capacity = vector::DEFAULT_VECTOR_CAPACITY);
+        explicit execution_dag_t(std::pmr::memory_resource* resource,
+                                 uint64_t capacity = vector::DEFAULT_VECTOR_CAPACITY);
 
-        execution_graph_t(const execution_graph_t&) = delete;
-        execution_graph_t& operator=(const execution_graph_t&) = delete;
-        execution_graph_t(execution_graph_t&&) = delete;
-        execution_graph_t& operator=(execution_graph_t&&) = delete;
+        execution_dag_t(const execution_dag_t&) = delete;
+        execution_dag_t& operator=(const execution_dag_t&) = delete;
+        execution_dag_t(execution_dag_t&&) = delete;
+        execution_dag_t& operator=(execution_dag_t&&) = delete;
 
         // -- topology --
 
@@ -448,4 +450,4 @@ namespace components::execution_graph {
         std::pmr::vector<uint32_t> single_group_{resource_};
     };
 
-} // namespace components::execution_graph
+} // namespace components::execution_dag

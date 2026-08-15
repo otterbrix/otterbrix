@@ -2,9 +2,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/casts/default_casts.hpp>
-#include <components/execution_graph/execution_graph.hpp>
+#include <components/execution_dag/execution_dag.hpp>
 
-using namespace components::execution_graph;
+using namespace components::execution_dag;
 
 using components::graph_execution_context;
 using components::casts::cast_kind;
@@ -42,7 +42,7 @@ namespace {
     slot_list_t slots(std::initializer_list<slot_id_t> list) { return slot_list_t(list, resource()); }
 
     // Declares a slot fed by column `column` of the input chunk.
-    slot_id_t input_slot(execution_graph_t& graph, size_t column, logical_type type) {
+    slot_id_t input_slot(execution_dag_t& graph, size_t column, logical_type type) {
         auto slot = graph.declare_slot();
         graph.bind_input(slot, column, type);
         return slot;
@@ -50,8 +50,8 @@ namespace {
 
 } // namespace
 
-TEST_CASE("execution_graph::an operator over two input columns") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::an operator over two input columns") {
+    execution_dag_t graph(resource());
     auto left = input_slot(graph, 0, logical_type::BIGINT);
     auto right = input_slot(graph, 1, logical_type::BIGINT);
 
@@ -79,8 +79,8 @@ TEST_CASE("execution_graph::an operator over two input columns") {
     REQUIRE(result.value().data[0].get_value<int64_t>(1) == 12);
 }
 
-TEST_CASE("execution_graph::a node can be built before the nodes feeding it") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a node can be built before the nodes feeding it") {
+    execution_dag_t graph(resource());
     auto column_a = input_slot(graph, 0, logical_type::BIGINT);
     auto column_b = input_slot(graph, 1, logical_type::BIGINT);
     auto column_c = input_slot(graph, 2, logical_type::BIGINT);
@@ -114,8 +114,8 @@ TEST_CASE("execution_graph::a node can be built before the nodes feeding it") {
     REQUIRE(result.value().data[0].get_value<int64_t>(0) == 20);
 }
 
-TEST_CASE("execution_graph::a cast is inserted on the edge that needs it") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a cast is inserted on the edge that needs it") {
+    execution_dag_t graph(resource());
     auto left = input_slot(graph, 0, logical_type::INTEGER);
     auto right = input_slot(graph, 1, logical_type::DOUBLE);
 
@@ -157,8 +157,8 @@ TEST_CASE("execution_graph::a cast is inserted on the edge that needs it") {
     REQUIRE(result.value().data[0].get_value<double>(1) == Catch::Approx(4.5));
 }
 
-TEST_CASE("execution_graph::output order is independent of execution order") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::output order is independent of execution order") {
+    execution_dag_t graph(resource());
     auto column_a = input_slot(graph, 0, logical_type::BIGINT);
     auto column_b = input_slot(graph, 1, logical_type::BIGINT);
 
@@ -185,8 +185,8 @@ TEST_CASE("execution_graph::output order is independent of execution order") {
 
 // SELECT y, x + 1 over a table stored as (x, y, z): the chunk order, the slot order and the
 // output order are all different, and z is never referenced.
-TEST_CASE("execution_graph::slots follow the stored column order, not the query's") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::slots follow the stored column order, not the query's") {
+    execution_dag_t graph(resource());
     auto column_y = input_slot(graph, 1, logical_type::BIGINT);
     auto column_x = input_slot(graph, 0, logical_type::BIGINT);
 
@@ -226,8 +226,8 @@ TEST_CASE("execution_graph::slots follow the stored column order, not the query'
     REQUIRE(result.value().data[1].get_value<int64_t>(0) == 41);
 }
 
-TEST_CASE("execution_graph::a chunk laid out differently than the bound slots is refused") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a chunk laid out differently than the bound slots is refused") {
+    execution_dag_t graph(resource());
     auto column = input_slot(graph, 0, logical_type::BIGINT);
     auto node = graph.add_operator(operator_code::negate, column);
     graph.set_slot_type(graph.output_slot(node), logical_type::BIGINT);
@@ -245,8 +245,8 @@ TEST_CASE("execution_graph::a chunk laid out differently than the bound slots is
     }
 }
 
-TEST_CASE("execution_graph::a parameter becomes a constant operand") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a parameter becomes a constant operand") {
+    execution_dag_t graph(resource());
     auto column = input_slot(graph, 0, logical_type::BIGINT);
 
     parameter_map_t parameters(resource());
@@ -282,8 +282,8 @@ TEST_CASE("execution_graph::a parameter becomes a constant operand") {
     }
 }
 
-TEST_CASE("execution_graph::a unary operator takes one operand") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a unary operator takes one operand") {
+    execution_dag_t graph(resource());
     auto column = input_slot(graph, 0, logical_type::BIGINT);
 
     auto node = graph.add_operator(operator_code::negate, column);
@@ -303,8 +303,8 @@ TEST_CASE("execution_graph::a unary operator takes one operand") {
     REQUIRE(result.value().data[0].get_value<int64_t>(0) == -7);
 }
 
-TEST_CASE("execution_graph::a null operand yields a null result") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a null operand yields a null result") {
+    execution_dag_t graph(resource());
     auto left = input_slot(graph, 0, logical_type::BIGINT);
     auto right = input_slot(graph, 1, logical_type::BIGINT);
 
@@ -330,9 +330,9 @@ TEST_CASE("execution_graph::a null operand yields a null result") {
     REQUIRE(result.value().data[0].get_value<int64_t>(1) == 5);
 }
 
-TEST_CASE("execution_graph::malformed graphs are refused") {
+TEST_CASE("execution_dag::malformed graphs are refused") {
     SECTION("an input that was never connected") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto column = input_slot(graph, 0, logical_type::BIGINT);
         auto node = graph.add_operator(operator_code::add, invalid_slot, column);
         graph.set_slot_type(graph.output_slot(node), logical_type::BIGINT);
@@ -341,7 +341,7 @@ TEST_CASE("execution_graph::malformed graphs are refused") {
     }
 
     SECTION("a slot nothing writes") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto column = input_slot(graph, 0, logical_type::BIGINT);
         auto orphan = graph.declare_slot();
         graph.set_slot_type(orphan, logical_type::BIGINT);
@@ -352,7 +352,7 @@ TEST_CASE("execution_graph::malformed graphs are refused") {
     }
 
     SECTION("a slot with no type") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto left = input_slot(graph, 0, logical_type::BIGINT);
         auto right = input_slot(graph, 1, logical_type::BIGINT);
         auto node = graph.add_operator(operator_code::add, left, right);
@@ -361,7 +361,7 @@ TEST_CASE("execution_graph::malformed graphs are refused") {
     }
 
     SECTION("a cycle") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto column = input_slot(graph, 0, logical_type::BIGINT);
         auto node = graph.add_operator(operator_code::add, column, invalid_slot);
         graph.set_slot_type(graph.output_slot(node), logical_type::BIGINT);
@@ -371,7 +371,7 @@ TEST_CASE("execution_graph::malformed graphs are refused") {
     }
 
     SECTION("no output selected") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto left = input_slot(graph, 0, logical_type::BIGINT);
         auto right = input_slot(graph, 1, logical_type::BIGINT);
         auto node = graph.add_operator(operator_code::add, left, right);
@@ -380,7 +380,7 @@ TEST_CASE("execution_graph::malformed graphs are refused") {
     }
 
     SECTION("processing before prepare") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto left = input_slot(graph, 0, logical_type::BIGINT);
         auto right = input_slot(graph, 1, logical_type::BIGINT);
         auto node = graph.add_operator(operator_code::add, left, right);
@@ -390,8 +390,8 @@ TEST_CASE("execution_graph::malformed graphs are refused") {
         REQUIRE(graph.process(input, graph_execution_context{}).contains_error());
     }
 }
-TEST_CASE("execution_graph::coalesce takes the first operand that is not null") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::coalesce takes the first operand that is not null") {
+    execution_dag_t graph(resource());
     auto first = input_slot(graph, 0, logical_type::BIGINT);
     auto second = input_slot(graph, 1, logical_type::BIGINT);
 
@@ -420,8 +420,8 @@ TEST_CASE("execution_graph::coalesce takes the first operand that is not null") 
     REQUIRE(result.value().data[0].is_null(2));
 }
 
-TEST_CASE("execution_graph::case takes the arm of the first true condition") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::case takes the arm of the first true condition") {
+    execution_dag_t graph(resource());
     auto condition = input_slot(graph, 0, logical_type::BOOLEAN);
     auto when_true = input_slot(graph, 1, logical_type::BIGINT);
     auto otherwise = input_slot(graph, 2, logical_type::BIGINT);
@@ -454,8 +454,8 @@ TEST_CASE("execution_graph::case takes the arm of the first true condition") {
     REQUIRE(result.value().data[0].get_value<int64_t>(2) == 200);
 }
 
-TEST_CASE("execution_graph::case with no else and no match is null") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::case with no else and no match is null") {
+    execution_dag_t graph(resource());
     auto condition = input_slot(graph, 0, logical_type::BOOLEAN);
     auto when_true = input_slot(graph, 1, logical_type::BIGINT);
 
@@ -480,8 +480,8 @@ TEST_CASE("execution_graph::case with no else and no match is null") {
     REQUIRE(result.value().data[0].is_null(1));
 }
 
-TEST_CASE("execution_graph::a selected null stays null") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a selected null stays null") {
+    execution_dag_t graph(resource());
     auto condition = input_slot(graph, 0, logical_type::BOOLEAN);
     auto when_true = input_slot(graph, 1, logical_type::BIGINT);
     auto otherwise = input_slot(graph, 2, logical_type::BIGINT);
@@ -506,16 +506,16 @@ TEST_CASE("execution_graph::a selected null stays null") {
     REQUIRE(result.value().data[0].is_null(0));
 }
 
-TEST_CASE("execution_graph::a blend rejects a shape it cannot read") {
+TEST_CASE("execution_dag::a blend rejects a shape it cannot read") {
     SECTION("coalesce with no operands") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto node = graph.add_blend(blend_node_t::blend_kind::coalesce, slot_list_t(resource()));
         graph.set_slot_type(graph.output_slot(node), logical_type::BIGINT);
         graph.set_output(slots({graph.output_slot(node)}));
         REQUIRE(graph.prepare().contains_error());
     }
     SECTION("case with a condition but no result") {
-        execution_graph_t graph(resource());
+        execution_dag_t graph(resource());
         auto condition = input_slot(graph, 0, logical_type::BOOLEAN);
         auto node = graph.add_blend(blend_node_t::blend_kind::case_when, slots({condition}));
         graph.set_slot_type(graph.output_slot(node), logical_type::BIGINT);
@@ -527,13 +527,13 @@ TEST_CASE("execution_graph::a blend rejects a shape it cannot read") {
 // A STRUCT is stored as one vector per entry, so reaching a field is a pointer walk, not a copy —
 // and once the field node hands that vector on, the rest of the graph treats it as an ordinary
 // column. Computing on it is what proves the slot really addresses the child's values.
-TEST_CASE("execution_graph::a field node reaches a struct entry") {
+TEST_CASE("execution_dag::a field node reaches a struct entry") {
     std::pmr::vector<complex_logical_type> entries(resource());
     entries.emplace_back(logical_type::BIGINT, "x");
     entries.emplace_back(logical_type::BIGINT, "y");
     auto struct_type = complex_logical_type::create_struct("point", entries);
 
-    execution_graph_t graph(resource());
+    execution_dag_t graph(resource());
     auto column = graph.declare_slot();
     graph.bind_input(column, 0, struct_type);
     // Second entry of the struct, then +1 on it.
@@ -575,8 +575,8 @@ TEST_CASE("execution_graph::a field node reaches a struct entry") {
 
 // A path with no steps below the column addresses nothing, so the node is refused rather than
 // silently behaving like a plain column reference.
-TEST_CASE("execution_graph::a field node with no path is refused") {
-    execution_graph_t graph(resource());
+TEST_CASE("execution_dag::a field node with no path is refused") {
+    execution_dag_t graph(resource());
     auto column = input_slot(graph, 0, logical_type::BIGINT);
     std::pmr::vector<size_t> empty(resource());
     auto field = graph.add_field(column, empty);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/parameter_map.hpp>
@@ -65,7 +65,7 @@ namespace components::operators {
 
         struct compiled_check_t {
             expressions::condition_kind condition{expressions::condition_kind::always};
-            std::unique_ptr<execution_graph::execution_graph_t> graph;
+            std::unique_ptr<execution_dag::execution_dag_t> graph;
         };
 
         std::vector<std::string> not_null_columns_;

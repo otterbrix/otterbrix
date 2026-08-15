@@ -1,7 +1,7 @@
 #pragma once
 
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
@@ -71,7 +71,7 @@ namespace components::operators {
         bool layout_built_{false};
         std::pmr::vector<types::complex_logical_type> res_types_{resource_};
         expressions::condition_kind condition_{expressions::condition_kind::always};
-        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
         // RIGHT/FULL only: a flat "matched" marker (one byte per build row) over all
         // build chunks, with per-chunk start offsets so build row (chunk,row) maps to
         // build_matched_[build_chunk_offsets_[chunk] + row]. Unmatched build rows are

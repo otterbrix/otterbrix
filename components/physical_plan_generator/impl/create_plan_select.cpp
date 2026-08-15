@@ -4,7 +4,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_select.hpp>
 
-#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 
 namespace services::planner::impl {
@@ -232,7 +232,7 @@ namespace services::planner::impl {
 
         auto op = boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, plan_log));
 
-        // Aggregates are always handled by operator_group_t upstream; node_select_t only contains
+        // Aggregates are always handled by operator_hash_group_t upstream; node_select_t only contains
         // scalar expressions (get_field, arithmetic, constant, star_expand, coalesce, case_when).
         for (const auto& expr : node->expressions()) {
             if (expr->group() == expression_group::scalar) {

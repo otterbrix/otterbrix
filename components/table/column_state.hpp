@@ -13,7 +13,7 @@
 #include <components/table/storage/buffer_handle.hpp>
 
 #include <components/execution_context/graph_execution_context.hpp>
-#include <components/execution_graph/execution_graph.hpp>
+#include <components/execution_dag/execution_dag.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/types/logical_value.hpp>
@@ -71,7 +71,7 @@ namespace components::table {
     public:
         table_filter_t(types::parameter_map_t parameters,
                        graph_execution_context context,
-                       std::unique_ptr<execution_graph::execution_graph_t> graph,
+                       std::unique_ptr<execution_dag::execution_dag_t> graph,
                        expressions::condition_kind condition)
             : parameters(std::move(parameters))
             , context(context)
@@ -80,7 +80,7 @@ namespace components::table {
 
         types::parameter_map_t parameters;
         graph_execution_context context;
-        std::unique_ptr<execution_graph::execution_graph_t> graph;
+        std::unique_ptr<execution_dag::execution_dag_t> graph;
         expressions::condition_kind condition{expressions::condition_kind::always};
     };
 

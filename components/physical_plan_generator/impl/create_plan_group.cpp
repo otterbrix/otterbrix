@@ -5,7 +5,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_group.hpp>
 
-#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 
 namespace services::planner::impl {
 
@@ -20,7 +20,7 @@ namespace services::planner::impl {
         // multiply reads its single value. What the OPERATOR still has to know is merely that a
         // reduction exists, because that is what makes an empty input emit its one row.
         struct reduction_registrar {
-            boost::intrusive_ptr<components::operators::operator_group_t>& group;
+            boost::intrusive_ptr<components::operators::operator_hash_group_t>& group;
 
             void visit(const components::expressions::param_storage& param) const {
                 if (!components::expressions::is_expr(param)) {
@@ -79,7 +79,7 @@ namespace services::planner::impl {
                                                           const components::compute::function_registry_t&,
                                                           const components::logical_plan::node_ptr& node,
                                                           const components::logical_plan::storage_parameters*) {
-        boost::intrusive_ptr<components::operators::operator_group_t> group;
+        boost::intrusive_ptr<components::operators::operator_hash_group_t> group;
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);
 
@@ -88,9 +88,9 @@ namespace services::planner::impl {
         const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());
 
         if (known) {
-            group = new components::operators::operator_group_t(context.resource, context.log.clone());
+            group = new components::operators::operator_hash_group_t(context.resource, context.log.clone());
         } else {
-            group = new components::operators::operator_group_t(node->resource(), log_t{});
+            group = new components::operators::operator_hash_group_t(node->resource(), log_t{});
         }
 
         // Build group operator from node expressions

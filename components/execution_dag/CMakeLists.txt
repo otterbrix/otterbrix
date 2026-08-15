@@ -1,7 +1,7 @@
-project(execution_graph CXX)
+project(execution_dag CXX)
 
 set(SOURCE_${PROJECT_NAME}
-        execution_graph.cpp
+        execution_dag.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

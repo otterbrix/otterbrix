@@ -2,7 +2,7 @@
 
 #include "join_utils.hpp"
 #include "operator_data.hpp"
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 
 #include <components/context/context.hpp>
 #include <components/context/subplan_runner.hpp>
@@ -160,7 +160,7 @@ namespace components::operators {
         eager_join_builder builder(res, out_types, indices_left, indices_right, result);
         const auto condition =
             semi_anti ? expressions::condition_kind::always : expressions::classify_condition(on_expression_);
-        std::unique_ptr<execution_graph::execution_graph_t> graph;
+        std::unique_ptr<execution_dag::execution_dag_t> graph;
         if (condition == expressions::condition_kind::computed) {
             std::pmr::vector<types::complex_logical_type> merged_types(res);
             merged_types.reserve(outer_count + inner_count);

@@ -3,7 +3,7 @@
 #include "manager_disk.hpp"
 #include <algorithm>                              // std::min
 #include <components/logical_plan/node_group.hpp> // node_group_t::set_pushdown (re-lowering guard)
-#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp>                   // components::vector::cells_equal (typed FK hash-verify)
@@ -1109,7 +1109,7 @@ namespace services::disk {
         // (2) Rebuild the operator_group from the POD: plain-column keys + builtin
         //     SUM/COUNT/MIN/MAX/AVG (COUNT(*) == empty arg path). No HAVING / DISTINCT / computed
         //     columns (the optimizer never stamps those).
-        ops::operator_group_t group{resource, log.clone()};
+        ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
             ops::group_key_t key{resource};
             key.name.assign(gk.name.begin(), gk.name.end());

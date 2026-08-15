@@ -1,4 +1,4 @@
-#include "execution_graph.hpp"
+#include "execution_dag.hpp"
 
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cassert>
 
-namespace components::execution_graph {
+namespace components::execution_dag {
 
     execution_node_t::execution_node_t(std::pmr::memory_resource* resource, slot_list_t inputs, slot_list_t outputs)
         : input_indices_(std::move(inputs), resource)
@@ -584,7 +584,7 @@ namespace components::execution_graph {
         placed_ = false;
     }
 
-    execution_graph_t::execution_graph_t(std::pmr::memory_resource* resource, uint64_t capacity)
+    execution_dag_t::execution_dag_t(std::pmr::memory_resource* resource, uint64_t capacity)
         : resource_(resource)
         , capacity_(capacity)
         , slots_(resource)
@@ -594,20 +594,20 @@ namespace components::execution_graph {
         , nodes_(resource)
         , order_(resource) {}
 
-    node_id_t execution_graph_t::append(execution_node_ptr node) {
+    node_id_t execution_dag_t::append(execution_node_ptr node) {
         prepared_ = false;
         nodes_.push_back(std::move(node));
         return node_id_t{nodes_.size() - 1};
     }
 
-    slot_id_t execution_graph_t::declare_slot() {
+    slot_id_t execution_dag_t::declare_slot() {
         prepared_ = false;
         slots_.emplace_back();
         return slot_id_t{slots_.size() - 1};
     }
 
     node_id_t
-    execution_graph_t::add_aggregate(const compute::function* function, const slot_list_t& inputs, bool distinct) {
+    execution_dag_t::add_aggregate(const compute::function* function, const slot_list_t& inputs, bool distinct) {
         auto output = declare_slot();
         return append(new function_node_t(resource_,
                                           function,
@@ -617,7 +617,7 @@ namespace components::execution_graph {
                                           distinct));
     }
 
-    node_id_t execution_graph_t::add_field(slot_id_t input, const std::pmr::vector<size_t>& path) {
+    node_id_t execution_dag_t::add_field(slot_id_t input, const std::pmr::vector<size_t>& path) {
         for (node_id_t id{0}; id < nodes_.size(); id++) {
             const auto* field = dynamic_cast<const field_node_t*>(nodes_[id].get());
             if (field != nullptr && field->input_indices().front() == input && field->path() == path) {
@@ -628,23 +628,23 @@ namespace components::execution_graph {
         return append(new field_node_t(resource_, std::pmr::vector<size_t>(path, resource_), input, output));
     }
 
-    node_id_t execution_graph_t::add_cast(slot_id_t input, casts::cast_kind kind) {
+    node_id_t execution_dag_t::add_cast(slot_id_t input, casts::cast_kind kind) {
         auto output = declare_slot();
         return append(new cast_node_t(resource_, kind, input, output));
     }
 
-    node_id_t execution_graph_t::add_operator(operators::operator_code op, slot_id_t left, slot_id_t right) {
+    node_id_t execution_dag_t::add_operator(operators::operator_code op, slot_id_t left, slot_id_t right) {
         auto output = declare_slot();
         return append(new operator_node_t(resource_, op, left, right, output));
     }
 
-    node_id_t execution_graph_t::add_operator(operators::operator_code op, slot_id_t operand) {
+    node_id_t execution_dag_t::add_operator(operators::operator_code op, slot_id_t operand) {
         auto output = declare_slot();
         return append(new operator_node_t(resource_, op, operand, output));
     }
 
     node_id_t
-    execution_graph_t::add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count) {
+    execution_dag_t::add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count) {
         slot_list_t outputs(resource_);
         outputs.reserve(output_count);
         for (size_t position = 0; position < output_count; position++) {
@@ -653,17 +653,17 @@ namespace components::execution_graph {
         return append(new function_node_t(resource_, function, slot_list_t(inputs, resource_), std::move(outputs)));
     }
 
-    node_id_t execution_graph_t::add_parameter(core::parameter_id_t id) {
+    node_id_t execution_dag_t::add_parameter(core::parameter_id_t id) {
         auto output = declare_slot();
         return append(new parameter_node_t(resource_, id, output));
     }
 
-    node_id_t execution_graph_t::add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs) {
+    node_id_t execution_dag_t::add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs) {
         auto output = declare_slot();
         return append(new blend_node_t(resource_, kind, slot_list_t(inputs, resource_), output));
     }
 
-    node_id_t execution_graph_t::add_case_when(const slot_list_t& conditions, slot_list_t& masks) {
+    node_id_t execution_dag_t::add_case_when(const slot_list_t& conditions, slot_list_t& masks) {
         masks.clear();
         masks.reserve(conditions.size() + 1);
         // One mask per condition plus the DEFAULT arm's. They are BOOLEAN and always written, so
@@ -677,50 +677,50 @@ namespace components::execution_graph {
             new case_when_node_t(resource_, slot_list_t(conditions, resource_), slot_list_t(masks, resource_)));
     }
 
-    node_id_t execution_graph_t::add_case_then(const slot_list_t& values, const slot_list_t& masks) {
+    node_id_t execution_dag_t::add_case_then(const slot_list_t& values, const slot_list_t& masks) {
         auto output = declare_slot();
         return append(
             new case_then_node_t(resource_, slot_list_t(values, resource_), slot_list_t(masks, resource_), output));
     }
 
-    void execution_graph_t::set_constraint(node_id_t node, slot_id_t mask) {
+    void execution_dag_t::set_constraint(node_id_t node, slot_id_t mask) {
         prepared_ = false;
         nodes_[node]->set_constraint(mask);
     }
 
-    void execution_graph_t::connect(node_id_t consumer, size_t position, slot_id_t producer) {
+    void execution_dag_t::connect(node_id_t consumer, size_t position, slot_id_t producer) {
         prepared_ = false;
         nodes_[consumer]->set_input(position, producer);
     }
 
-    slot_id_t execution_graph_t::output_slot(node_id_t node, size_t position) const {
+    slot_id_t execution_dag_t::output_slot(node_id_t node, size_t position) const {
         return nodes_[node]->output_indices()[position];
     }
 
-    void execution_graph_t::bind_input(slot_id_t slot, size_t column_index, const types::complex_logical_type& type) {
+    void execution_dag_t::bind_input(slot_id_t slot, size_t column_index, const types::complex_logical_type& type) {
         prepared_ = false;
         slots_[slot].input_column = column_index;
         slots_[slot].bound = true;
         set_slot_type(slot, type);
     }
 
-    void execution_graph_t::set_slot_type(slot_id_t slot, const types::complex_logical_type& type) {
+    void execution_dag_t::set_slot_type(slot_id_t slot, const types::complex_logical_type& type) {
         prepared_ = false;
         slots_[slot].type = type;
         slots_[slot].typed = true;
     }
 
-    void execution_graph_t::set_cast(node_id_t node, casts::cast_t cast) {
+    void execution_dag_t::set_cast(node_id_t node, casts::cast_t cast) {
         auto* target = dynamic_cast<cast_node_t*>(nodes_[node].get());
         assert(target && "execution graph: set_cast on a node that is not a cast");
         target->set_cast(std::move(cast));
     }
 
-    node_id_t execution_graph_t::insert_cast_before(node_id_t consumer,
-                                                    size_t position,
-                                                    casts::cast_t cast,
-                                                    casts::cast_kind kind,
-                                                    const types::complex_logical_type& target) {
+    node_id_t execution_dag_t::insert_cast_before(node_id_t consumer,
+                                                  size_t position,
+                                                  casts::cast_t cast,
+                                                  casts::cast_kind kind,
+                                                  const types::complex_logical_type& target) {
         auto source = nodes_[consumer]->input_indices()[position];
         auto node = add_cast(source, kind);
         auto produced = output_slot(node);
@@ -734,7 +734,7 @@ namespace components::execution_graph {
         return node;
     }
 
-    core::error_t execution_graph_t::validate() {
+    core::error_t execution_dag_t::validate() {
         std::pmr::vector<node_id_t> producer(slots_.size(), invalid_node, resource_);
         for (size_t index = 0; index < nodes_.size(); index++) {
             auto error = nodes_[index]->validate();
@@ -770,7 +770,7 @@ namespace components::execution_graph {
         return order_nodes();
     }
 
-    core::error_t execution_graph_t::order_nodes() {
+    core::error_t execution_dag_t::order_nodes() {
         std::pmr::vector<node_id_t> producer(slots_.size(), invalid_node, resource_);
         for (size_t index = 0; index < nodes_.size(); index++) {
             for (auto slot : nodes_[index]->output_indices()) {
@@ -860,7 +860,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    std::pmr::vector<execution_graph_t::input_binding_t> execution_graph_t::input_bindings() const {
+    std::pmr::vector<execution_dag_t::input_binding_t> execution_dag_t::input_bindings() const {
         std::pmr::vector<input_binding_t> bindings(resource_);
         for (size_t index = 0; index < slots_.size(); index++) {
             if (slots_[index].bound) {
@@ -870,19 +870,19 @@ namespace components::execution_graph {
         return bindings;
     }
 
-    void execution_graph_t::set_output(const slot_list_t& selected) {
+    void execution_dag_t::set_output(const slot_list_t& selected) {
         prepared_ = false;
         output_slots_.assign(selected.begin(), selected.end());
     }
 
-    void execution_graph_t::set_parameters(const parameter_map_t* parameters) {
+    void execution_dag_t::set_parameters(const parameter_map_t* parameters) {
         parameters_ = parameters;
         for (auto& node : nodes_) {
             node->set_parameters(parameters);
         }
     }
 
-    core::error_t execution_graph_t::prepare() {
+    core::error_t execution_dag_t::prepare() {
         if (output_slots_.empty()) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: no outputs were set", resource()});
@@ -912,7 +912,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    void execution_graph_t::split_at_group() {
+    void execution_dag_t::split_at_group() {
         key_nodes_.clear();
         chunk_nodes_.clear();
         group_nodes_.clear();
@@ -982,13 +982,13 @@ namespace components::execution_graph {
         }
     }
 
-    void execution_graph_t::add_key_slot(slot_id_t slot) {
+    void execution_dag_t::add_key_slot(slot_id_t slot) {
         prepared_ = false;
         key_slots_.push_back(slot);
     }
 
     core::error_t
-    execution_graph_t::run(execution_node_t* node, const graph_execution_context& context, uint64_t ambient) {
+    execution_dag_t::run(execution_node_t* node, const graph_execution_context& context, uint64_t ambient) {
         uint64_t count = unconstrained_rows;
         for (auto slot : node->input_indices()) {
             count = std::min(count, slot_sizes_[slot]);
@@ -1016,7 +1016,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t execution_graph_t::bind_inputs(const vector::data_chunk_t& input) {
+    core::error_t execution_dag_t::bind_inputs(const vector::data_chunk_t& input) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: process() before prepare()", resource()});
@@ -1049,8 +1049,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t execution_graph_t::process(const vector::data_chunk_t& input,
-                                             const graph_execution_context& context) {
+    core::error_t execution_dag_t::process(const vector::data_chunk_t& input, const graph_execution_context& context) {
         // An ungrouped run is a grouped one over the single group 0.
         if (auto error = reserve_groups(1); error.contains_error()) {
             return error;
@@ -1061,8 +1060,8 @@ namespace components::execution_graph {
         return process_groups({single_group_.data(), input.size()}, context);
     }
 
-    core::error_t execution_graph_t::process_keys(const vector::data_chunk_t& input,
-                                                  const graph_execution_context& context) {
+    core::error_t execution_dag_t::process_keys(const vector::data_chunk_t& input,
+                                                const graph_execution_context& context) {
         if (auto error = bind_inputs(input); error.contains_error()) {
             return error;
         }
@@ -1076,13 +1075,13 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    const vector::vector_t& execution_graph_t::key_values(size_t index) const {
+    const vector::vector_t& execution_dag_t::key_values(size_t index) const {
         assert(index < key_slots_.size());
         return data_storage_[key_slots_[index]];
     }
 
-    core::error_t execution_graph_t::process_groups(core::span<const uint32_t> group_ids,
-                                                    const graph_execution_context& context) {
+    core::error_t execution_dag_t::process_groups(core::span<const uint32_t> group_ids,
+                                                  const graph_execution_context& context) {
         if (group_ids.size() < bound_rows_) {
             return core::error_t(
                 core::error_code_t::invalid_parameter,
@@ -1102,7 +1101,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t execution_graph_t::reserve_groups(uint64_t group_count) {
+    core::error_t execution_dag_t::reserve_groups(uint64_t group_count) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: reserve_groups() before prepare()", resource()});
@@ -1116,8 +1115,7 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t
-    execution_graph_t::emit_groups(const graph_execution_context& context, uint64_t first, uint64_t count) {
+    core::error_t execution_dag_t::emit_groups(const graph_execution_context& context, uint64_t first, uint64_t count) {
         if (!prepared_) {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"execution graph: finalize() before prepare()", resource()});
@@ -1137,12 +1135,12 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::error_t execution_graph_t::finalize_groups(const graph_execution_context& context,
-                                                     core::span<const vector::vector_t* const> keys,
-                                                     uint64_t first,
-                                                     uint64_t count,
-                                                     vector::data_chunk_t* target,
-                                                     uint64_t target_row) {
+    core::error_t execution_dag_t::finalize_groups(const graph_execution_context& context,
+                                                   core::span<const vector::vector_t* const> keys,
+                                                   uint64_t first,
+                                                   uint64_t count,
+                                                   vector::data_chunk_t* target,
+                                                   uint64_t target_row) {
         if (keys.size() != key_slots_.size()) {
             return core::error_t(
                 core::error_code_t::invalid_parameter,
@@ -1160,10 +1158,10 @@ namespace components::execution_graph {
         return copy_outputs(emitted_rows(count), target, target_row);
     }
 
-    core::error_t execution_graph_t::finalize_inplace(const graph_execution_context& context,
-                                                      uint64_t count,
-                                                      vector::data_chunk_t* target,
-                                                      uint64_t target_row) {
+    core::error_t execution_dag_t::finalize_inplace(const graph_execution_context& context,
+                                                    uint64_t count,
+                                                    vector::data_chunk_t* target,
+                                                    uint64_t target_row) {
         // No grouping: every reduction holds exactly one accumulator, and a graph without one
         // simply completes the rows it was fed.
         const uint64_t ambient = reduction_nodes_.empty() ? count : uint64_t{1};
@@ -1176,7 +1174,7 @@ namespace components::execution_graph {
     // What the outputs actually hold: every node stamped its output size, so the emitted row count
     // is the narrowest of them. All-unconstrained means every output is constant, which broadcasts
     // to whatever the caller asked for.
-    uint64_t execution_graph_t::emitted_rows(uint64_t ambient) const {
+    uint64_t execution_dag_t::emitted_rows(uint64_t ambient) const {
         uint64_t emitted = unconstrained_rows;
         for (auto slot : output_slots_) {
             emitted = std::min(emitted, slot_sizes_[slot]);
@@ -1185,7 +1183,7 @@ namespace components::execution_graph {
     }
 
     core::error_t
-    execution_graph_t::copy_outputs(uint64_t rows, vector::data_chunk_t* target, uint64_t target_row) const {
+    execution_dag_t::copy_outputs(uint64_t rows, vector::data_chunk_t* target, uint64_t target_row) const {
         if (target->column_count() < output_slots_.size()) {
             return core::error_t(
                 core::error_code_t::schema_error,
@@ -1203,8 +1201,8 @@ namespace components::execution_graph {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<vector::data_chunk_t> execution_graph_t::finalize(const graph_execution_context& context,
-                                                                             uint64_t count) {
+    core::result_wrapper_t<vector::data_chunk_t> execution_dag_t::finalize(const graph_execution_context& context,
+                                                                           uint64_t count) {
         const uint64_t ambient = reduction_nodes_.empty() ? count : uint64_t{1};
         if (auto error = emit_groups(context, 0, ambient); error.contains_error()) {
             return error;
@@ -1223,4 +1221,4 @@ namespace components::execution_graph {
         return result;
     }
 
-} // namespace components::execution_graph
+} // namespace components::execution_dag

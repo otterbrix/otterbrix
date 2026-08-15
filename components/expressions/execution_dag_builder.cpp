@@ -1,12 +1,12 @@
-#include "execution_graph_builder.hpp"
+#include "execution_dag_builder.hpp"
 
 namespace components::expressions {
 
     namespace {
 
-        using execution_graph::execution_graph_t;
-        using execution_graph::node_id_t;
-        using execution_graph::slot_id_t;
+        using execution_dag::execution_dag_t;
+        using execution_dag::node_id_t;
+        using execution_dag::slot_id_t;
         using types::complex_logical_type;
         using types::logical_type;
 
@@ -14,7 +14,7 @@ namespace components::expressions {
 
         class builder_t {
         public:
-            builder_t(execution_graph_t* graph,
+            builder_t(execution_dag_t* graph,
                       const types::parameter_map_t& parameters,
                       const std::pmr::vector<complex_logical_type>& input_types,
                       size_t right_offset)
@@ -41,7 +41,7 @@ namespace components::expressions {
             match_slot(const compare_expression_t* expression, slot_id_t subject, slot_id_t pattern);
             std::pmr::memory_resource* resource() const noexcept { return graph_->resource(); }
 
-            execution_graph_t* graph_;
+            execution_dag_t* graph_;
             const types::parameter_map_t& parameters_;
             const std::pmr::vector<complex_logical_type>& input_types_;
             size_t right_offset_;
@@ -107,14 +107,14 @@ namespace components::expressions {
                     core::error_code_t::unimplemented_yet,
                     std::pmr::string{"execution graph builder: cast spelled on a column reference", resource()});
             }
-            slot_id_t slot = execution_graph::invalid_slot;
+            slot_id_t slot = execution_dag::invalid_slot;
             for (const auto& binding : graph_->input_bindings()) {
                 if (binding.column == column) {
                     slot = binding.slot;
                     break;
                 }
             }
-            if (slot == execution_graph::invalid_slot) {
+            if (slot == execution_dag::invalid_slot) {
                 slot = graph_->declare_slot();
                 graph_->bind_input(slot, column, input_types_[column]);
             }
@@ -172,7 +172,7 @@ namespace components::expressions {
             if (!is_coalesce) {
                 return case_slot(expression);
             }
-            execution_graph::slot_list_t inputs(resource());
+            execution_dag::slot_list_t inputs(resource());
             inputs.reserve(expression->params().size());
             for (const auto& param : expression->params()) {
                 auto slot = slot_of(param);
@@ -181,7 +181,7 @@ namespace components::expressions {
                 }
                 inputs.push_back(slot.value());
             }
-            auto node = graph_->add_blend(execution_graph::blend_node_t::blend_kind::coalesce, inputs);
+            auto node = graph_->add_blend(execution_dag::blend_node_t::blend_kind::coalesce, inputs);
             graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
             return graph_->output_slot(node);
         }
@@ -193,7 +193,7 @@ namespace components::expressions {
             const size_t arm_count = params.size() / 2;
             const bool has_else = params.size() % 2 == 1;
 
-            execution_graph::slot_list_t conditions(resource());
+            execution_dag::slot_list_t conditions(resource());
             conditions.reserve(arm_count);
             for (size_t arm = 0; arm < arm_count; arm++) {
                 auto slot = slot_of(params[arm * 2]);
@@ -203,22 +203,22 @@ namespace components::expressions {
                 conditions.push_back(slot.value());
             }
 
-            execution_graph::slot_list_t masks(resource());
+            execution_dag::slot_list_t masks(resource());
             graph_->add_case_when(conditions, masks);
 
-            execution_graph::slot_list_t values(resource());
-            execution_graph::slot_list_t claimed(resource());
+            execution_dag::slot_list_t values(resource());
+            execution_dag::slot_list_t claimed(resource());
             values.reserve(arm_count + 1);
             claimed.reserve(arm_count + 1);
             auto build_arm = [&](const param_storage& param,
-                                 execution_graph::slot_id_t mask) -> core::result_wrapper_t<slot_id_t> {
+                                 execution_dag::slot_id_t mask) -> core::result_wrapper_t<slot_id_t> {
                 const size_t first = graph_->node_count();
                 auto slot = slot_of(param);
                 if (slot.has_error()) {
                     return slot;
                 }
                 for (size_t node = first; node < graph_->node_count(); node++) {
-                    graph_->set_constraint(execution_graph::node_id_t{node}, mask);
+                    graph_->set_constraint(execution_dag::node_id_t{node}, mask);
                 }
                 return slot;
             };
@@ -266,7 +266,7 @@ namespace components::expressions {
             const auto flags_slot = graph_->output_slot(flags_node);
             graph_->set_slot_type(flags_slot, flags->second.type());
 
-            execution_graph::slot_list_t inputs({subject, pattern, flags_slot}, resource());
+            execution_dag::slot_list_t inputs({subject, pattern, flags_slot}, resource());
             auto node = graph_->add_function(function, inputs, 1);
             graph_->set_slot_type(graph_->output_slot(node), complex_logical_type{logical_type::BOOLEAN});
             return graph_->output_slot(node);
@@ -326,7 +326,7 @@ namespace components::expressions {
             }
 
             // ANY is an OR over the per-element results, ALL an AND: one fold node over the N of them.
-            execution_graph::slot_list_t results(resource());
+            execution_dag::slot_list_t results(resource());
             results.reserve(elements.size());
             for (size_t index = 0; index < elements.size(); index++) {
                 std::pmr::vector<size_t> step({index}, resource());
@@ -346,8 +346,8 @@ namespace components::expressions {
                 graph_->set_slot_type(compared_slot, complex_logical_type{logical_type::BOOLEAN});
                 results.push_back(compared_slot);
             }
-            auto fold = graph_->add_blend(is_any ? execution_graph::blend_node_t::blend_kind::logical_or
-                                                 : execution_graph::blend_node_t::blend_kind::logical_and,
+            auto fold = graph_->add_blend(is_any ? execution_dag::blend_node_t::blend_kind::logical_or
+                                                 : execution_dag::blend_node_t::blend_kind::logical_and,
                                           results);
             graph_->set_slot_type(graph_->output_slot(fold), complex_logical_type{logical_type::BOOLEAN});
             return graph_->output_slot(fold);
@@ -450,7 +450,7 @@ namespace components::expressions {
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: resolved aggregate is not registered", resource()});
             }
-            execution_graph::slot_list_t inputs(resource());
+            execution_dag::slot_list_t inputs(resource());
             inputs.reserve(expression->params().size());
             for (const auto& argument : expression->params()) {
                 auto slot = slot_of(argument);
@@ -482,7 +482,7 @@ namespace components::expressions {
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: resolved function is not registered", resource()});
             }
-            execution_graph::slot_list_t inputs(resource());
+            execution_dag::slot_list_t inputs(resource());
             inputs.reserve(expression->args().size());
             for (const auto& argument : expression->args()) {
                 auto slot = slot_of(argument);
@@ -592,8 +592,8 @@ namespace components::expressions {
 
     } // namespace
 
-    core::result_wrapper_t<execution_graph::slot_id_t>
-    build_expression(execution_graph::execution_graph_t* graph,
+    core::result_wrapper_t<execution_dag::slot_id_t>
+    build_expression(execution_dag::execution_dag_t* graph,
                      const types::parameter_map_t& parameters,
                      const expression_i* expression,
                      const std::pmr::vector<types::complex_logical_type>& input_types,
@@ -607,14 +607,14 @@ namespace components::expressions {
         return builder.slot_of_expression(expression);
     }
 
-    core::result_wrapper_t<std::unique_ptr<execution_graph::execution_graph_t>>
+    core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_graph(std::pmr::memory_resource* resource,
                 const types::parameter_map_t& parameters,
                 core::span<const expression_i* const> expressions,
                 const std::pmr::vector<types::complex_logical_type>& input_types,
                 size_t right_offset) {
-        auto graph = std::make_unique<execution_graph::execution_graph_t>(resource);
-        execution_graph::slot_list_t outputs(resource);
+        auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
+        execution_dag::slot_list_t outputs(resource);
         outputs.reserve(expressions.size());
         for (const auto* expression : expressions) {
             auto slot = build_expression(graph.get(), parameters, expression, input_types, right_offset);
@@ -632,17 +632,17 @@ namespace components::expressions {
 
     // Outputs the N computed SET values, then one trailing is_modified column. Writing the
     // values back is the caller's job — the graph only reads.
-    core::result_wrapper_t<std::unique_ptr<execution_graph::execution_graph_t>>
+    core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_update_graph(std::pmr::memory_resource* resource,
                        const types::parameter_map_t& parameters,
                        core::span<const expression_i* const> values,
                        const std::pmr::vector<types::complex_logical_type>& input_types,
                        size_t right_offset) {
         const types::complex_logical_type boolean{types::logical_type::BOOLEAN};
-        auto graph = std::make_unique<execution_graph::execution_graph_t>(resource);
-        execution_graph::slot_list_t outputs(resource);
+        auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
+        execution_dag::slot_list_t outputs(resource);
         outputs.reserve(values.size() + 1);
-        auto modified = execution_graph::invalid_slot;
+        auto modified = execution_dag::invalid_slot;
 
         for (const auto* value : values) {
             auto slot = build_expression(graph.get(), parameters, value, input_types, right_offset);
@@ -656,14 +656,14 @@ namespace components::expressions {
             // is_modified is calculated by comparing those
             const auto& path = value->key().path();
             const size_t column = path.front();
-            auto current = execution_graph::invalid_slot;
+            auto current = execution_dag::invalid_slot;
             for (const auto& binding : graph->input_bindings()) {
                 if (binding.column == column) {
                     current = binding.slot;
                     break;
                 }
             }
-            if (current == execution_graph::invalid_slot) {
+            if (current == execution_dag::invalid_slot) {
                 current = graph->declare_slot();
                 graph->bind_input(current, column, input_types[column]);
             }
@@ -686,7 +686,7 @@ namespace components::expressions {
             auto changed = graph->output_slot(graph->add_operator(operators::operator_code::logical_not, same));
             graph->set_slot_type(changed, boolean);
 
-            if (modified == execution_graph::invalid_slot) {
+            if (modified == execution_dag::invalid_slot) {
                 modified = changed;
             } else {
                 modified =
@@ -703,7 +703,7 @@ namespace components::expressions {
         return graph;
     }
 
-    core::result_wrapper_t<std::unique_ptr<execution_graph::execution_graph_t>>
+    core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_condition_graph(std::pmr::memory_resource* resource,
                           const types::parameter_map_t& parameters,
                           const expression_i* expression,
@@ -712,7 +712,7 @@ namespace components::expressions {
         return build_graph(resource, parameters, {&expression, 1}, input_types, right_offset);
     }
 
-    core::result_wrapper_t<vector::data_chunk_t> run_graph(execution_graph::execution_graph_t* graph,
+    core::result_wrapper_t<vector::data_chunk_t> run_graph(execution_dag::execution_dag_t* graph,
                                                            const types::parameter_map_t& parameters,
                                                            const vector::data_chunk_t& input,
                                                            const components::graph_execution_context& context) {

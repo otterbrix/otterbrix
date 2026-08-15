@@ -6,7 +6,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_empty.hpp>
-#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 
 #include <memory_resource>
 
@@ -31,8 +31,9 @@ namespace {
     // (now deleted) folded the same accumulate()/materialize_groups()/
     // empty_aggregate_result() cores finalize() reaches, so the error contracts below
     // are unchanged.
-    void
-    drive_group(operators::operator_group_t* group, std::pmr::memory_resource* resource, pipeline::context_t* ctx) {
+    void drive_group(operators::operator_hash_group_t* group,
+                     std::pmr::memory_resource* resource,
+                     pipeline::context_t* ctx) {
         group->prepare();
         operators::chunks_vector_t out(resource);
         if (auto child = group->left(); child && child->output()) {
@@ -68,7 +69,8 @@ TEST_CASE("group operator contracts: unresolved column key surfaces operator err
     chunk.set_value(0, 1, int64_t(2));
     chunk.set_cardinality(2);
 
-    boost::intrusive_ptr<operators::operator_group_t> group(new operators::operator_group_t(&resource, log_t{}));
+    boost::intrusive_ptr<operators::operator_hash_group_t> group(
+        new operators::operator_hash_group_t(&resource, log_t{}));
     operators::group_key_t key(&resource);
     key.name = std::pmr::string("k", &resource);
     key.type = operators::group_key_t::kind::column;
@@ -114,7 +116,8 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     chunk.set_value(0, 3, make_row(types::logical_value_t(&resource, int64_t(20))));
     chunk.set_cardinality(4);
 
-    boost::intrusive_ptr<operators::operator_group_t> group(new operators::operator_group_t(&resource, log_t{}));
+    boost::intrusive_ptr<operators::operator_hash_group_t> group(
+        new operators::operator_hash_group_t(&resource, log_t{}));
     operators::group_key_t key(&resource);
     key.name = std::pmr::string("kf", &resource);
     key.type = operators::group_key_t::kind::column;
@@ -167,7 +170,8 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     }
     REQUIRE(avg_uid != compute::invalid_function_uid);
 
-    boost::intrusive_ptr<operators::operator_group_t> group(new operators::operator_group_t(&resource, log_t{}));
+    boost::intrusive_ptr<operators::operator_hash_group_t> group(
+        new operators::operator_hash_group_t(&resource, log_t{}));
     // The reduce IS an aggregate node in the group's graph, so the OUTPUT carries the aggregate
     // expression; add_value only records that a reduction exists. Both stamps the builder demands
     // of validation (uid + result type) are applied here by hand.

@@ -1,7 +1,7 @@
 #include "full_scan.hpp"
 
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -22,7 +22,7 @@ namespace components::operators {
         }
 
         const auto condition = expressions::classify_condition(expression);
-        std::unique_ptr<execution_graph::execution_graph_t> graph;
+        std::unique_ptr<execution_dag::execution_dag_t> graph;
         if (condition == expressions::condition_kind::computed) {
             auto built = expressions::build_condition_graph(resource, parameters->parameters, expression.get(), types);
             if (built.has_error()) {

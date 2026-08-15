@@ -10,7 +10,7 @@ set(SOURCE_${PROJECT_NAME}
         sort_expression.cpp
         function_expression.cpp
         cast_expression.cpp
-        execution_graph_builder.cpp
+        execution_dag_builder.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -26,7 +26,7 @@ target_link_libraries(
         otterbrix::casts
         otterbrix::compute
         otterbrix::execution_context
-        otterbrix::execution_graph
+        otterbrix::execution_dag
         otterbrix::operators
         otterbrix::vector
 

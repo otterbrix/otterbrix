@@ -12,7 +12,7 @@
 #include "collection.hpp"
 #include "row_version_manager.hpp"
 #include "struct_column_data.hpp"
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/vector/vector_operations.hpp>
 
 namespace components::table {

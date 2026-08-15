@@ -3,7 +3,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/execution_graph_builder.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/expressions/expression.hpp>
 
 #include <memory>
@@ -38,7 +38,7 @@ namespace components::operators {
     private:
         const expressions::expression_ptr expression_;
 
-        std::unique_ptr<execution_graph::execution_graph_t> graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
         std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
         std::vector<size_t> stream_populated_cols_;

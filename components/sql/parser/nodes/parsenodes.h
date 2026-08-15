@@ -359,6 +359,7 @@ typedef struct TypeCast {
      * type matches typeName (computing multi-type fields), instead of casting.
      * false for a normal '::' cast. */
     bool variant_select;
+    bool try_cast;
 } TypeCast;
 
 /*

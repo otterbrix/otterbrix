@@ -14,9 +14,7 @@ namespace components::planner {
     // (a Null Object returning the tree unchanged).
     using optimizer_pass_t = logical_plan::node_ptr (*)(std::pmr::memory_resource*, logical_plan::node_ptr);
 
-    inline logical_plan::node_ptr no_op_pass(std::pmr::memory_resource*, logical_plan::node_ptr node) {
-        return node;
-    }
+    inline logical_plan::node_ptr no_op_pass(std::pmr::memory_resource*, logical_plan::node_ptr node) { return node; }
 
     // Single optimization pass. Runs AFTER the planner rewrite, i.e. after
     // resolve → validate → enrich → planner.create_plan, so node->table_oid()

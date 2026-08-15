@@ -28,9 +28,9 @@ namespace services::planner::impl {
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
-        auto sort = known ? boost::intrusive_ptr(
-                                new components::operators::operator_sort_t(context.resource, context.log.clone()))
-                          : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));
+        auto sort =
+            known ? boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()))
+                  : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));
 
         for (const auto& expr : node->expressions()) {
             if (expr->group() == components::expressions::expression_group::sort) {
@@ -49,8 +49,7 @@ namespace services::planner::impl {
                 // Sort order is encoded in key.path()[0]: 0 = ascending, 1 = descending.
                 const auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
                 components::operators::sort_key_spec_t ck(plan_resource);
-                ck.op = scalar_expr->type();
-                ck.operands = scalar_expr->params();
+                ck.expression = expr;
                 const auto& sort_path = scalar_expr->key().path();
                 bool is_desc = !sort_path.empty() && sort_path[0] == size_t(1);
                 ck.order_ = is_desc ? components::sort::order::descending : components::sort::order::ascending;

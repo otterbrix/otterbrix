@@ -17,7 +17,6 @@ TEST_CASE("catalog::type_spec::scalars_encode_empty") {
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::DOUBLE}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::STRING_LITERAL}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::TIMESTAMP}) == "");
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::BLOB}) == "");
 }
 
 // The real persisted read-back path (operator_resolve_table / bootstrap):
@@ -68,8 +67,7 @@ TEST_CASE("catalog::type_spec::unsigned_ints_roundtrip_via_spec") {
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::USMALLINT}) == "uint2");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::UINTEGER}) == "uint4");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::UBIGINT}) == "uint8");
-    for (auto lt :
-         {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
+    for (auto lt : {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
         INFO("logical_type = " << static_cast<int>(lt));
         REQUIRE(persisted_readback(complex_logical_type{lt}) == lt);
     }

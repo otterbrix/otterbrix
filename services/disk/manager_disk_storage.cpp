@@ -8,9 +8,7 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
-                                                components::vector::data_chunk_t& data,
-                                                core::date::timezone_offset_t session_tz) {
+    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid, components::vector::data_chunk_t& data) {
         // Bootstrap / WAL-replay only (pre-scheduler-start). Replay records carry no
         // MVCC txn, so the append commits under transaction_data{0, 0}. The
         // storage_entry_sync borrow is safe in this single-threaded window.
@@ -59,36 +57,6 @@ namespace services::disk {
                 }
             }
             local.data = std::move(expanded_data);
-        }
-
-        if (s->has_schema() && !table_columns.empty()) {
-            using components::types::is_numeric;
-            using components::types::logical_type;
-            for (size_t i = 0; i < table_columns.size() && i < local.column_count(); i++) {
-                auto src_type = local.data[i].type().type();
-                auto tgt_type = table_columns[i].type().type();
-                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
-                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
-                    auto& src_vec = local.data[i];
-                    auto target_type = table_columns[i].type();
-                    if (src_vec.type().has_alias()) {
-                        target_type.set_alias(src_vec.type().alias());
-                    }
-                    components::vector::vector_t casted(resource(), target_type, local.size());
-                    for (uint64_t row = 0; row < local.size(); row++) {
-                        if (src_vec.validity().row_is_valid(row)) {
-                            // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
-                            // non-null, so the cast can not fail.
-                            auto casted_val = src_vec.value(row).cast_as(target_type, session_tz);
-                            assert(!casted_val.has_error() && "numeric/string column cast can not fail");
-                            casted.set_value(row, casted_val.value());
-                        } else {
-                            casted.validity().set_invalid(row);
-                        }
-                    }
-                    local.data[i] = std::move(casted);
-                }
-            }
         }
 
         // WAL-replay only (txn{0,0}), single-threaded: a write_conflict / out_of_memory

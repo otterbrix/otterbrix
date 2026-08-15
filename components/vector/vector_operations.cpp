@@ -116,6 +116,26 @@ namespace components::vector::vector_ops {
             }
         }
 
+        // An NA vector is CONSTANT, carries no data and is null in every row, so the whole
+        // column hashes as the one NULL_HASH.
+        static void na_loop_hash(vector_t& result) {
+            result.set_vector_type(vector_type::CONSTANT);
+            *result.data<uint64_t>() = hasher_t::NULL_HASH;
+        }
+
+        template<bool HAS_RINDEXING>
+        static void na_loop_combine_hash(vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
+            auto hash_data = hashes.data<uint64_t>();
+            if (hashes.get_vector_type() == vector_type::CONSTANT) {
+                *hash_data = combine_hash_scalar(*hash_data, hasher_t::NULL_HASH);
+                return;
+            }
+            for (uint64_t i = 0; i < count; i++) {
+                auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
+                hash_data[ridx] = combine_hash_scalar(hash_data[ridx], hasher_t::NULL_HASH);
+            }
+        }
+
         // 128-bit hash: std::hash is not portably specialised for absl::[u]int128, so
         // hash the two 64-bit halves of the two's-complement representation and combine
         // them. The bit pattern is sign-independent (int128 -> uint128 preserves the raw
@@ -430,6 +450,9 @@ namespace components::vector::vector_ops {
                 case types::physical_type::ARRAY:
                     array_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
                     break;
+                case types::physical_type::NA:
+                    na_loop_hash(result);
+                    break;
                 default:
                     throw std::logic_error("Invalid type for hash");
             }
@@ -579,6 +602,9 @@ namespace components::vector::vector_ops {
                 case types::physical_type::ARRAY:
                     array_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
                     break;
+                case types::physical_type::NA:
+                    na_loop_combine_hash<HAS_RINDEXING>(hashes, rindexing, count);
+                    break;
                 default:
                     throw std::logic_error("Invalid type for hash");
             }
@@ -635,6 +661,19 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset,
               uint64_t copy_count) {
+        // An NA vector holds no data at all: it is CONSTANT, unallocated, and null at every row.
+        // So copying INTO one has nothing to write, and copying one OUT is exactly "every target
+        // row is null".
+        if (target.type().type() == types::logical_type::NA) {
+            return;
+        }
+        if (source.type().type() == types::logical_type::NA) {
+            for (uint64_t row = 0; row < copy_count; row++) {
+                target.set_null(target_offset + row, true);
+            }
+            return;
+        }
+
         // A projected-out (placeholder) source column carries type info but NO data buffer:
         // data_chunk_t's projected constructor allocates real buffers only for the
         // column_pruning-selected storage columns and leaves the rest as placeholders
@@ -1269,6 +1308,39 @@ namespace components::vector::vector_ops {
         vector_t result(resource, lhs.type(), count);
         types::simple_physical_type_switch<binary_same_type_callback_t>(lhs_phys, lhs, *rhs_ptr, result, count, op);
         return result;
+    }
+
+    // Mirrors the dispatch in hash_type_switch
+    bool is_hashable(const types::complex_logical_type& type) {
+        switch (type.to_physical_type()) {
+            case types::physical_type::BOOL:
+            case types::physical_type::INT8:
+            case types::physical_type::INT16:
+            case types::physical_type::INT32:
+            case types::physical_type::INT64:
+            case types::physical_type::UINT8:
+            case types::physical_type::UINT16:
+            case types::physical_type::UINT32:
+            case types::physical_type::UINT64:
+            case types::physical_type::INT128:
+            case types::physical_type::UINT128:
+            case types::physical_type::FLOAT:
+            case types::physical_type::DOUBLE:
+            case types::physical_type::STRING:
+                return true;
+            case types::physical_type::STRUCT:
+                for (const auto& field : type.child_types()) {
+                    if (!is_hashable(field)) {
+                        return false;
+                    }
+                }
+                return true;
+            case types::physical_type::LIST:
+            case types::physical_type::ARRAY:
+                return is_hashable(type.child_type());
+            default:
+                return false;
+        }
     }
 
     void hash(vector_t& input, vector_t& result, uint64_t count) {

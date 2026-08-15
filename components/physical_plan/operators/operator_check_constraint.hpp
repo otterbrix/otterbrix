@@ -1,9 +1,11 @@
 #pragma once
 
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/types/parameter_map.hpp>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,8 +13,9 @@
 namespace components::operators {
 
     // Checks NOT NULL constraints and CHECK expressions over the incoming chunk.
-    // CHECK expressions are compiled to predicate_ptr once in the constructor;
-    // evaluated per-row without re-parsing.
+    // A CHECK is stored as SQL TEXT, so it is compiled once per execution — against the
+    // write-set's actual column layout, since that is what its column references resolve
+    // against — into an expression tree and then an execution graph.
     class operator_check_constraint_t final : public read_write_operator_t {
     public:
         // column_defaults: decoded DEFAULT values (name -> value) of the target
@@ -60,15 +63,23 @@ namespace components::operators {
         // violation it sets the error and returns. Called by await_async_and_resume.
         void validate_();
 
+        struct compiled_check_t {
+            expressions::condition_kind condition{expressions::condition_kind::always};
+            std::unique_ptr<execution_dag::execution_dag_t> graph;
+        };
+
         std::vector<std::string> not_null_columns_;
         // Decoded DEFAULTs (name -> value); consulted for columns absent from the
         // write-set by the NOT NULL loop and the compiled CHECK predicates.
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
-        bool write_set_named_{false};                                                     // see ctor note
-        std::vector<std::pair<std::string, predicates::predicate_ptr>> check_predicates_; // (name, compiled)
+        bool write_set_named_{false}; // see ctor note
         // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
         // shorter than the size cannot be padded and is rejected with an error.
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
+        // (name, SQL text) as stored in pg_constraint.conexpr — compiled in validate_().
+        std::vector<std::pair<std::string, std::string>> check_exprs_;
+        // Literals the compiled CHECKs reference, bound as the parameters their graphs read.
+        types::parameter_map_t check_params_{resource_};
     };
 
 } // namespace components::operators

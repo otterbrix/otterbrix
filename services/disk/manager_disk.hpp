@@ -405,6 +405,14 @@ namespace services::disk {
         unique_future<std::pmr::vector<resolve_function_result_t>>
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
+        // Bookkeeping lookup (NOT query-time cast resolution — that is the in-memory
+        // cast_registry_). Finds the pg_cast row identified by its (castsource,
+        // casttarget) pair and returns the cast's own oid (col 0), or INVALID_OID if
+        // absent. Admin path only: unregister-cast uses it to find the row to delete.
+        unique_future<components::catalog::oid_t> find_cast_oid(execution_context_t ctx,
+                                                                components::catalog::oid_t source_oid,
+                                                                components::catalog::oid_t target_oid);
+
         // V4 admin-path enumerators. Bypass the per-name cache (cache is per-(name, ns_oid)
         // keyed; enumeration of "all namespaces" / "all tables in ns" cannot be served by
         // it). Used by catalog-resolve enumeration paths and the UDF namespace pick.
@@ -497,9 +505,7 @@ namespace services::disk {
         // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
-        uint64_t direct_append_sync(components::catalog::oid_t table_oid,
-                                    components::vector::data_chunk_t& data,
-                                    core::date::timezone_offset_t session_tz);
+        uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data);
         void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 uint64_t count);
@@ -739,6 +745,7 @@ namespace services::disk {
                                                        // resolve + invalidation pull
                                                        &manager_disk_t::resolve_namespace,
                                                        &manager_disk_t::resolve_function_by_name,
+                                                       &manager_disk_t::find_cast_oid,
                                                        &manager_disk_t::list_namespaces,
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,

@@ -56,21 +56,21 @@ TEST_CASE("components::sql::functions") {
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT id, text, some_udf(text) AS some_alias FROM some_table;)_",
-        R"_($aggregate: {$group: {some_alias: {$some_udf: "text"}}, $select: {id, text, some_alias}})_",
+        R"_($aggregate: {$group: {id, text, $function: {name: {"some_udf"}, args: {"text"}}}, $select: {}})_",
         vec());
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT *, some_udf_1(foo_name) FROM some_udf_2(1) AS some_alias;)_",
-        R"_($aggregate: {$function: {name: {"some_udf_2"}, args: {#0}}, $group: {some_udf_1: {$some_udf_1: "foo_name"}}, $select: {*, some_udf_1}})_",
+        R"_($aggregate: {$function: {name: {"some_udf_2"}, args: {#0}}, $group: {*, $function: {name: {"some_udf_1"}, args: {"foo_name"}}}, $select: {}})_",
         vec({v(&resource, 1l)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT some_udf(5, 10);)_",
-                         R"_($aggregate: {$group: {some_udf: {$some_udf: [#0, #1]}}, $select: {some_udf}})_",
+                         R"_($aggregate: {$group: {$function: {name: {"some_udf"}, args: {#0, #1}}}, $select: {}})_",
                          vec({v(&resource, 5l), v(&resource, 10l)}));
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT name, some_udf(name, number) AS some_alias;)_",
-        R"_($aggregate: {$group: {some_alias: {$some_udf: ["name", "number"]}}, $select: {name, some_alias}})_",
+        R"_($aggregate: {$group: {name, $function: {name: {"some_udf"}, args: {"name", "number"}}}, $select: {}})_",
         vec());
 
     TEST_SIMPLE_FUNCTION(

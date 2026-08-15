@@ -22,31 +22,36 @@ static const std::string udf2_name = "mult";
 static const std::string udf3_name = "is_even";
 static const std::string udf4_name = "modulo";
 
-struct concat_kernel_state : kernel_state {
-    std::string value;
+// An aggregate UDF: one accumulator per group, addressed by group id. `update` folds a whole
+// chunk in, `finalize` emits one value per group.
+struct concat_kernel_state {
+    explicit concat_kernel_state(std::pmr::memory_resource* resource)
+        : value(resource) {}
+    std::pmr::string value;
 };
 
-static core::result_wrapper_t<kernel_state_ptr> concat_init(kernel_context&, kernel_init_args) {
-    auto c = std::make_unique<concat_kernel_state>();
-    c->value = std::string{};
-    return c;
+static aggregate_state_layout_t concat_layout(const std::pmr::vector<types::complex_logical_type>&) {
+    return aggregate_state_of<concat_kernel_state>();
 }
 
-static core::error_t concat_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
-    auto* acc = static_cast<concat_kernel_state*>(ctx.state());
+static core::error_t concat_update(kernel_context&,
+                                   const vector::data_chunk_t& in,
+                                   core::span<const uint32_t> groups,
+                                   aggregate_states_t states) {
     for (size_t i = 0; i < in.size(); i++) {
-        acc->value += in.data[0].data<std::string_view>()[i];
+        states.at<concat_kernel_state>(groups[i]).value += in.data[0].data<std::string_view>()[i];
     }
     return core::error_t::no_error();
 }
 
-static core::error_t concat_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
-                                   static_cast<concat_kernel_state&>(from).value);
+static core::error_t
+concat_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& out) {
+    for (uint64_t row = 0; row < count; row++) {
+        const auto& acc = states.at<concat_kernel_state>(first + row);
+        out.set_value(row, types::logical_value_t{ctx.exec_context().resource(), std::string{acc.value}});
+    }
     return core::error_t::no_error();
 }
-
-static core::error_t concat_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
 std::unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* resource) {
     function_doc doc{"short_doc", "full_doc", {"arg"}, false};
@@ -54,39 +59,40 @@ std::unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* 
     auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
 
     kernel_signature_t sig(function_type_t::aggregate,
-                           {exact_type_matcher(types::logical_type::STRING_LITERAL)},
+                           {parameter_type::exact(types::logical_type::STRING_LITERAL)},
                            {output_type::computed(same_type_resolver(0))});
-    aggregate_kernel k{std::move(sig), concat_init, concat_consume, concat_merge, concat_finalize};
+    aggregate_kernel k{std::move(sig), concat_layout, concat_update, concat_finalize};
 
     fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
-struct mult_kernel_state : kernel_state {
+struct mult_kernel_state {
     double value{};
 };
 
-static core::result_wrapper_t<kernel_state_ptr> mult_init(kernel_context&, kernel_init_args) {
-    auto c = std::make_unique<mult_kernel_state>();
-    c->value = 0.0;
-    return c;
+static aggregate_state_layout_t mult_layout(const std::pmr::vector<types::complex_logical_type>&) {
+    return aggregate_state_of<mult_kernel_state>();
 }
 
-static core::error_t mult_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
-    auto* acc = static_cast<mult_kernel_state*>(ctx.state());
+static core::error_t mult_update(kernel_context&,
+                                 const vector::data_chunk_t& in,
+                                 core::span<const uint32_t> groups,
+                                 aggregate_states_t states) {
     for (size_t i = 0; i < in.size(); i++) {
-        acc->value += in.data[0].data<double>()[i] * static_cast<double>(in.data[1].data<int64_t>()[i]);
+        states.at<mult_kernel_state>(groups[i]).value +=
+            in.data[0].data<double>()[i] * static_cast<double>(in.data[1].data<int64_t>()[i]);
     }
     return core::error_t::no_error();
 }
 
-static core::error_t mult_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
-                                   static_cast<mult_kernel_state&>(from).value);
+static core::error_t
+mult_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& out) {
+    for (uint64_t row = 0; row < count; row++) {
+        out.data<double>()[row] = states.at<mult_kernel_state>(first + row).value;
+    }
     return core::error_t::no_error();
 }
-
-static core::error_t mult_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
 // has overloads for diff argument types
 std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* resource) {
@@ -96,9 +102,9 @@ std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* re
 
     kernel_signature_t sig(
         function_type_t::aggregate,
-        {exact_type_matcher(types::logical_type::DOUBLE), exact_type_matcher(types::logical_type::BIGINT)},
+        {parameter_type::exact(types::logical_type::DOUBLE), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::DOUBLE)});
-    aggregate_kernel k{std::move(sig), mult_init, mult_consume, mult_merge, mult_finalize};
+    aggregate_kernel k{std::move(sig), mult_layout, mult_update, mult_finalize};
     fn->add_kernel(resource, std::move(k));
 
     return fn;
@@ -117,7 +123,7 @@ std::unique_ptr<row_function> make_is_even_func(std::pmr::memory_resource* resou
     auto fn = std::make_unique<row_function>(udf3_name, arity::unary(), doc, 1);
 
     kernel_signature_t sig(function_type_t::row,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), is_even_exec};
 
@@ -139,7 +145,7 @@ std::unique_ptr<row_function> make_modulo_func(std::pmr::memory_resource* resour
 
     kernel_signature_t sig(
         function_type_t::row,
-        {exact_type_matcher(types::logical_type::BIGINT), exact_type_matcher(types::logical_type::BIGINT)},
+        {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), modulo_exec};
 

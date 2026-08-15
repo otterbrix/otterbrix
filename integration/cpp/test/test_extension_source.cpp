@@ -54,7 +54,7 @@ namespace {
     // table to its own backend data. The node carries NO host state (it is pure
     // logical plan); the injected create_plan rule looks the data up by identity.
     struct mock_ext_data_t {
-        rows_spec_t spec;                                                // SOURCE rows
+        rows_spec_t spec; // SOURCE rows
         bool async_delivery{true};
         std::vector<std::pair<int64_t, int64_t>>* sink_written{nullptr}; // SINK target
     };
@@ -91,9 +91,7 @@ namespace {
                 // Drained sentinel: a 0-COLUMN chunk (`batch.data.empty()`), per the
                 // pump contract in execute_pipeline — a schema'd 0-row chunk is REAL
                 // input (the empty-guard a scalar aggregate needs), not a drain.
-                vector::data_chunk_t sentinel(resource(),
-                                              std::pmr::vector<types::complex_logical_type>{resource()},
-                                              0);
+                vector::data_chunk_t sentinel(resource(), std::pmr::vector<types::complex_logical_type>{resource()}, 0);
                 promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(sentinel)});
                 return future;
             }
@@ -133,13 +131,13 @@ namespace {
     // (a real sink flushes the remainder + reports the affected count).
     class mock_sink_op_t final : public operators::read_only_operator_t {
     public:
-        mock_sink_op_t(std::pmr::memory_resource* resource, log_t log, std::vector<std::pair<int64_t, int64_t>>* written)
+        mock_sink_op_t(std::pmr::memory_resource* resource,
+                       log_t log,
+                       std::vector<std::pair<int64_t, int64_t>>* written)
             : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
             , written_(written) {}
 
-        [[nodiscard]] operators::pipeline_role role() const noexcept override {
-            return operators::pipeline_role::sink;
-        }
+        [[nodiscard]] operators::pipeline_role role() const noexcept override { return operators::pipeline_role::sink; }
 
         [[nodiscard]] core::error_t
         push(components::pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
@@ -175,8 +173,11 @@ namespace {
             return {};
         }
         if (node->children().empty()) {
-            return {new mock_source_op_t(
-                context.resource, context.log.clone(), it->second.spec, it->second.async_delivery, node->table_oid())};
+            return {new mock_source_op_t(context.resource,
+                                         context.log.clone(),
+                                         it->second.spec,
+                                         it->second.async_delivery,
+                                         node->table_oid())};
         }
         return {new mock_sink_op_t(context.resource, context.log.clone(), it->second.sink_written)};
     }
@@ -212,11 +213,9 @@ namespace {
                     // (db, rel) identity — NOT on the node.
                     mock_ext_store()[ext_key(kExtDb, uid_s)] =
                         mock_ext_data_t{it->second.spec, it->second.async_delivery, nullptr};
-                    auto ext =
-                        logical_plan::make_node_extension(res, core::dbname_t{kExtDb}, core::relname_t{uid_s});
-                    ext->set_result_alias(agg->result_alias().empty()
-                                              ? static_cast<const std::string&>(agg->relname())
-                                              : agg->result_alias());
+                    auto ext = logical_plan::make_node_extension(res, core::dbname_t{kExtDb}, core::relname_t{uid_s});
+                    ext->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
+                                                                      : agg->result_alias());
                     if (node->children().empty()) {
                         node = ext; // bare scan leaf — the extension IS the plan node
                     } else {
@@ -331,9 +330,8 @@ namespace {
         return out;
     }
 
-    std::pmr::vector<types::complex_logical_type> pair_schema(std::pmr::memory_resource* res,
-                                                              const std::string& col_a,
-                                                              const std::string& col_b) {
+    std::pmr::vector<types::complex_logical_type>
+    pair_schema(std::pmr::memory_resource* res, const std::string& col_a, const std::string& col_b) {
         std::pmr::vector<types::complex_logical_type> schema(res);
         schema.emplace_back(types::logical_type::BIGINT, col_a);
         schema.emplace_back(types::logical_type::BIGINT, col_b);
@@ -365,10 +363,9 @@ static externals_by_uid_t one_source(std::pmr::memory_resource* res,
                                      std::vector<std::pair<int64_t, int64_t>> rows,
                                      bool async_delivery) {
     externals_by_uid_t externals;
-    externals.emplace(uid,
-                      external_source_t{rows_spec_t{col_a, col_b, std::move(rows)},
-                                        pair_schema(res, col_a, col_b),
-                                        async_delivery});
+    externals.emplace(
+        uid,
+        external_source_t{rows_spec_t{col_a, col_b, std::move(rows)}, pair_schema(res, col_a, col_b), async_delivery});
     return externals;
 }
 
@@ -377,8 +374,8 @@ static externals_by_uid_t one_source(std::pmr::memory_resource* res,
     test_clear_directory(config);                                                                                      \
     config.disk.on = false;                                                                                            \
     config.wal.on = false;                                                                                             \
-    mock_ext_store().clear(); /* fresh host store per test (keyed by db.rel) */                                       \
-    test_spaces space(config, &make_mock_extension); /* host injects its create_plan rule at engine start */          \
+    mock_ext_store().clear();                        /* fresh host store per test (keyed by db.rel) */                 \
+    test_spaces space(config, &make_mock_extension); /* host injects its create_plan rule at engine start */           \
     auto dispatcher = space.dispatcher();                                                                              \
     auto* res = dispatcher->resource();
 
@@ -465,8 +462,7 @@ TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
 }
 
 TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_local/base")
-    {
+    EXT_TEST_BOILERPLATE("/tmp/test_ext_local/base") {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE DATABASE extdb;");
     }
@@ -476,9 +472,9 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session,
-            "INSERT INTO extdb.local_t (key, amount) VALUES (1, 1000), (2, 2000), (5, 5000);");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "INSERT INTO extdb.local_t (key, amount) VALUES (1, 1000), (2, 2000), (5, 5000);");
         REQUIRE(cur->is_success());
     }
     auto externals = one_source(res, "uid_l", "key", "name", {{1, 11}, {2, 22}, {3, 33}}, /*async=*/true);
@@ -602,9 +598,7 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     sink->append_child(child);
 
     auto session = otterbrix::session_id_t();
-    auto cur = dispatcher->execute_plan(
-        session,
-        logical_plan::execution_plan_t{res, sink, binder.params_ptr()});
+    auto cur = dispatcher->execute_plan(session, logical_plan::execution_plan_t{res, sink, binder.params_ptr()});
     REQUIRE(cur->is_success());
 
     // The sink received + "wrote" all three source rows to the backend.

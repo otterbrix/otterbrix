@@ -227,6 +227,18 @@ namespace components::catalog {
             return c;
         }
 
+        std::vector<column_definition_t> pg_cast_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), /*not_null*/ true); // cast identity — pg_depend anchor
+            c.emplace_back("castsource", oid_col(), true);       // pg_type.oid of the source type
+            c.emplace_back("casttarget", oid_col(), true);       // pg_type.oid of the target type
+            // (castsource, casttarget) is the registry lookup key; oid is the catalog-row identity
+            // used for by-oid delete and pg_depend edges. No castcontext column yet — implicitness
+            // lives on the in-memory cast_entry (set by register_default_casts) and is only needed
+            // here once user-defined CREATE CAST persists its own level.
+            return c;
+        }
+
         std::vector<column_definition_t> pg_computed_column_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("relid",
@@ -254,9 +266,9 @@ namespace components::catalog {
         // relation, type, function) is conceptually scoped to a database. The default "main"
         // database row is seeded with well_known_oid::main_database in
         // manager_disk_t::bootstrap_system_tables_sync.
-        static const std::array<system_table_def_t, 13> tables = []() {
+        static const std::array<system_table_def_t, 14> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 13>{{
+            return std::array<system_table_def_t, 14>{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -286,6 +298,7 @@ namespace components::catalog {
                 {"pg_sequence", well_known_oid::pg_sequence_table, pg_catalog, relkind::regular, pg_sequence_columns()},
                 {"pg_rewrite", well_known_oid::pg_rewrite_table, pg_catalog, relkind::regular, pg_rewrite_columns()},
                 {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
+                {"pg_cast", well_known_oid::pg_cast_table, pg_catalog, relkind::regular, pg_cast_columns()},
             }};
         }();
         return tables;
@@ -630,30 +643,11 @@ namespace components::catalog {
 
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
-        switch (t.type()) {
-            // Empty spec = "decode from atttypid" — ONLY types with a well-known
-            // pg_type oid in builtin_type_to_oid may appear here, else read-back
-            // decodes to UNKNOWN. Unsigned ints have no well-known oid and fall
-            // through to the flat-text spec ("uint1".."uint8") below instead.
-            case LT::BOOLEAN:
-            case LT::TINYINT:
-            case LT::SMALLINT:
-            case LT::INTEGER:
-            case LT::BIGINT:
-            case LT::FLOAT:
-            case LT::DOUBLE:
-            case LT::STRING_LITERAL:
-            case LT::TIMESTAMP:
-            case LT::TIMESTAMP_TZ:
-            case LT::DATE:
-            case LT::TIME:
-            case LT::TIME_TZ:
-            case LT::INTERVAL:
-            case LT::BLOB:
-            case LT::UUID:
-                return "";
-            default:
-                break;
+        // Only a type atttypid can carry on its own goes specless. Anything else — an
+        // unsigned integer, a BLOB, a UUID, a nested type — is written out below, or it
+        // would come back as neither an oid nor a spec.
+        if (builtin_type_to_oid(t.type()) != INVALID_OID) {
+            return "";
         }
         // ENUM: flat text "ENUM:type_name:label0=val0,label1=val1,..."
         if (t.type() == LT::ENUM) {
@@ -727,50 +721,23 @@ namespace components::catalog {
         }
     }
 
-    std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers) {
-        using K = components::compute::input_type::kind_t;
+    std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters) {
         std::string out;
-        for (size_t i = 0; i < matchers.size(); ++i) {
+        for (size_t i = 0; i < parameters.size(); ++i) {
             if (i > 0)
                 out += '|';
-            const auto& m = matchers[i];
-            switch (m.kind()) {
-                case K::exact:
-                    out += "e:";
-                    out += std::to_string(static_cast<int>(m.exact_type()));
-                    break;
-                case K::numeric:
-                    out += "n";
-                    break;
-                case K::integer:
-                    out += "i";
-                    break;
-                case K::floating:
-                    out += "f";
-                    break;
-                case K::string:
-                    out += "s";
-                    break;
-                case K::any_of: {
-                    out += "a:";
-                    const auto& list = m.any_of_list();
-                    for (size_t j = 0; j < list.size(); ++j) {
-                        if (j > 0)
-                            out += ',';
-                        out += std::to_string(static_cast<int>(list[j]));
-                    }
-                    break;
-                }
-                case K::always_true:
-                    out += "t";
-                    break;
-                case K::custom:
-                    // Closure-only matcher (non-introspectable). Persist as a
-                    // placeholder so the row still parses; the on-restart
-                    // restore will need to rebuild the matcher elsewhere or
-                    // skip restoring this overload.
-                    out += "t";
-                    break;
+            const auto& parameter = parameters[i];
+            if (!parameter.is_variable()) {
+                out += "e:";
+                out += std::to_string(static_cast<int>(parameter.type().type()));
+                continue;
+            }
+            out += "v:";
+            out += std::to_string(static_cast<int>(parameter.id()));
+            const auto& admissible = parameter.admissible();
+            for (size_t j = 0; j < admissible.size(); ++j) {
+                out += j > 0 ? ',' : ':';
+                out += std::to_string(static_cast<int>(admissible[j].type()));
             }
         }
         return out;

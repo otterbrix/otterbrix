@@ -30,12 +30,19 @@ TEST_CASE("components::compute::registry::basic") {
                 REQUIRE(fn->fn_arity().varargs == true);
             } else if (name == "regexp_replace") {
                 REQUIRE(fn->fn_arity().num_args == 3);
+            } else if (name == "regexp_like") {
+                // regexp_like(subject, pattern[, flags]) — 2 or 3 args
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == true);
             } else if (name == "generate_series") {
                 // generate_series(start, stop[, step]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
                 REQUIRE(fn->fn_arity().varargs == true);
+            } else if (name == "pow") {
+                // pow(base, exponent)
+                REQUIRE(fn->fn_arity().num_args == 2);
             } else {
-                // sum, min, max, avg, length
+                // sum, min, max, avg, length, abs, sqrt, cbrt, factorial
                 REQUIRE(fn->fn_arity().num_args == 1);
             }
         }

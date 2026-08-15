@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -15,6 +16,19 @@
 
 #include <memory_resource>
 #include <utility>
+
+namespace {
+    // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    const components::casts::cast_registry_t* test_cast_registry() {
+        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
+        static const bool loaded = [] {
+            components::casts::register_default_casts(registry);
+            return true;
+        }();
+        (void) loaded;
+        return &registry;
+    }
+} // namespace
 
 using namespace components;
 using namespace components::logical_plan;
@@ -104,7 +118,7 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     // Real validation: stamps side()/path() on the keys and output_types() on the
     // scans + both joins (left_width/right_width the promote rule classifies against).
     logical_plan::storage_parameters params{res};
-    auto validated = services::dispatcher::validate_schema(res, nullptr, agg.get(), params);
+    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params);
     REQUIRE_FALSE(validated.has_error());
     REQUIRE(inner_cross->has_output_types());
     REQUIRE(inner_cross->output_types().size() == 4); // [a|b]

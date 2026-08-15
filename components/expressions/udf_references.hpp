@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aggregate_expression.hpp"
+#include "cast_expression.hpp"
 #include "compare_expression.hpp"
 #include "function_expression.hpp"
 #include "scalar_expression.hpp"
@@ -86,6 +87,10 @@ namespace components::expressions {
                     }
                 }
                 return false;
+            }
+            case expression_group::cast: {
+                const auto* c = static_cast<const cast_expression_t*>(expr.get());
+                return param_references_udf(c->child());
             }
             default:
                 return false;

@@ -1,6 +1,7 @@
 project(compute)
 
 set(${PROJECT_NAME}_SOURCES
+        aggregate_state.cpp
         compute_kernel.cpp
         function.cpp
         kernel_executor.cpp
@@ -10,6 +11,7 @@ set(${PROJECT_NAME}_SOURCES
         kernels/aggregate.cpp
         kernels/string_functions.cpp
         kernels/expand_functions.cpp
+        kernels/math_functions.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -24,6 +26,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::vector
+        otterbrix::regex
         absl::int128
 )
 

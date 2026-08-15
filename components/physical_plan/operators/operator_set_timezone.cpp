@@ -53,7 +53,7 @@ namespace components::operators {
         row.set_value(0, 0, std::string_view("TimeZone"));
         row.set_value(1, 0, std::string_view(timezone_name_.data(), timezone_name_.size()));
 
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
         auto [_u, uf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::append_pg_catalog_row,
                                          exec_ctx,

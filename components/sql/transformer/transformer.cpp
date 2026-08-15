@@ -159,6 +159,7 @@ namespace components::sql::transform {
                 if (!rel.empty()) {
                     log_node = maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(log_node));
                 }
+                log_node = wrap_with_catalog_resolve_types(resource_, cast_type_names_, std::move(log_node));
                 break;
             }
             case T_UpdateStmt:

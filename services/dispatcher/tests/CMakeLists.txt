@@ -5,6 +5,8 @@ add_definitions(-DDEV_MODE)
 set(${PROJECT_NAME}_SOURCES
         test_dispatcher_catalog.cpp
         test_variant_e3_differential.cpp
+        test_resolve_function.cpp
+        test_stamp_scalar_types.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

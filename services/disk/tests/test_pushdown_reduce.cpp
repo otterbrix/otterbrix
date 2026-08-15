@@ -17,6 +17,8 @@
 
 #include "pushdown_reduce_fixture.hpp"
 #include <components/compute/tests/pushdown_sum_uid.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -80,6 +82,16 @@ namespace {
             gk.name.assign("grp", 3);
             gk.path.push_back(static_cast<uint64_t>(group_col));
             spec.group_keys.push_back(std::move(gk));
+            // This stands in for `SELECT grp, sum(val) ... GROUP BY grp`, whose target list names
+            // the key — so the output is the reference that reads it, as the coordinator ships.
+            components::expressions::key_t key{r, std::string("grp")};
+            std::pmr::vector<size_t> key_path{r};
+            key_path.push_back(static_cast<size_t>(group_col));
+            key.set_path(std::move(key_path));
+            spec.outputs.push_back(
+                components::expressions::make_scalar_expression(r,
+                                                                components::expressions::scalar_type::get_field,
+                                                                key));
             spec.output_types.emplace_back(types::logical_type::BIGINT); // key column
         }
         ops::pushed_aggregate_t pa{r};
@@ -87,9 +99,31 @@ namespace {
         pa.func_uid = sum_uid(r);
         pa.distinct = false;
         pa.alias.assign("sum_val", 7);
+        pa.result_type = types::complex_logical_type{types::logical_type::BIGINT};
         pa.arg_col_path.push_back(static_cast<uint64_t>(val_col));
+        // The reduction itself: the agent's group builds an aggregate node from this expression.
+        components::expressions::key_t alias{r, std::string("sum_val")};
+        auto reduction = components::expressions::make_aggregate_expression(r, "sum", alias);
+        reduction->add_function_uid(pa.func_uid);
+        reduction->set_result_type(pa.result_type);
+        components::expressions::key_t argument{r};
+        std::pmr::vector<size_t> argument_path{r};
+        argument_path.push_back(static_cast<size_t>(val_col));
+        argument.set_path(std::move(argument_path));
+        reduction->append_param(argument);
+        spec.outputs.push_back(reduction);
         spec.aggregates.push_back(std::move(pa));
         spec.output_types.emplace_back(types::logical_type::BIGINT); // sum column
+        // The schema the reduce runs OVER. Every table here is all-BIGINT, so it is wide enough to
+        // cover the ordinals this spec references. An empty slice pushes no batch, so this is the
+        // only description of the input the agent's group ever gets.
+        size_t width = val_col + 1;
+        if (group_col >= 0 && static_cast<size_t>(group_col) + 1 > width) {
+            width = static_cast<size_t>(group_col) + 1;
+        }
+        for (size_t column = 0; column < width; column++) {
+            spec.input_types.emplace_back(types::logical_type::BIGINT);
+        }
         return spec;
     }
 

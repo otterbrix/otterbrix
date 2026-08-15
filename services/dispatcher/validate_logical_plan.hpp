@@ -2,10 +2,13 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/cursor/cursor.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 
 #include <span>
@@ -13,6 +16,10 @@
 
 namespace components::catalog {
     class table_id;
+}
+
+namespace components::casts {
+    class cast_registry_t;
 }
 
 // Real type lives in services::catalog_resolve; impl::plan_resolve_index_t
@@ -63,11 +70,38 @@ namespace services::dispatcher {
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const impl::plan_resolve_index_t* idx,
                                                components::logical_plan::node_t* node,
-                                               core::date::timezone_offset_t session_tz);
+                                               const components::graph_execution_context& execution_context);
 
+    [[nodiscard]] core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
+                                                        const components::casts::cast_registry_t* cast_registry,
+                                                        const components::graph_execution_context& execution_context,
+                                                        std::vector<components::table::column_definition_t>& columns);
+
+    namespace impl {
+        [[nodiscard]] core::error_t
+        resolve_scalar_output_type(std::pmr::memory_resource* resource,
+                                   const components::casts::cast_registry_t* cast_registry,
+                                   components::expressions::scalar_expression_t* scalar_expr,
+                                   const named_schema& schema,
+                                   const components::logical_plan::storage_parameters& parameters,
+                                   const named_schema* schema_right = nullptr,
+                                   bool same_schema = true,
+                                   bool* saw_reduction = nullptr);
+
+        [[nodiscard]] core::error_t
+        resolve_compare_output_type(std::pmr::memory_resource* resource,
+                                    const components::casts::cast_registry_t* cast_registry,
+                                    components::expressions::compare_expression_t* compare_expr,
+                                    const named_schema& schema,
+                                    const components::logical_plan::storage_parameters& parameters);
+    } // namespace impl
+
+    // `cast_registry` is the sole source of the casts INSERT/UPDATE column coercion is
+    // stamped from.
     [[nodiscard]] core::result_wrapper_t<named_schema>
     validate_schema(std::pmr::memory_resource* resource,
                     const impl::plan_resolve_index_t* idx,
+                    const components::casts::cast_registry_t* cast_registry,
                     components::logical_plan::node_t* node,
                     const components::logical_plan::storage_parameters& parameters);
 

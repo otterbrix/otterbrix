@@ -1,5 +1,6 @@
 #include "eager_aggregation.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -130,11 +131,32 @@ namespace components::planner::optimizer {
             // collecting each reference's MERGED column index.
             std::vector<ce::scalar_expression_t*> keys;
             std::vector<size_t> key_merged;
+            // The target list naming a grouping key. The group emits its TARGET LIST, so a key it
+            // names appears a second time as an ordinary column reference: `SELECT g, MIN(x)
+            // GROUP BY g` carries a group_field for the reduction AND a get_field for the output.
+            // It reduces nothing, but it reads a column whose position moves when the partial is
+            // spliced in, so its path is rewritten with the key's rather than the whole rule being
+            // refused. Same reading build_pushed_spec takes of a repeated key.
+            std::vector<ce::key_t*> key_outputs;
+            std::vector<size_t> key_output_merged;
             std::vector<ce::aggregate_expression_t*> aggs;
             std::vector<size_t> agg_merged;
             for (const auto& e : group_node->expressions()) {
                 if (e->group() == ce::expression_group::scalar) {
                     auto* s = static_cast<ce::scalar_expression_t*>(e.get());
+                    if (s->type() == ce::scalar_type::get_field) {
+                        if (!s->params().empty() && !ce::is_key(s->params().front())) {
+                            return; // a computed output, not a plain reference
+                        }
+                        ce::key_t& field = s->params().empty() ? s->key() : ce::as_key(s->params().front());
+                        size_t m = 0;
+                        if (!single_col(field, m)) {
+                            return;
+                        }
+                        key_outputs.push_back(&field);
+                        key_output_merged.push_back(m);
+                        continue;
+                    }
                     if (s->type() != ce::scalar_type::group_field) {
                         return; // coalesce / case_when / arithmetic key -> not handled
                     }
@@ -168,6 +190,16 @@ namespace components::planner::optimizer {
             }
             if (keys.empty() || aggs.empty()) {
                 return;
+            }
+            // Every bare column the target list emits has to BE one of the reduction keys -- a
+            // grouped query cannot emit anything else at group cardinality.
+            std::vector<size_t> key_output_of(key_outputs.size());
+            for (size_t i = 0; i < key_outputs.size(); ++i) {
+                const auto named = std::find(key_merged.begin(), key_merged.end(), key_output_merged[i]);
+                if (named == key_merged.end()) {
+                    return;
+                }
+                key_output_of[i] = static_cast<size_t>(named - key_merged.begin());
             }
 
             // Every group key AND every aggregate argument must live on ONE side.
@@ -226,12 +258,18 @@ namespace components::planner::optimizer {
             size_t next_pos = 0;
             bool join_key_covered = false;
             size_t join_key_pos = 0;
+            // The keys, in emitted order. A group emits its TARGET LIST and a grouping key is NOT
+            // an output column on its own, so each key has to be NAMED as well as grouped on --
+            // otherwise the partial emits only its aggregates and the join probes a column that
+            // is not there. Collected first, appended below the group_fields so the output order
+            // is [keys..., join key, aggregates...], which key_partial_pos/agg_partial_pos assume.
+            std::vector<ce::key_t> emitted_keys;
             for (size_t i = 0; i < keys.size(); ++i) {
                 const size_t local = key_merged[i] - base;
-                auto gf = ce::make_scalar_expression(resource,
-                                                     ce::scalar_type::group_field,
-                                                     local_key(resource, keys[i]->key(), local));
-                partial_group->append_expression(gf);
+                auto key = local_key(resource, keys[i]->key(), local);
+                partial_group->append_expression(
+                    ce::make_scalar_expression(resource, ce::scalar_type::group_field, key));
+                emitted_keys.push_back(key);
                 key_partial_pos[i] = next_pos;
                 if (local == join_key_local) {
                     join_key_covered = true;
@@ -246,8 +284,13 @@ namespace components::planner::optimizer {
                 set_key_path(resource, jk, join_key_local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, jk));
+                emitted_keys.push_back(jk);
                 join_key_pos = next_pos;
                 ++next_pos;
+            }
+            for (const auto& emitted : emitted_keys) {
+                partial_group->append_expression(
+                    ce::make_scalar_expression(resource, ce::scalar_type::get_field, emitted));
             }
             const size_t num_keys = next_pos;
             std::vector<size_t> agg_partial_pos(aggs.size());
@@ -258,6 +301,11 @@ namespace components::planner::optimizer {
                                                           aggs[i]->key(),
                                                           local_key(resource, ce::as_key(aggs[i]->params()[0]), local));
                 pagg->add_function_uid(aggs[i]->function_uid());
+                // This rule runs AFTER validation, so nothing will stamp the expression it just
+                // built -- and the graph builder rejects an unstamped aggregate. Only MIN/MAX are
+                // pushed and MIN(MIN)=MIN over the same column, so the partial reduces to exactly
+                // the type the final one was resolved to.
+                pagg->set_result_type(aggs[i]->result_type());
                 pagg->set_mergeable(true);
                 pagg->set_distinct(false);
                 partial_group->append_expression(pagg);
@@ -267,6 +315,10 @@ namespace components::planner::optimizer {
             // --- Rewrite the FINAL group to read the partial's output columns ----
             for (size_t i = 0; i < keys.size(); ++i) {
                 set_key_path(resource, keys[i]->key(), base + key_partial_pos[i]);
+            }
+            // A target-list reference reads the key it names, so it follows it to the same column.
+            for (size_t i = 0; i < key_outputs.size(); ++i) {
+                set_key_path(resource, *key_outputs[i], base + key_partial_pos[key_output_of[i]]);
             }
             for (size_t i = 0; i < aggs.size(); ++i) {
                 // MIN(MIN)=MIN, MAX(MAX)=MAX: the function stays; only the argument

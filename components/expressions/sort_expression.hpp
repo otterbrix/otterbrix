@@ -19,13 +19,10 @@ namespace components::expressions {
 
         sort_order order() const;
         sort_null_order null_order() const;
-        key_t& key();
-        const key_t& key() const;
 
     private:
         sort_order order_;
         sort_null_order null_order_;
-        key_t key_;
 
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;

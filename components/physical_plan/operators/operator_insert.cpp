@@ -20,7 +20,7 @@ namespace components::operators {
         , returning_(std::move(returning)) {}
 
     core::error_t
-    operator_insert::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+    operator_insert::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // STREAMING DML SINK: fold each scan batch into a bounded accumulator and
         // emit nothing (out stays empty). await_async_and_resume iterates
         // output_->chunks() (the accumulated batches) and runs the single
@@ -31,15 +31,25 @@ namespace components::operators {
             modified_ = make_operator_write_data(resource());
         }
         if (input.size() > 0) {
-            // INSERT ... SELECT: rename the streamed projection columns to the target
-            // columns (positionally, in target order) so the name-based append routes
-            // each value to the intended column. No-op for VALUES (rename_targets_ is
-            // empty) and for a projection that already carries the target names.
-            if (!rename_targets_.empty()) {
-                const uint64_t n = std::min<uint64_t>(input.column_count(), rename_targets_.size());
-                for (uint64_t i = 0; i < n; ++i) {
-                    input.data[i].set_type_alias(std::string(rename_targets_[i]));
+            // Rename each column to the target it lands in (the append routes by name) and
+            // convert it to the stored type. The cast runs here, upstream of storage_append,
+            // so the WAL — written from the chunk handed to it — holds stored types.
+            const uint64_t bound = std::min<uint64_t>(input.column_count(), column_bindings_.size());
+            for (uint64_t i = 0; i < bound; ++i) {
+                const auto& binding = column_bindings_[i];
+                if (!binding.cast) {
+                    input.data[i].set_type_alias(std::string(binding.target_name));
+                    continue;
                 }
+                auto target_type = binding.target_type;
+                target_type.set_alias(std::string(binding.target_name));
+                vector::vector_t casted(resource_, target_type, input.size());
+                auto error =
+                    binding.cast(casts::cast_kind::cast, input.data[i], &casted, ctx->execution_context, input.size());
+                if (error.contains_error()) {
+                    return error;
+                }
+                input.data[i] = std::move(casted);
             }
             output_->append_chunk(std::move(input));
         }
@@ -56,7 +66,10 @@ namespace components::operators {
         // With threshold==0 the executor makes a single is_final==true call, so
         // this collapses to one flush + finalize.
         const bool is_final = ctx->dml_flush_is_final;
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+        components::execution_context_t exec_ctx{ctx->session,
+                                                 ctx->txn,
+                                                 ctx->execution_context.timezone_offset,
+                                                 table_oid_};
 
         // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first
         // append_pg_catalog_row instead of the user append-first path. The row is
@@ -185,7 +198,12 @@ namespace components::operators {
                         if (seg.size() == 0) {
                             continue;
                         }
-                        auto proj = evaluate_projection(resource_, returning_, &seg, ctx->parameters, ctx->session_tz);
+                        auto proj = evaluate_projection(resource_,
+                                                        returning_,
+                                                        &seg,
+                                                        ctx->parameters,
+                                                        ctx->execution_context,
+                                                        &returning_graph_);
                         if (proj.has_error()) {
                             // The rows ARE already appended (WAL-first): carry the range
                             // with the error so record_flush registers it and the failed-

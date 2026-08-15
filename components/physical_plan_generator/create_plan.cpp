@@ -52,8 +52,8 @@ namespace services::planner {
     // has no host operator, so its plan errors downstream. Defined here (operator_t
     // complete) so the returned intrusive_ptr<operator_t> temporary is destructible.
     components::operators::operator_ptr no_custom_lowering(const context_storage_t&,
-                                                          const components::compute::function_registry_t&,
-                                                          const components::logical_plan::node_ptr&) {
+                                                           const components::compute::function_registry_t&,
+                                                           const components::logical_plan::node_ptr&) {
         return {};
     }
 

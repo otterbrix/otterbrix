@@ -22,6 +22,44 @@ namespace components::operators::join_detail {
         return v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
+    // turn 1 row into a const_vector (every row redirects to the same value)
+    inline vector::vector_t
+    broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row) {
+        vector::vector_t value(resource, source.type(), 1);
+        // copy's third argument is the END index in the source, not a length
+        vector::vector_ops::copy(source, value, row + 1, row, 0);
+        value.set_vector_type(vector::vector_type::CONSTANT);
+        return value;
+    }
+
+    inline vector::data_chunk_t merged_chunk(std::pmr::memory_resource* resource,
+                                             const std::pmr::vector<types::complex_logical_type>& probe_types,
+                                             const vector::data_chunk_t& build) {
+        const uint64_t capacity = build.size() > 0 ? build.size() : 1;
+        vector::data_chunk_t chunk(resource, {}, capacity);
+        chunk.data.reserve(probe_types.size() + build.column_count());
+        for (const auto& type : probe_types) {
+            chunk.data.emplace_back(resource, type, 1);
+        }
+        for (const auto& column : build.data) {
+            vector::vector_t vec(resource, column.type(), capacity);
+            vec.reference(column);
+            chunk.data.push_back(std::move(vec));
+        }
+        chunk.set_cardinality(build.size());
+        return chunk;
+    }
+
+    // Re-point a merged chunk's probe columns at row `row` of `probe`.
+    inline void point_at_probe_row(std::pmr::memory_resource* resource,
+                                   vector::data_chunk_t& chunk,
+                                   const vector::data_chunk_t& probe,
+                                   uint64_t row) {
+        for (size_t column = 0; column < probe.column_count(); column++) {
+            chunk.data[column] = broadcast_row(resource, probe.data[column], row);
+        }
+    }
+
     // Computes the joined output schema and the per-side column→output-slot maps.
     //
     // The output schema is assembled in LOGICAL [left, right] order regardless of

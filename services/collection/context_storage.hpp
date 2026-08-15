@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
@@ -31,10 +32,10 @@ namespace services {
         // Plain fn-ptr (no std::function). NEVER null — defaults to no_custom_lowering
         // (a Null Object returning {}); the returned operator MAY be null, meaning
         // "no host lowering for this node".
-        using create_plan_rule_t = boost::intrusive_ptr<components::operators::operator_t> (*)(
-            const context_storage_t&,
-            const components::compute::function_registry_t&,
-            const components::logical_plan::node_ptr&);
+        using create_plan_rule_t =
+            boost::intrusive_ptr<components::operators::operator_t> (*)(const context_storage_t&,
+                                                                        const components::compute::function_registry_t&,
+                                                                        const components::logical_plan::node_ptr&);
 
         boost::intrusive_ptr<components::operators::operator_t>
         no_custom_lowering(const context_storage_t&,
@@ -45,6 +46,7 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
+        components::graph_execution_context execution_context;
         core::date::timezone_offset_t session_timezone;
         // Host-injected create_plan rule (see planner::create_plan_rule_t). Stamped
         // per query by the executor; read at create_plan's extension arm. Never null.
@@ -78,7 +80,7 @@ namespace services {
                           core::date::timezone_offset_t session_timezone)
             : resource(resource)
             , log(std::move(log))
-            , session_timezone(session_timezone)
+            , execution_context{.timezone_offset = session_timezone}
             , indexed_keys(resource)
             , indexed_descriptions(resource)
             , cte_working_sets(resource)

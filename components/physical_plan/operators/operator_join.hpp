@@ -1,11 +1,13 @@
 #pragma once
 
-#include "predicates/predicate.hpp"
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/vector/data_chunk.hpp>
+
+#include <memory>
 
 namespace components::operators {
 
@@ -45,14 +47,14 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
-        // Drop the lazily-built layout/predicate + matched marker so a re-driven sub-plan
+        // Drop the lazily-built layout/graph + matched marker so a re-driven sub-plan
         // (recursive-CTE recursive term, re-run per fixpoint iteration over a repointed
         // working set) rebuilds from the NEW build side. reset_for_reuse() clears
         // state_/output_ but not this build state.
         void reset_pipeline_state() noexcept override {
             layout_built_ = false;
             res_types_.clear();
-            predicate_ = nullptr;
+            graph_.reset();
             build_matched_.clear();
             build_chunk_offsets_.clear();
             indices_left_.clear();
@@ -68,7 +70,8 @@ namespace components::operators {
         // --- Build/probe state ---
         bool layout_built_{false};
         std::pmr::vector<types::complex_logical_type> res_types_{resource_};
-        predicates::predicate_ptr predicate_{nullptr};
+        expressions::condition_kind condition_{expressions::condition_kind::always};
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
         // RIGHT/FULL only: a flat "matched" marker (one byte per build row) over all
         // build chunks, with per-chunk start offsets so build row (chunk,row) maps to
         // build_matched_[build_chunk_offsets_[chunk] + row]. Unmatched build rows are
@@ -76,13 +79,14 @@ namespace components::operators {
         std::pmr::vector<uint8_t> build_matched_{resource_};
         std::pmr::vector<uint64_t> build_chunk_offsets_{resource_};
 
-        // Derive the output layout + predicate + (right/full) the matched marker once,
-        // lazily, from the materialized build (right) side and a probe schema chunk.
-        void build_layout_(pipeline::context_t* context, const vector::data_chunk_t& probe_front);
+        // Derive the output layout + condition graph + (right/full) the matched marker once,
+        // lazily, from the materialized build (right) side and a probe schema chunk. A condition
+        [[nodiscard]] core::error_t build_layout_(pipeline::context_t* context,
+                                                  const vector::data_chunk_t& probe_front);
         // Probe one left batch against the materialized build chunks and emit per
         // join_type_ via the shared join_builder. Marks matched build rows for
-        // right/full. Sets error on predicate failure.
-        void probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out);
+        // right/full. Sets error on a condition failure.
+        void probe_batch_(pipeline::context_t* context, const vector::data_chunk_t& probe, chunks_vector_t& out);
         // Emit unmatched build rows (right/full) NULL-padded on the left side.
         void emit_unmatched_build_(chunks_vector_t& out);
     };

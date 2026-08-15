@@ -204,7 +204,8 @@ namespace components::sql::transform {
     }
 
     inline bool is_arithmetic_operator(std::string_view op) {
-        return op == "+" || op == "-" || op == "*" || op == "/" || op == "%";
+        return op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "&" || op == "|" || op == "#" ||
+               op == "~" || op == "<<" || op == ">>";
     }
 
     // Unary plus is the identity (SQLite semantics: "+X is equivalent to X"): peel every
@@ -234,7 +235,35 @@ namespace components::sql::transform {
             return expressions::scalar_type::divide;
         if (op == "%")
             return expressions::scalar_type::mod;
+        if (op == "&")
+            return expressions::scalar_type::bit_and;
+        if (op == "|")
+            return expressions::scalar_type::bit_or;
+        if (op == "#")
+            return expressions::scalar_type::bit_xor;
+        if (op == "~")
+            return expressions::scalar_type::bit_not;
+        if (op == "<<")
+            return expressions::scalar_type::shift_left;
+        if (op == ">>")
+            return expressions::scalar_type::shift_right;
         return expressions::scalar_type::invalid;
+    }
+
+    // Prefix/postfix operators that are spelled as function calls internally:
+    //   ^ -> pow   |/ -> sqrt   ||/ -> cbrt   ! -> factorial   @ -> abs
+    inline std::string_view operator_function_name(std::string_view op) {
+        if (op == "^")
+            return "pow";
+        if (op == "|/")
+            return "sqrt";
+        if (op == "||/")
+            return "cbrt";
+        if (op == "!")
+            return "factorial";
+        if (op == "@")
+            return "abs";
+        return {};
     }
 
     // --- JSONB operators -------------------------------------------------
@@ -304,6 +333,10 @@ namespace components::sql::transform {
                                           const std::string& relname,
                                           logical_plan::node_ptr main_node,
                                           constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
+
+    logical_plan::node_ptr wrap_with_catalog_resolve_types(std::pmr::memory_resource* resource,
+                                                           const std::vector<std::string>& type_names,
+                                                           logical_plan::node_ptr main_node);
 
     // Wrap `main_node` (a database-scoped DDL — CREATE DATABASE, DROP DATABASE,
     // CREATE TYPE, etc.) in

@@ -61,6 +61,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::find_cast_oid>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>,
@@ -469,6 +470,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_function_by_name, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::find_cast_oid>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::find_cast_oid, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>: {

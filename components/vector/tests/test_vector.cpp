@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/vector.hpp>
+#include <core/resource_tracer.hpp>
 #include <random>
 
 TEST_CASE("components::vector::vector") {
@@ -406,5 +407,53 @@ TEST_CASE("components::vector::nested_null_access") {
         REQUIRE(v.is_null({6, 2}));
         REQUIRE_FALSE(v.is_null({6, 0}));
         REQUIRE_FALSE(v.is_null({6, 1}));
+    }
+}
+TEST_CASE("components::vector::vector: an NA vector allocates nothing and reads null everywhere") {
+    using namespace components;
+
+    resource_tracer_t tracer;
+
+    SECTION("construction allocates nothing") {
+        const size_t before = tracer.total_allocated();
+        vector::vector_t nulls{&tracer, types::complex_logical_type{types::logical_type::NA}};
+        REQUIRE(tracer.total_allocated() == before);
+        REQUIRE(nulls.get_vector_type() == vector::vector_type::CONSTANT);
+    }
+
+    SECTION("every row reads as null, at any index") {
+        vector::vector_t nulls{&tracer, types::complex_logical_type{types::logical_type::NA}};
+        REQUIRE(nulls.is_null(0));
+        REQUIRE(nulls.is_null(1));
+        REQUIRE(nulls.is_null(1023));
+        REQUIRE(nulls.value(7).is_null());
+        REQUIRE(nulls.value(7).type().type() == types::logical_type::NA);
+    }
+
+    SECTION("writing a null into it stays allocation-free") {
+        vector::vector_t nulls{&tracer, types::complex_logical_type{types::logical_type::NA}};
+        const size_t before = tracer.total_allocated();
+        nulls.set_null(0, true);
+        nulls.set_null(500, true);
+        REQUIRE(tracer.total_allocated() == before); // set_invalid must not materialize a mask
+        REQUIRE(nulls.is_null(500));
+    }
+
+    SECTION("flattening it is a no-op rather than a materialization") {
+        vector::vector_t nulls{&tracer, types::complex_logical_type{types::logical_type::NA}};
+        const size_t before = tracer.total_allocated();
+        nulls.flatten(components::vector::DEFAULT_VECTOR_CAPACITY);
+        REQUIRE(tracer.total_allocated() == before);
+        REQUIRE(nulls.get_vector_type() == vector::vector_type::CONSTANT);
+        REQUIRE(nulls.is_null(1023));
+    }
+
+    SECTION("placing a NULL value into it allocates nothing either") {
+        const size_t before = tracer.total_allocated();
+        types::logical_value_t null_value{&tracer, types::complex_logical_type{types::logical_type::NA}};
+        vector::vector_t placed{&tracer, null_value};
+        REQUIRE(tracer.total_allocated() == before);
+        REQUIRE(placed.get_vector_type() == vector::vector_type::CONSTANT);
+        REQUIRE(placed.is_null(0));
     }
 }

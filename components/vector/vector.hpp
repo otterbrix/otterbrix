@@ -194,6 +194,11 @@ namespace components::vector {
 
         types::logical_value_t value(uint64_t row_index) const;
 
+        // Walk a nested path
+        const vector_t* resolve_nested_location(const std::pmr::vector<uint64_t>& path,
+                                                uint64_t* leaf_index,
+                                                bool* contains_null) const;
+
         // Assert on a null value; undefined behaviour in release build mode.
         template<typename T>
         T get_value(uint64_t row_index) const;
@@ -324,6 +329,15 @@ namespace components::vector {
                     child.set_value(row_index * array_size + i, std::move(value[i]));
                 }
             }
+        } else if constexpr (std::is_same_v<value_type, core::date::timetz_t>) {
+            auto& child_entries = entries();
+            reinterpret_cast<core::date::microseconds*>(child_entries[0]->data_)[row_index] = value.time;
+            reinterpret_cast<core::date::seconds_i32*>(child_entries[1]->data_)[row_index] = value.zone;
+        } else if constexpr (std::is_same_v<value_type, core::date::interval_t>) {
+            auto& child_entries = entries();
+            reinterpret_cast<core::date::microseconds*>(child_entries[0]->data_)[row_index] = value.time;
+            reinterpret_cast<core::date::days*>(child_entries[1]->data_)[row_index] = value.day;
+            reinterpret_cast<core::date::months*>(child_entries[2]->data_)[row_index] = value.month;
         } else {
             assert(types::to_physical_type(types::to_logical_type<value_type>()) == type_.to_physical_type() &&
                    "value has to be casted to vector's type before set_value");

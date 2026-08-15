@@ -15,6 +15,7 @@
 
 #include <core/spinlock/spinlock.hpp>
 
+#include <components/casts/cast_entry.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
@@ -56,6 +57,13 @@ namespace otterbrix {
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,
                             const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
+        auto register_cast(const session_id_t& session,
+                           const components::types::complex_logical_type& source,
+                           const components::types::complex_logical_type& target,
+                           components::casts::cast_entry entry) -> bool;
+        auto unregister_cast(const session_id_t& session,
+                             const components::types::complex_logical_type& source,
+                             const components::types::complex_logical_type& target) -> bool;
         auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
         // `render_id` selects the per-query EXPLAIN renderer slot (0 = built-in postgres default);

@@ -1,6 +1,5 @@
 #include "operator_match.hpp"
 
-#include "predicates/predicate.hpp"
 #include <components/expressions/function_expression.hpp>
 
 namespace components::operators {
@@ -38,13 +37,10 @@ namespace components::operators {
     // sample's column types (never move-assigned from sample.types(), whose vector is
     // allocated on the foreign/null sink arena — that move-assign compares allocators
     // and dereferences the dangling sink resource).
-    core::error_t operator_match_t::build_predicate_(pipeline::context_t* ctx,
-                                                     const vector::data_chunk_t& sample,
-                                                     std::pmr::memory_resource* resource,
-                                                     std::pmr::vector<types::complex_logical_type>& types,
-                                                     std::vector<size_t>& populated_cols,
-                                                     bool& sparse,
-                                                     predicates::predicate_ptr& predicate) {
+    void operator_match_t::build_schema_metadata_(const vector::data_chunk_t& sample,
+                                                  std::pmr::vector<types::complex_logical_type>& types,
+                                                  std::vector<size_t>& populated_cols,
+                                                  bool& sparse) {
         // `types` is already constructed on `resource` by the caller (so its allocator
         // is the stable resource, never null), so an in-place fill is safe.
         types.clear();
@@ -64,16 +60,6 @@ namespace components::operators {
             }
         }
         sparse = populated_cols.size() != sample.column_count();
-
-        predicate = expression_ ? predicates::create_predicate(resource,
-                                                               ctx->function_registry,
-                                                               expression_,
-                                                               types,
-                                                               types,
-                                                               &ctx->parameters,
-                                                               ctx->session_tz)
-                                : predicates::create_all_true_predicate(resource);
-        return core::error_t::no_error();
     }
 
     // Shared filter core (R6): filter ONE chunk through the predicate + projection,
@@ -84,7 +70,7 @@ namespace components::operators {
     // populated (non-placeholder) columns are copied — exactly as the prior single-loop
     // implementation did.
     core::error_t operator_match_t::filter_batch_(std::pmr::memory_resource* resource,
-                                                  predicates::predicate_ptr& predicate,
+                                                  const vector::vector_t* decisions,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
                                                   bool row_ids_meaningful,
@@ -99,16 +85,10 @@ namespace components::operators {
 
         vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, chunk.size())
                                                 : vector::data_chunk_t(resource, types, chunk.size());
-        vector::indexing_vector_t all_indices(nullptr, nullptr);
-        auto results = predicate->batch_check(chunk, chunk, all_indices, all_indices, chunk.size());
-        if (results.has_error()) {
-            return results.error();
-        }
         int64_t out_count = 0;
         for (size_t i = 0; i < chunk.size(); i++) {
-            // WHERE filter: a row is emitted only when the predicate is definitely TRUE. A NULL
-            // operand yields UNKNOWN, which does not select (and NOT does not turn it into TRUE).
-            if (types::selects(results.value()[i])) {
+            const bool keep = decisions == nullptr || (!decisions->is_null(i) && decisions->get_value<bool>(i));
+            if (keep) {
                 for (size_t j : populated_cols) {
                     out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
                 }
@@ -162,20 +142,39 @@ namespace components::operators {
             // old (null) allocator and crash.
             stream_types_.~vector();
             new (&stream_types_) std::pmr::vector<types::complex_logical_type>(stream_resource_);
-            auto err = build_predicate_(ctx,
-                                        input,
-                                        stream_resource_,
-                                        stream_types_,
-                                        stream_populated_cols_,
-                                        stream_sparse_,
-                                        stream_predicate_);
-            if (err.contains_error()) {
-                return err;
+            build_schema_metadata_(input, stream_types_, stream_populated_cols_, stream_sparse_);
+            condition_ = expressions::classify_condition(expression_);
+            if (condition_ == expressions::condition_kind::computed) {
+                auto built = expressions::build_condition_graph(stream_resource_,
+                                                                ctx->parameters.parameters,
+                                                                expression_.get(),
+                                                                stream_types_);
+                if (built.has_error()) {
+                    return built.error();
+                }
+                graph_ = std::move(built.value());
             }
             stream_ready_ = true;
         }
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
+        }
+        std::optional<vector::data_chunk_t> produced;
+        if (graph_) {
+            // rebound per outer row by LATERAL, so the parameters are re-read for every chunk
+            graph_->set_parameters(&ctx->parameters.parameters);
+            if (auto error = graph_->process(input, ctx->execution_context); error.contains_error()) {
+                return error;
+            }
+            auto computed = graph_->finalize(ctx->execution_context, input.size());
+            if (computed.has_error()) {
+                return computed.error();
+            }
+            produced = std::move(computed.value());
+        }
+        const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
         return filter_batch_(stream_resource_,
-                             stream_predicate_,
+                             decisions,
                              stream_populated_cols_,
                              stream_sparse_,
                              row_ids_meaningful_(),

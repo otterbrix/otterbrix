@@ -4,18 +4,28 @@
 namespace components::expressions {
 
     function_expression_t::function_expression_t(std::pmr::memory_resource* resource, std::string&& name)
-        : expression_i(expression_group::function)
+        : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
         , args_(resource) {}
 
-    function_expression_t::function_expression_t(std::pmr::memory_resource*,
+    function_expression_t::function_expression_t(std::pmr::memory_resource* resource,
                                                  std::string&& name,
                                                  std::pmr::vector<param_storage>&& args)
-        : expression_i(expression_group::function)
+        : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
         , args_(std::move(args)) {}
 
     const std::string& function_expression_t::name() const noexcept { return name_; }
+
+    void function_expression_t::set_key(const key_t& new_key) { key() = new_key; }
+
+    void function_expression_t::set_distinct(bool distinct) noexcept { distinct_ = distinct; }
+
+    bool function_expression_t::is_distinct() const noexcept { return distinct_; }
+
+    void function_expression_t::set_star_argument(bool star) noexcept { star_argument_ = star; }
+
+    bool function_expression_t::has_star_argument() const noexcept { return star_argument_; }
 
     std::pmr::vector<param_storage>& function_expression_t::args() noexcept { return args_; }
 

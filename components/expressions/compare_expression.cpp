@@ -1,5 +1,4 @@
 #include "compare_expression.hpp"
-#include "like_to_regex.hpp"
 #include <sstream>
 
 namespace std {
@@ -28,13 +27,15 @@ namespace components::expressions {
                                                compare_type type,
                                                const param_storage& left,
                                                const param_storage& right)
-        : expression_i(expression_group::compare)
+        : expression_i(expression_group::compare, key_t{resource})
         , type_(type)
         , left_(left)
         , right_(right)
         , children_(resource) {}
 
     compare_type compare_expression_t::type() const { return type_; }
+
+    void compare_expression_t::set_key(const key_t& new_key) { key() = new_key; }
 
     param_storage& compare_expression_t::left() { return left_; }
 
@@ -59,22 +60,17 @@ namespace components::expressions {
     bool compare_expression_t::do_not_fold() const noexcept { return do_not_fold_; }
     void compare_expression_t::make_unfoldable() noexcept { do_not_fold_ = true; }
 
-    bool compare_expression_t::regex_like() const noexcept { return regex_like_; }
-    bool compare_expression_t::regex_icase() const noexcept { return regex_icase_; }
-    bool compare_expression_t::regex_negate() const noexcept { return regex_negate_; }
-    void compare_expression_t::set_regex_flags(bool like, bool icase, bool negate) noexcept {
-        regex_like_ = like;
-        regex_icase_ = icase;
-        regex_negate_ = negate;
-    }
+    void compare_expression_t::add_function_uid(compute::function_uid uid) noexcept { function_uid_ = uid; }
+    compute::function_uid compare_expression_t::function_uid() const noexcept { return function_uid_; }
+
+    core::parameter_id_t compare_expression_t::regex_flags_param() const noexcept { return regex_flags_param_; }
+    void compare_expression_t::set_regex_flags(core::parameter_id_t flags) noexcept { regex_flags_param_ = flags; }
 
     hash_t compare_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
         boost::hash_combine(hash_, inner_op_);
-        boost::hash_combine(hash_, regex_like_);
-        boost::hash_combine(hash_, regex_icase_);
-        boost::hash_combine(hash_, regex_negate_);
+        boost::hash_combine(hash_, regex_flags_param_.t);
         boost::hash_combine(hash_, std::hash<param_storage>()(left_));
         boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {
@@ -104,9 +100,9 @@ namespace components::expressions {
 
     bool compare_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const compare_expression_t*>(rhs);
-        return type_ == other->type_ && inner_op_ == other->inner_op_ && regex_like_ == other->regex_like_ &&
-               regex_icase_ == other->regex_icase_ && regex_negate_ == other->regex_negate_ && left_ == other->left_ &&
-               right_ == other->right_ && children_.size() == other->children_.size() &&
+        return type_ == other->type_ && inner_op_ == other->inner_op_ &&
+               regex_flags_param_ == other->regex_flags_param_ && left_ == other->left_ && right_ == other->right_ &&
+               children_.size() == other->children_.size() &&
                std::equal(children_.begin(), children_.end(), other->children_.begin());
     }
 
@@ -191,34 +187,21 @@ namespace components::expressions {
         }
     }
 
-    std::string like_to_regex(const std::string& pattern) {
-        std::string result = "^";
-        for (size_t i = 0; i < pattern.size(); ++i) {
-            char c = pattern[i];
-            if (c == '%') {
-                result += ".*";
-            } else if (c == '_') {
-                result += '.';
-            } else if (c == '\\' && i + 1 < pattern.size()) {
-                ++i;
-                // escape the next character literally
-                char next = pattern[i];
-                if (next == '.' || next == '*' || next == '+' || next == '?' || next == '(' || next == ')' ||
-                    next == '[' || next == ']' || next == '{' || next == '}' || next == '|' || next == '^' ||
-                    next == '$' || next == '\\') {
-                    result += '\\';
-                }
-                result += next;
-            } else if (c == '.' || c == '*' || c == '+' || c == '?' || c == '(' || c == ')' || c == '[' || c == ']' ||
-                       c == '{' || c == '}' || c == '|' || c == '^' || c == '$' || c == '\\') {
-                result += '\\';
-                result += c;
-            } else {
-                result += c;
-            }
+    condition_kind classify_condition(const expression_ptr& expression) noexcept {
+        if (!expression) {
+            return condition_kind::always;
         }
-        result += '$';
-        return result;
+        if (expression->group() != expression_group::compare) {
+            return condition_kind::computed;
+        }
+        switch (static_cast<const compare_expression_t*>(expression.get())->type()) {
+            case compare_type::all_true:
+                return condition_kind::always;
+            case compare_type::all_false:
+                return condition_kind::never;
+            default:
+                return condition_kind::computed;
+        }
     }
 
 } // namespace components::expressions

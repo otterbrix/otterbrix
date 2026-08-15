@@ -54,6 +54,8 @@ namespace {
             return wk::pg_rewrite_table;
         if (name == "pg_settings")
             return wk::pg_settings_table;
+        if (name == "pg_cast")
+            return wk::pg_cast_table;
         return components::catalog::INVALID_OID;
     }
 

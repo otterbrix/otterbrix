@@ -1,16 +1,103 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>
-#include <components/expressions/like_to_regex.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/regex/like_to_regex.hpp>
 
 using namespace components::expressions;
 
 namespace components::sql::transform {
+
+    namespace {
+        // The aggregate a HAVING names may sit ANYWHERE inside a target-list entry — as the entry
+        // itself, under a CAST, inside a CASE arm, or as an operand of arithmetic — so matching it
+        // means descending the whole expression rather than inspecting its top node. A call matches
+        // on name AND arguments: two aggregates of the same name are different aggregates.
+        const expressions::expression_i* find_call(const expressions::expression_i* expr,
+                                                   const std::string& name,
+                                                   const std::pmr::vector<expressions::param_storage>& args,
+                                                   bool args_comparable);
+
+        const expressions::expression_i* find_call_in(const expressions::param_storage& param,
+                                                      const std::string& name,
+                                                      const std::pmr::vector<expressions::param_storage>& args,
+                                                      bool args_comparable) {
+            if (!std::holds_alternative<expressions::expression_ptr>(param)) {
+                return nullptr;
+            }
+            const auto& nested = std::get<expressions::expression_ptr>(param);
+            return nested ? find_call(nested.get(), name, args, args_comparable) : nullptr;
+        }
+
+        const expressions::expression_i* find_call(const expressions::expression_i* expr,
+                                                   const std::string& name,
+                                                   const std::pmr::vector<expressions::param_storage>& args,
+                                                   bool args_comparable) {
+            if (expr == nullptr) {
+                return nullptr;
+            }
+            switch (expr->group()) {
+                case expression_group::aggregate: {
+                    const auto* agg = static_cast<const aggregate_expression_t*>(expr);
+                    if (agg->function_name() == name && (!args_comparable || agg->params() == args)) {
+                        return expr;
+                    }
+                    for (const auto& param : agg->params()) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                case expression_group::function: {
+                    const auto* call = static_cast<const function_expression_t*>(expr);
+                    if (call->name() == name && (!args_comparable || call->args() == args)) {
+                        return expr;
+                    }
+                    for (const auto& param : call->args()) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                case expression_group::cast:
+                    return find_call_in(static_cast<const expressions::cast_expression_t*>(expr)->child(),
+                                        name,
+                                        args,
+                                        args_comparable);
+                case expression_group::scalar: {
+                    for (const auto& param : static_cast<const scalar_expression_t*>(expr)->params()) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                case expression_group::compare: {
+                    const auto* cmp = static_cast<const compare_expression_t*>(expr);
+                    if (const auto* found = find_call_in(cmp->left(), name, args, args_comparable)) {
+                        return found;
+                    }
+                    if (const auto* found = find_call_in(cmp->right(), name, args, args_comparable)) {
+                        return found;
+                    }
+                    for (const auto& child : cmp->children()) {
+                        if (const auto* found = find_call(child.get(), name, args, args_comparable)) {
+                            return found;
+                        }
+                    }
+                    return nullptr;
+                }
+                default:
+                    return nullptr;
+            }
+        }
+    } // namespace
 
     namespace {
         // Logical negation (complement) of a scalar comparison operator: eq<->ne, lt<->gte, gt<->lte.
@@ -61,8 +148,21 @@ namespace components::sql::transform {
             expr->append_param(zero_id);
             expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         } else {
-            // Unary minus: proper unary operator with single operand
-            expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+            if (stype == scalar_type::add) {
+                auto operand = transform_a_expr_operand(node->rexpr, names, params);
+                if (std::holds_alternative<expression_ptr>(operand)) {
+                    return std::get<expression_ptr>(operand);
+                }
+                auto value =
+                    make_scalar_expression(resource_,
+                                           std::holds_alternative<expressions::key_t>(operand) ? scalar_type::get_field
+                                                                                               : scalar_type::constant);
+                value->append_param(std::move(operand));
+                return value;
+            }
+            if (stype == scalar_type::subtract) {
+                expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+            }
             expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         }
         return expr;
@@ -114,6 +214,19 @@ namespace components::sql::transform {
                     auto sub_op = std::string_view(strVal(sub_expr->name->lst.front().data));
                     if (is_arithmetic_operator(sub_op)) {
                         return transform_a_expr_arithmetic(sub_expr, names, params);
+                    }
+                    if (auto function_name = operator_function_name(sub_op); !function_name.empty()) {
+                        auto call = make_function_expression(resource_, std::string{function_name});
+                        if (sub_expr->lexpr) {
+                            call->args().push_back(transform_a_expr_operand(sub_expr->lexpr, names, params));
+                        }
+                        if (sub_expr->rexpr) {
+                            call->args().push_back(transform_a_expr_operand(sub_expr->rexpr, names, params));
+                        }
+                        if (has_error()) {
+                            return nullptr;
+                        }
+                        return expression_ptr{call};
                     }
                     if (is_jsonb_nav_operator(sub_op)) {
                         expressions::key_t k{resource_};
@@ -218,11 +331,12 @@ namespace components::sql::transform {
                     }
                     auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                     col_ref.deduce_side(names);
-                    col_ref.field.set_cast_type(target_type_res.value());
-                    if (cast->variant_select) {
-                        col_ref.field.set_variant_select(true);
-                    }
-                    return col_ref.field;
+                    return param_storage{expression_ptr{
+                        make_cast_expression(resource_,
+                                             param_storage{std::move(col_ref.field)},
+                                             target_type_res.value(),
+                                             casts::cast_t{},
+                                             cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                 }
                 // A cast over a scalar jsonb navigation, e.g. (t #>> 'a.c')::bigint:
                 // resolve the navigation to its flattened column key and annotate it,
@@ -239,15 +353,16 @@ namespace components::sql::transform {
                             error_ = target_type_res.error();
                             return nullptr;
                         }
-                        expressions::key_t k{resource_};
-                        if (!resolve_jsonb_scalar_key(sub, names, k)) {
+                        expressions::key_t navigated{resource_};
+                        if (!resolve_jsonb_scalar_key(sub, names, navigated)) {
                             return nullptr;
                         }
-                        k.set_cast_type(target_type_res.value());
-                        if (cast->variant_select) {
-                            k.set_variant_select(true);
-                        }
-                        return k;
+                        return param_storage{expression_ptr{make_cast_expression(
+                            resource_,
+                            param_storage{std::move(navigated)},
+                            target_type_res.value(),
+                            casts::cast_t{},
+                            cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                     }
                 }
                 return add_param_value(node, plan->parameters.get());
@@ -298,25 +413,7 @@ namespace components::sql::transform {
                 if (!func->agg_star) {
                     args.reserve(func->args->lst.size());
                     for (const auto& arg : func->args->lst) {
-                        auto arg_node = pg_ptr_cast<Node>(arg.data);
-                        if (nodeTag(arg_node) == T_ColumnRef) {
-                            auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
-                            key.deduce_side(names);
-                            args.emplace_back(std::move(key.field));
-                        } else if (nodeTag(arg_node) == T_A_Expr) {
-                            auto sub = pg_ptr_cast<A_Expr>(arg_node);
-                            if (sub->kind == AEXPR_OP && is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                args.emplace_back(resolve_select_operand(arg_node, names, plan, group));
-                            } else {
-                                args.emplace_back(add_param_value(arg_node, plan->parameters.get()));
-                            }
-                        } else if (nodeTag(arg_node) == T_CaseExpr) {
-                            // CASE WHEN ... inside aggregate arg, e.g. SUM(CASE ...)
-                            args.emplace_back(
-                                case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_node), nullptr, names, plan, group));
-                        } else {
-                            args.emplace_back(add_param_value(arg_node, plan->parameters.get()));
-                        }
+                        args.emplace_back(resolve_select_operand(pg_ptr_cast<Node>(arg.data), names, plan, group));
                     }
                 }
 
@@ -324,19 +421,12 @@ namespace components::sql::transform {
                 // bare aggregate) so only qualifying rows reach the aggregate.
                 args = apply_aggregate_filter(func->agg_filter, std::move(args), names, plan);
 
-                // Create aggregate with auto-generated alias
-                // TODO: default aggregate aliases should come from function registry, not hardcoded here
-                std::string auto_alias = "__agg_" + funcname + "_" + std::to_string(aggregate_counter_++);
-                auto agg_expr =
-                    make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, auto_alias});
-                for (auto& arg : args) {
-                    agg_expr->append_param(arg);
-                }
-                pending_internal_aggs_.push_back(agg_expr);
-
-                // Return key referencing the aggregate result
-                return expressions::key_t{resource_, auto_alias};
+                auto call = make_function_expression(resource_, std::move(funcname), std::move(args));
+                call->set_star_argument(func->agg_star);
+                return param_storage{expressions::expression_ptr{call}};
             }
+            case T_CaseExpr:
+                return case_expr_to_scalar(pg_ptr_cast<CaseExpr>(node), nullptr, names, plan, group);
             case T_SubLink: {
                 auto sub = pg_ptr_cast<SubLink>(node);
                 if (sub->subLinkType != EXPR_SUBLINK) {
@@ -458,6 +548,17 @@ namespace components::sql::transform {
         lateral_join_->add_correlation(param_id, outer_col.field);
         lateral_correlation_map_.emplace(dedup_key, param_id);
         return param_id;
+    }
+
+    void transformer::note_cast_type(const types::complex_logical_type& target) {
+        if (target.type() != types::logical_type::UNKNOWN) {
+            // a built-in target needs no catalog trip
+            return;
+        }
+        const std::string& name = target.type_name();
+        if (std::find(cast_type_names_.begin(), cast_type_names_.end(), name) == cast_type_names_.end()) {
+            cast_type_names_.push_back(name);
+        }
     }
 
     core::parameter_id_t transformer::add_param_value(Node* node, logical_plan::parameter_node_t* params) {
@@ -584,42 +685,30 @@ namespace components::sql::transform {
                     // value<std::string_view>() below treats it as a std::string pointer and
                     // crashes before the executor's regex operand guards can report an error.
                     if (!types::is_string(raw_val.value().type().type())) {
-                        error_ =
-                            core::error_t(core::error_code_t::sql_parse_error,
-                                          std::pmr::string{"LIKE: right side must be a string", resource_});
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"LIKE: right side must be a string", resource_});
                         return nullptr;
                     }
-                    auto pattern = expressions::like_to_regex(std::string(raw_val.value().value<std::string_view>()));
+                    auto pattern = std::string(raw_val.value().value<std::string_view>());
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
                     const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE
                     const bool negate = (op_str == "!~~" || op_str == "!~~*"); // NOT LIKE / NOT ILIKE
-                    auto cmp = make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
-                    // On the SCALAR path the pattern is already like_to_regex-converted, so regex_like is not
-                    // needed; negation is expressed by the union_not wrapper. Only case-insensitivity rides
-                    // the compare (the executor compiles the regex with icase when set).
+
+                    // Convert to regex function call. NOT [I]LIKE is the `n` flag rather than a
+                    // union_not: the match itself inverts, so a NULL subject stays UNKNOWN (the row
+                    // is dropped, as PostgreSQL does) without an is_not_null guard around it.
+                    std::string flags{"l"};
                     if (icase) {
-                        // ILIKE: the storage constant_filter compiles the pattern with RE2's case-insensitive
-                        // option (regex_icase is threaded into the disk filter by transform_predicate), so this
-                        // pushes down to disk exactly like plain LIKE — no in-memory diversion.
-                        cmp->set_regex_flags(/*like=*/false, /*icase=*/true, /*negate=*/false);
+                        flags += 'i';
                     }
                     if (negate) {
-                        auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
-                        not_expr->append_child(cmp);
-                        // A NULL subject makes `NULL NOT [I]LIKE p` UNKNOWN -> the row is dropped
-                        // (PostgreSQL); the bare union_not would flip the regex's NULL-subject
-                        // false into true and keep it. Guard with is_not_null(col) exactly like
-                        // the negated ANY/ALL forms, so disk pushdown inherits the same shape.
-                        auto guard_param = plan->parameters->add_parameter(
-                            types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
-                        auto guard =
-                            make_compare_expression(resource_, compare_type::is_not_null, key_left.field, guard_param);
-                        auto guarded = make_compare_union_expression(resource_, compare_type::union_and);
-                        guarded->append_child(guard);
-                        guarded->append_child(not_expr);
-                        return guarded;
+                        flags += 'n';
                     }
-                    return cmp;
+                    std::pmr::vector<expressions::param_storage> args{resource_};
+                    args.emplace_back(key_left.field);
+                    args.emplace_back(param_id);
+                    args.emplace_back(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
+                    return make_function_expression(resource_, "regexp_like", std::move(args));
                 }
 
                 // JSONB key existence: '?' / '?|' / '?&'. Desugars to IS NOT NULL.
@@ -668,11 +757,14 @@ namespace components::sql::transform {
                                 }
                                 auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
-                                col_ref.field.set_cast_type(target_type_res.value());
-                                if (cast->variant_select) {
-                                    col_ref.field.set_variant_select(true);
-                                }
-                                return col_ref.field;
+                                note_cast_type(target_type_res.value());
+                                auto conversion = make_cast_expression(resource_,
+                                                                       param_storage{std::move(col_ref.field)},
+                                                                       target_type_res.value(),
+                                                                       casts::cast_t{},
+                                                                       cast->try_cast ? casts::cast_kind::try_cast
+                                                                                      : casts::cast_kind::cast);
+                                return param_storage{expressions::expression_ptr{conversion}};
                             }
                             // '<jsonb nav chain> ::? type' in a predicate, e.g.
                             // WHERE m -> 'a' ->> 'b' ::? bigint > 0.
@@ -696,6 +788,31 @@ namespace components::sql::transform {
                                     }
                                     return k;
                                 }
+                            }
+                            if (cast->arg && nodeTag(cast->arg) == T_A_Const) {
+                                auto target_type_res = get_type(resource_, cast->typeName);
+                                if (target_type_res.has_error()) {
+                                    error_ = target_type_res.error();
+                                    return nullptr;
+                                }
+                                auto value_res = get_value(resource_, node);
+                                if (value_res.has_error()) {
+                                    error_ = value_res.error();
+                                    return nullptr;
+                                }
+                                bool converts = value_res.value().type() != target_type_res.value();
+                                param_storage bound{plan->parameters->add_parameter(std::move(value_res.value()))};
+                                if (!converts) {
+                                    return bound;
+                                }
+                                note_cast_type(target_type_res.value());
+                                auto conversion = make_cast_expression(resource_,
+                                                                       bound,
+                                                                       target_type_res.value(),
+                                                                       casts::cast_t{},
+                                                                       cast->try_cast ? casts::cast_kind::try_cast
+                                                                                      : casts::cast_kind::cast);
+                                return param_storage{expressions::expression_ptr{conversion}};
                             }
                             return add_param_value(node, plan->parameters.get());
                         }
@@ -1054,7 +1171,17 @@ namespace components::sql::transform {
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
                 expr->set_inner_op(inner_op);
                 if (inner_op == compare_type::regex) {
-                    expr->set_regex_flags(re_like, re_icase, re_negate);
+                    std::string flags;
+                    if (re_like) {
+                        flags += 'l';
+                    }
+                    if (re_icase) {
+                        flags += 'i';
+                    }
+                    if (re_negate) {
+                        flags += 'n';
+                    }
+                    expr->set_regex_flags(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
                 }
                 // ANY/ALL pushes into the disk scan as a conjunction of per-element filters
                 // (transform_predicate: constant_filter for comparisons, regex_filter for LIKE/ILIKE). The
@@ -1594,7 +1721,9 @@ namespace components::sql::transform {
             case T_FuncCall: {
                 auto func = pg_ptr_cast<FuncCall>(node);
                 auto funcname = std::string{strVal(linitial(func->funcname))};
-
+                // The arguments have to be built before anything can be matched: two aggregates of
+                // the same name are different aggregates. Binding HAVING sum(g) to a projected
+                // sum(v) on the name alone made the group answer about the wrong column.
                 std::pmr::vector<param_storage> args(resource_);
                 if (func->args) {
                     for (const auto& arg : func->args->lst) {
@@ -1618,14 +1747,8 @@ namespace components::sql::transform {
                     return std::holds_alternative<expressions::expression_ptr>(p);
                 });
                 for (const auto& expr : group->expressions()) {
-                    if (expr->group() == expression_group::aggregate) {
-                        auto* agg = static_cast<const aggregate_expression_t*>(expr.get());
-                        if (agg->function_name() != funcname) {
-                            continue;
-                        }
-                        if (!args_comparable || agg->params() == args) {
-                            return agg->key();
-                        }
+                    if (const auto* found = find_call(expr.get(), funcname, args, args_comparable)) {
+                        return found->key();
                     }
                 }
                 // Not in SELECT — add to group so operator_group_t computes it for HAVING
@@ -1665,8 +1788,12 @@ namespace components::sql::transform {
                             expr->append_param(resolve_having_operand(sub->lexpr, names, plan, group));
                             expr->append_param(resolve_having_operand(sub->rexpr, names, plan, group));
                         } else {
-                            // Unary minus: proper unary operator with single operand
-                            expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+                            if (stype == scalar_type::add) {
+                                return resolve_having_operand(sub->rexpr, names, plan, group);
+                            }
+                            if (stype == scalar_type::subtract) {
+                                expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+                            }
                             expr->append_param(resolve_having_operand(sub->rexpr, names, plan, group));
                         }
                         return expr;

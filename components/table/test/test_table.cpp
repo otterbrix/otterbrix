@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/in_memory_block_manager.hpp>
@@ -387,16 +388,32 @@ TEST_CASE("components::table::data_table") {
         }
         table_scan_state state(&resource);
         std::pair row_range{uint64_t(test_size * 0.25f), uint64_t(test_size * 0.75f)};
-        auto conj_and = std::make_unique<conjunction_and_filter_t>();
-        conj_and->child_filters.emplace_back(std::make_unique<constant_filter_t>(
-            components::expressions::compare_type::gte,
-            logical_value_t{&resource, row_range.first},
-            std::pmr::vector<uint64_t>{{uint64_t{0}}, std::pmr::polymorphic_allocator<uint64_t>{&resource}}));
-        conj_and->child_filters.emplace_back(std::make_unique<constant_filter_t>(
-            components::expressions::compare_type::lt,
-            logical_value_t{&resource, generate_string(row_range.second)},
-            std::pmr::vector<uint64_t>{{uint64_t{1}}, std::pmr::polymorphic_allocator<uint64_t>{&resource}}));
-        data_table->initialize_scan(state, column_indices, conj_and.get());
+        // The predicate reaches the scan as one graph, the same way a pushed WHERE does:
+        // col0 >= lo AND col1 < hi.
+        namespace expr = components::expressions;
+        const core::parameter_id_t lo_id{0};
+        const core::parameter_id_t hi_id{1};
+        components::types::parameter_map_t parameters(&resource);
+        parameters.emplace(lo_id, logical_value_t{&resource, row_range.first});
+        parameters.emplace(hi_id, logical_value_t{&resource, generate_string(row_range.second)});
+
+        auto column_key = [&](size_t ordinal) {
+            expr::key_t key{&resource};
+            key.set_path(std::pmr::vector<size_t>{{ordinal}, std::pmr::polymorphic_allocator<size_t>{&resource}});
+            return key;
+        };
+        auto predicate = expr::make_compare_union_expression(&resource, expr::compare_type::union_and);
+        predicate->append_child(
+            expr::make_compare_expression(&resource, expr::compare_type::gte, column_key(0), lo_id));
+        predicate->append_child(expr::make_compare_expression(&resource, expr::compare_type::lt, column_key(1), hi_id));
+
+        auto built = expr::build_condition_graph(&resource, parameters, predicate.get(), data_table->copy_types());
+        REQUIRE_FALSE(built.has_error());
+        table_filter_t filter{parameters,
+                              components::graph_execution_context{},
+                              std::move(built.value()),
+                              expr::condition_kind::computed};
+        data_table->initialize_scan(state, column_indices, &filter);
         scan_and_check(*data_table, state, base_layout, row_range.second - row_range.first, [&](size_t produced) {
             return row_range.first + produced;
         });

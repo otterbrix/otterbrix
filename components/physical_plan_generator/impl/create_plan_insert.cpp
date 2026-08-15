@@ -31,21 +31,19 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     node->table_oid(),
                                                                                     std::move(returning)));
-        // INSERT ... SELECT: the SELECT projection column names need not match the
-        // target columns (e.g. SELECT 5, 55 into (id, a.b)), and the append is
-        // name-based, so hand the operator the target names to rename the streamed
-        // columns positionally. INSERT ... VALUES has a raw-data (data_t) child whose
-        // columns fill_row already named, so it is left untouched.
-        const auto& kt = node_insert->key_translation();
-        if (!kt.empty() && !node->children().empty() &&
-            node->children().front()->type() != components::logical_plan::node_type::data_t) {
-            std::pmr::vector<std::pmr::string> names(context.resource);
-            names.reserve(kt.size());
-            for (const auto& k : kt) {
-                names.emplace_back(std::pmr::string{k.as_string().c_str(), context.resource});
-            }
-            plan->set_rename_targets(std::move(names));
+        // The validator resolved, per incoming column, the target it lands in and the cast
+        // that stores it there. The append is name-based, so the operator renames the
+        // streamed columns to their targets as it converts them.
+        components::logical_plan::insert_column_bindings_t bindings(context.resource);
+        bindings.reserve(node_insert->column_bindings().size());
+        for (const auto& binding : node_insert->column_bindings()) {
+            bindings.emplace_back(components::logical_plan::insert_column_binding_t{
+                .target_index = binding.target_index,
+                .target_name = std::pmr::string{binding.target_name.c_str(), context.resource},
+                .target_type = binding.target_type,
+                .cast = binding.cast});
         }
+        plan->set_column_bindings(std::move(bindings));
         plan->set_children(create_plan(context,
                                        function_registry,
                                        node->children().front(),

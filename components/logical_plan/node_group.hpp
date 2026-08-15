@@ -28,6 +28,13 @@ namespace components::logical_plan {
         void set_pushdown(bool pushdown) noexcept;
         [[nodiscard]] bool pushdown() const noexcept;
 
+        const std::pmr::vector<components::types::complex_logical_type>& input_types() const noexcept {
+            return input_types_;
+        }
+        void set_input_types(std::pmr::vector<components::types::complex_logical_type> types) {
+            input_types_ = std::move(types);
+        }
+
         size_t internal_aggregate_count{0};
         // Number of visible SELECT-clause columns recorded BEFORE the
         // transformer appends hidden internal aggregates for HAVING etc.
@@ -41,6 +48,7 @@ namespace components::logical_plan {
         // See set_pushdown()/pushdown() above. Default false = coordinator-side
         // reduce. Intentionally NOT folded into hash_impl().
         bool pushdown_{false};
+        std::pmr::vector<components::types::complex_logical_type> input_types_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

@@ -102,6 +102,8 @@ namespace components::operators {
         // operator_unregister_udf_t reverses the registry+pg_proc effects.
         register_udf,
         unregister_udf,
+        register_cast,
+        unregister_cast,
         // COMMIT / ROLLBACK — operator-pipeline replacement for inline
         // manager_dispatcher_t::{commit,abort}_transaction. The operator
         // drives txn_manager->{commit,abort}() and (for commit) the
@@ -231,6 +233,9 @@ namespace components::operators {
         // Only a SOURCE (scans, raw-data carriers) or a STREAMING operator
         // (filter/projection) overrides this.
         [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::sink; }
+
+        // marker for executor to update sub-queries links
+        [[nodiscard]] virtual bool produces_query_rows() const noexcept { return false; }
 
         // SOURCE: fetch the next batch via an async storage round-trip
         // (storage_fetch_next_batch). A drained source returns an EMPTY chunk

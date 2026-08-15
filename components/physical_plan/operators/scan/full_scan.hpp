@@ -11,7 +11,9 @@
 namespace components::operators {
 
     // Build a table_filter_t from a compare-expression predicate + bound parameters, resolving
-    // parameter ids against `parameters` and coercing literals in `session_tz`. Defined in
+    // parameter ids against `parameters` and coercing literals in the context's timezone. An
+    // expression filter is compiled into its execution graph HERE, so the filter crosses the
+    // mailbox ready to run. Defined in
     // full_scan.cpp; used by the full_scan disk-send OPEN to lower the WHERE once.
     // Returns a null unique_ptr for an all-true / absent predicate, or a physical_plan_error /
     // invalid_parameter on a malformed expression — never throws (R2).
@@ -20,7 +22,7 @@ namespace components::operators {
                         const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters,
-                        core::date::timezone_offset_t session_tz);
+                        const components::graph_execution_context& context);
 
     class full_scan final : public read_only_operator_t {
     public:

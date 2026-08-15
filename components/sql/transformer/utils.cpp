@@ -536,11 +536,19 @@ namespace components::sql::transform {
                 values.emplace_back(std::move(res.value()));
             }
         }
+        if (values.empty()) {
+            // Empty array literal (ARRAY[]): the element type is indeterminate at parse
+            // time. Use NA  as a placeholder; it is resolved against the target column's
+            // element type when the value is cast/reconciled on the INSERT path.
+            return types::logical_value_t::create_array(resource,
+                                                        types::complex_logical_type{types::logical_type::NA},
+                                                        std::move(values));
+        }
         // The element type comes from the first NON-NULL element. A NULL element (logical_type NA)
         // is a valid null slot compatible with any element type, so it is skipped both when inferring
-        // the element type and when checking element-type consistency. An empty array (ARRAY[]) or an
-        // all-NULL array leaves the element type indeterminate (UNKNOWN), resolved against the target
-        // column's element type when the value is cast/reconciled on the INSERT path.
+        // the element type and when checking element-type consistency. An all-NULL array leaves the
+        // element type indeterminate (UNKNOWN), resolved against the target column's element type
+        // when the value is cast/reconciled on the INSERT path.
         types::complex_logical_type element_type{types::logical_type::UNKNOWN};
         bool element_type_found = false;
         for (const auto& value : values) {
@@ -851,6 +859,28 @@ namespace components::sql::transform {
                                          "AND/OR/NOT, IS NULL/IS NOT NULL",
                                      resource});
         }
+    }
+
+    logical_plan::node_ptr wrap_with_catalog_resolve_types(std::pmr::memory_resource* resource,
+                                                           const std::vector<std::string>& type_names,
+                                                           logical_plan::node_ptr main_node) {
+        if (!main_node || type_names.empty()) {
+            return main_node;
+        }
+        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        for (const auto& name : type_names) {
+            seq->append_child(logical_plan::make_node_catalog_resolve_type(resource,
+                                                                           core::dbname_t{std::string{"public"}},
+                                                                           core::typename_t{name}));
+        }
+        if (main_node->type() == logical_plan::node_type::sequence_t) {
+            for (auto& child : main_node->children()) {
+                seq->append_child(child);
+            }
+            return seq;
+        }
+        seq->append_child(std::move(main_node));
+        return seq;
     }
 
     logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(std::pmr::memory_resource* resource,

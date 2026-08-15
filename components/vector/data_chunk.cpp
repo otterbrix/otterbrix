@@ -40,8 +40,7 @@ namespace {
     // Copy element `index` of every row out of an ARRAY/LIST into a contiguous vector, so
     // that index i means row i. Those values are strided in the flat child, hence the gather —
     // typed copies through vector_ops::copy, no per-element logical_value_t round-trip.
-    vector_t
-    align_to_rows(const vector_t& array, size_t index, uint64_t count, std::pmr::memory_resource* resource) {
+    vector_t align_to_rows(const vector_t& array, size_t index, uint64_t count, std::pmr::memory_resource* resource) {
         const vector_t& child = array.entry();
         const bool is_list = array.type().type() == types::logical_type::LIST;
         const size_t stride =
@@ -122,10 +121,11 @@ namespace components::vector {
     }
 
     // An unprojected placeholder vector has no data buffer AND no auxiliary buffer.
-    // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null.)
+    // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null;
+    // an NA column is a real column that allocates nothing at all.)
     // These exist to keep column indices stable when projected_scan skips columns.
     static bool is_unprojected_placeholder(const vector_t& v) noexcept {
-        return v.data() == nullptr && v.auxiliary() == nullptr;
+        return v.type().type() != types::logical_type::NA && v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
     uint64_t data_chunk_t::allocation_size() const {

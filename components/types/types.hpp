@@ -250,6 +250,24 @@ namespace components::types {
         }
     }
 
+    constexpr bool is_integer(logical_type type) {
+        switch (type) {
+            case logical_type::TINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::BIGINT:
+            case logical_type::HUGEINT:
+            case logical_type::UTINYINT:
+            case logical_type::USMALLINT:
+            case logical_type::UINTEGER:
+            case logical_type::UBIGINT:
+            case logical_type::UHUGEINT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     constexpr bool is_duration(logical_type type) {
         switch (type) {
             case logical_type::DATE:
@@ -381,8 +399,7 @@ namespace components::types {
             if (lhs == logical_type::INTERVAL && is_arithmetic_numeric(rhs)) {
                 return logical_type::INTERVAL;
             }
-            if (op == vector::arithmetic_op::multiply && is_arithmetic_numeric(lhs) &&
-                rhs == logical_type::INTERVAL) {
+            if (op == vector::arithmetic_op::multiply && is_arithmetic_numeric(lhs) && rhs == logical_type::INTERVAL) {
                 return logical_type::INTERVAL;
             }
         }
@@ -423,6 +440,12 @@ namespace components::types {
         std::pmr::vector<complex_logical_type>& child_types();
         const std::pmr::vector<complex_logical_type>& child_types() const;
         logical_type_extension* extension() const;
+
+        template<typename Extension>
+        requires std::is_base_of_v<logical_type_extension, Extension> [[nodiscard]] const Extension*
+        extension_as() const noexcept {
+            return static_cast<const Extension*>(extension());
+        }
 
         bool is_convertable_to(const complex_logical_type& other) const;
 
@@ -616,6 +639,14 @@ namespace components::types {
         physical_type stored_as_;
         uint8_t width_;
         uint8_t scale_;
+    };
+
+    // Special values for decimal
+    struct decimal_special {
+        static int128_t positive_infinity(physical_type stored_as) noexcept;
+        static int128_t negative_infinity(physical_type stored_as) noexcept;
+        static int128_t not_a_number(physical_type stored_as) noexcept;
+        static bool is_special(physical_type stored_as, int128_t raw) noexcept;
     };
 
     class function_logical_type_extension : public logical_type_extension {

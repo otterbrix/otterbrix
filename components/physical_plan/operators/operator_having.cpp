@@ -1,7 +1,5 @@
 #include "operator_having.hpp"
 
-#include "predicates/predicate.hpp"
-
 namespace components::operators {
 
     namespace {
@@ -45,36 +43,44 @@ namespace components::operators {
                 }
             }
             stream_sparse_ = stream_populated_cols_.size() != input.column_count();
-            // expression_ is ALWAYS non-null (create_plan_having returns nullptr on empty expressions),
-            // so there is no create_all_true_predicate branch.
-            stream_predicate_ = predicates::create_predicate(resource_,
-                                                             ctx->function_registry,
-                                                             expression_,
-                                                             stream_types_,
-                                                             stream_types_,
-                                                             &ctx->parameters,
-                                                             ctx->session_tz);
+            condition_ = expressions::classify_condition(expression_);
+            if (condition_ == expressions::condition_kind::computed) {
+                auto graph = expressions::build_condition_graph(resource_,
+                                                                ctx->parameters.parameters,
+                                                                expression_.get(),
+                                                                stream_types_);
+                if (graph.has_error()) {
+                    return graph.error();
+                }
+                graph_ = std::move(graph.value());
+            }
             stream_ready_ = true;
         }
 
-        // Evaluate the predicate over the whole batch (single-input filter: chunk compared to itself).
-        vector::indexing_vector_t all_indices(nullptr, nullptr);
-        auto results = stream_predicate_->batch_check(input, input, all_indices, all_indices, input.size());
-        if (results.has_error()) {
-            return results.error();
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
         }
-        const std::vector<types::tri_bool_t>& mask = results.value();
 
-        // Build the selection of surviving (predicate-true) rows. The selection MUST be sized to the
-        // full input length (set_index is unchecked); only the first out_count slots are filled/read.
-        // HAVING keeps a group only when the predicate is definitely TRUE -- a NULL operand (e.g. an
-        // aggregate over an all-NULL group) yields UNKNOWN, which drops the group, exactly as WHERE
-        // drops an UNKNOWN row.
+        // Compute the condition over the whole batch: the graph is a pure N->N computation and
+        // THIS operator does the row elimination below.
+        std::optional<vector::data_chunk_t> produced;
+        if (graph_) {
+            auto computed =
+                expressions::run_graph(graph_.get(), ctx->parameters.parameters, input, ctx->execution_context);
+            if (computed.has_error()) {
+                return computed.error();
+            }
+            produced = std::move(computed.value());
+        }
+        const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
+
+        // Build the selection of surviving rows. The selection MUST be sized to the full input
+        // length (set_index is unchecked); only the first out_count slots are filled/read.
         vector::indexing_vector_t sel(resource_);
         sel.reset(input.size());
         uint64_t out_count = 0;
         for (uint64_t i = 0; i < input.size(); i++) {
-            if (types::selects(mask[i])) {
+            if (decisions == nullptr || (!decisions->is_null(i) && decisions->get_value<bool>(i))) {
                 sel.set_index(out_count, i);
                 out_count++;
             }

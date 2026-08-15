@@ -131,6 +131,8 @@ namespace services::disk {
                 return components::catalog::well_known_oid::pg_rewrite_table;
             if (name == "pg_settings")
                 return components::catalog::well_known_oid::pg_settings_table;
+            if (name == "pg_cast")
+                return components::catalog::well_known_oid::pg_cast_table;
             return components::catalog::INVALID_OID;
         }
     } // namespace
@@ -204,7 +206,7 @@ namespace services::disk {
                     chunk.set_value(0, 0, std::string_view("TimeZone"));
                     chunk.set_value(1, 0, std::string_view("UTC"));
                 });
-                direct_append_sync(catalog::well_known_oid::pg_settings_table, row, {});
+                direct_append_sync(catalog::well_known_oid::pg_settings_table, row);
             }
             auto tz_name = read_setting_sync("TimeZone");
             if (!tz_name.empty()) {
@@ -261,7 +263,7 @@ namespace services::disk {
                     chunk.set_value(0, 0, db.oid);
                     chunk.set_value(1, 0, db.name);
                 });
-                direct_append_sync(pg_database_oid, row, tz);
+                direct_append_sync(pg_database_oid, row);
             }
         }
 
@@ -272,7 +274,7 @@ namespace services::disk {
                         chunk.set_value(0, 0, nrow.oid);
                         chunk.set_value(1, 0, nrow.name);
                     });
-                    direct_append_sync(pg_namespace_oid_tbl, row, tz);
+                    direct_append_sync(pg_namespace_oid_tbl, row);
                 }
             }
         }
@@ -285,7 +287,7 @@ namespace services::disk {
                         chunk.set_value(1, 0, trow.name);
                         chunk.set_value(2, 0, pg_catalog_ns_oid);
                     });
-                    direct_append_sync(pg_type_oid, row, tz);
+                    direct_append_sync(pg_type_oid, row);
                 }
             }
         }
@@ -298,7 +300,7 @@ namespace services::disk {
                         chunk.set_value(1, 0, frow.name);
                         chunk.set_value(2, 0, pg_catalog_ns_oid);
                     });
-                    direct_append_sync(pg_proc_oid, row, tz);
+                    direct_append_sync(pg_proc_oid, row);
                 }
             }
         }

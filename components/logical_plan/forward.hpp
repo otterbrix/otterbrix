@@ -61,6 +61,8 @@ namespace components::logical_plan {
         // global default function_registry_t, and pg_proc.
         register_udf_t,
         unregister_udf_t,
+        register_cast_t,
+        unregister_cast_t,
         // BEGIN / COMMIT / ROLLBACK transaction-control leaf, selected by op().
         // The operators drive txn_manager.commit/abort + pg_catalog MVCC swap on
         // disk via storage_publish_commits / storage_revert_appends. See

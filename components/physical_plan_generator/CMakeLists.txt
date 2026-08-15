@@ -30,6 +30,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_create_matview.cpp
         impl/create_plan_register_udf.cpp
         impl/create_plan_unregister_udf.cpp
+        impl/create_plan_register_cast.cpp
         impl/create_plan_commit_transaction.cpp
         impl/create_plan_abort_transaction.cpp
         impl/create_plan_begin_transaction.cpp

@@ -9,670 +9,463 @@ using namespace components::vector;
 
 namespace {
     template<typename T>
-    concept addable = requires(T& a, const T& b) { a += b; };
+    concept addable = requires(T& a, const T& b) {
+        a += b;
+    };
     template<typename T>
-    concept comparable = requires(const T& a, const T& b) { a < b; };
+    concept comparable = requires(const T& a, const T& b) {
+        a < b;
+    };
     template<typename T>
-    concept dividable = requires(const T& a, const T& b) { a / b; };
-
-    template<typename T = void>
-    struct sum_operator_t;
-    template<typename T = void>
-    struct divide_operator_t;
-    template<typename T = void>
-    struct min_operator_t;
-    template<typename T = void>
-    struct max_operator_t;
-
-    template<>
-    struct sum_operator_t<void> {
-        template<addable T>
-        auto operator()(const vector_t& v, size_t count) const {
-            auto raw_sum = T();
-            bool has_any = false;
-            for (size_t i = 0; i < count; i++) {
-                if (v.is_null(i))
-                    continue;
-                raw_sum += v.data<T>()[i];
-                has_any = true;
-            }
-            if (!has_any) {
-                return logical_value_t(v.resource(), logical_type::NA);
-            }
-            return logical_value_t{v.resource(), raw_sum};
-        }
-        template<typename T, typename U>
-        auto operator()(const vector_t& v, size_t count) const {
-            auto raw_sum = T();
-            bool has_any = false;
-            for (size_t i = 0; i < count; i++) {
-                if (v.is_null(i))
-                    continue;
-                raw_sum += T(v.data<U>()[i]);
-                has_any = true;
-            }
-            if (!has_any) {
-                return logical_value_t(v.resource(), logical_type::NA);
-            }
-            return logical_value_t{v.resource(), raw_sum};
-        }
-        // Combine two partial sums (used to fold per-chunk states into one group state).
-        // Callers must ensure neither operand is NA before dispatching here.
-        template<addable T>
-        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
-            return logical_value_t{v1.resource(), T(v1.value<T>() + v2.value<T>())};
-        }
-        template<typename T, typename U>
-        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
-            return logical_value_t{v1.resource(), T(v1.value<U>() + v2.value<U>())};
-        }
+    concept dividable = requires(const T& a, const T& b) {
+        a / b;
     };
 
-    template<>
-    struct divide_operator_t<void> {
-        template<dividable T>
-        auto operator()(const logical_value_t& v, size_t count) const {
-            return logical_value_t{v.resource(), v.value<T>() / static_cast<T>(count)};
-        }
-        template<typename T, typename U>
-        auto operator()(const logical_value_t& v, size_t count) const {
-            return logical_value_t{v.resource(), T(v.value<U>() / static_cast<U>(count))};
-        }
+    // An aggregate accumulates into one state per group, addressed by group id
+
+    template<typename T>
+    struct numeric_state_t {
+        T value{};
+        bool has_value{false};
     };
 
-    template<>
-    struct min_operator_t<void> {
-        template<comparable T>
-        auto operator()(const vector_t& v, size_t count) const {
-            auto* data = v.data<T>();
-            T best = T();
-            bool has_any = false;
-            for (size_t i = 0; i < count; i++) {
-                if (v.is_null(i))
-                    continue;
-                if (!has_any || data[i] < best) {
-                    best = data[i];
-                    has_any = true;
-                }
-            }
-            if (!has_any) {
-                return logical_value_t(v.resource(), logical_type::NA);
-            }
-            return logical_value_t{v.resource(), best};
-        }
-        template<typename T, typename U>
-        auto operator()(const vector_t& v, size_t count) const {
-            auto* data = v.data<U>();
-            U best = U();
-            bool has_any = false;
-            for (size_t i = 0; i < count; i++) {
-                if (v.is_null(i))
-                    continue;
-                if (!has_any || data[i] < best) {
-                    best = data[i];
-                    has_any = true;
-                }
-            }
-            if (!has_any) {
-                return logical_value_t(v.resource(), logical_type::NA);
-            }
-            return logical_value_t{v.resource(), T(best)};
-        }
-        template<comparable T>
-        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
-            if (v1.type().type() == logical_type::NA) {
-                return v2;
-            }
-            if (v2.type().type() == logical_type::NA) {
-                return v1;
-            }
-            return logical_value_t{v1.resource(), std::min(v1.value<T>(), v2.value<T>())};
-        }
-        template<typename T, typename U>
-        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
-            if (v1.type().type() == logical_type::NA) {
-                return v2;
-            }
-            if (v2.type().type() == logical_type::NA) {
-                return v1;
-            }
-            return logical_value_t{v1.resource(), T(std::min(v1.value<U>(), v2.value<U>()))};
-        }
+    template<typename T>
+    struct avg_state_t {
+        T value{};
+        uint64_t count{0};
     };
 
-    template<>
-    struct max_operator_t<void> {
-        template<comparable T>
-        auto operator()(const vector_t& v, size_t count) const {
-            auto* data = v.data<T>();
-            T best = T();
-            bool has_any = false;
-            for (size_t i = 0; i < count; i++) {
-                if (v.is_null(i))
-                    continue;
-                if (!has_any || best < data[i]) {
-                    best = data[i];
-                    has_any = true;
-                }
-            }
-            if (!has_any) {
-                return logical_value_t(v.resource(), logical_type::NA);
-            }
-            return logical_value_t{v.resource(), best};
-        }
-        template<typename T, typename U>
-        auto operator()(const vector_t& v, size_t count) const {
-            auto* data = v.data<U>();
-            U best = U();
-            bool has_any = false;
-            for (size_t i = 0; i < count; i++) {
-                if (v.is_null(i))
-                    continue;
-                if (!has_any || best < data[i]) {
-                    best = data[i];
-                    has_any = true;
-                }
-            }
-            if (!has_any) {
-                return logical_value_t(v.resource(), logical_type::NA);
-            }
-            return logical_value_t{v.resource(), T(best)};
-        }
-        template<comparable T>
-        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
-            if (v1.type().type() == logical_type::NA) {
-                return v2;
-            }
-            if (v2.type().type() == logical_type::NA) {
-                return v1;
-            }
-            return logical_value_t{v1.resource(), std::max(v1.value<T>(), v2.value<T>())};
-        }
-        template<typename T, typename U>
-        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
-            if (v1.type().type() == logical_type::NA) {
-                return v2;
-            }
-            if (v2.type().type() == logical_type::NA) {
-                return v1;
-            }
-            return logical_value_t{v1.resource(), T(std::max(v1.value<U>(), v2.value<U>()))};
-        }
+    struct count_state_t {
+        uint64_t value{0};
     };
 
-    template<template<typename...> class OP>
-    core::result_wrapper_t<logical_value_t> operator_switch(const vector_t& v, size_t count) {
-        OP op{};
-        switch (v.type().type()) {
-            case logical_type::BOOLEAN:
-                return op.template operator()<bool>(v, count);
+    template<template<typename> class op_t, typename fallback_t, typename... args_t>
+    auto arithmetic_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
+        -> decltype(fallback()) {
+        switch (type.type()) {
             case logical_type::TINYINT:
-                return op.template operator()<int8_t>(v, count);
+                return op_t<int8_t>{}(std::forward<args_t>(args)...);
             case logical_type::SMALLINT:
-                return op.template operator()<int16_t>(v, count);
+                return op_t<int16_t>{}(std::forward<args_t>(args)...);
             case logical_type::INTEGER:
-                return op.template operator()<int32_t>(v, count);
+                return op_t<int32_t>{}(std::forward<args_t>(args)...);
             case logical_type::BIGINT:
-                return op.template operator()<int64_t>(v, count);
+                return op_t<int64_t>{}(std::forward<args_t>(args)...);
             case logical_type::HUGEINT:
-                return op.template operator()<int128_t>(v, count);
+                return op_t<int128_t>{}(std::forward<args_t>(args)...);
             case logical_type::UTINYINT:
-                return op.template operator()<uint8_t>(v, count);
+                return op_t<uint8_t>{}(std::forward<args_t>(args)...);
             case logical_type::USMALLINT:
-                return op.template operator()<uint16_t>(v, count);
+                return op_t<uint16_t>{}(std::forward<args_t>(args)...);
             case logical_type::UINTEGER:
-                return op.template operator()<uint32_t>(v, count);
+                return op_t<uint32_t>{}(std::forward<args_t>(args)...);
             case logical_type::UBIGINT:
-                return op.template operator()<uint64_t>(v, count);
+                return op_t<uint64_t>{}(std::forward<args_t>(args)...);
             case logical_type::UHUGEINT:
-                return op.template operator()<uint128_t>(v, count);
-            case logical_type::STRING_LITERAL:
-                if constexpr (requires { op.template operator()<std::string_view>(v, count); }) {
-                    return op.template operator()<std::string_view>(v, count);
-                } else {
-                    return core::error_t{
-                        core::error_code_t::physical_plan_error,
-                        std::pmr::string{"aggregate is not supported for string columns", v.resource()}};
-                }
-            case logical_type::DECIMAL: {
-                // stored as int???_t, but this won't result in a proper type
-                // intermediate logical_value_t could be avoided, but convenient for templates
-                switch (v.type().to_physical_type()) {
-                    case physical_type::INT16: {
-                        auto int_sum = op.template operator()<int16_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int16_t>());
-                    }
-                    case physical_type::INT32: {
-                        auto int_sum = op.template operator()<int32_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int32_t>());
-                    }
-                    case physical_type::INT64: {
-                        auto int_sum = op.template operator()<int64_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int64_t>());
-                    }
-                    case physical_type::INT128: {
-                        auto int_sum = op.template operator()<int128_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int128_t>());
-                    }
-                    default:
-                        return core::error_t{
-                            core::error_code_t::physical_plan_error,
-                            std::pmr::string{"aggregate: unsupported decimal physical type", v.resource()}};
-                }
-            }
+                return op_t<uint128_t>{}(std::forward<args_t>(args)...);
             case logical_type::FLOAT:
-                return op.template operator()<float>(v, count);
+                return op_t<float>{}(std::forward<args_t>(args)...);
             case logical_type::DOUBLE:
-                return op.template operator()<double>(v, count);
-            default:
-                return core::error_t{core::error_code_t::physical_plan_error,
-                                     std::pmr::string{"aggregate is not supported for this column type", v.resource()}};
-        }
-        return logical_value_t(v.resource(), logical_type::NA);
-    }
-
-    template<template<typename...> class OP>
-    core::result_wrapper_t<logical_value_t> operator_switch(const logical_value_t& v1, const logical_value_t& v2) {
-        OP op{};
-        switch (v1.type().type()) {
-            case logical_type::BOOLEAN:
-                return op.template operator()<bool>(v1, v2);
-            case logical_type::TINYINT:
-                return op.template operator()<int8_t>(v1, v2);
-            case logical_type::SMALLINT:
-                return op.template operator()<int16_t>(v1, v2);
-            case logical_type::INTEGER:
-                return op.template operator()<int32_t>(v1, v2);
-            case logical_type::BIGINT:
-                return op.template operator()<int64_t>(v1, v2);
-            case logical_type::HUGEINT:
-                return op.template operator()<int128_t>(v1, v2);
-            case logical_type::UTINYINT:
-                return op.template operator()<uint8_t>(v1, v2);
-            case logical_type::USMALLINT:
-                return op.template operator()<uint16_t>(v1, v2);
-            case logical_type::UINTEGER:
-                return op.template operator()<uint32_t>(v1, v2);
-            case logical_type::UBIGINT:
-                return op.template operator()<uint64_t>(v1, v2);
-            case logical_type::UHUGEINT:
-                return op.template operator()<uint128_t>(v1, v2);
-            case logical_type::STRING_LITERAL:
-                if constexpr (requires { op.template operator()<std::string_view>(v1, v2); }) {
-                    return op.template operator()<std::string_view>(v1, v2);
-                } else {
-                    return core::error_t{
-                        core::error_code_t::physical_plan_error,
-                        std::pmr::string{"aggregate is not supported for string columns", v1.resource()}};
-                }
-            case logical_type::DECIMAL: {
-                // stored as int???_t, but this won't result in a proper type
-                // intermediate logical_value_t could be avoided, but convenient for templates
-                switch (v1.type().to_physical_type()) {
-                    case physical_type::INT16: {
-                        auto int_sum = op.template operator()<int16_t>(v1, v2);
-                        return logical_value_t::create_decimal(v1.resource(),
-                                                               v1.type(),
-                                                               int_sum.template value<int16_t>());
-                    }
-                    case physical_type::INT32: {
-                        auto int_sum = op.template operator()<int32_t>(v1, v2);
-                        return logical_value_t::create_decimal(v1.resource(),
-                                                               v1.type(),
-                                                               int_sum.template value<int32_t>());
-                    }
-                    case physical_type::INT64: {
-                        auto int_sum = op.template operator()<int64_t>(v1, v2);
-                        return logical_value_t::create_decimal(v1.resource(),
-                                                               v1.type(),
-                                                               int_sum.template value<int64_t>());
-                    }
-                    case physical_type::INT128: {
-                        auto int_sum = op.template operator()<int128_t>(v1, v2);
-                        return logical_value_t::create_decimal(v1.resource(),
-                                                               v1.type(),
-                                                               int_sum.template value<int128_t>());
-                    }
+                return op_t<double>{}(std::forward<args_t>(args)...);
+            case logical_type::DECIMAL:
+                switch (type.to_physical_type()) {
+                    case physical_type::INT16:
+                        return op_t<int16_t>{}(std::forward<args_t>(args)...);
+                    case physical_type::INT32:
+                        return op_t<int32_t>{}(std::forward<args_t>(args)...);
+                    case physical_type::INT64:
+                        return op_t<int64_t>{}(std::forward<args_t>(args)...);
+                    case physical_type::INT128:
+                        return op_t<int128_t>{}(std::forward<args_t>(args)...);
                     default:
-                        return core::error_t{
-                            core::error_code_t::physical_plan_error,
-                            std::pmr::string{"aggregate: unsupported decimal physical type", v1.resource()}};
+                        return fallback();
+                }
+            default:
+                return fallback();
+        }
+    }
+
+    template<template<typename> class op_t, typename fallback_t, typename... args_t>
+    auto ordered_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
+        -> decltype(fallback()) {
+        switch (type.to_physical_type()) {
+            case physical_type::BOOL:
+            case physical_type::INT8:
+                return op_t<int8_t>{}(std::forward<args_t>(args)...);
+            case physical_type::INT16:
+                return op_t<int16_t>{}(std::forward<args_t>(args)...);
+            case physical_type::INT32:
+                return op_t<int32_t>{}(std::forward<args_t>(args)...);
+            case physical_type::INT64:
+                return op_t<int64_t>{}(std::forward<args_t>(args)...);
+            case physical_type::INT128:
+                return op_t<int128_t>{}(std::forward<args_t>(args)...);
+            case physical_type::UINT8:
+                return op_t<uint8_t>{}(std::forward<args_t>(args)...);
+            case physical_type::UINT16:
+                return op_t<uint16_t>{}(std::forward<args_t>(args)...);
+            case physical_type::UINT32:
+                return op_t<uint32_t>{}(std::forward<args_t>(args)...);
+            case physical_type::UINT64:
+                return op_t<uint64_t>{}(std::forward<args_t>(args)...);
+            case physical_type::UINT128:
+                return op_t<uint128_t>{}(std::forward<args_t>(args)...);
+            case physical_type::FLOAT:
+                return op_t<float>{}(std::forward<args_t>(args)...);
+            case physical_type::DOUBLE:
+                return op_t<double>{}(std::forward<args_t>(args)...);
+            default:
+                return fallback();
+        }
+    }
+
+    core::error_t unsupported_argument(kernel_context& ctx, const char* name) {
+        std::pmr::string message{name, ctx.exec_context().resource()};
+        message += " does not accumulate the type it was given";
+        return core::error_t(core::error_code_t::kernel_error, std::move(message));
+    }
+
+    // ---- layouts ---------------------------------------------------------------------------
+
+    template<typename T>
+    struct numeric_layout_t {
+        aggregate_state_layout_t operator()() const { return aggregate_state_of<numeric_state_t<T>>(); }
+    };
+
+    template<typename T>
+    struct avg_layout_t {
+        aggregate_state_layout_t operator()() const { return aggregate_state_of<avg_state_t<T>>(); }
+    };
+
+    aggregate_state_layout_t no_layout() { return {}; }
+
+    aggregate_state_layout_t sum_layout(const std::pmr::vector<complex_logical_type>& inputs) {
+        if (inputs.size() != 1) {
+            return {};
+        }
+        return arithmetic_dispatch<numeric_layout_t>(inputs.front(), no_layout);
+    }
+
+    // MIN/MAX over text. A vector stores its strings as string_view into an auxiliary buffer that
+    // belongs to the input chunk, so the accumulator must own its copy: the winning row's chunk is
+    // long gone by the time finalize runs.
+    struct string_state_t {
+        explicit string_state_t(std::pmr::memory_resource* resource)
+            : value(resource) {}
+        std::pmr::string value;
+        bool has_value{false};
+    };
+
+    aggregate_state_layout_t min_max_layout(const std::pmr::vector<complex_logical_type>& inputs) {
+        if (inputs.size() != 1) {
+            return {};
+        }
+        if (inputs.front().to_physical_type() == physical_type::STRING) {
+            return aggregate_state_of<string_state_t>();
+        }
+        return ordered_dispatch<numeric_layout_t>(inputs.front(), no_layout);
+    }
+
+    aggregate_state_layout_t avg_layout(const std::pmr::vector<complex_logical_type>& inputs) {
+        if (inputs.size() != 1) {
+            return {};
+        }
+        return arithmetic_dispatch<avg_layout_t>(inputs.front(), no_layout);
+    }
+
+    aggregate_state_layout_t count_layout(const std::pmr::vector<complex_logical_type>&) {
+        return aggregate_state_of<count_state_t>();
+    }
+
+    // ---- updates ---------------------------------------------------------------------------
+
+    template<typename T>
+    struct sum_update_t {
+        core::error_t
+        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
+            const auto* data = input.data<T>();
+            const bool all_valid = input.validity().all_valid();
+            for (uint64_t row = 0; row < groups.size(); row++) {
+                if (!all_valid && input.is_null(row)) {
+                    continue;
+                }
+                auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
+                accumulator.value = static_cast<T>(accumulator.value + data[row]);
+                accumulator.has_value = true;
+            }
+            return core::error_t::no_error();
+        }
+    };
+
+    template<typename T>
+    struct min_update_t {
+        core::error_t
+        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
+            const auto* data = input.data<T>();
+            const bool all_valid = input.validity().all_valid();
+            for (uint64_t row = 0; row < groups.size(); row++) {
+                if (!all_valid && input.is_null(row)) {
+                    continue;
+                }
+                auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
+                if (!accumulator.has_value || data[row] < accumulator.value) {
+                    accumulator.value = data[row];
+                    accumulator.has_value = true;
                 }
             }
-            case logical_type::FLOAT:
-                return op.template operator()<float>(v1, v2);
-            case logical_type::DOUBLE:
-                return op.template operator()<double>(v1, v2);
-            default:
-                return core::error_t{
-                    core::error_code_t::physical_plan_error,
-                    std::pmr::string{"aggregate is not supported for this column type", v1.resource()}};
+            return core::error_t::no_error();
         }
-        return logical_value_t(v1.resource(), logical_type::NA);
-    }
+    };
 
-    template<template<typename...> class OP>
-    core::result_wrapper_t<logical_value_t> operator_switch(const logical_value_t& v, size_t count) {
-        OP op{};
-        switch (v.type().type()) {
-            case logical_type::BOOLEAN:
-                return op.template operator()<bool>(v, count);
-            case logical_type::TINYINT:
-                return op.template operator()<int8_t>(v, count);
-            case logical_type::SMALLINT:
-                return op.template operator()<int16_t>(v, count);
-            case logical_type::INTEGER:
-                return op.template operator()<int32_t>(v, count);
-            case logical_type::BIGINT:
-                return op.template operator()<int64_t>(v, count);
-            case logical_type::HUGEINT:
-                return op.template operator()<int128_t>(v, count);
-            case logical_type::UTINYINT:
-                return op.template operator()<uint8_t>(v, count);
-            case logical_type::USMALLINT:
-                return op.template operator()<uint16_t>(v, count);
-            case logical_type::UINTEGER:
-                return op.template operator()<uint32_t>(v, count);
-            case logical_type::UBIGINT:
-                return op.template operator()<uint64_t>(v, count);
-            case logical_type::UHUGEINT:
-                return op.template operator()<uint128_t>(v, count);
-            case logical_type::DECIMAL: {
-                // stored as int???_t, but this won't result in a proper type
-                // intermediate logical_value_t could be avoided, but convenient for templates
-                switch (v.type().to_physical_type()) {
-                    case physical_type::INT16: {
-                        auto int_sum = op.template operator()<int16_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int16_t>());
-                    }
-                    case physical_type::INT32: {
-                        auto int_sum = op.template operator()<int32_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int32_t>());
-                    }
-                    case physical_type::INT64: {
-                        auto int_sum = op.template operator()<int64_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int64_t>());
-                    }
-                    case physical_type::INT128: {
-                        auto int_sum = op.template operator()<int128_t>(v, count);
-                        return logical_value_t::create_decimal(v.resource(),
-                                                               v.type(),
-                                                               int_sum.template value<int128_t>());
-                    }
-                    default:
-                        return core::error_t{
-                            core::error_code_t::physical_plan_error,
-                            std::pmr::string{"aggregate: unsupported decimal physical type", v.resource()}};
+    template<typename T>
+    struct max_update_t {
+        core::error_t
+        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
+            const auto* data = input.data<T>();
+            const bool all_valid = input.validity().all_valid();
+            for (uint64_t row = 0; row < groups.size(); row++) {
+                if (!all_valid && input.is_null(row)) {
+                    continue;
+                }
+                auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
+                if (!accumulator.has_value || accumulator.value < data[row]) {
+                    accumulator.value = data[row];
+                    accumulator.has_value = true;
                 }
             }
-            case logical_type::FLOAT:
-                return op.template operator()<float>(v, count);
-            case logical_type::DOUBLE:
-                return op.template operator()<double>(v, count);
-            default:
-                return core::error_t{core::error_code_t::physical_plan_error,
-                                     std::pmr::string{"aggregate is not supported for this column type", v.resource()}};
-        }
-        return logical_value_t(v.resource(), logical_type::NA);
-    }
-
-    core::result_wrapper_t<logical_value_t> sum(const vector_t& v, size_t count) {
-        return operator_switch<sum_operator_t>(v, count);
-    }
-
-    core::result_wrapper_t<logical_value_t> min(const vector_t& v, size_t count) {
-        return operator_switch<min_operator_t>(v, count);
-    }
-
-    core::result_wrapper_t<logical_value_t> max(const vector_t& v, size_t count) {
-        return operator_switch<max_operator_t>(v, count);
-    }
-
-    struct sum_kernel_state : kernel_state {
-        explicit sum_kernel_state(std::pmr::memory_resource* resource)
-            : value(resource, logical_type::NA) {}
-        logical_value_t value;
-    };
-
-    static core::result_wrapper_t<kernel_state_ptr> sum_init(kernel_context& ctx, kernel_init_args) {
-        auto c = std::make_unique<sum_kernel_state>(ctx.exec_context().resource());
-        return c;
-    }
-
-    static core::error_t sum_consume(kernel_context& ctx, const data_chunk_t& in) {
-        auto* acc = static_cast<sum_kernel_state*>(ctx.state());
-        auto r = sum(in.data[0], in.size());
-        if (r.has_error()) {
-            return r.error();
-        }
-        acc->value = r.value();
-        return core::error_t::no_error();
-    }
-
-    // Fold this chunk's partial sum into the running group state. A NA operand is the
-    // additive identity (no non-null rows seen yet), so it is skipped.
-    static core::error_t sum_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
-        auto& src = static_cast<sum_kernel_state&>(from);
-        auto& acc = static_cast<sum_kernel_state&>(into);
-        if (src.value.type().type() == logical_type::NA) {
             return core::error_t::no_error();
         }
-        if (acc.value.type().type() == logical_type::NA) {
-            acc.value = src.value;
-        } else {
-            auto r = operator_switch<sum_operator_t>(acc.value, src.value);
-            if (r.has_error()) {
-                return r.error();
+    };
+
+    template<typename T>
+    struct avg_update_t {
+        core::error_t
+        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
+            const auto* data = input.data<T>();
+            const bool all_valid = input.validity().all_valid();
+            for (uint64_t row = 0; row < groups.size(); row++) {
+                if (!all_valid && input.is_null(row)) {
+                    continue;
+                }
+                auto& accumulator = states.at<avg_state_t<T>>(groups[row]);
+                accumulator.value = static_cast<T>(accumulator.value + data[row]);
+                accumulator.count++;
             }
-            acc.value = r.value();
-        }
-        return core::error_t::no_error();
-    }
-
-    static core::error_t sum_finalize(aggregate_kernel_context& ctx) {
-        ctx.batch_results.push_back(static_cast<sum_kernel_state*>(ctx.state())->value);
-        return core::error_t::no_error();
-    }
-
-    struct min_kernel_state : kernel_state {
-        explicit min_kernel_state(std::pmr::memory_resource* resource)
-            : value(resource, logical_type::NA) {}
-        logical_value_t value;
-    };
-
-    static core::result_wrapper_t<kernel_state_ptr> min_init(kernel_context& ctx, kernel_init_args) {
-        auto c = std::make_unique<min_kernel_state>(ctx.exec_context().resource());
-        return c;
-    }
-
-    static core::error_t min_consume(kernel_context& ctx, const data_chunk_t& in) {
-        auto* acc = static_cast<min_kernel_state*>(ctx.state());
-        auto r = min(in.data[0], in.size());
-        if (r.has_error()) {
-            return r.error();
-        }
-        acc->value = r.value();
-        return core::error_t::no_error();
-    }
-
-    static core::error_t min_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
-        auto& src = static_cast<min_kernel_state&>(from);
-        auto& acc = static_cast<min_kernel_state&>(into);
-        if (src.value.type().type() == logical_type::NA) {
             return core::error_t::no_error();
         }
-        if (acc.value.type().type() == logical_type::NA) {
-            acc.value = src.value;
-        } else {
-            auto r = operator_switch<min_operator_t>(acc.value, src.value);
-            if (r.has_error()) {
-                return r.error();
+    };
+
+    core::error_t sum_update(kernel_context& ctx,
+                             const data_chunk_t& input,
+                             core::span<const uint32_t> groups,
+                             aggregate_states_t states) {
+        const auto& column = input.data.front();
+        return arithmetic_dispatch<sum_update_t>(
+            column.type(),
+            [&ctx] { return unsupported_argument(ctx, "sum"); },
+            column,
+            groups,
+            states);
+    }
+
+    // Shared by min and max: `keep` decides whether the incoming string replaces the accumulator.
+    template<typename keep_t>
+    core::error_t
+    string_min_max_update(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) {
+        const auto* data = input.data<std::string_view>();
+        const bool all_valid = input.validity().all_valid();
+        const keep_t keep{};
+        for (uint64_t row = 0; row < groups.size(); row++) {
+            if (!all_valid && input.is_null(row)) {
+                continue;
             }
-            acc.value = r.value();
-        }
-        return core::error_t::no_error();
-    }
-
-    static core::error_t min_finalize(aggregate_kernel_context& ctx) {
-        ctx.batch_results.push_back(static_cast<min_kernel_state*>(ctx.state())->value);
-        return core::error_t::no_error();
-    }
-
-    struct max_kernel_state : kernel_state {
-        explicit max_kernel_state(std::pmr::memory_resource* resource)
-            : value(resource, logical_type::NA) {}
-        logical_value_t value;
-    };
-
-    static core::result_wrapper_t<kernel_state_ptr> max_init(kernel_context& ctx, kernel_init_args) {
-        auto c = std::make_unique<max_kernel_state>(ctx.exec_context().resource());
-        return c;
-    }
-
-    static core::error_t max_consume(kernel_context& ctx, const data_chunk_t& in) {
-        auto* acc = static_cast<max_kernel_state*>(ctx.state());
-        auto r = max(in.data[0], in.size());
-        if (r.has_error()) {
-            return r.error();
-        }
-        acc->value = r.value();
-        return core::error_t::no_error();
-    }
-
-    static core::error_t max_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
-        auto& src = static_cast<max_kernel_state&>(from);
-        auto& acc = static_cast<max_kernel_state&>(into);
-        if (src.value.type().type() == logical_type::NA) {
-            return core::error_t::no_error();
-        }
-        if (acc.value.type().type() == logical_type::NA) {
-            acc.value = src.value;
-        } else {
-            auto r = operator_switch<max_operator_t>(acc.value, src.value);
-            if (r.has_error()) {
-                return r.error();
+            auto& accumulator = states.at<string_state_t>(groups[row]);
+            const std::string_view candidate = data[row];
+            if (!accumulator.has_value || keep(candidate, std::string_view{accumulator.value})) {
+                accumulator.value.assign(candidate);
+                accumulator.has_value = true;
             }
-            acc.value = r.value();
         }
         return core::error_t::no_error();
     }
 
-    static core::error_t max_finalize(aggregate_kernel_context& ctx) {
-        ctx.batch_results.push_back(static_cast<max_kernel_state*>(ctx.state())->value);
-        return core::error_t::no_error();
-    }
-
-    struct count_kernel_state : kernel_state {
-        size_t value;
-    };
-
-    static core::result_wrapper_t<kernel_state_ptr> count_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<count_kernel_state>();
-        c->value = size_t{0};
-        return c;
-    }
-
-    static core::error_t count_consume(kernel_context& ctx, const data_chunk_t& in) {
-        auto* acc = static_cast<count_kernel_state*>(ctx.state());
-        acc->value = 0;
-        for (size_t i = 0; i < in.size(); i++) {
-            acc->value += !in.data[0].is_null(i);
+    core::error_t min_update(kernel_context& ctx,
+                             const data_chunk_t& input,
+                             core::span<const uint32_t> groups,
+                             aggregate_states_t states) {
+        const auto& column = input.data.front();
+        if (column.type().to_physical_type() == physical_type::STRING) {
+            return string_min_max_update<std::less<std::string_view>>(column, groups, states);
         }
-        return core::error_t::no_error();
+        return ordered_dispatch<min_update_t>(
+            column.type(),
+            [&ctx] { return unsupported_argument(ctx, "min"); },
+            column,
+            groups,
+            states);
     }
 
-    static core::error_t count_consume_empty(kernel_context& ctx, const data_chunk_t& in) {
-        auto* acc = static_cast<count_kernel_state*>(ctx.state());
-        acc->value = in.size();
-        return core::error_t::no_error();
-    }
-
-    static core::error_t count_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
-        static_cast<count_kernel_state&>(into).value += static_cast<count_kernel_state&>(from).value;
-        return core::error_t::no_error();
-    }
-
-    static core::error_t count_finalize(aggregate_kernel_context& ctx) {
-        ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
-                                       static_cast<count_kernel_state*>(ctx.state())->value);
-        return core::error_t::no_error();
-    }
-
-    struct avg_kernel_state : kernel_state {
-        explicit avg_kernel_state(std::pmr::memory_resource* resource)
-            : count(0)
-            , value(resource, logical_type::NA) {}
-        size_t count;
-        logical_value_t value;
-    };
-
-    static core::result_wrapper_t<kernel_state_ptr> avg_init(kernel_context& ctx, kernel_init_args) {
-        auto c = std::make_unique<avg_kernel_state>(ctx.exec_context().resource());
-        return c;
-    }
-
-    static core::error_t avg_consume(kernel_context& ctx, const data_chunk_t& in) {
-        auto* acc = static_cast<avg_kernel_state*>(ctx.state());
-        size_t valid = 0;
-        for (size_t i = 0; i < in.size(); i++) {
-            valid += !in.data[0].is_null(i);
+    core::error_t max_update(kernel_context& ctx,
+                             const data_chunk_t& input,
+                             core::span<const uint32_t> groups,
+                             aggregate_states_t states) {
+        const auto& column = input.data.front();
+        if (column.type().to_physical_type() == physical_type::STRING) {
+            return string_min_max_update<std::greater<std::string_view>>(column, groups, states);
         }
-        acc->count = valid;
-        auto r = sum(in.data[0], in.size());
-        if (r.has_error()) {
-            return r.error();
-        }
-        acc->value = r.value();
-        return core::error_t::no_error();
+        return ordered_dispatch<max_update_t>(
+            column.type(),
+            [&ctx] { return unsupported_argument(ctx, "max"); },
+            column,
+            groups,
+            states);
     }
 
-    // Accumulate running sum + count so the average is computed once over the whole
-    // group in finalize (combining per-chunk averages would be incorrect).
-    static core::error_t avg_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
-        auto& src = static_cast<avg_kernel_state&>(from);
-        auto& acc = static_cast<avg_kernel_state&>(into);
-        if (src.count == 0) {
-            return core::error_t::no_error();
-        }
-        acc.count += src.count;
-        if (acc.value.type().type() == logical_type::NA) {
-            acc.value = src.value;
-        } else {
-            auto r = operator_switch<sum_operator_t>(acc.value, src.value);
-            if (r.has_error()) {
-                return r.error();
+    core::error_t avg_update(kernel_context& ctx,
+                             const data_chunk_t& input,
+                             core::span<const uint32_t> groups,
+                             aggregate_states_t states) {
+        const auto& column = input.data.front();
+        return arithmetic_dispatch<avg_update_t>(
+            column.type(),
+            [&ctx] { return unsupported_argument(ctx, "avg"); },
+            column,
+            groups,
+            states);
+    }
+
+    // COUNT(x) counts the rows where x is not null.
+    core::error_t count_update(kernel_context&,
+                               const data_chunk_t& input,
+                               core::span<const uint32_t> groups,
+                               aggregate_states_t states) {
+        const auto& column = input.data.front();
+        const bool all_valid = column.validity().all_valid();
+        for (uint64_t row = 0; row < groups.size(); row++) {
+            if (!all_valid && column.is_null(row)) {
+                continue;
             }
-            acc.value = r.value();
+            states.at<count_state_t>(groups[row]).value++;
         }
         return core::error_t::no_error();
     }
 
-    static core::error_t avg_finalize(aggregate_kernel_context& ctx) {
-        auto& acc = *static_cast<avg_kernel_state*>(ctx.state());
-        if (acc.count == 0) {
-            ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
+    // COUNT(*) takes no argument column: every row counts.
+    core::error_t count_star_update(kernel_context&,
+                                    const data_chunk_t&,
+                                    core::span<const uint32_t> groups,
+                                    aggregate_states_t states) {
+        for (uint64_t row = 0; row < groups.size(); row++) {
+            states.at<count_state_t>(groups[row]).value++;
+        }
+        return core::error_t::no_error();
+    }
+
+    // ---- finalizes -------------------------------------------------------------------------
+
+    template<typename T>
+    struct numeric_finalize_t {
+        core::error_t operator()(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) const {
+            auto* data = output.data<T>();
+            for (uint64_t row = 0; row < count; row++) {
+                const auto& accumulator = states.at<numeric_state_t<T>>(first + row);
+                output.set_null(row, !accumulator.has_value);
+                data[row] = accumulator.has_value ? accumulator.value : T{};
+            }
             return core::error_t::no_error();
         }
-        auto r = operator_switch<divide_operator_t>(acc.value, acc.count);
-        if (r.has_error()) {
-            return r.error();
+    };
+
+    template<typename T>
+    struct avg_finalize_t {
+        core::error_t operator()(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) const {
+            auto* data = output.data<T>();
+            for (uint64_t row = 0; row < count; row++) {
+                const auto& accumulator = states.at<avg_state_t<T>>(first + row);
+                output.set_null(row, accumulator.count == 0);
+                data[row] = accumulator.count == 0
+                                ? T{}
+                                : static_cast<T>(accumulator.value / static_cast<T>(accumulator.count));
+            }
+            return core::error_t::no_error();
         }
-        ctx.batch_results.push_back(r.value());
+    };
+
+    core::error_t
+    sum_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        return arithmetic_dispatch<numeric_finalize_t>(
+            output.type(),
+            [&ctx] { return unsupported_argument(ctx, "sum"); },
+            states,
+            first,
+            count,
+            output);
+    }
+
+    core::error_t
+    min_max_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        if (output.type().to_physical_type() == physical_type::STRING) {
+            // set_value copies the bytes into the output vector's own string buffer, so the
+            // accumulator's storage is free to die with the arena.
+            for (uint64_t row = 0; row < count; row++) {
+                const auto& accumulator = states.at<string_state_t>(first + row);
+                if (!accumulator.has_value) {
+                    output.set_null(row, true);
+                    continue;
+                }
+                output.set_value(row, std::string_view{accumulator.value});
+            }
+            return core::error_t::no_error();
+        }
+        return ordered_dispatch<numeric_finalize_t>(
+            output.type(),
+            [&ctx] { return unsupported_argument(ctx, "min/max"); },
+            states,
+            first,
+            count,
+            output);
+    }
+
+    core::error_t
+    avg_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        return arithmetic_dispatch<avg_finalize_t>(
+            output.type(),
+            [&ctx] { return unsupported_argument(ctx, "avg"); },
+            states,
+            first,
+            count,
+            output);
+    }
+
+    core::error_t
+    count_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        auto* data = output.data<uint64_t>();
+        for (uint64_t row = 0; row < count; row++) {
+            output.set_null(row, false);
+            data[row] = states.at<count_state_t>(first + row).value;
+        }
         return core::error_t::no_error();
+    }
+
+    std::pmr::vector<complex_logical_type> numeric_parameters(std::pmr::memory_resource* resource) {
+        std::pmr::vector<complex_logical_type> types(resource);
+        for (auto type : {logical_type::TINYINT,
+                          logical_type::SMALLINT,
+                          logical_type::INTEGER,
+                          logical_type::BIGINT,
+                          logical_type::HUGEINT,
+                          logical_type::UTINYINT,
+                          logical_type::USMALLINT,
+                          logical_type::UINTEGER,
+                          logical_type::UBIGINT,
+                          logical_type::UHUGEINT,
+                          logical_type::FLOAT,
+                          logical_type::DOUBLE,
+                          // Any (width, scale):
+                          logical_type::DECIMAL}) {
+            types.emplace_back(type);
+        }
+        return types;
     }
 
     std::unique_ptr<aggregate_function> make_sum_func(std::pmr::memory_resource* resource,
@@ -686,9 +479,9 @@ namespace {
             std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {numeric_types_matcher()},
+                               {parameter_type::variable(0, numeric_parameters(resource))},
                                {output_type::computed(same_type_resolver(0))});
-        aggregate_kernel k{std::move(sig), sum_init, sum_consume, sum_merge, sum_finalize};
+        aggregate_kernel k{std::move(sig), sum_layout, sum_update, sum_finalize};
 
         fn->add_kernel(resource, std::move(k));
         return fn;
@@ -705,9 +498,9 @@ namespace {
             std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {always_true_type_matcher()},
+                               {parameter_type::variable(0)},
                                {output_type::computed(same_type_resolver(0))});
-        aggregate_kernel k{std::move(sig), min_init, min_consume, min_merge, min_finalize};
+        aggregate_kernel k{std::move(sig), min_max_layout, min_update, min_max_finalize};
 
         fn->add_kernel(resource, std::move(k));
         return fn;
@@ -724,9 +517,9 @@ namespace {
             std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {always_true_type_matcher()},
+                               {parameter_type::variable(0)},
                                {output_type::computed(same_type_resolver(0))});
-        aggregate_kernel k{std::move(sig), max_init, max_consume, max_merge, max_finalize};
+        aggregate_kernel k{std::move(sig), min_max_layout, max_update, min_max_finalize};
 
         fn->add_kernel(resource, std::move(k));
         return fn;
@@ -746,14 +539,14 @@ namespace {
                                                        /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {always_true_type_matcher()},
+                               {parameter_type::variable(0)},
                                {output_type::fixed(logical_type::UBIGINT)});
-        aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
+        aggregate_kernel k{std::move(sig), count_layout, count_update, count_finalize};
         fn->add_kernel(resource, std::move(k));
 
         // COUNT(*) — zero-argument kernel
         kernel_signature_t sig_star(function_type_t::aggregate, {}, {output_type::fixed(logical_type::UBIGINT)});
-        aggregate_kernel k_star{std::move(sig_star), count_init, count_consume_empty, count_merge, count_finalize};
+        aggregate_kernel k_star{std::move(sig_star), count_layout, count_star_update, count_finalize};
         fn->add_kernel(resource, std::move(k_star));
 
         return fn;
@@ -770,9 +563,9 @@ namespace {
             std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
-                               {numeric_types_matcher()},
+                               {parameter_type::variable(0, numeric_parameters(resource))},
                                {output_type::computed(same_type_resolver(0))});
-        aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};
+        aggregate_kernel k{std::move(sig), avg_layout, avg_update, avg_finalize};
 
         fn->add_kernel(resource, std::move(k));
         return fn;
@@ -804,6 +597,7 @@ namespace components::compute {
                                             "Results in a single number of the same type as input"));
         register_string_functions(r);
         register_expand_functions(r);
+        register_math_functions(r);
     }
 
 } // namespace components::compute

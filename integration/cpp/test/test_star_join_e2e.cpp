@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
@@ -25,6 +26,19 @@
 #include <memory_resource>
 #include <string>
 #include <vector>
+
+namespace {
+    // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    const components::casts::cast_registry_t* test_cast_registry() {
+        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
+        static const bool loaded = [] {
+            components::casts::register_default_casts(registry);
+            return true;
+        }();
+        (void) loaded;
+        return &registry;
+    }
+} // namespace
 
 using namespace components;
 using namespace components::logical_plan;
@@ -264,6 +278,8 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "d_year")));
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "c_nation")));
+    group_exprs.emplace_back(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "d_year")));
+    group_exprs.emplace_back(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "c_nation")));
     auto sum_profit = make_aggregate_expression(res, "sum", bare_key(res, "profit"));
     auto profit_arith = make_scalar_expression(res, scalar_type::subtract);
     profit_arith->append_param(bare_key(res, "f_rev"));
@@ -290,7 +306,8 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     agg->append_child(sort);
     agg->append_child(select);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, agg.get(), params->parameters());
+    auto validated =
+        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);

@@ -1,23 +1,25 @@
 #pragma once
 
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/sort/sort.hpp>
 
+#include <memory>
+
 namespace components::operators {
 
     // One ORDER BY key, held at its ORDER BY position — the position in the spec list IS
-    // the key's priority. A plain key references an input column (op == invalid, col_path
-    // set); a computed key (op != invalid) evaluates an arithmetic expression — e.g.
-    // "ORDER BY a + b" — into a temporary column at sort time.
+    // the key's priority. A plain key references an input column (expression == nullptr,
+    // col_path set); a computed key — "ORDER BY a + b", or a SELECT alias like "a + b AS c" —
+    // carries the validated expression, which the sort's graph evaluates into a temporary
+    // column at sort time, exactly as every other computation in the engine is evaluated.
     struct sort_key_spec_t {
         explicit sort_key_spec_t(std::pmr::memory_resource* r)
-            : operands(r)
-            , col_path(r) {}
-        expressions::scalar_type op{expressions::scalar_type::invalid};
-        std::pmr::vector<expressions::param_storage> operands;
+            : col_path(r) {}
+        expressions::expression_ptr expression;
         std::pmr::vector<size_t> col_path;
         sort::order order_{sort::order::ascending};
         sort::null_order null_order_{sort::null_order::last};
@@ -56,6 +58,10 @@ namespace components::operators {
         // key to a trailing tie-breaker.
         sort::columnar_sorter_t sorter_;
         std::pmr::vector<sort_key_spec_t> key_specs_;
+        // ONE graph computing every computed key, in key order, over an input chunk. All the
+        // buffered chunks share a schema, so the first non-empty one builds it and the rest reuse
+        // it; null until then.
+        std::unique_ptr<execution_dag::execution_dag_t> computed_graph_;
         size_t expected_output_count_{0};
         logical_plan::limit_t limit_;
         chunks_vector_t buffered_input_{resource_};
@@ -66,6 +72,10 @@ namespace components::operators {
         // finalize (streaming sink).
         [[nodiscard]] core::error_t
         sort_merge(pipeline::context_t* pipeline_context, chunks_vector_t& source_chunks, chunks_vector_t& out);
+
+        // Types the input from `probe` and builds computed_graph_ over it. Idempotent.
+        [[nodiscard]] core::error_t build_computed_graph(pipeline::context_t* pipeline_context,
+                                                         const vector::data_chunk_t& probe);
     };
 
 } // namespace components::operators

@@ -20,8 +20,7 @@ constexpr auto N = 50;
 constexpr auto JOIN_LEFT_SIZE = 20;
 constexpr auto JOIN_RIGHT_SIZE = 5;
 
-static auto consume_calls = 0;
-static auto merge_calls = 0;
+static auto update_calls = 0;
 static auto finalize_calls = 0;
 
 static core::error_t double_val_exec(kernel_context& ctx,
@@ -35,7 +34,7 @@ std::unique_ptr<row_function> make_double_val_func(std::pmr::memory_resource* re
     function_doc doc{"double_val", "multiplies by 2", {"arg"}, false};
     auto fn = std::make_unique<row_function>("double_val", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::row,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), double_val_exec};
     fn->add_kernel(resource, std::move(k));
@@ -54,7 +53,7 @@ std::unique_ptr<row_function> make_gt_threshold_func(std::pmr::memory_resource* 
     auto fn = std::make_unique<row_function>("gt_threshold", arity::binary(), doc, 1);
     kernel_signature_t sig(
         function_type_t::row,
-        {exact_type_matcher(types::logical_type::BIGINT), exact_type_matcher(types::logical_type::BIGINT)},
+        {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), gt_threshold_exec};
     fn->add_kernel(resource, std::move(k));
@@ -74,75 +73,83 @@ std::unique_ptr<vector_function> make_vec_negate_func(std::pmr::memory_resource*
     function_doc doc{"vec_negate", "negates column", {"arg"}, false};
     auto fn = std::make_unique<vector_function>("vec_negate", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::vector,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     vector_kernel k{std::move(sig), vec_negate_exec};
     fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
-struct sum_squares_state : kernel_state {
+struct sum_squares_state {
     double value = 0.0;
 };
 
-static core::result_wrapper_t<kernel_state_ptr> sum_squares_init(kernel_context&, kernel_init_args) {
-    return std::make_unique<sum_squares_state>();
+static aggregate_state_layout_t sum_squares_layout(const std::pmr::vector<types::complex_logical_type>&) {
+    return aggregate_state_of<sum_squares_state>();
 }
 
-static core::error_t sum_squares_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
-    auto* acc = static_cast<sum_squares_state*>(ctx.state());
+static core::error_t sum_squares_update(kernel_context&,
+                                        const vector::data_chunk_t& in,
+                                        core::span<const uint32_t> groups,
+                                        aggregate_states_t states) {
     auto* src = in.data[0].data<int64_t>();
     for (size_t i = 0; i < in.size(); i++) {
         auto v = static_cast<double>(src[i]);
-        acc->value += v * v;
+        states.at<sum_squares_state>(groups[i]).value += v * v;
     }
     return core::error_t::no_error();
 }
 
-static core::error_t sum_squares_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state& into) {
-    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
-                                   static_cast<sum_squares_state&>(from).value);
-    static_cast<sum_squares_state&>(into).value += static_cast<sum_squares_state&>(from).value;
+static core::error_t sum_squares_finalize(kernel_context&,
+                                          aggregate_states_t states,
+                                          uint64_t first,
+                                          uint64_t count,
+                                          vector::vector_t& out) {
+    for (uint64_t row = 0; row < count; row++) {
+        out.data<double>()[row] = states.at<sum_squares_state>(first + row).value;
+    }
     return core::error_t::no_error();
 }
-
-static core::error_t sum_squares_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
 std::unique_ptr<aggregate_function> make_sum_squares_func(std::pmr::memory_resource* resource) {
     function_doc doc{"sum_squares", "sum of squares", {"arg"}, false};
     auto fn = std::make_unique<aggregate_function>("sum_squares", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::aggregate,
-                           {exact_type_matcher(types::logical_type::BIGINT)},
+                           {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::DOUBLE)});
-    aggregate_kernel k{std::move(sig), sum_squares_init, sum_squares_consume, sum_squares_merge, sum_squares_finalize};
+    aggregate_kernel k{std::move(sig), sum_squares_layout, sum_squares_update, sum_squares_finalize};
     fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
-struct call_counter_state : kernel_state {
+struct call_counter_state {
     int64_t rows = 0;
 };
 
-static core::result_wrapper_t<kernel_state_ptr> call_counter_init(kernel_context&, kernel_init_args) {
-    return std::make_unique<call_counter_state>();
+static aggregate_state_layout_t call_counter_layout(const std::pmr::vector<types::complex_logical_type>&) {
+    return aggregate_state_of<call_counter_state>();
 }
 
-static core::error_t call_counter_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
-    consume_calls += 1;
-    static_cast<call_counter_state*>(ctx.state())->rows += static_cast<int64_t>(in.size());
+static core::error_t call_counter_update(kernel_context&,
+                                         const vector::data_chunk_t& in,
+                                         core::span<const uint32_t> groups,
+                                         aggregate_states_t states) {
+    update_calls += 1;
+    for (size_t i = 0; i < in.size(); i++) {
+        states.at<call_counter_state>(groups[i]).rows += 1;
+    }
     return core::error_t::no_error();
 }
 
-static core::error_t call_counter_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state& into) {
-    merge_calls += 1;
-    auto n = static_cast<call_counter_state&>(from).rows;
-    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), n);
-    static_cast<call_counter_state&>(into).rows += n;
-    return core::error_t::no_error();
-}
-
-static core::error_t call_counter_finalize(aggregate_kernel_context&) {
+static core::error_t call_counter_finalize(kernel_context&,
+                                           aggregate_states_t states,
+                                           uint64_t first,
+                                           uint64_t count,
+                                           vector::vector_t& out) {
     finalize_calls += 1;
+    for (uint64_t row = 0; row < count; row++) {
+        out.data<int64_t>()[row] = states.at<call_counter_state>(first + row).rows;
+    }
     return core::error_t::no_error();
 }
 
@@ -153,13 +160,9 @@ std::unique_ptr<aggregate_function> make_call_counter_func(std::pmr::memory_reso
                      false};
     auto fn = std::make_unique<aggregate_function>("call_counter", arity::unary(), doc, 1);
     kernel_signature_t sig(function_type_t::aggregate,
-                           {always_true_type_matcher()},
+                           {parameter_type::variable(0)},
                            {output_type::fixed(types::logical_type::BIGINT)});
-    aggregate_kernel k{std::move(sig),
-                       call_counter_init,
-                       call_counter_consume,
-                       call_counter_merge,
-                       call_counter_finalize};
+    aggregate_kernel k{std::move(sig), call_counter_layout, call_counter_update, call_counter_finalize};
     fn->add_kernel(resource, std::move(k));
     return fn;
 }
@@ -612,8 +615,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
 
     INFO("join + GROUP BY + call_counter (verify batch call semantics)");
     {
-        consume_calls = 0;
-        merge_calls = 0;
+        update_calls = 0;
         finalize_calls = 0;
 
         auto session = otterbrix::session_id_t();
@@ -632,12 +634,12 @@ TEST_CASE("integration::cpp::test_batch_join") {
             REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == 4);
         }
 
-        // Batch semantics: each group is aggregated independently — its chunks are folded
-        // into one value via consume + merge, then finalize emits the group's result. With
-        // one chunk per (small) group that is one consume, one merge and one finalize each.
-        REQUIRE(consume_calls == JOIN_RIGHT_SIZE);
-        REQUIRE(merge_calls == JOIN_RIGHT_SIZE);
-        REQUIRE(finalize_calls == JOIN_RIGHT_SIZE);
+        // Batch semantics: the aggregate is driven PER CHUNK, not per group — every row of a
+        // chunk is scattered into its own group's accumulator in one call, and one finalize
+        // emits the whole block of groups. This is what keeps the cost independent of how many
+        // groups there are, so it is asserted, not merely observed.
+        REQUIRE(update_calls == 1);
+        REQUIRE(finalize_calls == 1);
     }
 }
 

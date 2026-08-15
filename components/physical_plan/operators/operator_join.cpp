@@ -1,6 +1,5 @@
 #include "operator_join.hpp"
 #include "join_utils.hpp"
-#include "predicates/predicate.hpp"
 
 #include <components/vector/vector_operations.hpp>
 
@@ -16,9 +15,10 @@ namespace components::operators {
         , join_type_(join_type)
         , expression_(expression) {}
 
-    void operator_join_t::build_layout_(pipeline::context_t* context, const vector::data_chunk_t& probe_front) {
-        // Lazily derive the output layout, predicate and (right/full) the matched
-        // marker once, from the materialized build (right) side and one probe
+    core::error_t operator_join_t::build_layout_(pipeline::context_t* context,
+                                                 const vector::data_chunk_t& probe_front) {
+        // Lazily derive the output layout, condition graph and (right/full) the
+        // matched marker once, from the materialized build (right) side and one probe
         // (left) schema chunk. Used by push().
         const auto& build_chunks = right_->output()->chunks();
         // operator_data_t always holds at least one (possibly empty) chunk.
@@ -34,14 +34,24 @@ namespace components::operators {
                                          indices_left_,
                                          indices_right_);
 
-        predicate_ = expression_ ? predicates::create_predicate(resource_,
-                                                                context->function_registry,
-                                                                expression_,
-                                                                probe_front.types(),
-                                                                build_chunks.front().types(),
-                                                                &context->parameters,
-                                                                context->session_tz)
-                                 : predicates::create_all_true_predicate(resource_);
+        condition_ = expressions::classify_condition(expression_);
+        if (condition_ == expressions::condition_kind::computed) {
+            // The ON is resolved against the two sides' merged layout, so the right side's
+            // ordinals start at probe_front.column_count().
+            auto merged_types = probe_front.types();
+            const auto build_types = build_chunks.front().types();
+            merged_types.insert(merged_types.end(), build_types.begin(), build_types.end());
+
+            auto built = expressions::build_condition_graph(resource_,
+                                                            context->parameters.parameters,
+                                                            expression_.get(),
+                                                            merged_types,
+                                                            probe_front.column_count());
+            if (built.has_error()) {
+                return built.error();
+            }
+            graph_ = std::move(built.value());
+        }
 
         // RIGHT/FULL: size the flat matched marker over all build rows, with
         // per-chunk start offsets so build row (chunk,row) maps to
@@ -59,9 +69,12 @@ namespace components::operators {
         }
 
         layout_built_ = true;
+        return core::error_t::no_error();
     }
 
-    void operator_join_t::probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out) {
+    void operator_join_t::probe_batch_(pipeline::context_t* context,
+                                       const vector::data_chunk_t& probe,
+                                       chunks_vector_t& out) {
         // Probe ONE left batch against the materialized build (right) chunks and
         // emit per join_type_, in left-major order (mirrors operator_hash_join_t):
         // for each probe row, emit matched rows across the build chunks (build-chunk
@@ -76,25 +89,46 @@ namespace components::operators {
 
         join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
 
+        chunks_vector_t merged(resource_);
+        if (graph_) {
+            const auto probe_types = probe.types();
+            merged.reserve(build_chunks.size());
+            for (const auto& B : build_chunks) {
+                merged.push_back(join_detail::merged_chunk(resource_, probe_types, B));
+            }
+        }
+        if (graph_) {
+            graph_->set_parameters(&context->parameters.parameters);
+        }
+
         const uint64_t n = probe.size();
         for (uint64_t li = 0; li < n; ++li) {
             bool matched = false;
-            for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
+            for (size_t ci = 0; condition_ != expressions::condition_kind::never && ci < build_chunks.size(); ++ci) {
                 const auto& B = build_chunks[ci];
                 if (B.size() == 0) {
                     continue;
                 }
-                auto results = predicates::batch_check_1vN(predicate_, probe, B, li, B.size());
-                if (results.has_error()) {
-                    set_error(results.error());
-                    builder.flush();
-                    return;
+                std::optional<vector::data_chunk_t> decided;
+                if (graph_) {
+                    auto& chunk = merged[ci];
+                    join_detail::point_at_probe_row(resource_, chunk, probe, li);
+                    if (auto error = graph_->process(chunk, context->execution_context); error.contains_error()) {
+                        set_error(error);
+                        builder.flush();
+                        return;
+                    }
+                    auto produced = graph_->finalize(context->execution_context, chunk.size());
+                    if (produced.has_error()) {
+                        set_error(produced.error());
+                        builder.flush();
+                        return;
+                    }
+                    decided = std::move(produced.value());
                 }
-                const auto& mask = results.value();
+                const vector::vector_t* decisions = decided.has_value() ? &decided->data.front() : nullptr;
                 for (uint64_t rj = 0; rj < B.size(); ++rj) {
-                    // A join emits a pair only when the ON predicate is definitely TRUE; a NULL join
-                    // key yields UNKNOWN, which does not match.
-                    if (types::selects(mask[rj])) {
+                    if (decisions == nullptr || (!decisions->is_null(rj) && decisions->get_value<bool>(rj))) {
                         builder.emit_matched(probe, li, B, rj);
                         matched = true;
                         if (mark_matched) {
@@ -143,9 +177,11 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         if (!layout_built_) {
-            build_layout_(ctx, input);
+            if (auto error = build_layout_(ctx, input); error.contains_error()) {
+                return error;
+            }
         }
-        probe_batch_(input, out);
+        probe_batch_(ctx, input, out);
         if (has_error()) {
             return get_error();
         }

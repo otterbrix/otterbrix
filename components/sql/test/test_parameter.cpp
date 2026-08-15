@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -94,12 +95,17 @@ TEST_CASE("components::sql::update_bind") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    using fields = std::pmr::vector<update_expr_ptr>;
+    using fields = std::pmr::vector<expression_ptr>;
+    // A SET value keyed by its target column: SET <target> = $id
+    auto set_const = [&](components::expressions::key_t target, core::parameter_id_t id) {
+        auto expr = make_scalar_expression(&resource, scalar_type::constant, target);
+        expr->append_param(id);
+        return expression_ptr{expr};
+    };
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "count"}));
-        f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
+        f.emplace_back(set_const(components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET count = $1 WHERE id = $2;)_",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
@@ -109,10 +115,8 @@ TEST_CASE("components::sql::update_bind") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "name"}));
-        f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "flag"}));
-        f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{1});
+        f.emplace_back(set_const(components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
+        f.emplace_back(set_const(components::expressions::key_t{&resource, "flag"}, core::parameter_id_t{1}));
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
@@ -122,12 +126,11 @@ TEST_CASE("components::sql::update_bind") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "rating"}));
-        update_expr_ptr calculate = new update_expr_calculate_t(update_expr_type::add);
-        calculate->left() =
-            new update_expr_get_value_t(components::expressions::key_t{&resource, "rating", side_t::undefined});
-        calculate->right() = new update_expr_get_const_value_t(core::parameter_id_t{0});
-        f.back()->left() = std::move(calculate);
+        auto rating =
+            make_scalar_expression(&resource, scalar_type::add, components::expressions::key_t{&resource, "rating"});
+        rating->append_param(components::expressions::key_t{&resource, "rating", side_t::undefined});
+        rating->append_param(core::parameter_id_t{0});
+        f.emplace_back(expression_ptr{rating});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET rating = rating + $1 WHERE flag = $2;)_",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"flag": {$eq: #1}}, $limit: -1})_",

@@ -9,6 +9,7 @@ set(SOURCE_${PROJECT_NAME}
         data_chunk_binary.cpp
         validation.cpp
         arithmetic.cpp
+        operations/apply_operator.cpp
 
         arrow/appender/bool_data.cpp
         arrow/appender/fixed_size_list_data.cpp
@@ -35,6 +36,8 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::types
+        otterbrix::execution_context
+        otterbrix::operators
         otterbrix::string_buffer
         Boost::boost
 )

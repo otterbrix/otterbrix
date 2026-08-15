@@ -111,6 +111,7 @@ namespace services::disk {
         inline constexpr components::catalog::oid_t pg_constraint_oid = wk::pg_constraint_table;
         inline constexpr components::catalog::oid_t pg_sequence_oid = wk::pg_sequence_table;
         inline constexpr components::catalog::oid_t pg_rewrite_oid = wk::pg_rewrite_table;
+        inline constexpr components::catalog::oid_t pg_cast_oid = wk::pg_cast_table;
         inline constexpr components::catalog::oid_t pg_computed_column_oid = wk::pg_computed_column_table;
 
     } // namespace detail

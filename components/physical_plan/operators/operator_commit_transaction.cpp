@@ -209,12 +209,12 @@ namespace components::operators {
                 std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
                                                                          base_append_oids.end(),
                                                                          resource_};
-                auto [_ic, icf] =
-                    actor_zeta::send(ctx->index_address,
-                                     &services::index::manager_index_t::commit_inserts,
-                                     components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
-                                     std::move(append_oids),
-                                     commit_id_);
+                auto [_ic, icf] = actor_zeta::send(
+                    ctx->index_address,
+                    &services::index::manager_index_t::commit_inserts,
+                    components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                    std::move(append_oids),
+                    commit_id_);
                 core::error_t result = co_await std::move(icf);
                 if (result.contains_error()) {
                     // Clean abort: nothing published yet (this block runs before
@@ -229,12 +229,12 @@ namespace components::operators {
                 std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
                                                                          base_delete_table_oids.end(),
                                                                          resource_};
-                auto [_dc, dcf] =
-                    actor_zeta::send(ctx->index_address,
-                                     &services::index::manager_index_t::commit_deletes,
-                                     components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
-                                     std::move(delete_oids),
-                                     commit_id_);
+                auto [_dc, dcf] = actor_zeta::send(
+                    ctx->index_address,
+                    &services::index::manager_index_t::commit_deletes,
+                    components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                    std::move(delete_oids),
+                    commit_id_);
                 core::error_t result = co_await std::move(dcf);
                 if (result.contains_error()) {
                     // Clean abort BEFORE any publish — see commit_inserts note above.
@@ -427,14 +427,15 @@ namespace components::operators {
             // Single batched message: the disk manager fans the per-table compact
             // out internally.
             if (!safe_oids.empty()) {
-                auto [_mc, mcf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::maybe_cleanup_many,
-                                                   components::execution_context_t{ctx->session,
-                                                                                   txn_data,
-                                                                                   ctx->session_tz,
-                                                                                   components::catalog::INVALID_OID},
-                                                   std::move(safe_oids),
-                                                   compact_watermark);
+                auto [_mc, mcf] =
+                    actor_zeta::send(ctx->disk_address,
+                                     &services::disk::manager_disk_t::maybe_cleanup_many,
+                                     components::execution_context_t{ctx->session,
+                                                                     txn_data,
+                                                                     ctx->execution_context.timezone_offset,
+                                                                     components::catalog::INVALID_OID},
+                                     std::move(safe_oids),
+                                     compact_watermark);
                 co_await std::move(mcf);
             }
         }

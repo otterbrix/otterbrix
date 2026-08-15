@@ -51,6 +51,14 @@ namespace components::compute {
         virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& args) = 0;
         virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
         virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
+
+        // Aggregates only: fold a chunk into one accumulator per group, then emit one value per
+        // group. The caller owns the accumulators and says how big one is by asking state_layout.
+        virtual aggregate_state_layout_t state_layout() const = 0;
+        virtual core::error_t
+        update(const vector::data_chunk_t& args, core::span<const uint32_t> groups, aggregate_states_t states) = 0;
+        virtual core::error_t
+        finalize(aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& output) = 0;
     };
 
     class function_visitor {
@@ -106,6 +114,14 @@ namespace components::compute {
         get_best_executor(std::pmr::memory_resource* resource,
                           std::pmr::vector<types::complex_logical_type> types) const;
 
+        // When state of kernel has to be accessible
+        // TODO: remove default context
+        [[nodiscard]] core::result_wrapper_t<std::unique_ptr<function_executor>>
+        make_executor(std::pmr::memory_resource* resource,
+                      std::pmr::vector<types::complex_logical_type> in_types,
+                      const function_options* options = nullptr,
+                      exec_context_t& ctx = default_exec_context()) const;
+
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 
         // Whether partial results of this function can be combined by a fragment-
@@ -128,11 +144,6 @@ namespace components::compute {
     using function_ptr = std::unique_ptr<function>;
     using function_uid = size_t;
     constexpr inline size_t invalid_function_uid = std::numeric_limits<size_t>::max();
-    struct registered_func_id {
-        function_uid uid;
-        std::vector<kernel_signature_t> signatures;
-    };
-
     namespace detail {
         // function_impl is responsive for lifetime of function & all of its kernels
         template<typename KernelType>
@@ -310,71 +321,26 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, registered_func_id>, 9> DEFAULT_FUNCTIONS{
-        std::pair<std::string, registered_func_id>{"sum",
-                                                   {0,
-                                                    {kernel_signature_t{function_type_t::aggregate,
-                                                                        {input_type::make_numeric()},
-                                                                        {output_type::same_type_at(0)}}}}},
-        std::pair<std::string, registered_func_id>{"min",
-                                                   {1,
-                                                    {kernel_signature_t{function_type_t::aggregate,
-                                                                        {input_type::make_always_true()},
-                                                                        {output_type::same_type_at(0)}}}}},
-        std::pair<std::string, registered_func_id>{"max",
-                                                   {2,
-                                                    {kernel_signature_t{function_type_t::aggregate,
-                                                                        {input_type::make_always_true()},
-                                                                        {output_type::same_type_at(0)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "count",
-            {3,
-             {kernel_signature_t{function_type_t::aggregate,
-                                 {input_type::make_always_true()},
-                                 {output_type::same_type_at(0)}},
-              kernel_signature_t{function_type_t::aggregate, {}, {output_type::fixed(types::logical_type::UBIGINT)}}}}},
-        std::pair<std::string, registered_func_id>{"avg",
-                                                   {4,
-                                                    {kernel_signature_t{function_type_t::aggregate,
-                                                                        {input_type::make_numeric()},
-                                                                        {output_type::same_type_at(0)}}}}},
-        // substring/length/regexp_replace use make_always_true matchers so the
-        // dispatcher accepts NA inputs; the kernel body propagates NULL.
-        std::pair<std::string, registered_func_id>{
-            "substring",
-            {5,
-             {kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(), input_type::make_always_true()},
-                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}},
-              kernel_signature_t{
-                  function_type_t::row,
-                  {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
-                  {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "length",
-            {6,
-             {kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true()},
-                                 {output_type::fixed(types::logical_type::BIGINT)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "regexp_replace",
-            {7,
-             {kernel_signature_t{
-                 function_type_t::row,
-                 {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
-                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "generate_series",
-            {8,
-             {kernel_signature_t{function_type_t::expand,
-                                 {input_type::make_integer(), input_type::make_integer()},
-                                 {output_type::fixed(types::logical_type::BIGINT)}},
-              kernel_signature_t{function_type_t::expand,
-                                 {input_type::make_integer(), input_type::make_integer(), input_type::make_integer()},
-                                 {output_type::fixed(types::logical_type::BIGINT)}}}}}};
+    static const std::array<std::pair<std::string, function_uid>, 15> DEFAULT_FUNCTIONS{
+        std::pair<std::string, function_uid>{"sum", 0},
+        std::pair<std::string, function_uid>{"min", 1},
+        std::pair<std::string, function_uid>{"max", 2},
+        std::pair<std::string, function_uid>{"count", 3},
+        std::pair<std::string, function_uid>{"avg", 4},
+        std::pair<std::string, function_uid>{"substring", 5},
+        std::pair<std::string, function_uid>{"length", 6},
+        std::pair<std::string, function_uid>{"regexp_replace", 7},
+        std::pair<std::string, function_uid>{"regexp_like", 8},
+        std::pair<std::string, function_uid>{"generate_series", 9},
+        std::pair<std::string, function_uid>{"abs", 10},
+        std::pair<std::string, function_uid>{"pow", 11},
+        std::pair<std::string, function_uid>{"sqrt", 12},
+        std::pair<std::string, function_uid>{"cbrt", 13},
+        std::pair<std::string, function_uid>{"factorial", 14}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);
     void register_expand_functions(function_registry_t& registry);
+    void register_math_functions(function_registry_t& registry);
 
 } // namespace components::compute

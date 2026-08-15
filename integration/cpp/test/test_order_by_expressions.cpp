@@ -63,10 +63,10 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_evaluation") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session,
-                                  "INSERT INTO db.m (id, v, s) VALUES (1, 5, 'a'), (2, NULL, 'b'), (3, 7, 'c');")
-                    ->is_success());
+        REQUIRE(
+            dispatcher
+                ->execute_sql(session, "INSERT INTO db.m (id, v, s) VALUES (1, 5, 'a'), (2, NULL, 'b'), (3, 7, 'c');")
+                ->is_success());
     }
 
     {
@@ -351,8 +351,7 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_over_null_rows") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
                     ->is_success());
     }
 
@@ -385,9 +384,7 @@ TEST_CASE("integration::cpp::order_by_expressions::null_literal_arithmetic_keys"
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, 7);")
-                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, 7);")->is_success());
     }
 
     // A NULL literal in arithmetic answers NULL (three-valued logic), never an operator
@@ -467,8 +464,7 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_nulls_first") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
                     ->is_success());
     }
 
@@ -501,8 +497,7 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_desc_nulls_placement
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
                     ->is_success());
     }
 
@@ -527,4 +522,3 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_desc_nulls_placement
         REQUIRE(cur->value(0, 2).value<int32_t>() == 2);
     }
 }
-

@@ -7,7 +7,8 @@ namespace components::logical_plan {
     node_group_t::node_group_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
         : node_t(resource, node_type::group_t)
         , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname))) {}
+        , relname_(std::move(static_cast<std::string&>(relname)))
+        , input_types_(resource) {}
 
     void node_group_t::set_pushdown(bool pushdown) noexcept { pushdown_ = pushdown; }
 

@@ -3,6 +3,7 @@
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/types/parameter_map.hpp>
 #include <core/pmr.hpp>
 
 #include <components/expressions/forward.hpp>
@@ -12,7 +13,7 @@ namespace components::logical_plan {
     using expr_value_t = types::logical_value_t;
 
     struct storage_parameters {
-        std::pmr::unordered_map<core::parameter_id_t, expr_value_t> parameters;
+        types::parameter_map_t parameters;
 
         explicit storage_parameters(std::pmr::memory_resource* resource)
             : parameters(resource) {}

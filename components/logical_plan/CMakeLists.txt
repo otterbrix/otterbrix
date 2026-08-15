@@ -14,6 +14,7 @@ set(SOURCE_${PROJECT_NAME}
         node_dynamic_cascade_delete.cpp
         node_register_udf.cpp
         node_unregister_udf.cpp
+        node_register_cast.cpp
         node_transaction.cpp
         node_catalog_resolve.cpp
         node_extension.cpp
@@ -64,6 +65,7 @@ target_link_libraries(
         otterbrix::expressions
         otterbrix::table
         otterbrix::catalog
+        otterbrix::casts
 
         absl::int128
         Boost::boost

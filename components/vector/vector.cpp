@@ -44,7 +44,8 @@ namespace components::vector {
 
     vector_t::vector_t(std::pmr::memory_resource* resource, const types::logical_value_t& value, uint64_t capacity)
         : type_(value.type())
-        , validity_(resource, capacity) {
+        , validity_(type_.type() == types::logical_type::NA ? validity_mask_t{resource, nullptr}
+                                                            : validity_mask_t{resource, capacity}) {
         reference(value);
     }
 
@@ -67,10 +68,14 @@ namespace components::vector {
                        bool create_data,
                        bool zero_data,
                        uint64_t capacity)
-        : vector_type_(vector_type::FLAT)
+        : vector_type_(type.type() == types::logical_type::NA ? vector_type::CONSTANT : vector_type::FLAT)
         , type_(std::move(type))
         , data_(nullptr)
-        , validity_(resource, capacity) {
+        , validity_(type_.type() == types::logical_type::NA ? validity_mask_t{resource, nullptr}
+                                                            : validity_mask_t{resource, capacity}) {
+        if (type_.type() == types::logical_type::NA) {
+            return;
+        }
         if (create_data) {
             auxiliary_.reset();
             validity_.reset();
@@ -134,6 +139,9 @@ namespace components::vector {
     void vector_t::reference(const types::logical_value_t& value) {
         assert(type_.type() == value.type().type());
         this->vector_type_ = vector_type::CONSTANT;
+        if (type_.type() == types::logical_type::NA) {
+            return;
+        }
         buffer_ = std::make_unique<vector_buffer_t>(resource(), value.type(), 1);
         auto internal_type = value.type().to_physical_type();
         if (internal_type == types::physical_type::STRUCT) {
@@ -277,7 +285,14 @@ namespace components::vector {
     }
 
     void vector_t::set_null(uint64_t position, bool value) {
-        assert(vector_type_ == vector_type::FLAT);
+        assert(vector_type_ == vector_type::FLAT || vector_type_ == vector_type::CONSTANT);
+        if (type_.type() == types::logical_type::NA) {
+            assert(value && "a row of an NA vector cannot be made valid");
+            return;
+        }
+        if (vector_type_ == vector_type::CONSTANT) {
+            position = 0;
+        }
         validity_.set(position, !value);
         if (value) {
             auto internal_type = type_.to_physical_type();
@@ -293,6 +308,88 @@ namespace components::vector {
                 }
             }
         }
+    }
+
+    const vector_t* vector_t::resolve_nested_location(const std::pmr::vector<uint64_t>& path,
+                                                      uint64_t* leaf_index,
+                                                      bool* contains_null) const {
+        assert(!path.empty());
+
+        const vector_t* vector = this;
+        uint64_t index = path[0];
+        bool null_seen = false;
+
+        // Resolve dictionary/constant layers so vector/index refer to the underlying flat storage.
+        auto resolve_storage = [&]() {
+            bool finished = false;
+            while (!finished) {
+                switch (vector->get_vector_type()) {
+                    case vector_type::CONSTANT:
+                        index = 0;
+                        finished = true;
+                        break;
+                    case vector_type::FLAT:
+                        finished = true;
+                        break;
+                    case vector_type::DICTIONARY:
+                        index = vector->indexing().get_index(index);
+                        vector = &vector->child();
+                        break;
+                    default:
+                        throw std::runtime_error("unsupported vector type in nested null access");
+                }
+            }
+        };
+
+        for (uint64_t step = 1; step < path.size(); ++step) {
+            resolve_storage();
+            if (!vector->validity_.row_is_valid(index)) {
+                null_seen = true;
+            }
+            const uint64_t sub = path[step];
+            switch (vector->type_.type()) {
+                case types::logical_type::LIST:
+                case types::logical_type::MAP: {
+                    auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
+                    if (sub >= offlen.length) {
+                        *leaf_index = index;
+                        if (contains_null) {
+                            *contains_null = true;
+                        }
+                        return vector;
+                    }
+                    index = offlen.offset + sub;
+                    vector = &vector->entry();
+                    break;
+                }
+                case types::logical_type::ARRAY: {
+                    auto stride =
+                        static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->size();
+                    index = index * stride + sub;
+                    vector = &vector->entry();
+                    break;
+                }
+                default:
+                    if (vector->type_.to_physical_type() == types::physical_type::STRUCT) {
+                        // Struct field: the row index stays the same, only the child changes.
+                        vector = vector->entries()[sub].get();
+                    } else {
+                        throw std::runtime_error("nested null access path is too deep for this type");
+                    }
+                    break;
+            }
+        }
+
+        resolve_storage();
+        if (!vector->validity_.row_is_valid(index)) {
+            null_seen = true;
+        }
+
+        *leaf_index = index;
+        if (contains_null) {
+            *contains_null = null_seen;
+        }
+        return vector;
     }
 
     vector_t::nested_element_t vector_t::resolve_nested_element(uint64_t row_index,
@@ -509,6 +606,9 @@ namespace components::vector {
         if (get_vector_type() == vector_type::DICTIONARY) {
             auto& indexing_vector = indexing();
             return child().set_value(indexing_vector.get_index(index), val);
+        }
+        if (get_vector_type() == vector_type::CONSTANT) {
+            index = 0;
         }
         if (!val.is_null() && val.type() != type_) {
             assert(false && "value has to be casted to vector's type before set_value");
@@ -1016,6 +1116,9 @@ namespace components::vector {
     }
 
     bool vector_t::is_null(uint64_t index) const {
+        if (type_.type() == types::logical_type::NA) {
+            return true;
+        }
         switch (get_vector_type()) {
             case vector_type::DICTIONARY:
                 return child().is_null(indexing().get_index(index)); // resolve one layer, recurse
@@ -1029,7 +1132,7 @@ namespace components::vector {
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {
-        if (!validity_.row_is_valid(index)) {
+        if (type_.type() == types::logical_type::NA || !validity_.row_is_valid(index)) {
             types::logical_value_t null_val(resource(), types::complex_logical_type{types::logical_type::NA});
             if (type_.has_alias()) {
                 null_val.set_alias(type_.alias());
@@ -1056,6 +1159,9 @@ namespace components::vector {
     }
 
     void vector_t::flatten(uint64_t count) {
+        if (type_.type() == types::logical_type::NA) {
+            return;
+        }
         switch (get_vector_type()) {
             case vector_type::FLAT:
                 break;
@@ -1406,11 +1512,12 @@ namespace components::vector {
 
     void vector_t::set_vector_type(vector_type vector_type) {
         this->vector_type_ = vector_type;
-        if (types::complex_logical_type::type_is_constant_size(type_.type()) &&
+        const bool stores_fields = type_.to_physical_type() == types::physical_type::STRUCT;
+        if (!stores_fields && types::complex_logical_type::type_is_constant_size(type_.type()) &&
             (vector_type_ == vector_type::CONSTANT || vector_type_ == vector_type::FLAT)) {
             auxiliary_.reset();
         }
-        if (vector_type_ == vector_type::CONSTANT && type_.to_physical_type() == types::physical_type::STRUCT) {
+        if (vector_type_ == vector_type::CONSTANT && stores_fields) {
             for (auto& entry : entries()) {
                 entry->set_vector_type(vector_type_);
             }

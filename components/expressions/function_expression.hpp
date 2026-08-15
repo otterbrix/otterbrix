@@ -27,9 +27,19 @@ namespace components::expressions {
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;
 
+        void set_key(const key_t& key);
+
+        void set_distinct(bool distinct) noexcept;
+        bool is_distinct() const noexcept;
+
+        void set_star_argument(bool star) noexcept;
+        bool has_star_argument() const noexcept;
+
     private:
         std::string name_;
         std::pmr::vector<param_storage> args_;
+        bool distinct_{false};
+        bool star_argument_{false};
         compute::function_uid function_uid_{compute::invalid_function_uid};
 
         hash_t hash_impl() const override;

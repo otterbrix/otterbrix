@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/clone_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -110,6 +111,10 @@ namespace components::planner::optimizer {
                     for (auto& arg : func->args()) {
                         for_each_key_in_param(arg, fn);
                     }
+                    break;
+                }
+                case expression_group::cast: {
+                    for_each_key_in_param(static_cast<cast_expression_t*>(expr.get())->child(), fn);
                     break;
                 }
                 default:

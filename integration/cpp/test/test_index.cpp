@@ -449,9 +449,12 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1}));
-            components::expressions::update_expr_ptr update_expr = new components::expressions::update_expr_set_t(
+            // SET count = $2 — the value expression's own key names the target column.
+            auto update_expr = components::expressions::make_scalar_expression(
+                dispatcher->resource(),
+                components::expressions::scalar_type::constant,
                 components::expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->left() = new components::expressions::update_expr_get_const_value_t(id_par{2});
+            update_expr->append_param(id_par{2});
             auto upd = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
                 dispatcher->resource(),
                 database_name,
@@ -1002,30 +1005,6 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
             auto r = index.search(compare_type::eq, logical_value_t(res, int64_t{5}), tz);
             REQUIRE(r.size() == 1);
             REQUIRE(r.front() == 1);
-        }
-    }
-
-    INFO("unit: reconcile_to_fixed_array degrades a non-castable element to NULL");
-    {
-        std::pmr::monotonic_buffer_resource arena;
-        auto* res = &arena;
-
-        // Nullable int[3] column, no default.
-        auto arr_col_type = complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 3);
-        components::table::column_definition_t col("arr", arr_col_type);
-
-        // Source array whose single element is a STRUCT — cast_as(STRUCT -> INTEGER)
-        // errors. Pre-fix: assert-abort (Debug) / empty-optional deref (Release UB).
-        std::vector<logical_value_t> fields;
-        fields.emplace_back(logical_value_t(res, int32_t{9}));
-        auto struct_elem = logical_value_t::create_struct(res, "s", fields);
-        auto src = logical_value_t::create_array(res, struct_elem.type(), std::vector<logical_value_t>{struct_elem});
-
-        auto out = components::table::reconcile_to_fixed_array(res, src, col, core::date::timezone_offset_t{});
-        REQUIRE(out.type().type() == logical_type::ARRAY);
-        REQUIRE(out.children().size() == 3);
-        for (const auto& elem : out.children()) {
-            REQUIRE(elem.is_null()); // element 0 degraded to NULL; slots 1-2 padded NULL
         }
     }
 

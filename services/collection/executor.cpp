@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 
+#include <components/casts/default_casts.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/planner/planner.hpp>
@@ -24,6 +25,7 @@
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -39,8 +41,8 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_create_database.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_transaction.hpp>
@@ -48,6 +50,7 @@
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
 #include <services/dispatcher/plan_resolve_index.hpp>
+#include <services/dispatcher/resolve_type.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
@@ -90,6 +93,8 @@ namespace services::collection::executor {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<executor_t, &executor_t::execute_plan_full>,
             actor_zeta::msg_id<executor_t, &executor_t::register_udf>,
+            actor_zeta::msg_id<executor_t, &executor_t::register_cast>,
+            actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
             actor_zeta::msg_id<executor_t, &executor_t::poke_msg>,
         };
@@ -195,11 +200,13 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , log_(log)
         , function_registry_(resource)
+        , cast_registry_(resource)
         , create_plan_rule_(create_plan_rule)
         , optimizer_pass_(optimizer_pass)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
+        components::casts::register_default_casts(cast_registry_);
         explain_renderers_.push_back(&render_postgres); // slot 0 = built-in default renderer
     }
 
@@ -211,6 +218,14 @@ namespace services::collection::executor {
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::register_cast>: {
+                co_await actor_zeta::dispatch(this, &executor_t::register_cast, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>: {
+                co_await actor_zeta::dispatch(this, &executor_t::unregister_cast, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>: {
@@ -340,7 +355,6 @@ namespace services::collection::executor {
                                                        false,
                                                        std::move(captured_subplans))};
         }
-
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.analyze = explain_analyze;
@@ -483,6 +497,16 @@ namespace services::collection::executor {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
             const auto& mapping = plan.sub_query_results[i];
+
+            // set result type, so next query will be able to use it for it's validation
+            if (plan.sub_queries[i]->has_output_types()) {
+                const auto& column_type = plan.sub_queries[i]->output_types().front();
+                plan.parameters->set_parameter(
+                    mapping.id,
+                    mapping.compacter == &components::vector::compact_to_single_value
+                        ? components::types::logical_value_t{resource(), column_type}
+                        : components::types::logical_value_t::create_array(resource(), column_type, {}));
+            }
             // PostgreSQL: the argument of WHERE / HAVING must be type boolean. For a bare
             // boolean-context scalar sub-query (`WHERE (SELECT ...)` / `HAVING (SELECT ...)`)
             // reject a non-boolean STATIC output type here — otherwise a numeric scalar would
@@ -801,7 +825,9 @@ namespace services::collection::executor {
                 root->append_child(n);
             }
             auto params = components::logical_plan::make_parameter_node(resource());
-            services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
+            services::context_storage_t cstor{resource(),
+                                              log_.clone(),
+                                              context_storage.execution_context.timezone_offset};
             co_return co_await this->execute_plan(session,
                                                   components::logical_plan::execution_plan_t{resource(), root, params},
                                                   std::move(cstor),
@@ -926,6 +952,52 @@ namespace services::collection::executor {
         if (plan.sub_queries.back()) {
             services::catalog_resolve::stamp_oids_from_resolves(plan.sub_queries.back().get());
             services::catalog_resolve::gather_plan_resolve_index(plan.sub_queries.back().get(), &dispatcher_idx);
+        }
+
+        // Register/unregister cast: resolve + validate ONLY. Catalog-resolve above
+        // turned any UDT source/target names into real types via dispatcher_idx; a
+        // type that is neither built-in nor a registered UDT stays UNKNOWN and is
+        // rejected here. The registry fan-out and the pg_cast write are driven by
+        // the dispatcher AFTER this returns (registry first, then catalog), so this
+        // pass touches neither — it only resolves, validates, and hands the resolved
+        // (source, target) back on execute_result_t.
+        if (original_type == node_type::register_cast_t || original_type == node_type::unregister_cast_t) {
+            auto* root = components::logical_plan::effective_root_node(plan.sub_queries.back().get());
+            components::types::complex_logical_type src;
+            components::types::complex_logical_type tgt;
+            if (original_type == node_type::register_cast_t) {
+                auto* rc = static_cast<components::logical_plan::node_register_cast_t*>(root);
+                src = rc->source();
+                tgt = rc->target();
+            } else {
+                auto* uc = static_cast<components::logical_plan::node_unregister_cast_t*>(root);
+                src = uc->source();
+                tgt = uc->target();
+            }
+            services::dispatcher::resolve_one_type(src, &dispatcher_idx);
+            services::dispatcher::resolve_one_type(tgt, &dispatcher_idx);
+            if (src.type() == logical_type::UNKNOWN || tgt.type() == logical_type::UNKNOWN) {
+                co_return execute_result_t{make_cursor(
+                    resource(),
+                    core::error_t{core::error_code_t::schema_error,
+                                  std::pmr::string{"cast source or target type is not registered", resource()}})};
+            }
+            const bool exists = cast_registry_.contains(src, tgt);
+            if (original_type == node_type::register_cast_t && exists) {
+                co_return execute_result_t{
+                    make_cursor(resource(),
+                                core::error_t{core::error_code_t::schema_error,
+                                              std::pmr::string{"cast is already registered", resource()}})};
+            }
+            if (original_type == node_type::unregister_cast_t && !exists) {
+                co_return execute_result_t{
+                    make_cursor(resource(),
+                                core::error_t{core::error_code_t::schema_error,
+                                              std::pmr::string{"cast is not registered", resource()}})};
+            }
+            execute_result_t ok{make_cursor(resource())};
+            ok.resolved_cast = std::make_pair(std::move(src), std::move(tgt));
+            co_return ok;
         }
 
         // Build qualified_name_t from the effective consumer node; nodes
@@ -1089,6 +1161,16 @@ namespace services::collection::executor {
                             }
                         }
                     }
+                    if (!error) {
+                        if (auto default_err =
+                                services::dispatcher::convert_column_defaults(resource(),
+                                                                              &cast_registry_,
+                                                                              context_storage.execution_context,
+                                                                              n->column_definitions());
+                            default_err.contains_error()) {
+                            error = make_cursor(resource(), default_err);
+                        }
+                    }
                 }
                 break;
             }
@@ -1205,12 +1287,13 @@ namespace services::collection::executor {
                         auto vt_err = services::dispatcher::validate_types(resource(),
                                                                            &dispatcher_idx,
                                                                            plan.sub_queries.back().get(),
-                                                                           context_storage.session_timezone);
+                                                                           context_storage.execution_context);
                         if (vt_err.contains_error()) {
                             error = make_cursor(resource(), vt_err);
                         } else {
                             auto schema_res = services::dispatcher::validate_schema(resource(),
                                                                                     &dispatcher_idx,
+                                                                                    &cast_registry_,
                                                                                     plan.sub_queries.back().get(),
                                                                                     plan.parameters->parameters());
                             if (schema_res.has_error()) {
@@ -1283,10 +1366,11 @@ namespace services::collection::executor {
                 break;
             }
             default: {
+                services::dispatcher::resolve_expression_types(plan.sub_queries.back(), &dispatcher_idx);
                 auto vt_err = services::dispatcher::validate_types(resource(),
                                                                    &dispatcher_idx,
                                                                    plan.sub_queries.back().get(),
-                                                                   context_storage.session_timezone);
+                                                                   context_storage.execution_context);
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
@@ -1320,6 +1404,7 @@ namespace services::collection::executor {
                     auto schema_res =
                         services::dispatcher::validate_schema(resource(),
                                                               &dispatcher_idx,
+                                                              &cast_registry_,
                                                               plan.sub_queries.back().get(),
                                                               overridden ? validate_params : bound_params);
                     if (schema_res.has_error()) {
@@ -1363,7 +1448,9 @@ namespace services::collection::executor {
             // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT,
             // CHECK exprs), reading exclusively from the plan-tree idx. ctx
             // carries resolve_txn so enrich sees the same MVCC snapshot.
-            components::execution_context_t enrich_ctx{session, resolve_txn, context_storage.session_timezone};
+            components::execution_context_t enrich_ctx{session,
+                                                       resolve_txn,
+                                                       context_storage.execution_context.timezone_offset};
             auto ef = services::dispatcher::enrich_plan(resource(),
                                                         plan.sub_queries.back(),
                                                         disk_address_,
@@ -1418,7 +1505,9 @@ namespace services::collection::executor {
                     std::size_t count) -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
-                services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
+                services::context_storage_t cstor{resource(),
+                                                  log_.clone(),
+                                                  context_storage.execution_context.timezone_offset};
                 auto op = services::planner::create_plan(cstor,
                                                          local_fn_registry,
                                                          node,
@@ -1608,7 +1697,7 @@ namespace services::collection::executor {
                     services::catalog_resolve::gather_plan_resolve_index(plan.sub_queries.back().get(), &reenrich_idx);
                     components::execution_context_t enriched_ctx{session,
                                                                  resolve_txn,
-                                                                 context_storage.session_timezone};
+                                                                 context_storage.execution_context.timezone_offset};
                     auto ef2 = services::dispatcher::enrich_plan(resource(),
                                                                  plan.sub_queries.back(),
                                                                  disk_address_,
@@ -1646,10 +1735,9 @@ namespace services::collection::executor {
         // a precondition, not a fallback.
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
         plan.sub_queries.back() = components::planner::optimize(resource(),
-                                                               std::move(plan.sub_queries.back()),
-                                                               plan.parameters.get(),
-                                                               can_push_to_agent,
-                                                               optimizer_pass_);
+                                                                std::move(plan.sub_queries.back()),
+                                                                plan.parameters.get(),
+                                                                can_push_to_agent);
 
         // Build-side selection: fetch live row counts for the child
         // tables of every INNER hash join so create_plan_join can put the smaller
@@ -2062,6 +2150,22 @@ namespace services::collection::executor {
         co_return std::make_unique<function_result_t>(std::move(res));
     }
 
+    executor_t::unique_future<bool> executor_t::register_cast(components::session::session_id_t session,
+                                                              components::types::complex_logical_type source,
+                                                              components::types::complex_logical_type target,
+                                                              components::casts::cast_entry entry) {
+        trace(log_, "executor::register_cast, session: {}", session.data());
+        auto err = cast_registry_.add(source, target, components::casts::cast_entry(entry));
+        co_return !err.contains_error();
+    }
+
+    executor_t::unique_future<bool> executor_t::unregister_cast(components::session::session_id_t session,
+                                                                components::types::complex_logical_type source,
+                                                                components::types::complex_logical_type target) {
+        trace(log_, "executor::unregister_cast, session: {}", session.data());
+        co_return cast_registry_.remove(source, target);
+    }
+
     executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
         // Register the host-supplied renderer into THIS executor's own registry at slot `id` (a POD
         // fn-pointer, no shared state). Reject a null renderer or an out-of-range id with `false` —
@@ -2184,10 +2288,13 @@ namespace services::collection::executor {
         // for the sourceless_sink_root shape.
         bool pumpable_ancestors = false;
         if (sourceless_sink_root) {
+            pumpable_ancestors = chain.front()->produces_query_rows();
             for (ops::operator_t* op : chain) {
+                if (pumpable_ancestors) {
+                    break;
+                }
                 if (op->role() != ops::pipeline_role::sink) {
                     pumpable_ancestors = true; // a streaming op on the chain -> real pipeline
-                    break;
                 }
             }
         }
@@ -2559,7 +2666,7 @@ namespace services::collection::executor {
             pipeline_context.index_address = index_address_;
             pipeline_context.wal_address = wal_address_;
             pipeline_context.txn = txn;
-            pipeline_context.session_tz = plan_data.context_storage_.session_timezone;
+            pipeline_context.execution_context = plan_data.context_storage_.execution_context;
             // VACUUM/MVCC GC threshold. operator_vacuum_t reads this to gate
             // manager_disk_t::vacuum_all + manager_index_t::cleanup_all_versions.
             // The value arrives with the session context fetched at plan start.

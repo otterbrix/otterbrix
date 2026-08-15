@@ -3,9 +3,7 @@
 #include "manager_disk.hpp"
 #include <algorithm>                              // std::min
 #include <components/logical_plan/node_group.hpp> // node_group_t::set_pushdown (re-lowering guard)
-#include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
-#include <components/physical_plan/operators/operator_group.hpp> // operator_group_t + group_key_t (aggregate-pushdown reduce)
-#include <components/physical_plan/operators/predicates/expression_filter_bridge.hpp> // attach_expression_evaluators (WHERE f(col) pushdown)
+#include <components/physical_plan/operators/operator_hash_group.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp>                   // components::vector::cells_equal (typed FK hash-verify)
@@ -689,64 +687,6 @@ namespace services::disk {
             }
         }
 
-        // 4. Type promotion
-        if (s->has_schema() && !table_columns.empty()) {
-            for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
-                auto src_type = data->data[i].type();
-                auto tgt_type = table_columns[i].type();
-                if (src_type != tgt_type && src_type.is_convertable_to(tgt_type)) {
-                    auto& src_vec = data->data[i];
-                    auto target_type = table_columns[i].type();
-                    if (src_vec.type().has_alias()) {
-                        target_type.set_alias(src_vec.type().alias());
-                    }
-                    const bool array_target = target_type.type() == components::types::logical_type::ARRAY;
-                    // A whole-column NULL literal arrives as an NA-typed source vector, which
-                    // carries no values (and no meaningful validity mask) — every row is null.
-                    const bool src_is_null_type = src_vec.type().type() == components::types::logical_type::NA;
-                    components::vector::vector_t casted(resource(), target_type, data->size());
-                    for (uint64_t row = 0; row < data->size(); row++) {
-                        if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
-                            // A fixed ARRAY column reconciles a length mismatch against the
-                            // column DEFAULT (truncate / pad-with-default); other columns use
-                            // the plain value cast. No error channel in this coroutine — a
-                            // non-castable value degrades to NULL rather than aborting.
-                            components::types::logical_value_t reconciled{
-                                resource(),
-                                components::types::complex_logical_type{components::types::logical_type::NA}};
-                            if (array_target) {
-                                reconciled = components::table::reconcile_to_fixed_array(resource(),
-                                                                                         src_vec.value(row),
-                                                                                         table_columns[i],
-                                                                                         session_tz);
-                            } else {
-                                auto casted = src_vec.value(row).cast_as(target_type, session_tz);
-                                if (!casted.has_error()) {
-                                    reconciled = std::move(casted.value());
-                                }
-                            }
-                            // reconcile_to_fixed_array yields a NULL value only when a NOT NULL
-                            // fixed ARRAY column receives a too-short value with no default to
-                            // pad from. operator_check_constraint already rejects this with a
-                            // clean error before the append, so this is a defensive backstop.
-                            if (array_target && reconciled.is_null()) {
-                                trace(log_,
-                                      "agent_disk[{}]::storage_append_inner: NOT NULL fixed ARRAY column '{}' "
-                                      "cannot be padded from a too-short value",
-                                      pool_idx_,
-                                      table_columns[i].name());
-                                co_return std::make_pair(uint64_t{0}, uint64_t{0});
-                            }
-                            casted.set_value(row, reconciled);
-                        } else {
-                            casted.validity().set_invalid(row);
-                        }
-                    }
-                    data->data[i] = std::move(casted);
-                }
-            }
-        }
-
         // 5. WAL-first: allocate the start_row WITHOUT materializing, write WAL,
         //    then materialize. total_rows() is the next append position (the standard
         //    append computes the same value). No other same-oid handler runs between
@@ -1168,8 +1108,8 @@ namespace services::disk {
 
         // (2) Rebuild the operator_group from the POD: plain-column keys + builtin
         //     SUM/COUNT/MIN/MAX/AVG (COUNT(*) == empty arg path). No HAVING / DISTINCT / computed
-        //     columns (the optimizer never stamps those), so internal_aggregate_count==0.
-        ops::operator_group_t group{resource, log.clone(), 0};
+        //     columns (the optimizer never stamps those).
+        ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
             ops::group_key_t key{resource};
             key.name.assign(gk.name.begin(), gk.name.end());
@@ -1178,23 +1118,12 @@ namespace services::disk {
             group.add_key(std::move(key));
         }
         for (const auto& agg : spec.aggregates) {
-            std::pmr::vector<components::expressions::param_storage> args{resource};
-            if (!agg.arg_col_path.empty()) {
-                components::expressions::key_t k{resource};
-                std::pmr::vector<size_t> p{resource};
-                p.assign(agg.arg_col_path.begin(), agg.arg_col_path.end());
-                k.set_path(std::move(p));
-                args.emplace_back(std::move(k));
-            } // else COUNT(*): empty args (operator_group treats it as count-star)
-            group.add_value(agg.alias,
-                            boost::intrusive_ptr(new ops::aggregate::operator_func_t(resource,
-                                                                                     log.clone(),
-                                                                                     reg.get_function(agg.func_uid),
-                                                                                     std::move(args),
-                                                                                     agg.distinct)));
+            group.add_value(agg.alias, agg.result_type);
         }
-        // MANDATORY: forward the plan-resolved FINAL output types so an empty-slice scalar
-        // result stays typed (SUM(int)->INTEGER NULL) instead of the 0-byte NA sentinel (gcc -O3).
+        for (const auto& output : spec.outputs) {
+            group.add_output(output);
+        }
+        group.set_input_types(spec.input_types);
         group.set_output_types(spec.output_types);
 
         // (3) Pipeline context for group.push/finalize. Build IN PLACE (its move-ctor DROPS
@@ -1286,10 +1215,6 @@ namespace services::disk {
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
             scan.filter = std::move(filter);
-            // Attach agent-side per-row evaluators to any expression_filter_t in the shipped filter
-            // (WHERE f(col) OP const): its value_getter closures capture THIS agent's resource +
-            // function registry, which cannot cross the mailbox, so the filter arrived evaluator-less.
-            components::operators::predicates::attach_expression_evaluators(resource(), scan.filter.get());
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
@@ -1384,9 +1309,6 @@ namespace services::disk {
                                        components::operators::pushed_aggregate_spec_t spec) {
         auto it = storages_.find(table_oid);
         const bool no_storage = (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
-        // A pushed aggregate can carry an expression WHERE too — attach its per-row evaluators here
-        // (same rationale as the raw-scan path: the value_getter closures cannot cross the mailbox).
-        components::operators::predicates::attach_expression_evaluators(resource(), filter.get());
         auto reduced_r = reduce_pushed_aggregate(resource(),
                                                  log_.clone(),
                                                  no_storage ? nullptr : it->second->storage.get(),
@@ -1728,16 +1650,29 @@ namespace services::disk {
             }
             co_return std::move(result);
         }
+        // The key tuple becomes the same thing a pushed WHERE is: `col == k0 AND col == k1 ...` as one
+        // graph, with the key cells bound as its parameters.
+        namespace expr = components::expressions;
         for (std::uint64_t i = 0; i < nkeys; ++i) {
-            auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+            components::types::parameter_map_t parameters{resource()};
+            auto predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
             for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
-                std::pmr::vector<std::uint64_t> idx_vec{resource()};
-                idx_vec.push_back(key_col_indices[ki]);
-                filter->child_filters.push_back(
-                    std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                           keys.value(ki, i),
-                                                                           std::move(idx_vec)));
+                const core::parameter_id_t id{static_cast<uint16_t>(ki)};
+                parameters.emplace(id, keys.value(ki, i));
+                expr::key_t column{resource()};
+                column.set_path(std::pmr::vector<size_t>{{key_col_indices[ki]},
+                                                         std::pmr::polymorphic_allocator<size_t>{resource()}});
+                predicate->append_child(expr::make_compare_expression(resource(), expr::compare_type::eq, column, id));
             }
+            auto built = expr::build_condition_graph(resource(), parameters, predicate.get(), entry->storage->types());
+            if (built.has_error()) {
+                result.emplace_back();
+                continue;
+            }
+            auto filter = std::make_unique<components::table::table_filter_t>(std::move(parameters),
+                                                                              components::graph_execution_context{},
+                                                                              std::move(built.value()),
+                                                                              expr::condition_kind::computed);
             // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
             // Catalog-read path: a scan_error degrades this key's entry to empty, matching the
             // not-owned/record-only fallback (callers handle empty entries).

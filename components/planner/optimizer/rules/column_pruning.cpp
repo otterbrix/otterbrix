@@ -6,6 +6,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -93,6 +94,10 @@ namespace components::planner::optimizer {
                             return false;
                     }
                     return true;
+                }
+                if (sub->group() == expression_group::cast) {
+                    const auto* cast_expr = static_cast<const expressions::cast_expression_t*>(sub.get());
+                    return collect_cols_from_param(cast_expr->child(), cols);
                 }
                 if (sub->group() == expression_group::compare) {
                     const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(sub);
@@ -422,6 +427,70 @@ namespace components::planner::optimizer {
                         agg->set_projected_cols(std::move(per_child_projected[i]));
                     }
                 }
+            }
+
+            // Adjust schema to account for expressions and columns that are not used
+            std::vector<const std::vector<size_t>*> side_projected(n, nullptr);
+            for (size_t i = 0; i < n; ++i) {
+                const auto& child = children[i];
+                if (child && child->type() == logical_plan::node_type::aggregate_t) {
+                    const auto& projected =
+                        static_cast<const logical_plan::node_aggregate_t*>(child.get())->projected_cols();
+                    if (!projected.empty()) {
+                        side_projected[i] = &projected;
+                    }
+                }
+            }
+
+            std::function<void(const expressions::expression_ptr&)> remap;
+            remap = [&](const expressions::expression_ptr& expr) {
+                if (!expr || expr->group() != expressions::expression_group::compare) {
+                    return;
+                }
+                const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
+                if (expressions::is_union_compare_condition(ce->type())) {
+                    for (const auto& child : ce->children()) {
+                        remap(child);
+                    }
+                    return;
+                }
+                auto remap_side = [&](expressions::param_storage& side) {
+                    if (!expressions::is_key(side)) {
+                        return;
+                    }
+                    auto& key = expressions::as_key(side);
+                    if (key.path().empty() || key.path()[0] == SIZE_MAX) {
+                        return;
+                    }
+                    size_t which = 0;
+                    switch (key.side()) {
+                        case expressions::side_t::left:
+                            which = 0;
+                            break;
+                        case expressions::side_t::right:
+                            which = n - 1;
+                            break;
+                        default:
+                            return;
+                    }
+                    const auto* projected = side_projected[which];
+                    if (projected == nullptr) {
+                        return;
+                    }
+                    const auto at = std::find(projected->begin(), projected->end(), key.path()[0]);
+                    if (at == projected->end()) {
+                        return;
+                    }
+                    std::pmr::vector<size_t> path{join_node->resource()};
+                    path.push_back(static_cast<size_t>(at - projected->begin()));
+                    key.set_path(std::move(path));
+                };
+                remap_side(ce->left());
+                remap_side(ce->right());
+            };
+
+            for (const auto& expr : join_node->expressions()) {
+                remap(expr);
             }
         }
 

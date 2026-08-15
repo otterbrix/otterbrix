@@ -84,6 +84,9 @@ namespace services::disk {
         resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
         actor_zeta::unique_future<std::pmr::vector<resolve_function_result_t>>
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
+        actor_zeta::unique_future<components::catalog::oid_t> find_cast_oid(execution_context_t ctx,
+                                                                            components::catalog::oid_t source_oid,
+                                                                            components::catalog::oid_t target_oid);
         actor_zeta::unique_future<std::pmr::vector<std::string>> list_namespaces(execution_context_t ctx);
 
         actor_zeta::unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
@@ -337,6 +340,7 @@ namespace services::disk {
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,
                                                             &disk_contract::resolve_function_by_name,
+                                                            &disk_contract::find_cast_oid,
                                                             &disk_contract::list_namespaces,
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,

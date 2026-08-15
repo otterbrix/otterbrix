@@ -125,6 +125,26 @@ namespace components::compute {
             return executor_->execute(inputs);
         }
 
+        aggregate_state_layout_t state_layout() const override { return executor_->state_layout(); }
+
+        core::error_t
+        update(const data_chunk_t& args, core::span<const uint32_t> groups, aggregate_states_t states) override {
+            if (auto st = check_init(); st.contains_error()) {
+                return st;
+            }
+            if (auto st = check_args(kernel_ctx_.value().exec_context().resource(), args); st.contains_error()) {
+                return st;
+            }
+            return executor_->update(args, groups, states);
+        }
+
+        core::error_t finalize(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) override {
+            if (auto st = check_init(); st.contains_error()) {
+                return st;
+            }
+            return executor_->finalize(states, first, count, output);
+        }
+
         static core::result_wrapper_t<function_executor_impl_t>
         get_best_function_executor(std::pmr::memory_resource* resource,
                                    std::pmr::vector<complex_logical_type> in_types,
@@ -188,6 +208,22 @@ namespace components::compute {
         const function& func_;
         kernel_state_ptr state_;
     };
+
+    core::result_wrapper_t<std::unique_ptr<function_executor>>
+    function::make_executor(std::pmr::memory_resource* resource,
+                            std::pmr::vector<complex_logical_type> in_types,
+                            const function_options* options,
+                            exec_context_t& ctx) const {
+        auto resolved = function_executor_impl_t::get_best_function_executor(resource, std::move(in_types), *this);
+        if (resolved.has_error()) {
+            return resolved.convert_error<std::unique_ptr<function_executor>>();
+        }
+        auto owned = std::make_unique<function_executor_impl_t>(std::move(resolved.value()));
+        if (auto error = owned->init(options, ctx); error.contains_error()) {
+            return error;
+        }
+        return std::unique_ptr<function_executor>(std::move(owned));
+    }
 
     core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
     function::get_best_executor(std::pmr::memory_resource* resource, std::pmr::vector<complex_logical_type>) const {

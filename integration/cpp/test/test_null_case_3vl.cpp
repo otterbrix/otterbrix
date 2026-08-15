@@ -30,6 +30,8 @@ namespace {
         auto c = exec(d, sql);
         REQUIRE(c);
         INFO(sql);
+        const std::string why = c->is_error() ? std::string{c->get_error().what.c_str()} : std::string{};
+        INFO(why);
         REQUIRE(c->is_success());
         std::vector<opt> out;
         for (uint64_t r = 0; r < c->size(); ++r) {

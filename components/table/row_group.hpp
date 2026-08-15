@@ -19,8 +19,6 @@ namespace components::table {
     class collection_scan_state;
     class column_definition_t;
     class collection_t;
-    // Per-scan cache of expression_filter_t chunk layouts (defined in row_group.cpp).
-    class expression_filter_layout_cache_t;
 
     class row_group_t : public segment_base_t<row_group_t> {
     public:
@@ -59,21 +57,10 @@ namespace components::table {
         void scan(collection_scan_state& state, vector::data_chunk_t& result);
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        // `error` carries an out_of_memory error_t when a pin fails mid-check. `expression_layouts`
-        // caches per-expression_filter_t chunk layouts across the rows of one scan.
-        filter_match_t check_predicate(int64_t row_id,
-                                       const table_filter_t* filter,
-                                       expression_filter_layout_cache_t& expression_layouts,
-                                       core::error_t& error);
-
-        // Evaluate an expression_filter_t (WHERE f(col) OP const) for one row: materialize the
-        // referenced columns into a row-wide chunk (each at its original storage column index) and
-        // run the attached per-row evaluator. `error` carries a pin OOM or an evaluation failure.
-        // Three-valued: an UNKNOWN (NULL-operand) evaluation flows through as unknown.
-        filter_match_t check_expression_predicate(int64_t row_id,
-                                                  const expression_filter_t& filter,
-                                                  expression_filter_layout_cache_t& expression_layouts,
-                                                  core::error_t& error);
+        // Run the filter's graph over one vector's rows and return the per-row decision, indexed by
+        // vector offset. `error` carries an out_of_memory error_t when a pin fails mid-materialisation.
+        core::result_wrapper_t<vector::vector_t>
+        evaluate_predicate(const table_filter_t& filter, int64_t base_row, uint64_t count);
 
         void fetch_row(column_fetch_state& state,
                        const std::vector<storage_index_t>& column_ids,
@@ -162,7 +149,7 @@ namespace components::table {
                              uint64_t vector_index,
                              vector::indexing_vector_t& indexing,
                              const table_filter_t* filter,
-                             expression_filter_layout_cache_t& expression_layouts,
+                             uint64_t vector_count,
                              uint64_t& approved_tuple_count,
                              core::error_t& error);
 

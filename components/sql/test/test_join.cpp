@@ -61,7 +61,7 @@ TEST_CASE("components::sql::join") {
     SECTION("join specifics") {
         TEST_JOIN(
             R"_(select col1.id, col2.id_col1 from db.col as col1 JOIN col2 on col1.id = col2.id_col1;)_",
-            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, $select: {id, id_col1}})_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, $group: {id, id_col1}, $select: {}})_",
             vec());
 
         TEST_JOIN(
@@ -184,7 +184,7 @@ TEST_CASE("components::sql::join") {
         // qualified columns survive into the $select clause.
         TEST_JOIN(
             R"_(select col1.id, col2.id_col1 from col1, col2 where col1.id = col2.id_col1;)_",
-            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"id": {$eq: "id_col1"}}, $select: {id, id_col1}})_",
+            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"id": {$eq: "id_col1"}}, $group: {id, id_col1}, $select: {}})_",
             vec());
     }
 }

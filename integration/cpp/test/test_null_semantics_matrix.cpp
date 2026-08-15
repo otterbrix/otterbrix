@@ -272,9 +272,9 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_projection") {
     CHECK(coli(d, "SELECT -x FROM m.t ORDER BY id;") == std::vector<opt>{-5, {}, 0});
     CHECK(coli(d, "SELECT 100 - x FROM m.t ORDER BY id;") == std::vector<opt>{95, {}, 100});
     CHECK(coli(d, "SELECT 1 + x FROM m.t ORDER BY id;") == std::vector<opt>{6, {}, 1});
-    // NULL as a divisor and division by zero both yield NULL (no SIGFPE).
-    CHECK(coli(d, "SELECT 10 / x FROM m.t ORDER BY id;") == std::vector<opt>{2, {}, {}});
-    CHECK(coli(d, "SELECT 10 % x FROM m.t ORDER BY id;") == std::vector<opt>{0, {}, {}});
+    // Division by zero is an ERROR, not a NULL
+    CHECK_FALSE(okq(d, "SELECT 10 / x FROM m.t ORDER BY id;"));
+    CHECK_FALSE(okq(d, "SELECT 10 % x FROM m.t ORDER BY id;"));
     // Chained arithmetic keeps propagating NULL.
     CHECK(coli(d, "SELECT (x + 1) * 2 FROM m.t ORDER BY id;") == std::vector<opt>{12, {}, 2});
     CHECK(coli(d, "SELECT x + x FROM m.t ORDER BY id;") == std::vector<opt>{10, {}, 0});

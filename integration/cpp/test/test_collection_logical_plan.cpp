@@ -189,6 +189,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
         auto group = logical_plan::make_node_group(dispatcher->resource(), core::dbname_t{}, core::relname_t{});
 
+        group->append_expression(make_scalar_expression(dispatcher->resource(),
+                                                        expressions::scalar_type::group_field,
+                                                        key(dispatcher->resource(), "count_bool")));
+
         auto scalar_expr = make_scalar_expression(dispatcher->resource(),
                                                   expressions::scalar_type::get_field,
                                                   key(dispatcher->resource(), "count_bool"));
@@ -390,9 +394,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                         compare_type::lt,
                                         key{dispatcher->resource(), "count", side_t::left},
                                         id_par{1}));
-            expressions::update_expr_ptr update_expr =
-                new expressions::update_expr_set_t(expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->left() = new expressions::update_expr_get_const_value_t(id_par{2});
+            // SET count = $2 — the value expression's own key names the target column.
+            auto update_expr = expressions::make_scalar_expression(dispatcher->resource(),
+                                                                   expressions::scalar_type::constant,
+                                                                   expressions::key_t{dispatcher->resource(), "count"});
+            update_expr->append_param(id_par{2});
             auto upd = WRAP_DML_TARGET(
                 table_database_name,
                 table_collection_name,
@@ -468,8 +474,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             std::pmr::vector<std::pmr::string> path(dispatcher->resource());
             path.emplace_back("count_array");
             path.emplace_back("1");
-            expressions::update_expr_ptr update_expr = new expressions::update_expr_set_t(key{std::move(path)});
-            update_expr->left() = new expressions::update_expr_get_const_value_t(id_par{2});
+            auto update_expr = expressions::make_scalar_expression(dispatcher->resource(),
+                                                                   expressions::scalar_type::constant,
+                                                                   key{std::move(path)});
+            update_expr->append_param(id_par{2});
             auto upd = WRAP_DML_TARGET(
                 table_database_name,
                 table_collection_name,
@@ -530,14 +538,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), int64_t{2}));
 
-            expressions::update_expr_ptr update_expr =
-                new expressions::update_expr_set_t(expressions::key_t{dispatcher->resource(), "count"});
-            expressions::update_expr_ptr calculate_expr =
-                new expressions::update_expr_calculate_t(expressions::update_expr_type::mult);
-            calculate_expr->left() = new expressions::update_expr_get_value_t(
-                expressions::key_t{dispatcher->resource(), "count", expressions::side_t::right});
-            calculate_expr->right() = new expressions::update_expr_get_const_value_t(id_par{1});
-            update_expr->left() = std::move(calculate_expr);
+            auto update_expr = expressions::make_scalar_expression(dispatcher->resource(),
+                                                                   expressions::scalar_type::multiply,
+                                                                   expressions::key_t{dispatcher->resource(), "count"});
+            update_expr->append_param(expressions::key_t{dispatcher->resource(), "count", expressions::side_t::right});
+            update_expr->append_param(id_par{1});
 
             auto expr = components::expressions::make_compare_expression(
                 dispatcher->resource(),
@@ -650,9 +655,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                         compare_type::eq,
                                         key{dispatcher->resource(), "count", side_t::left},
                                         id_par{1}));
-            expressions::update_expr_ptr update_expr =
-                new expressions::update_expr_set_t(expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->left() = new expressions::update_expr_get_const_value_t(id_par{2});
+            // SET count = $2 — the value expression's own key names the target column.
+            auto update_expr = expressions::make_scalar_expression(dispatcher->resource(),
+                                                                   expressions::scalar_type::constant,
+                                                                   expressions::key_t{dispatcher->resource(), "count"});
+            update_expr->append_param(id_par{2});
             auto limit = logical_plan::make_node_limit(dispatcher->resource(),
                                                        core::dbname_t{table_database_name},
                                                        core::relname_t{table_collection_name},
@@ -684,9 +691,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                         compare_type::eq,
                                         key{dispatcher->resource(), "count", side_t::left},
                                         id_par{1}));
-            expressions::update_expr_ptr update_expr =
-                new expressions::update_expr_set_t(expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->left() = new expressions::update_expr_get_const_value_t(id_par{2});
+            // SET count = $2 — the value expression's own key names the target column.
+            auto update_expr = expressions::make_scalar_expression(dispatcher->resource(),
+                                                                   expressions::scalar_type::constant,
+                                                                   expressions::key_t{dispatcher->resource(), "count"});
+            update_expr->append_param(id_par{2});
             auto limit = logical_plan::make_node_limit(dispatcher->resource(),
                                                        core::dbname_t{table_database_name},
                                                        core::relname_t{table_collection_name},
@@ -891,6 +900,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 {
                     auto group =
                         logical_plan::make_node_group(dispatcher->resource(), core::dbname_t{}, core::relname_t{});
+
+                    group->append_expression(make_scalar_expression(dispatcher->resource(),
+                                                                    expressions::scalar_type::group_field,
+                                                                    key(dispatcher->resource(), "key_1")));
+
                     auto scalar_expr = make_scalar_expression(dispatcher->resource(),
                                                               expressions::scalar_type::get_field,
                                                               key(dispatcher->resource(), "key_1"));

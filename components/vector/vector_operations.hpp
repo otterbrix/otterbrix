@@ -405,6 +405,8 @@ namespace components::vector::vector_ops {
                                     const vector_t& rhs,
                                     uint64_t count);
 
+    bool is_hashable(const types::complex_logical_type& type);
+
     void hash(vector_t& input, vector_t& result, uint64_t count);
     void hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count);
 

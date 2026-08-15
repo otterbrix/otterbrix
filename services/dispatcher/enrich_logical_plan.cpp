@@ -19,9 +19,12 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/cursor/cursor.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -35,6 +38,7 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -119,9 +123,7 @@ namespace services::dispatcher { namespace {
         return defaults;
     }
 
-    void enrich_insert_sync(components::logical_plan::node_insert_t* node,
-                            const plan_resolve_index_t* idx,
-                            core::date::timezone_offset_t session_tz) {
+    void enrich_insert_sync(components::logical_plan::node_insert_t* node, const plan_resolve_index_t* idx) {
         // Insert node carries only its table_oid (stamped by
         // stamp_drop_oids_from_resolves from the sibling resolve_table);
         // look up table metadata by OID rather than (db, rel) strings.
@@ -134,115 +136,19 @@ namespace services::dispatcher { namespace {
         fill_not_null(*md, nn, /*include_with_defaults=*/false);
         node->set_not_null_cols(std::move(nn));
 
-        // A NOT NULL fixed-ARRAY column with no DEFAULT cannot pad a too-short value, so
-        // such values must error before the append (see node_insert_t::array_size_reqs).
+        // A too-short value for a fixed ARRAY reconciles by padding NULL, which a NOT NULL column
+        // cannot accept, so such values must error before the append (see
+        // node_insert_t::array_size_reqs). A DEFAULT does not exempt the column: a default fills an
+        // ABSENT column, never the missing tail of a value that was supplied.
         std::vector<std::pair<std::string, uint64_t>> array_reqs;
         for (const auto& col : md->columns) {
-            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull && !col.atthasdefault) {
+            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull) {
                 const auto size =
                     static_cast<const components::types::array_logical_type_extension*>(col.type.extension())->size();
                 array_reqs.emplace_back(col.attname, size);
             }
         }
         node->set_array_size_reqs(std::move(array_reqs));
-
-        // Coerce literal chunk types to table column types.
-        // The SQL transformer builds the INSERT chunk from VALUES literals,
-        // so integer literals become BIGINT, float literals become FLOAT/DOUBLE,
-        // and ROW(...) STRUCTs carry those literal types in their children.
-        // Storage allocates per-vector buffers from the chunk's type, so a
-        // BIGINT vector writes 8 bytes per row. On read, pg_attribute says
-        // the column is INTEGER (4 bytes) — and the int32 stride misaligns
-        // with the 8-byte payload. Rebuild each column vector with the
-        // table's declared type; cast_as on logical_value_t handles the
-        // recursive STRUCT/ARRAY descent.
-        // Skip for computing tables (relkind='g'): they adopt the literal's
-        // own type and may keep several same-name columns of different types
-        // (multi-type fields). Coercing every value to one resolved type would
-        // collapse those variants (e.g. a string 'val' cast to an existing
-        // BIGINT 'val'). Storage adopts the literal type directly, so the
-        // INTEGER/BIGINT width concern below does not apply there.
-        if (md->relkind != components::catalog::relkind::computed && !node->children().empty() &&
-            node->children().front() &&
-            node->children().front()->type() == components::logical_plan::node_type::data_t) {
-            auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
-            const auto& kt = node->key_translation();
-            // Coerce literal columns to the table's declared types. The raw data is a batch
-            // of ≤CAP chunks that all share the same column shape, so apply the same coercion
-            // to each chunk.
-            for (auto& chunk : dat->chunks()) {
-                for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
-                    auto& col = chunk.data[ci];
-                    // Locate this chunk column's matching table column by name
-                    // (key_translation[i] when present, else position).
-                    std::string col_name;
-                    if (ci < kt.size()) {
-                        col_name = kt[ci].as_string();
-                    } else {
-                        col_name = std::string(col.type().alias());
-                    }
-                    const components::types::complex_logical_type* target_type = nullptr;
-                    for (const auto& tc : md->columns) {
-                        if (tc.attname == col_name) {
-                            target_type = &tc.type;
-                            break;
-                        }
-                    }
-                    if (!target_type)
-                        continue;
-                    // complex_logical_type::operator== only compares the top-
-                    // level logical_type enum, so STRUCT-vs-STRUCT compares
-                    // equal regardless of children. For composite types (where
-                    // SQL literal children may carry the wrong width — BIGINT
-                    // for int4, DOUBLE for float4, …), force a full rebuild so
-                    // cast_as recurses into children. Scalars get the cheap
-                    // identity check.
-                    using LT = components::types::logical_type;
-                    // A fixed ARRAY target reconciles both element width and length (truncate /
-                    // pad from the column DEFAULT) at the storage append chokepoint, which holds
-                    // the decoded default value this layer does not. Leave the literal as-is.
-                    if (target_type->type() == LT::ARRAY)
-                        continue;
-                    const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
-                                              col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
-                    if (!is_composite && col.type() == *target_type)
-                        continue;
-                    // Build a fresh vector with the table's declared type and
-                    // copy every row via cast_as. complex_logical_type::cast_as
-                    // recurses STRUCT children, so nested ROW(int_literal,...)
-                    // → STRUCT(INTEGER,...) is fully retyped.
-                    //
-                    // TODO(L3): drop the per-row logical_value_t round-trip once a
-                    // typed cast accessor on vector_t/data_chunk covers this case.
-                    // vector_operations::cast_vector exists but is FLAT numeric-only
-                    // (asserts on strings, no STRUCT/LIST/ARRAY/MAP recursion, no
-                    // session_tz for timestamps); this loop relies on cast_as's
-                    // recursive composite descent + tz-aware temporal casts + null
-                    // preservation. No suitable batch accessor today, so left as-is
-                    // rather than inventing a new abstraction.
-                    components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
-                    const auto rows = chunk.size();
-                    for (std::uint64_t row = 0; row < rows; ++row) {
-                        auto v = col.value(row);
-                        if (!v.is_null() && v.type() != *target_type) {
-                            // No error channel here (void enrich); a non-castable value keeps its
-                            // original form, so a bad retype degrades gracefully instead of aborting.
-                            auto casted = v.cast_as(*target_type, session_tz);
-                            if (!casted.has_error()) {
-                                v = std::move(casted.value());
-                            }
-                        }
-                        replacement.set_value(row, v);
-                    }
-                    // Preserve the original column alias (used by storage_append
-                    // for name-based key matching).
-                    if (col.type().has_alias()) {
-                        replacement.type().set_alias(col.type().alias());
-                    }
-                    col = std::move(replacement);
-                }
-            }
-        }
     }
 
     void enrich_update_sync(components::logical_plan::node_update_t* node, const plan_resolve_index_t* idx) {
@@ -294,22 +200,37 @@ namespace services::catalog_resolve {
         if (body_plan->type() != node_type::aggregate_t) {
             return out;
         }
-        // Find the node_select_t child holding the SELECT-list expressions.
+        // Find the node holding the SELECT-list expressions. The transformer routes the whole
+        // target list to the GROUP node and leaves the select EMPTY, so the group is where the
+        // output columns live; the select still carries them for shapes that never grow a group.
         const node_t* select_node = nullptr;
+        const node_t* group_node = nullptr;
         for (const auto& c : body_plan->children()) {
-            if (c && c->type() == node_type::select_t) {
+            if (!c) {
+                continue;
+            }
+            if (c->type() == node_type::select_t) {
                 select_node = c.get();
-                break;
+            } else if (c->type() == node_type::group_t) {
+                group_node = c.get();
             }
         }
-        if (!select_node) {
+        const node_t* target_list =
+            select_node != nullptr && !select_node->expressions().empty() ? select_node : group_node;
+        if (target_list == nullptr) {
             return out;
         }
-        const auto& exprs = select_node->expressions();
+        const auto& exprs = target_list->expressions();
         out.reserve(exprs.size());
         for (const auto& expr : exprs) {
             if (!expr) {
                 return {};
+            }
+            // A grouping key is not an output column of its own — the target list names it
+            // separately where it is projected.
+            if (auto* key_expr = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
+                key_expr != nullptr && key_expr->type() == components::expressions::scalar_type::group_field) {
+                continue;
             }
             auto* sc = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
             if (!sc) {
@@ -720,6 +641,12 @@ namespace services::catalog_resolve {
         return nullptr;
     }
 
+    // A cast SPELLED in the query carries only the NAME of its target type -- the transformer has
+    // no catalog, so `CAST(x AS oddness_t)` arrives as UNKNOWN("oddness_t"). Resolve it HERE, where
+    // the plan-tree index is at hand, so validation and the cast registry only ever see concrete
+    // types (the registry could never match an UNKNOWN against its ENUM family entry).
+    // A name that resolves to nothing is LEFT ALONE: validation reports the unknown type with the
+    // context to say which expression it came from.
     std::vector<std::string> build_type_search_path_str(std::string_view target_dbname) {
         std::vector<std::string> path;
         if (!target_dbname.empty() && target_dbname != "public" && target_dbname != "pg_catalog") {
@@ -818,7 +745,7 @@ namespace services::dispatcher { namespace {
         switch (root->type()) {
             case node_type::insert_t: {
                 auto* node = static_cast<node_insert_t*>(root.get());
-                enrich_insert_sync(node, idx, ctx.session_tz);
+                enrich_insert_sync(node, idx);
                 const auto tbl_oid = node->table_oid();
                 // FK + CHECK populated by operator_resolve_constraint_t
                 // (direction=outgoing) and gathered into idx. No catalog

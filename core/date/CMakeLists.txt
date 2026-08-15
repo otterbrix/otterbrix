@@ -4,6 +4,7 @@ set(header_${PROJECT_NAME}
         date_types.hpp
         date_cast.hpp
         date_parse.hpp
+        date_to_string.hpp
         timezones.hpp
         )
 

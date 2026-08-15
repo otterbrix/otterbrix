@@ -117,10 +117,10 @@ namespace otterbrix {
 
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ = actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
-                                                                                           scheduler_dispatcher_.get(),
-                                                                                           log_,
-                                                                                           create_plan_rule,
-                                                                                           optimizer_pass);
+                                                                                            scheduler_dispatcher_.get(),
+                                                                                            log_,
+                                                                                            create_plan_rule,
+                                                                                            optimizer_pass);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource,
@@ -255,7 +255,7 @@ namespace otterbrix {
                                 }
                                 // TODO: load timezone from settings?
                                 for (auto& chunk : r->physical_data) {
-                                    disk_ptr->direct_append_sync(table_oid, chunk, {});
+                                    disk_ptr->direct_append_sync(table_oid, chunk);
                                 }
                             }
                             break;

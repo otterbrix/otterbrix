@@ -111,11 +111,14 @@ namespace components::catalog {
     std::string encode_type_spec(const types::complex_logical_type& t);
     types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
 
-    // Encode the per-arg `input_type` tagged matcher to a flat text format suitable
-    // for pg_proc.proargmatchers. Format per arg: "e:N" exact, "n" numeric, "i" integer,
-    // "f" floating, "s" string, "a:N1,N2,..." any_of, "t" always_true, where N is numeric
-    // value of types::logical_type. Multiple args are pipe-separated. Empty input vector → "".
-    std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers);
+    // Encode the per-arg `parameter_type` to a flat text format suitable for
+    // pg_proc.proargmatchers. Format per arg: "e:N" a concrete type, "v:I" a variable with
+    // id I accepting anything, "v:I:N1,N2,..." a variable restricted to those types, where
+    // N is the numeric value of types::logical_type. Multiple args are pipe-separated.
+    // Empty input vector → "".
+    // A concrete parameter's extension (decimal width/scale, element types) is NOT encoded,
+    // matching what the matcher form stored; nothing decodes this column yet.
+    std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters);
 
     // Encode output_type list to a flat text format. Per output: "f:N" fixed type
     // (N = logical_type id), "s:N" same_type_at_index N. Multiple outputs are comma-

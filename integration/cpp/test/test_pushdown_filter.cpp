@@ -3,6 +3,7 @@
 // check the shape of the resulting node tree
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -19,6 +20,19 @@
 #include <components/planner/optimizer.hpp>
 #include <components/tests/generaty.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
+
+namespace {
+    // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    const components::casts::cast_registry_t* test_cast_registry() {
+        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
+        static const bool loaded = [] {
+            components::casts::register_default_casts(registry);
+            return true;
+        }();
+        (void) loaded;
+        return &registry;
+    }
+} // namespace
 
 using namespace components::logical_plan;
 using namespace components::expressions;
@@ -579,7 +593,7 @@ TEST_CASE("kernel_bug_proof::join_keeps_all_physical_columns") {
                                                     key(&resource, "val", side_t::right)));
 
     components::logical_plan::storage_parameters params(&resource);
-    auto res = services::dispatcher::validate_schema(&resource, nullptr, join.get(), params);
+    auto res = services::dispatcher::validate_schema(&resource, nullptr, test_cast_registry(), join.get(), params);
     REQUIRE_FALSE(res.has_error());
 
     auto& schema = res.value();
@@ -600,7 +614,7 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
     agg->append_child(select);
 
     components::logical_plan::storage_parameters params(&resource);
-    auto res = services::dispatcher::validate_schema(&resource, nullptr, agg.get(), params);
+    auto res = services::dispatcher::validate_schema(&resource, nullptr, test_cast_registry(), agg.get(), params);
     REQUIRE_FALSE(res.has_error());
 
     auto& schema = res.value();

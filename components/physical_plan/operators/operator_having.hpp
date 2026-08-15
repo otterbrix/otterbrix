@@ -2,15 +2,18 @@
 
 #include <components/physical_plan/operators/operator.hpp>
 
-#include "predicates/predicate.hpp"
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/execution_dag_builder.hpp>
 #include <components/expressions/expression.hpp>
+
+#include <memory>
 
 namespace components::operators {
 
     // SQL HAVING — a post-aggregation streaming filter placed ABOVE the group operator.
     //
-    // It reuses the shared predicates/ layer (create_predicate + batch_check) exactly as
-    // operator_match does, but is a DISTINCT operator (operator_type::having, rendered "Having").
+    // It computes its condition on an execution graph exactly as operator_match does, but is a
+    // DISTINCT operator (operator_type::having, rendered "Having").
     // It is kept separate from operator_match because three WHERE-only branches are structurally
     // unreachable for HAVING (its child is ALWAYS the group operator, never a scan or nothing):
     //   * NO LIMIT / read-cap  — HAVING is always lowered unlimit(); operator_limit is the window.
@@ -35,11 +38,8 @@ namespace components::operators {
     private:
         const expressions::expression_ptr expression_;
 
-        // Streaming predicate cache: the group-output schema is stable across the several
-        // <=1024-row chunks the group emits (operator_group fixes out_types once), so the predicate
-        // + projection metadata are built ONCE on the first batch, on the operator's stable resource_
-        // (always context.resource, non-null), and reused for every subsequent chunk.
-        predicates::predicate_ptr stream_predicate_{nullptr};
+        std::unique_ptr<execution_dag::execution_dag_t> graph_;
+        expressions::condition_kind condition_{expressions::condition_kind::always};
         std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
         std::vector<size_t> stream_populated_cols_;
         bool stream_sparse_{false};

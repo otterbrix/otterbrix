@@ -148,7 +148,20 @@ namespace components::table {
 
         std::pmr::memory_resource* resource_;
         std::vector<column_definition_t> column_definitions_;
-        std::mutex append_lock_;
+        // NO LOCK HERE, and that is a proven property rather than an oversight.
+        //
+        // Every table is reachable from exactly ONE disk agent: manager_disk_t owns no storage
+        // map, each oid routes to a single agent by pool_idx_for_oid, and the table lives in
+        // that agent's storages_. Nothing beneath data_table_t is ever handed to another actor
+        // (no row_group_t / column_data_t / row_version_manager_t crosses the mailbox), and
+        // actor-zeta resumes one actor on at most one thread — try_acquire_running CASes an
+        // exclusive running state, and a suspended handler is never re-entered with a second
+        // message. There is no background eviction or checkpoint thread: buffer-pool eviction
+        // runs inline on the allocating thread. The manager-side *_sync paths (WAL replay,
+        // index rebuild, bootstrap) all run BEFORE the schedulers start — the parallel variant
+        // of the replay loop was removed for racing on storages_, TSan-confirmed.
+        //
+        // Adding a mutex back would not fix a race; it would hide the ownership rule.
         std::shared_ptr<collection_t> row_groups_;
         std::atomic<bool> is_root_;
         std::string name_;

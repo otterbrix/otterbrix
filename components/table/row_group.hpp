@@ -158,7 +158,7 @@ namespace components::table {
 
         bool has_unloaded_deletes() const;
 
-        std::mutex row_group_lock_;
+        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
         std::vector<storage::meta_block_pointer_t> column_pointers_;
         std::unique_ptr<std::atomic<bool>[]> is_loaded_;
         std::vector<storage::meta_block_pointer_t> deletes_pointers_;

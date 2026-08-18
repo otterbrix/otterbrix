@@ -85,7 +85,6 @@ namespace components::table {
     }
 
     bool column_data_t::has_updates() const {
-        std::lock_guard update_guard(update_lock_);
         return updates_.get();
     }
 
@@ -191,7 +190,6 @@ namespace components::table {
         const uint64_t result_offset = state.result_offset;
         const int64_t range_start = state.row_index - start_;
         auto scanned = scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
-        std::lock_guard update_guard(update_lock_);
         if (updates_ && scanned > 0) {
             result.flatten(result_offset + scanned);
             updates_->fetch_committed_range(range_start, scanned, result, result_offset);
@@ -277,11 +275,15 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
-        statistics_.update(vector, count);
-        // Update per-segment statistics (conservative: full vector stats go to current segment)
+        // ONE statistics pass over the vector, not two. The column-wide and the per-segment
+        // statistics are the same computation over the same data, so the batch is computed once
+        // and merged into both: merge() accumulates null_count and folds min/max exactly as a
+        // second update() over the same rows would.
+        base_statistics_t batch_stats(resource_, type_.type());
+        batch_stats.update(vector, count);
+        statistics_.merge(batch_stats);
+        // Per-segment statistics (conservative: full vector stats go to current segment)
         if (state.current) {
-            base_statistics_t batch_stats(resource_, type_.type());
-            batch_stats.update(vector, count);
             if (state.current->segment_statistics().has_stats()) {
                 auto merged = state.current->segment_statistics();
                 merged.merge(batch_stats);
@@ -761,7 +763,6 @@ namespace components::table {
     }
 
     void column_data_t::clear_updates() {
-        std::lock_guard update_guard(update_lock_);
         updates_.reset();
     }
 
@@ -771,7 +772,6 @@ namespace components::table {
                                       uint64_t scan_count,
                                       bool allow_updates,
                                       bool scan_committed) {
-        std::lock_guard update_guard(update_lock_);
         if (!updates_) {
             return;
         }
@@ -787,7 +787,6 @@ namespace components::table {
     }
 
     void column_data_t::fetch_update_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
-        std::lock_guard update_guard(update_lock_);
         if (!updates_) {
             return;
         }
@@ -799,7 +798,6 @@ namespace components::table {
                                                                 int64_t* row_ids,
                                                                 uint64_t update_count,
                                                                 vector::vector_t& base_vector) {
-        std::lock_guard update_guard(update_lock_);
         if (!updates_) {
             updates_ = std::make_unique<update_segment_t>(*this);
         }

@@ -302,7 +302,7 @@ namespace components::table {
         uint64_t type_size_;
         core::string_buffer_t heap_;
         column_data_t* column_data_;
-        std::shared_mutex m_;
+        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
     };
 
     struct update_select_element_t {

@@ -316,6 +316,12 @@ namespace components::table {
                             tdata[target_idx] = T(0);
                         }
                     }
+                } else if (uvf.referenced_indexing == nullptr || !uvf.referenced_indexing->is_set()) {
+                    // FLAT vector, no nulls, identity indexing: get_index(i) == i, so source and
+                    // target runs are both contiguous and the whole append is one memcpy instead
+                    // of `count` individually indexed assignments. T is a fixed-size arithmetic
+                    // type on this path, so a byte copy is exactly the element copy above.
+                    std::memcpy(tdata + target_offset, sdata + offset, static_cast<std::size_t>(count) * sizeof(T));
                 } else {
                     for (uint64_t i = 0; i < count; i++) {
                         auto source_idx = uvf.referenced_indexing->get_index(offset + i);

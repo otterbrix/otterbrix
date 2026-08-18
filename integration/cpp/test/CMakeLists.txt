@@ -10,6 +10,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_explain.cpp
         test_index.cpp
         test_insert.cpp
+        test_insert_type_promotion.cpp
         test_update.cpp
         test_wal_pool.cpp
         test_persistence.cpp

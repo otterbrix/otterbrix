@@ -225,7 +225,7 @@ namespace components::table {
         types::complex_logical_type type_;
         column_data_t* parent_;
         segment_tree_t<column_segment_t> data_;
-        mutable std::mutex update_lock_;
+        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
         std::unique_ptr<update_segment_t> updates_;
         uint64_t allocation_size_;
         base_statistics_t statistics_;

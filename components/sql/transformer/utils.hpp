@@ -15,6 +15,17 @@
 #include <vector>
 
 namespace components::sql::transform {
+
+#ifdef DEV_MODE
+    // Test-observable count of ROWS rewritten by promote_column while parsing an INSERT.
+    // Widening a column's type rebuilds every row already filled in that chunk, cell by cell
+    // through logical_value_t. The plan called this quadratic; this counter is how that claim
+    // gets checked instead of assumed — the number of widenings per column is bounded by the
+    // type lattice, so the growth may well be linear with a constant factor.
+    void note_promoted_rows(uint64_t rows) noexcept;
+    uint64_t insert_promote_rows() noexcept;
+    void reset_insert_promote_rows() noexcept;
+#endif
     template<class T>
     static T& pg_cast(Node& node) {
         return reinterpret_cast<T&>(node);

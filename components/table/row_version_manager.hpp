@@ -230,7 +230,7 @@ namespace components::table {
         chunk_vector_info& vector_info(uint64_t vector_idx);
         void fill_vector_info(uint64_t vector_idx);
 
-        std::mutex version_lock_;
+        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
         int64_t start_;
         std::vector<std::unique_ptr<chunk_info>> vector_info_;
         bool has_changes_;

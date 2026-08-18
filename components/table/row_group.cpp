@@ -53,7 +53,6 @@ namespace components::table {
             assert(columns_[c]);
             return *columns_[c];
         }
-        std::lock_guard l(row_group_lock_);
         if (columns_[c]) {
             assert(is_loaded_[c]);
             return *columns_[c];
@@ -781,7 +780,6 @@ namespace components::table {
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
-        std::lock_guard lock(row_group_lock_);
         if (!owned_version_info_) {
             auto new_info = std::make_shared<row_version_manager_t>(start);
             set_version_info(std::move(new_info));
@@ -793,7 +791,6 @@ namespace components::table {
         if (!has_unloaded_deletes()) {
             return version_info_;
         }
-        std::lock_guard lock(row_group_lock_);
         if (!has_unloaded_deletes()) {
             return version_info_;
         }

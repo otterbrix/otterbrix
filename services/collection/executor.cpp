@@ -1806,6 +1806,28 @@ namespace services::collection::executor {
                 co_await std::move(paf);
             }
 
+            // Heap delete-mark un-stamp, parity with operator_abort_transaction's
+            // storage_revert_deletes: an UPDATE/DELETE in this statement stamped
+            // delete marks (deleter == txn_id) on the old row versions before the
+            // failure surfaced. The marks are invisible to readers, but they
+            // PERSIST on the heap and chunk_vector_info::delete_rows skips an
+            // already-marked slot — so without the un-stamp every later UPDATE or
+            // DELETE of the same rows silently leaves the old version alive.
+            if (!exec_result.dml_deletes.empty() && disk_address_ != actor_zeta::address_t::empty_address()) {
+                std::set<components::catalog::oid_t> revert_delete_tables;
+                for (const auto& del : exec_result.dml_deletes) {
+                    revert_delete_tables.insert(del.table_oid);
+                }
+                components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.session_tz};
+                auto [_rd, rdf] = actor_zeta::send(
+                    disk_address_,
+                    &services::disk::manager_disk_t::storage_revert_deletes,
+                    rd_ctx,
+                    std::vector<components::catalog::oid_t>{revert_delete_tables.begin(),
+                                                            revert_delete_tables.end()});
+                co_await std::move(rdf);
+            }
+
             // Index revert, two-phase (send-all then await-all), deduped per
             // table_oid. revert_insert ← pending index INSERT bucket (dml_appends);
             // revert_delete ← pending index DELETE bucket (dml_deletes). Both are

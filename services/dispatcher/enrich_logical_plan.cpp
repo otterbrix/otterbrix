@@ -4,7 +4,7 @@
 // plan-tree resolve idx (populated by operator_resolve_*_t) to annotate DML
 // nodes with the data they need at execution time:
 //   INSERT  — not_null_cols, outgoing FK references, CHECK expressions
-//   UPDATE  — not_null_cols, outgoing FK references
+//   UPDATE  — not_null_cols, outgoing FK references, CHECK expressions
 //   DELETE  — referencing FKs (for CASCADE / SET NULL / SET DEFAULT)
 //   CREATE  — namespace_oid (for catalog registration)
 //
@@ -796,6 +796,9 @@ namespace services::dispatcher { namespace {
                 if (tbl_oid != components::catalog::INVALID_OID && idx) {
                     if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid); it != idx->outgoing_fks_by_oid.end()) {
                         node->set_outgoing_fks(it->second);
+                    }
+                    if (auto it = idx->check_exprs_by_oid.find(tbl_oid); it != idx->check_exprs_by_oid.end()) {
+                        node->set_check_exprs(it->second);
                     }
                     if (auto it = idx->unique_constraints_by_oid.find(tbl_oid);
                         it != idx->unique_constraints_by_oid.end()) {

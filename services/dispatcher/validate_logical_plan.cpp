@@ -53,6 +53,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <source_location>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -77,20 +78,24 @@ namespace services::dispatcher {
         core::error_t no_operator_error(std::pmr::memory_resource* resource,
                                         components::expressions::scalar_type type,
                                         const components::types::complex_logical_type& lhs,
-                                        const components::types::complex_logical_type& rhs) {
+                                        const components::types::complex_logical_type& rhs,
+                                        std::source_location location = std::source_location::current()) {
             return core::error_t(core::error_code_t::arithmetics_failure,
                                  std::pmr::string{"operator " + to_string(type) + " is not defined for types " +
                                                       describe_type(lhs) + " and " + describe_type(rhs),
-                                                  resource});
+                                                  resource},
+                                 location);
         }
 
         core::error_t no_operator_error(std::pmr::memory_resource* resource,
                                         components::expressions::scalar_type type,
-                                        const components::types::complex_logical_type& operand) {
+                                        const components::types::complex_logical_type& operand,
+                                        std::source_location location = std::source_location::current()) {
             return core::error_t(
                 core::error_code_t::arithmetics_failure,
                 std::pmr::string{"operator " + to_string(type) + " is not defined for type " + describe_type(operand),
-                                 resource});
+                                 resource},
+                location);
         }
 
         // Records a conversion an operator needs by SPLICING a cast expression over the operand.
@@ -149,10 +154,12 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] core::error_t ambiguous_key(std::pmr::memory_resource* resource,
-                                                  const components::expressions::key_t& key) {
+                                                  const components::expressions::key_t& key,
+                                                  std::source_location location = std::source_location::current()) {
             return core::error_t(
                 core::error_code_t::ambiguous_name,
-                std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path", resource});
+                std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path", resource},
+                location);
         }
 
         [[nodiscard]] core::result_wrapper_t<type_paths> find_types(std::pmr::memory_resource* resource,

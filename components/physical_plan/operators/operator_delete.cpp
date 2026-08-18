@@ -504,17 +504,19 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 index_old_chunks_);
+            // Record the delete marker ONCE across all flushes: COMMIT/ABORT key the
+            // MVCC swap/revert on the txn id, not on per-flush ranges. Recorded BEFORE
+            // the flush-error check so a late flush failure still leaves the marker for
+            // the failed-statement abort tail to un-stamp the already-stamped marks.
+            if (!delete_marker_recorded_) {
+                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                delete_marker_recorded_ = true;
+            }
+
             if (err.contains_error()) {
                 set_error(err);
                 mark_failed();
                 co_return;
-            }
-
-            // Record the delete marker ONCE across all flushes: COMMIT/ABORT key the
-            // MVCC swap/revert on the txn id, not on per-flush ranges.
-            if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
-                delete_marker_recorded_ = true;
             }
 
             // Clear the flushed slice (bounded memory). Keep returning_staged_ — it is

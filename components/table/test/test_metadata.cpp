@@ -10,6 +10,7 @@
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <cstdio>
 #include <cstring>
 #include <unistd.h>
 #include <vector>
@@ -195,6 +196,79 @@ TEST_CASE("metadata_reader: read past end of chain -> sticky data_corruption (er
     REQUIRE_NOTHROW(reader.read_data(reinterpret_cast<std::byte*>(&after), sizeof(after)));
     REQUIRE(reader.has_error());
     REQUIRE(reader.error().type == core::error_code_t::data_corruption);
+
+    cleanup_test_file();
+}
+
+// The 64 metadata sub-blocks are carved out of a block that was allocated at
+// block_allocation_size() but whose USABLE region starts after the block header, so
+// buffer() only reaches block_size() = block_allocation_size() - DEFAULT_BLOCK_HEADER_SIZE.
+// Sizing the sub-blocks from the ALLOCATION size instead makes 64 * 4096 = 262144 bytes
+// of sub-block space live in a 262136-byte region: sub-block 63 ends 8 bytes past the
+// allocation, and metadata_writer_t writes those 8 bytes.
+//
+// The victim is the allocator, not the table: the splat lands on the neighbouring pool
+// block's free-list pointer, so the process dies later, inside do_allocate, anywhere in
+// the program. That is why the observed crash was non-deterministic (5 runs of the same
+// 200k x 42-column load: 2 survived, 3 took SIGSEGV) and why the stack always pointed at
+// an innocent allocation site.
+//
+// A behavioural reproducer needs ~257 KB of checkpoint metadata (~6.4M cells) and still
+// only crashes some of the time, so the invariant itself is the test.
+TEST_CASE("metadata: sub-blocks fit inside the block's usable region") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    metadata_manager_t manager(bm);
+
+    INFO("sub_block_size=" << manager.sub_block_size() << " x " << META_SUB_BLOCKS_PER_BLOCK
+                           << " must fit in block_size=" << bm.block_size());
+    CHECK(manager.sub_block_size() * META_SUB_BLOCKS_PER_BLOCK <= bm.block_size());
+
+    // Each sub-block starts with a uint64_t next-pointer (metadata_writer_t /
+    // metadata_reader_t), so every sub-block base has to stay 8-byte aligned.
+    CHECK(manager.sub_block_size() % sizeof(uint64_t) == 0);
+
+    cleanup_test_file();
+}
+
+// The metadata sub-block stride is NOT stored in the file — metadata_manager_t recomputes
+// it from the block size on open. v1 files were written with a 4096-byte stride, v2 uses
+// 4088, so a v1 chain read by a v2 build would walk to wrong offsets and return garbage
+// rather than fail. The header version therefore has to be matched EXACTLY, and an older
+// file has to be refused through the error channel — there is no compatibility path.
+TEST_CASE("metadata: a file from an older format version is refused") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    {
+        test_env_t env;
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+    }
+
+    // Rewrite the version field in place to the previous format version.
+    {
+        std::FILE* f = std::fopen(test_db_path().c_str(), "r+b");
+        REQUIRE(f != nullptr);
+        const uint32_t legacy_version = 1; // what pre-reset builds wrote
+        REQUIRE(std::fseek(f, sizeof(uint32_t), SEEK_SET) == 0); // past the magic
+        REQUIRE(std::fwrite(&legacy_version, sizeof(legacy_version), 1, f) == 1);
+        std::fclose(f);
+    }
+
+    {
+        test_env_t env;
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        auto result = bm.load_existing_database();
+        REQUIRE(result.has_error());
+        INFO("error: " << result.error().what);
+        CHECK(result.error().type == core::error_code_t::data_corruption);
+    }
 
     cleanup_test_file();
 }

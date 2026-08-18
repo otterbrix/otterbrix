@@ -1,5 +1,7 @@
 #include "single_file_block_manager.hpp"
 
+#include <string>
+
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
@@ -77,10 +79,18 @@ namespace components::table::storage {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"Failed to read main header", buffer_manager.resource()});
         }
-        if (!main_header.validate()) {
+        if (!main_header.magic_ok()) {
             return core::error_t(
                 core::error_code_t::data_corruption,
-                std::pmr::string{"Invalid database file: bad magic or version", buffer_manager.resource()});
+                std::pmr::string{"Invalid database file: bad magic", buffer_manager.resource()});
+        }
+        if (main_header.version != main_header_t::CURRENT_VERSION) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Unsupported database file version " +
+                                                      std::to_string(main_header.version) + ", this build writes " +
+                                                      std::to_string(main_header_t::CURRENT_VERSION) +
+                                                      " (metadata sub-block layout changed; the file must be recreated)",
+                                                  buffer_manager.resource()});
         }
 
         database_header_t header1, header2;

@@ -13,6 +13,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_type_promotion.cpp
         test_statement_latency.cpp
         test_log_laziness.cpp
+        test_catalog_scan_cost.cpp
+        test_index_create_failure.cpp
         test_update.cpp
         test_wal_pool.cpp
         test_persistence.cpp

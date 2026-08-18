@@ -121,7 +121,7 @@ namespace services::disk {
         // and whose row i is the i-th key-tuple, so no row-major logical_value_t crosses
         // the boundary. All keys share the same table_oid (and therefore the same owning
         // agent), so the per-key loop runs intra-agent via a single scan_by_keys_inner.
-        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
         scan_by_keys(execution_context_t ctx,
                      components::catalog::oid_t table_oid,
                      std::pmr::vector<std::string> key_col_names,
@@ -132,11 +132,12 @@ namespace services::disk {
         // DEFAULT_VECTOR_CAPACITY rows). `keys` is a 1-row columnar carrier (column j ==
         // key_col_names[j]), so no row-major logical_value_t crosses the boundary. Callers
         // read cells via chunk.value(col_idx, row_idx).
-        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key(execution_context_t ctx,
                            components::catalog::oid_t table_oid,
-                           std::pmr::vector<std::string> key_col_names,
-                           components::vector::data_chunk_t keys);
+                           std::pmr::vector<std::uint64_t> key_col_indices,
+                           components::vector::data_chunk_t keys,
+                           std::pmr::vector<std::uint64_t> projected_cols);
 
         // Batched multi-key columnar row-data scan for one table: result[i] = matched chunks
         // for key-tuple i (each chunk <= DEFAULT_VECTOR_CAPACITY rows). `keys` is an N-row
@@ -145,11 +146,12 @@ namespace services::disk {
         // agent), so the per-key loop runs intra-agent via a single read_chunks_by_keys_inner
         // message. The outer vector always has one (possibly empty) entry per key in input
         // order, so result.size() == keys.size(). Callers read cells via chunk.value(col, row).
-        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
-                            std::pmr::vector<std::string> key_col_names,
-                            components::vector::data_chunk_t keys);
+                            std::pmr::vector<std::uint64_t> key_col_indices,
+                            components::vector::data_chunk_t keys,
+                            std::pmr::vector<std::uint64_t> projected_cols);
 
         // Aggregate-pushdown REDUCE — a DEDICATED protocol leg, not a scan mode:
         // the owning agent runs the whole GROUP BY over its slice (operator_group

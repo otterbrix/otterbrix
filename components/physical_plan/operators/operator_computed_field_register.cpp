@@ -1,6 +1,7 @@
 #include "operator_computed_field_register.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -67,17 +68,25 @@ namespace components::operators {
             // read existing pg_computed_column rows for (relid, attname).
             // pg_computed_column layout: 0=relid 1=attoid 2=attname
             // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
-            std::pmr::vector<std::string> r_keys(resource_);
-            r_keys.emplace_back("relid");
-            r_keys.emplace_back("attname");
+            std::pmr::vector<std::uint64_t> r_keys(resource_);
+            r_keys.emplace_back(catalog::pg_computed_column_col::relid);
+            r_keys.emplace_back(catalog::pg_computed_column_col::attname);
             auto [_r, rf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_chunks_by_key,
                 exec_ctx,
                 pg_computed_column,
                 std::move(r_keys),
-                components::operators::make_key_chunk(resource_, table_oid_, std::string_view{col.name()}));
-            auto batches = co_await std::move(rf);
+                components::operators::make_key_chunk(resource_, table_oid_, std::string_view{col.name()}),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto batches_r = co_await std::move(rf);
+            if (batches_r.has_error()) {
+                // A failed pg_computed_column read is not a miss; treating it as one lets the
+                // operation proceed on data that was never read.
+                set_error(batches_r.error());
+                co_return;
+            }
+            auto& batches = batches_r.value();
 
             std::int64_t max_version = -1;
             catalog::oid_t latest_atttypid = catalog::INVALID_OID;
@@ -119,16 +128,24 @@ namespace components::operators {
                     lookup = std::string{catalog::logical_type_to_pg_name(lt)};
                 }
                 if (!lookup.empty()) {
-                    std::pmr::vector<std::string> t_keys(resource_);
-                    t_keys.emplace_back("typname");
+                    std::pmr::vector<std::uint64_t> t_keys(resource_);
+                    t_keys.emplace_back(catalog::pg_type_col::typname);
                     auto [_t, tf] =
                         actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          pg_type,
                                          std::move(t_keys),
-                                         components::operators::make_key_chunk(resource_, std::string_view{lookup}));
-                    auto type_batches = co_await std::move(tf);
+                                         components::operators::make_key_chunk(resource_, std::string_view{lookup}),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                    auto type_batches_r = co_await std::move(tf);
+                    if (type_batches_r.has_error()) {
+                        // A failed pg_type read is not a miss; treating it as one lets the
+                        // operation proceed on data that was never read.
+                        set_error(type_batches_r.error());
+                        co_return;
+                    }
+                    auto& type_batches = type_batches_r.value();
                     if (!type_batches.empty() && type_batches[0].size() != 0 && type_batches[0].column_count() > 0) {
                         if (!type_batches[0].is_null(0, 0)) {
                             atttypid = static_cast<catalog::oid_t>(type_batches[0].get_value<std::uint32_t>(0, 0));

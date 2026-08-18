@@ -27,6 +27,7 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/types/types.hpp>
@@ -34,6 +35,7 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <memory_resource>
 #include <string>
@@ -114,7 +116,7 @@ namespace services::disk::test_probe {
     probe_read(Fx& fx,
                components::execution_context_t ctx,
                catalog::oid_t table_oid,
-               std::pmr::vector<std::string> key_cols,
+               std::pmr::vector<std::uint64_t> key_cols,
                std::pmr::vector<components::types::logical_value_t> key_vals,
                bool committed_scan = true) {
         auto keys = build_key_chunk(&fx.resource, std::move(key_vals));
@@ -126,7 +128,12 @@ namespace services::disk::test_probe {
         if (committed_scan) {
             ctx.txn = components::table::transaction_data{};
         }
-        return fx.invoke(&manager_disk_t::read_chunks_by_key, ctx, table_oid, std::move(key_cols), std::move(keys));
+        auto r = fx.invoke(&manager_disk_t::read_chunks_by_key, ctx, table_oid, std::move(key_cols), std::move(keys), std::pmr::vector<std::uint64_t>{&fx.resource});
+        // A probe read that could not be performed is a broken probe, not "no rows":
+        // returning an empty vector here would make every caller below silently assert
+        // "not found". Assert loudly instead — no test in this suite expects a failure.
+        assert(!r.has_error() && "catalog_probe::probe_read: keyed catalog read failed");
+        return std::move(r.value());
     }
 
     // --- probe_table ---------------------------------------------------------
@@ -152,9 +159,9 @@ namespace services::disk::test_probe {
 
         // pg_class scan by (relnamespace, relname).
         {
-            std::pmr::vector<std::string> keys{&fx.resource};
-            keys.emplace_back("relnamespace");
-            keys.emplace_back("relname");
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_class_col::relnamespace);
+            keys.emplace_back(catalog::pg_class_col::relname);
             std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
             vals.emplace_back(&fx.resource, namespace_oid);
             vals.emplace_back(&fx.resource, name);
@@ -200,8 +207,8 @@ namespace services::disk::test_probe {
             };
             std::unordered_map<std::string, cc_row_t> latest_any;
 
-            std::pmr::vector<std::string> keys{&fx.resource};
-            keys.emplace_back("relid");
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_computed_column_col::relid);
             std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
             vals.emplace_back(&fx.resource, out.oid);
             auto batches = probe_read(fx, ctx, pg_computed_column, std::move(keys), std::move(vals), committed_scan);
@@ -267,8 +274,8 @@ namespace services::disk::test_probe {
         {
             const auto snapshot_start_time = ctx.txn.start_time;
             std::vector<probe_column_info_t> rows;
-            std::pmr::vector<std::string> keys{&fx.resource};
-            keys.emplace_back("attrelid");
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_attribute_col::attrelid);
             std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
             vals.emplace_back(&fx.resource, out.oid);
             auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), std::move(vals), committed_scan);
@@ -343,9 +350,9 @@ namespace services::disk::test_probe {
 
         // pg_type scan by (typnamespace, typname).
         {
-            std::pmr::vector<std::string> keys{&fx.resource};
-            keys.emplace_back("typnamespace");
-            keys.emplace_back("typname");
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_type_col::typnamespace);
+            keys.emplace_back(catalog::pg_type_col::typname);
             std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
             vals.emplace_back(&fx.resource, namespace_oid);
             vals.emplace_back(&fx.resource, name);
@@ -377,9 +384,9 @@ namespace services::disk::test_probe {
         // Composite fallback via pg_class relkind='c'.
         catalog::oid_t composite_oid = catalog::INVALID_OID;
         {
-            std::pmr::vector<std::string> keys{&fx.resource};
-            keys.emplace_back("relnamespace");
-            keys.emplace_back("relname");
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_class_col::relnamespace);
+            keys.emplace_back(catalog::pg_class_col::relname);
             std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
             vals.emplace_back(&fx.resource, namespace_oid);
             vals.emplace_back(&fx.resource, name);
@@ -413,8 +420,8 @@ namespace services::disk::test_probe {
         };
         std::vector<field_row> fields;
         {
-            std::pmr::vector<std::string> keys{&fx.resource};
-            keys.emplace_back("attrelid");
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_attribute_col::attrelid);
             std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
             vals.emplace_back(&fx.resource, composite_oid);
             auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), std::move(vals));
@@ -481,9 +488,9 @@ namespace services::disk::test_probe {
         out.namespace_oid = namespace_oid;
 
         constexpr catalog::oid_t pg_proc = catalog::well_known_oid::pg_proc_table;
-        std::pmr::vector<std::string> keys{&fx.resource};
-        keys.emplace_back("pronamespace");
-        keys.emplace_back("proname");
+        std::pmr::vector<std::uint64_t> keys{&fx.resource};
+        keys.emplace_back(catalog::pg_proc_col::pronamespace);
+        keys.emplace_back(catalog::pg_proc_col::proname);
         std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
         vals.emplace_back(&fx.resource, namespace_oid);
         vals.emplace_back(&fx.resource, name);

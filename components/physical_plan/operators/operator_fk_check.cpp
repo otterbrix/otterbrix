@@ -154,7 +154,14 @@ namespace components::operators {
                                              fk_.parent_table_oid,
                                              std::move(col_names),
                                              std::move(keys));
-            auto matches = co_await std::move(fut);
+            auto matches_r = co_await std::move(fut);
+            if (matches_r.has_error()) {
+                // A failed parent-key read is not a miss; treating it as one lets the
+                // operation proceed on data that was never read.
+                set_error(matches_r.error());
+                co_return;
+            }
+            auto& matches = matches_r.value();
 
             // Any missing parent (empty match list) is a violation.
             for (std::size_t i = 0; i < matches.size(); ++i) {

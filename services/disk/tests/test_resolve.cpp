@@ -253,10 +253,11 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
             keys.set_value(0, i, probe_keys[i]);
         }
         keys.set_cardinality(N);
-        std::pmr::vector<std::string> key_cols{&fx.resource};
-        key_cols.emplace_back("k");
+        // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
+        std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
+        key_cols.emplace_back(0);
         auto res =
-            fx.invoke(&manager_disk_t::read_chunks_by_keys, fx.ctx(), table_oid, std::move(key_cols), std::move(keys));
+            disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_keys, fx.ctx(), table_oid, std::move(key_cols), std::move(keys), std::pmr::vector<std::uint64_t>{&fx.resource}));
         REQUIRE(res.size() == N);
         // Copy into a std::vector for re-use in the parity loop (chunk-by-chunk
         // size/value comparison below).
@@ -275,15 +276,16 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 
     // --- parity: result[k] of the batched call == singular read_chunks_by_key(k) ---
     for (std::size_t i = 0; i < N; ++i) {
-        std::pmr::vector<std::string> single_key_cols{&fx.resource};
-        single_key_cols.emplace_back("k");
+        // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
+        std::pmr::vector<std::uint64_t> single_key_cols{&fx.resource};
+        single_key_cols.emplace_back(0);
         std::pmr::vector<logical_value_t> single_vals{&fx.resource};
         single_vals.emplace_back(&fx.resource, probe_keys[i]);
-        auto single = fx.invoke(&manager_disk_t::read_chunks_by_key,
+        auto single = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                 fx.ctx(),
                                 table_oid,
                                 std::move(single_key_cols),
-                                test_probe::build_key_chunk(&fx.resource, std::move(single_vals)));
+                                test_probe::build_key_chunk(&fx.resource, std::move(single_vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         // Same total row count per key (the no-match key yields 0 on both paths).
         std::uint64_t single_total = total_rows(single);
@@ -312,4 +314,153 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
             REQUIRE(pr.first == probe_keys[i]);
         }
     }
+}
+
+// 8. A keyed read that CANNOT BE PERFORMED must not be reported as "no rows".
+//
+// The keyed catalog reads used to return a bare vector with no error slot, so every
+// failure — an unknown key column, a key-arity mismatch, and (the dangerous one) a
+// scan_local io_error/data_corruption from a failed block pin — collapsed into "one
+// empty entry per key". The callers cannot tell that apart from a legitimate miss, and
+// they do not try: operator_resolve_table turns an empty pg_namespace read into
+// "Database does not exist", and operator_resolve_constraint assigns the empty result
+// straight into fk.child_col_names, building FK metadata that is silently wrong.
+//
+// Test 7 above pins the other half of the pact: key 99, which genuinely matches nothing,
+// yields an EMPTY entry. So empty already means "not found" — which is exactly why an
+// unperformable read must mean something else.
+//
+// The injected failure here is an unknown key column: resolve_key_col_indices cannot map
+// it, so no scan runs at all. No failpoint exists in this layer for forcing a real
+// io_error, and this branch reaches the same swallow.
+TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    using components::types::logical_value_t;
+
+    fixture fx;
+    auto ns_oid = disk_test_helpers::test_create_namespace(fx, "ns_err");
+    auto table_oid = disk_test_helpers::test_create_table(fx,
+                                                          ns_oid,
+                                                          "err_tbl",
+                                                          std::vector<components::table::column_definition_t>{},
+                                                          catalog::relkind::regular);
+    REQUIRE(table_oid >= FIRST_USER_OID);
+    {
+        std::vector<components::table::column_definition_t> scols;
+        scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
+        fx.invoke(&manager_disk_t::create_storage_with_columns,
+                  session_id_t{},
+                  table_oid,
+                  well_known_oid::main_database,
+                  std::move(scols));
+    }
+
+    // A column ordinal this table does not have: the read is impossible, not empty.
+    std::pmr::vector<std::uint64_t> bad_cols{&fx.resource};
+    bad_cols.emplace_back(99);
+    std::pmr::vector<logical_value_t> vals{&fx.resource};
+    vals.emplace_back(&fx.resource, std::int64_t{10});
+    auto res = fx.invoke(&manager_disk_t::read_chunks_by_key,
+                         fx.ctx(),
+                         table_oid,
+                         std::move(bad_cols),
+                         test_probe::build_key_chunk(&fx.resource, std::move(vals)), std::pmr::vector<std::uint64_t>{&fx.resource});
+
+    INFO("an unperformable keyed read must carry an error, not an empty result");
+    REQUIRE(res.has_error());
+
+    // And the batched entry point must behave identically — same failure, same channel.
+    std::pmr::vector<std::uint64_t> bad_cols_b{&fx.resource};
+    bad_cols_b.emplace_back(99);
+    std::pmr::vector<logical_value_t> vals_b{&fx.resource};
+    vals_b.emplace_back(&fx.resource, std::int64_t{10});
+    auto res_b = fx.invoke(&manager_disk_t::read_chunks_by_keys,
+                           fx.ctx(),
+                           table_oid,
+                           std::move(bad_cols_b),
+                           test_probe::build_key_chunk(&fx.resource, std::move(vals_b)), std::pmr::vector<std::uint64_t>{&fx.resource});
+    REQUIRE(res_b.has_error());
+}
+
+// 9. A projected keyed read returns the same values in the columns it asked for.
+//
+// Projection is supplied by the CALLER, and the columns it leaves out come back as
+// ordinal-stable placeholders rather than being removed — that is what lets a consumer keep
+// addressing column 3 as column 3. The failure mode is therefore silent: project too narrowly
+// and the consumer reads an empty placeholder where a value used to be, with no error anywhere.
+// This pins the contract that makes narrowing safe: same rows, same ordinals, same values in
+// the projected columns.
+TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    using components::types::logical_value_t;
+
+    fixture fx;
+    auto ns_oid = disk_test_helpers::test_create_namespace(fx, "ns_proj");
+    auto table_oid = disk_test_helpers::test_create_table(fx,
+                                                          ns_oid,
+                                                          "proj_tbl",
+                                                          std::vector<components::table::column_definition_t>{},
+                                                          catalog::relkind::regular);
+    REQUIRE(table_oid >= FIRST_USER_OID);
+    {
+        std::vector<components::table::column_definition_t> scols;
+        scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
+        scols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
+        scols.emplace_back("b", complex_logical_type{logical_type::BIGINT});
+        fx.invoke(&manager_disk_t::create_storage_with_columns,
+                  session_id_t{},
+                  table_oid,
+                  well_known_oid::main_database,
+                  std::move(scols));
+    }
+    {
+        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        for (auto n : {"k", "a", "b"}) {
+            complex_logical_type t{logical_type::BIGINT};
+            t.set_alias(n);
+            types.push_back(std::move(t));
+        }
+        auto chunk = std::make_unique<components::vector::data_chunk_t>(&fx.resource, types, 1);
+        chunk->set_cardinality(1);
+        chunk->set_value(0, 0, std::int64_t{7});
+        chunk->set_value(1, 0, std::int64_t{70});
+        chunk->set_value(2, 0, std::int64_t{700});
+        components::execution_context_t append_ctx{session_id_t{},
+                                                   components::table::transaction_data{0, 0},
+                                                   {},
+                                                   table_oid};
+        auto append_r =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        REQUIRE_FALSE(append_r.has_error());
+    }
+
+    auto read = [&](std::pmr::vector<std::uint64_t> projection) {
+        std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
+        key_cols.emplace_back(0); // "k"
+        std::pmr::vector<logical_value_t> vals{&fx.resource};
+        vals.emplace_back(&fx.resource, std::int64_t{7});
+        return disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
+                                                    fx.ctx(),
+                                                    table_oid,
+                                                    std::move(key_cols),
+                                                    test_probe::build_key_chunk(&fx.resource, std::move(vals)),
+                                                    std::move(projection)));
+    };
+
+    auto full = read(std::pmr::vector<std::uint64_t>{&fx.resource});
+    std::pmr::vector<std::uint64_t> only_b{&fx.resource};
+    only_b.emplace_back(2); // "b"
+    auto projected = read(std::move(only_b));
+
+    REQUIRE(full.size() == 1);
+    REQUIRE(projected.size() == 1);
+    REQUIRE(full[0].size() == 1);
+    REQUIRE(projected[0].size() == 1);
+    // Same ordinals on both paths, and the projected column carries the same value.
+    REQUIRE(projected[0].column_count() == full[0].column_count());
+    REQUIRE(projected[0].value(2, 0).value<std::int64_t>() == full[0].value(2, 0).value<std::int64_t>());
+    // The key column survives projection: the filter needs it, so the agent keeps it.
+    REQUIRE(projected[0].value(0, 0).value<std::int64_t>() == std::int64_t{7});
 }

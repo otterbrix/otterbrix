@@ -1,6 +1,7 @@
 #include "operator_vacuum.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/table/column_state.hpp>
@@ -213,15 +214,23 @@ namespace components::operators {
             for (const auto table_oid : computing_table_oids) {
                 // pg_computed_column layout: 0=relid 1=attoid 2=attname
                 // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
-                std::pmr::vector<std::string> cc_keys(resource_);
-                cc_keys.emplace_back("relid");
+                std::pmr::vector<std::uint64_t> cc_keys(resource_);
+                cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
                 auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::read_chunks_by_key,
                                                    cc_ctx,
                                                    kPgComputedColumn,
                                                    std::move(cc_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid));
-                auto cc_batches = co_await std::move(ccf);
+                                                   components::operators::make_key_chunk(resource_, table_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                auto cc_batches_r = co_await std::move(ccf);
+                if (cc_batches_r.has_error()) {
+                    // A failed pg_computed_column read is not a miss; treating it as one lets the
+                    // operation proceed on data that was never read.
+                    set_error(cc_batches_r.error());
+                    co_return;
+                }
+                auto& cc_batches = cc_batches_r.value();
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
                 // and derive their target attoids purely from the already-awaited
@@ -308,15 +317,23 @@ namespace components::operators {
                 // taken BEFORE the deletes; row[5]>0 there can include rows
                 // whose live counterparts were just version-GC'd.
                 {
-                    std::pmr::vector<std::string> cc2_keys(resource_);
-                    cc2_keys.emplace_back("relid");
+                    std::pmr::vector<std::uint64_t> cc2_keys(resource_);
+                    cc2_keys.emplace_back(catalog::pg_computed_column_col::relid);
                     auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
                                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                                          cc_ctx,
                                                          kPgComputedColumn,
                                                          std::move(cc2_keys),
-                                                         components::operators::make_key_chunk(resource_, table_oid));
-                    auto live_cc = co_await std::move(ccf2);
+                                                         components::operators::make_key_chunk(resource_, table_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                    auto live_cc_r = co_await std::move(ccf2);
+                    if (live_cc_r.has_error()) {
+                        // This list drives which physical columns survive compaction. A failed
+                        // read would look like "no live computed columns" and drop all of them.
+                        set_error(live_cc_r.error());
+                        co_return;
+                    }
+                    auto& live_cc = live_cc_r.value();
 
                     std::set<std::string> live_attnames;
                     for (auto& chunk : live_cc) {

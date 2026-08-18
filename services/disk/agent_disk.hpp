@@ -35,7 +35,6 @@ namespace services::disk {
     using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
 
     class manager_disk_t;
-    using name_t = std::string;
     using session_id_t = ::components::session::session_id_t;
     // Catalog-DDL _inner handlers take the same by-value context the manager routers do.
     using execution_context_t = ::components::execution_context_t;
@@ -57,6 +56,14 @@ namespace services::disk {
 #ifdef DEV_MODE
     uint64_t pushdown_reply_rows() noexcept;
     void reset_pushdown_reply_rows() noexcept;
+
+    // Test-observable counter of storage scans issued by the KEYED catalog read
+    // (read_chunks_by_keys_inner). Each bump is one full pass over a pg_* table: the
+    // keyed read builds one filter per key tuple, so a batch of N keys costs N passes.
+    // This is the instrument for "how much does a statement pay to resolve its catalog",
+    // and the acceptance measure for batching that loop into a single pass.
+    uint64_t catalog_key_scans() noexcept;
+    void reset_catalog_key_scans() noexcept;
 #endif
 
     // Forward-declared (full definitions in manager_disk.hpp). agent_disk_t's slice
@@ -71,7 +78,10 @@ namespace services::disk {
     // holds the value for stored column key_col_indices[j]. STREAMS `storage` exactly ONCE
     // (fetch_next_batch) regardless of key count — O(table_rows + nkeys), NOT O(nkeys *
     // table_rows). Exposed at namespace scope so tests can drive it against a counting storage.
-    std::pmr::vector<std::pmr::vector<std::int64_t>>
+    // A scan failure is returned, not swallowed: a partial result here reads to
+    // operator_fk_check / operator_unique_constraint as "these keys matched nothing",
+    // i.e. a constraint that passes because the rows were never read.
+    core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>
     fk_hash_semijoin(std::pmr::memory_resource* resource,
                      components::storage::storage_t& storage,
                      const std::pmr::vector<std::uint64_t>& key_col_indices,
@@ -106,12 +116,11 @@ namespace services::disk {
         using unique_future = actor_zeta::unique_future<T>;
 
         /// Default-constructed agent: CATALOG role, pool_idx = 0.
-        agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* manager, const path_t& path_db, log_t& log);
+        agent_disk_t(std::pmr::memory_resource* resource, const path_t& path_db, log_t& log);
 
         /// Role-aware constructor. agent 0 = CATALOG; agents 1..N-1 = USER_POOL
         /// with their respective pool_idx (matches pool_idx_for_oid contract).
         agent_disk_t(std::pmr::memory_resource* resource,
-                     manager_disk_t* manager,
                      const path_t& path_db,
                      log_t& log,
                      agent_role_t role,
@@ -339,7 +348,7 @@ namespace services::disk {
         //   empty). The whole batch is one mailbox message so name resolution happens once,
         //   the scan is O(table_rows + nkeys) (NOT one full scan per key), and it is
         //   serialized against same-oid mutations.
-        unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
         scan_by_keys_inner(components::catalog::oid_t table_oid,
                            std::pmr::vector<std::string> key_col_names,
                            components::vector::data_chunk_t keys,
@@ -351,12 +360,14 @@ namespace services::disk {
         //   filter (constant = keys.value(j, 0)) and returns the matching rows as batched
         //   data_chunk_t (<= DEFAULT_VECTOR_CAPACITY rows each), all columns, no row limit.
         //   The filter constant is a logical_value_t — the irreducible filter-API floor,
-        //   same as scan_by_keys_inner; it never crosses the mailbox. A not-owned OID /
-        //   record-only marker / unknown column / empty keys yields an empty vector.
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        //   same as scan_by_keys_inner; it never crosses the mailbox. A read that cannot be
+        //   performed (not-owned OID / record-only marker / unknown column / empty key columns)
+        //   is a core::error_t — never an empty result, which means "matched nothing".
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key_inner(components::catalog::oid_t table_oid,
-                                 std::pmr::vector<std::string> key_col_names,
+                                 std::pmr::vector<std::uint64_t> key_col_indices,
                                  components::vector::data_chunk_t keys,
+                                 std::pmr::vector<std::uint64_t> projected_cols,
                                  components::table::transaction_data txn);
 
         // read_chunks_by_keys_inner — batched multi-key columnar row-data scan for one owned
@@ -366,14 +377,16 @@ namespace services::disk {
         //   and scans, returning the matching rows as batched data_chunk_t (all columns, no row
         //   limit). result[i] == matched chunks for key-tuple i; the outer vector always has one
         //   (possibly empty) entry per key in input order, so result.size() == keys.size() on
-        //   EVERY path — mirroring scan_by_keys_inner. A not-owned OID / record-only marker /
-        //   unknown column / arity mismatch yields a same-length vector of empty entries (or empty
-        //   when keys is empty). The filter constant is a logical_value_t — the irreducible
-        //   filter-API floor, same as read_chunks_by_key_inner; it never crosses the mailbox.
-        unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+        //   EVERY path — mirroring scan_by_keys_inner. A read that cannot be performed (not-owned
+        //   OID / record-only marker / unknown column / arity mismatch / a scan io_error) is a
+        //   core::error_t; an empty entry therefore means exactly one thing, "this key matched
+        //   nothing". The filter constant is a logical_value_t — the irreducible filter-API floor,
+        //   same as read_chunks_by_key_inner; it never crosses the mailbox.
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys_inner(components::catalog::oid_t table_oid,
-                                  std::pmr::vector<std::string> key_col_names,
+                                  std::pmr::vector<std::uint64_t> key_col_indices,
                                   components::vector::data_chunk_t keys,
+                                  std::pmr::vector<std::uint64_t> projected_cols,
                                   components::table::transaction_data txn);
 
         // storage_types_inner — schema metadata accessor.
@@ -588,7 +601,6 @@ namespace services::disk {
         // which loops it over its oid slice. Synchronous; agent-thread callers only.
         void mark_storage_dropped_one_local(components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 
-        const name_t name_;
         log_t log_;
         path_t path_;
         core::filesystem::local_file_system_t fs_;

@@ -70,22 +70,32 @@ namespace components::operators {
         const auto direction = target_node_->direction();
         using direction_t = components::logical_plan::resolve_direction;
 
-        const std::string key_col =
-            (direction == direction_t::outgoing) ? std::string{"conrelid"} : std::string{"confrelid"};
+        // Which side of pg_constraint this resolve keys on, as a storage ordinal: outgoing
+        // constraints are keyed by the child (conrelid), incoming ones by the parent (confrelid).
+        const std::uint64_t key_col = (direction == direction_t::outgoing) ? catalog::pg_constraint_col::conrelid
+                                                                           : catalog::pg_constraint_col::confrelid;
 
         std::vector<catalog::fk_info_t> fks;
         std::vector<std::pair<std::string, std::string>> check_exprs;
 
         // scan pg_constraint by (conrelid|confrelid).
-        std::pmr::vector<std::string> con_keys(resource_);
+        std::pmr::vector<std::uint64_t> con_keys(resource_);
         con_keys.emplace_back(key_col);
         auto [_c, fut_con] = actor_zeta::send(ctx->disk_address,
                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                               exec_ctx,
                                               kPgConstraint,
                                               std::move(con_keys),
-                                              components::operators::make_key_chunk(resource_, table_oid));
-        auto con_batches = co_await std::move(fut_con);
+                                              components::operators::make_key_chunk(resource_, table_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+        auto con_batches_r = co_await std::move(fut_con);
+        if (con_batches_r.has_error()) {
+            // A failed pg_constraint read is not a miss; reporting it as one is how an
+            // unreadable catalog became a wrong answer instead of an error.
+            set_error(con_batches_r.error());
+            co_return;
+        }
+        auto& con_batches = con_batches_r.value();
 
         // PASS 1: decode every pg_constraint row. FK rows ('f') build a partially-filled
         // fk_info_t plus the child/parent attoid CSVs needed to resolve column names; CHECK
@@ -143,9 +153,9 @@ namespace components::operators {
                         fk.parent_table_oid = table_oid;
                     }
                     fk.matchtype =
-                        con_chunk.is_null(catalog::pg_constraint_col::confmatch, ci)
+                        con_chunk.is_null(catalog::pg_constraint_col::confmatchtype, ci)
                             ? 's'
-                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confmatch, ci)[0];
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confmatchtype, ci)[0];
                     fk.del_action =
                         con_chunk.is_null(catalog::pg_constraint_col::confdeltype, ci)
                             ? 'a'
@@ -205,28 +215,42 @@ namespace components::operators {
             // issue both before awaiting either — same independence the prior per-FK code relied
             // on, now amortised across the whole constraint set in two mailbox hops total.
             // child_results[k] / parent_results[k] correspond to pending_fks[k].
-            std::pmr::vector<std::string> attr_c_keys(resource_);
-            attr_c_keys.emplace_back("attrelid");
+            std::pmr::vector<std::uint64_t> attr_c_keys(resource_);
+            attr_c_keys.emplace_back(catalog::pg_attribute_col::attrelid);
             auto [_a, fut_attr_c] = actor_zeta::send(ctx->disk_address,
                                                      &services::disk::manager_disk_t::read_chunks_by_keys,
                                                      exec_ctx,
                                                      kPgAttribute,
                                                      std::move(attr_c_keys),
-                                                     components::operators::make_keys_chunk(resource_, child_oids));
+                                                     components::operators::make_keys_chunk(resource_, child_oids),
+                             std::pmr::vector<std::uint64_t>{resource_});
 
-            std::pmr::vector<std::string> attr_p_keys(resource_);
-            attr_p_keys.emplace_back("attrelid");
+            std::pmr::vector<std::uint64_t> attr_p_keys(resource_);
+            attr_p_keys.emplace_back(catalog::pg_attribute_col::attrelid);
             auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
                                                      &services::disk::manager_disk_t::read_chunks_by_keys,
                                                      exec_ctx,
                                                      kPgAttribute,
                                                      std::move(attr_p_keys),
-                                                     components::operators::make_keys_chunk(resource_, parent_oids));
+                                                     components::operators::make_keys_chunk(resource_, parent_oids),
+                             std::pmr::vector<std::uint64_t>{resource_});
 
-            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> child_results =
-                co_await std::move(fut_attr_c);
-            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> parent_results =
-                co_await std::move(fut_attr_p);
+            auto child_results_r = co_await std::move(fut_attr_c);
+            if (child_results_r.has_error()) {
+                // A failed pg_attribute (FK child) read is not a miss; reporting it as one builds
+                // constraint metadata from data that was never read.
+                set_error(child_results_r.error());
+                co_return;
+            }
+            auto& child_results = child_results_r.value();
+            auto parent_results_r = co_await std::move(fut_attr_p);
+            if (parent_results_r.has_error()) {
+                // A failed pg_attribute (FK parent) read is not a miss; reporting it as one builds
+                // constraint metadata from data that was never read.
+                set_error(parent_results_r.error());
+                co_return;
+            }
+            auto& parent_results = parent_results_r.value();
 
             // PASS 2: per-FK column-name resolution + (for referencing) the chained
             // pg_class / pg_namespace reads. Identical extraction logic to the prior
@@ -351,16 +375,24 @@ namespace components::operators {
                     // descendant collection without a back-resolve). The pg_namespace
                     // read keys on an oid DERIVED from the pg_class read result, so
                     // this remains a 2-hop chained read per FK (NOT batchable).
-                    std::pmr::vector<std::string> cls_keys(resource_);
-                    cls_keys.emplace_back("oid");
+                    std::pmr::vector<std::uint64_t> cls_keys(resource_);
+                    cls_keys.emplace_back(catalog::pg_namespace_col::oid);
                     auto [_cls, fut_cls] =
                         actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          kPgClass,
                                          std::move(cls_keys),
-                                         components::operators::make_key_chunk(resource_, fk.child_table_oid));
-                    auto cls_batches = co_await std::move(fut_cls);
+                                         components::operators::make_key_chunk(resource_, fk.child_table_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                    auto cls_batches_r = co_await std::move(fut_cls);
+                    if (cls_batches_r.has_error()) {
+                        // A failed pg_class read is not a miss; reporting it as one is how an
+                        // unreadable catalog became a wrong answer instead of an error.
+                        set_error(cls_batches_r.error());
+                        co_return;
+                    }
+                    auto& cls_batches = cls_batches_r.value();
                     if (!cls_batches.empty() && cls_batches[0].size() != 0 &&
                         cls_batches[0].column_count() > catalog::pg_class_col::relname) {
                         fk.child_collection_name =
@@ -368,15 +400,23 @@ namespace components::operators {
                         fk.child_database = "";
                         const auto ns_oid = static_cast<catalog::oid_t>(
                             cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
-                        std::pmr::vector<std::string> ns_keys(resource_);
-                        ns_keys.emplace_back("oid");
+                        std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                        ns_keys.emplace_back(catalog::pg_namespace_col::oid);
                         auto [_ns, fut_ns] = actor_zeta::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                                               exec_ctx,
                                                               kPgNamespace,
                                                               std::move(ns_keys),
-                                                              components::operators::make_key_chunk(resource_, ns_oid));
-                        auto ns_batches = co_await std::move(fut_ns);
+                                                              components::operators::make_key_chunk(resource_, ns_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                        auto ns_batches_r = co_await std::move(fut_ns);
+                        if (ns_batches_r.has_error()) {
+                            // A failed pg_namespace read is not a miss; reporting it as one is how an
+                            // unreadable catalog became a wrong answer instead of an error.
+                            set_error(ns_batches_r.error());
+                            co_return;
+                        }
+                        auto& ns_batches = ns_batches_r.value();
                         if (!ns_batches.empty() && ns_batches[0].size() != 0 &&
                             ns_batches[0].column_count() > catalog::pg_namespace_col::nspname) {
                             fk.child_schema = std::string(
@@ -398,15 +438,23 @@ namespace components::operators {
         std::vector<std::vector<std::string>> unique_groups;
         std::vector<std::string> pk_columns;
         if (!pending_unique_attoids.empty()) {
-            std::pmr::vector<std::string> attr_keys(resource_);
-            attr_keys.emplace_back("attrelid");
+            std::pmr::vector<std::uint64_t> attr_keys(resource_);
+            attr_keys.emplace_back(catalog::pg_attribute_col::attrelid);
             auto [_u, fut_attr_u] = actor_zeta::send(ctx->disk_address,
                                                      &services::disk::manager_disk_t::read_chunks_by_key,
                                                      exec_ctx,
                                                      kPgAttribute,
                                                      std::move(attr_keys),
-                                                     components::operators::make_key_chunk(resource_, table_oid));
-            auto attr_batches = co_await std::move(fut_attr_u);
+                                                     components::operators::make_key_chunk(resource_, table_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto attr_batches_r = co_await std::move(fut_attr_u);
+            if (attr_batches_r.has_error()) {
+                // A failed pg_attribute read is not a miss; reporting it as one is how an
+                // unreadable catalog became a wrong answer instead of an error.
+                set_error(attr_batches_r.error());
+                co_return;
+            }
+            auto& attr_batches = attr_batches_r.value();
 
             for (std::size_t gi = 0; gi < pending_unique_attoids.size(); ++gi) {
                 const auto& attoids = pending_unique_attoids[gi];

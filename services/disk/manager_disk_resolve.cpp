@@ -164,39 +164,37 @@ namespace services::disk {
     // agent (keyed by table_oid), so the per-key loop runs intra-agent: one
     // scan_by_keys_inner message carries the whole batch and the agent resolves the
     // shared key column names to indices once. result[i] corresponds to keys[i].
-    manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
     manager_disk_t::scan_by_keys(execution_context_t ctx,
                                  components::catalog::oid_t table_oid,
                                  std::pmr::vector<std::string> key_col_names,
                                  components::vector::data_chunk_t keys) {
         std::pmr::vector<std::pmr::vector<std::int64_t>> out(resource());
-        // INVARIANT: result.size() == keys.size() on EVERY path — one (possibly
-        // empty) row per input key, in input order, so result[i] always maps to
-        // keys[i]. Consumers (operator_fk_check / operator_fk_cascade) index
-        // result[i] positionally and treat an empty row as "no parent match", so a
-        // short outer vector would silently skip checks. No-key-columns, no-agents
-        // and null-agent paths therefore still emit keys.size() empty rows rather
-        // than a 0-size vector. (Per-key arity / unknown column is handled
-        // agent-side, also yielding empty rows in result order.) keys.empty()
-        // collapses to an empty result, which is keys.size()==0 — still the invariant.
-        auto fill_empty_rows = [&]() {
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                out.emplace_back();
-            }
-        };
-        if (keys.empty() || key_col_names.empty()) {
-            fill_empty_rows();
+        // INVARIANT on SUCCESS: result.size() == keys.size() — one (possibly empty) row per
+        // input key, in input order, so result[i] always maps to keys[i]. Consumers
+        // (operator_fk_check / operator_fk_cascade) index result[i] positionally and treat an
+        // empty row as "no parent match", so a short outer vector would silently skip checks.
+        //
+        // The routing failures below used to emit keys.size() empty rows, which reads to those
+        // same consumers as "no parent matched any key" — a constraint check that passes because
+        // the check could not run. They are errors now. Zero keys is not a failure: an empty
+        // request has an empty answer, and keys.size() == 0 still satisfies the invariant.
+        if (keys.empty()) {
             co_return out;
         }
+        if (key_col_names.empty()) {
+            co_return core::error_t{core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"scan_by_keys: no key columns given", resource()}};
+        }
         if (agents_.empty()) {
-            fill_empty_rows();
-            co_return out;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"scan_by_keys: no disk agents", resource()}};
         }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            fill_empty_rows();
-            co_return out;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"scan_by_keys: owning disk agent is null", resource()}};
         }
 
         auto [scan_ns, scan_fut] = actor_zeta::otterbrix::send(agent->address(),
@@ -211,31 +209,40 @@ namespace services::disk {
         co_return co_await std::move(scan_fut);
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::read_chunks_by_key(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
-                                       std::pmr::vector<std::string> key_col_names,
-                                       components::vector::data_chunk_t keys) {
+                                       std::pmr::vector<std::uint64_t> key_col_indices,
+                                       components::vector::data_chunk_t keys,
+                                       std::pmr::vector<std::uint64_t> projected_cols) {
         // Thin router: name→index resolution + the eq-AND filtered scan now run
         // intra-agent in read_chunks_by_key_inner (no row-major flatten, no
         // separate column-name resolution hop). Callers read cells via
         // chunk.value(col, row).
-        std::pmr::vector<components::vector::data_chunk_t> empty(resource());
-        if (key_col_names.empty())
-            co_return empty;
-
-        if (agents_.empty())
-            co_return empty;
+        // These used to return an empty vector, which the resolve operators read as
+        // "no such row" — a misrouted or agent-less read then surfaced as "Database does
+        // not exist". A read that never ran is an error.
+        if (key_col_indices.empty()) {
+            co_return core::error_t{core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"read_chunks_by_key: no key columns given", resource()}};
+        }
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"read_chunks_by_key: no disk agents", resource()}};
+        }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
-        if (agent == nullptr)
-            co_return empty;
+        if (agent == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"read_chunks_by_key: owning disk agent is null", resource()}};
+        }
 
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::read_chunks_by_key_inner,
                                                               table_oid,
-                                                              std::move(key_col_names),
+                                                              std::move(key_col_indices),
                                                               std::move(keys),
+                                                              std::move(projected_cols),
                                                               ctx.txn);
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
@@ -243,47 +250,45 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
     manager_disk_t::read_chunks_by_keys(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
-                                        std::pmr::vector<std::string> key_col_names,
-                                        components::vector::data_chunk_t keys) {
+                                        std::pmr::vector<std::uint64_t> key_col_indices,
+                                        components::vector::data_chunk_t keys,
+                                        std::pmr::vector<std::uint64_t> projected_cols) {
         // Thin router for the multi-key batch: name→index resolution + the per-key eq-AND
         // filtered scans run intra-agent in read_chunks_by_keys_inner (one mailbox hop for the
         // whole batch). INVARIANT: result.size() == keys.size() on EVERY path — one (possibly
         // empty) entry per input key, in input order, so result[i] always maps to keys[i].
-        // Consumers index result[i] positionally, so the no-key-columns / no-agents / null-agent
-        // paths still emit keys.size() empty entries rather than a 0-size vector. (Per-key arity
-        // / unknown column is handled agent-side, also yielding empty entries in result order.)
+        // Consumers index result[i] positionally, so on SUCCESS the invariant still holds. The
+        // routing failures below no longer masquerade as keys.size() empty entries — that shape
+        // is indistinguishable from "every key matched nothing", which is how a failed FK
+        // attribute read silently produced empty fk.child_col_names.
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> out(resource());
-        auto fill_empty_entries = [&]() {
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                // Nested pmr vector: bare emplace_back() lets uses-allocator construction
-                // propagate `out`'s resource to the inner vector. emplace_back(resource())
-                // would resolve to the 2-arg (resource, allocator) form — no such ctor.
-                out.emplace_back();
-            }
-        };
-        if (keys.empty() || key_col_names.empty()) {
-            fill_empty_entries();
+        if (keys.empty()) {
             co_return out;
         }
+        if (key_col_indices.empty()) {
+            co_return core::error_t{core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"read_chunks_by_keys: no key columns given", resource()}};
+        }
         if (agents_.empty()) {
-            fill_empty_entries();
-            co_return out;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"read_chunks_by_keys: no disk agents", resource()}};
         }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            fill_empty_entries();
-            co_return out;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"read_chunks_by_keys: owning disk agent is null", resource()}};
         }
 
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::read_chunks_by_keys_inner,
                                                               table_oid,
-                                                              std::move(key_col_names),
+                                                              std::move(key_col_indices),
                                                               std::move(keys),
+                                                              std::move(projected_cols),
                                                               ctx.txn);
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());

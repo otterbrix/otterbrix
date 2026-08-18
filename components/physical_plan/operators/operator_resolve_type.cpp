@@ -80,16 +80,23 @@ namespace components::operators {
             } else if (dbname_ == "pg_catalog") {
                 namespace_oid_ = catalog::well_known_oid::pg_catalog_namespace;
             } else if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                std::pmr::vector<std::string> ns_keys(resource_);
-                ns_keys.emplace_back("nspname");
+                std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
                 auto [_n, nf] =
                     actor_zeta::send(ctx->disk_address,
                                      &services::disk::manager_disk_t::read_chunks_by_key,
                                      exec_ctx,
                                      kPgNamespace,
                                      std::move(ns_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}));
-                auto ns_batches = co_await std::move(nf);
+                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                auto ns_batches_r = co_await std::move(nf);
+                if (ns_batches_r.has_error()) {
+                    // A failed pg_namespace read is not a miss; saying "not found" here hides it.
+                    set_error(ns_batches_r.error());
+                    co_return;
+                }
+                auto& ns_batches = ns_batches_r.value();
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {
                     if (!ns_batches[0].is_null(0, 0)) {
                         namespace_oid_ = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
@@ -101,17 +108,24 @@ namespace components::operators {
         vector::data_chunk_t chunk(resource_, output_schema_, /*capacity=*/1);
 
         if (namespace_oid_ != catalog::INVALID_OID && ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            std::pmr::vector<std::string> typ_keys(resource_);
-            typ_keys.emplace_back("typname");
-            typ_keys.emplace_back("typnamespace");
+            std::pmr::vector<std::uint64_t> typ_keys(resource_);
+            typ_keys.emplace_back(catalog::pg_type_col::typname);
+            typ_keys.emplace_back(catalog::pg_type_col::typnamespace);
             auto [_t, tf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_chunks_by_key,
                 exec_ctx,
                 kPgType,
                 std::move(typ_keys),
-                components::operators::make_key_chunk(resource_, std::string_view{name_}, namespace_oid_));
-            auto batches = co_await std::move(tf);
+                components::operators::make_key_chunk(resource_, std::string_view{name_}, namespace_oid_),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto batches_r = co_await std::move(tf);
+            if (batches_r.has_error()) {
+                // A failed pg_type read is not a miss; saying "not found" here hides it.
+                set_error(batches_r.error());
+                co_return;
+            }
+            auto& batches = batches_r.value();
 
             if (!batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4) {
                 const auto& batch = batches.front();

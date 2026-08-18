@@ -26,16 +26,18 @@ namespace services::disk {
     } // namespace
     uint64_t pushdown_reply_rows() noexcept { return g_pushdown_reply_rows.load(std::memory_order_relaxed); }
     void reset_pushdown_reply_rows() noexcept { g_pushdown_reply_rows.store(0, std::memory_order_relaxed); }
+
+    namespace {
+        std::atomic<uint64_t> g_catalog_key_scans{0};
+    } // namespace
+    uint64_t catalog_key_scans() noexcept { return g_catalog_key_scans.load(std::memory_order_relaxed); }
+    void reset_catalog_key_scans() noexcept { g_catalog_key_scans.store(0, std::memory_order_relaxed); }
 #endif
 
-    agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
-                               manager_disk_t* manager,
-                               const path_t& path_db,
-                               log_t& log)
-        : agent_disk_t(resource, manager, path_db, log, agent_role_t::CATALOG, 0) {}
+    agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource, const path_t& path_db, log_t& log)
+        : agent_disk_t(resource, path_db, log, agent_role_t::CATALOG, 0) {}
 
     agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
-                               manager_disk_t* /*manager*/,
                                const path_t& path_db,
                                log_t& log,
                                agent_role_t role,
@@ -1395,7 +1397,7 @@ namespace services::disk {
     // O(table_rows + nkeys) instead of O(nkeys * table_rows). No logical_value_t round-trip
     // (R1): typed data_chunk_t::hash + the NULL-aware typed verify
     // components::vector::cells_equal, shared with GROUP BY / HASH JOIN / UNIQUE.
-    std::pmr::vector<std::pmr::vector<std::int64_t>>
+    core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>
     fk_hash_semijoin(std::pmr::memory_resource* resource,
                      components::storage::storage_t& storage,
                      const std::pmr::vector<std::uint64_t>& key_col_indices,
@@ -1474,10 +1476,10 @@ namespace services::disk {
         std::vector<std::size_t> projected_cols(key_col_indices.begin(), key_col_indices.end());
         std::vector<std::uint64_t> scan_col_ids(key_col_indices.begin(), key_col_indices.end());
         components::storage::scan_position_t pos{};
-        // The scan error is intentionally NOT propagated (return discarded): a fetch failure
-        // stops the scan and leaves the remaining buckets empty — a PARTIAL result callers
-        // already tolerate.
-        for_each_storage_batch(
+        // A fetch failure stops the scan and would leave the remaining buckets empty. That
+        // shape is indistinguishable from "these keys matched nothing", which is precisely
+        // the answer that makes an FK or UNIQUE check pass — so it is returned as an error.
+        auto scan_error = for_each_storage_batch(
             storage,
             pos,
             /*filter=*/nullptr,
@@ -1534,19 +1536,33 @@ namespace services::disk {
                 }
                 return core::error_t::no_error();
             });
+        if (scan_error.contains_error()) {
+            return scan_error;
+        }
         return result;
     }
 
     // Resolve the key-column NAMES to storage column indices against an owned slice entry.
-    // Returns true (and fills out_indices in name order) on success; false when the entry is not
-    // owned / a record-only marker / has no key columns / names a column the table lacks — the
-    // caller then degrades the whole keyed batch to one empty entry per key. Shared by
-    // scan_by_keys_inner and read_chunks_by_keys_inner.
-    static bool resolve_key_col_indices(const collection_storage_entry_t* entry,
-                                        const std::pmr::vector<std::string>& key_col_names,
-                                        std::pmr::vector<std::uint64_t>& out_indices) {
-        if (entry == nullptr || entry->storage == nullptr || key_col_names.empty()) {
-            return false;
+    // Fills out_indices in name order and returns no_error() on success.
+    //
+    // Every failure here means the read CANNOT BE PERFORMED, which is a different fact from
+    // "the key matched nothing" — and the callers cannot tell them apart if both arrive as an
+    // empty result. They used to: this returned bool and the caller degraded the whole batch to
+    // one empty entry per key, so a corrupt or misrouted catalog read surfaced to the user as
+    // "Database does not exist". The causes are kept distinct because they are distinct: a
+    // misrouted oid is ours, an unknown column name is the caller's.
+    // Shared by scan_by_keys_inner and read_chunks_by_keys_inner.
+    static core::error_t resolve_key_col_indices(const collection_storage_entry_t* entry,
+                                                 const std::pmr::vector<std::string>& key_col_names,
+                                                 std::pmr::vector<std::uint64_t>& out_indices,
+                                                 std::pmr::memory_resource* resource) {
+        if (entry == nullptr || entry->storage == nullptr) {
+            return core::error_t{core::error_code_t::missing_table,
+                                 std::pmr::string{"keyed read: storage is not owned by this agent", resource}};
+        }
+        if (key_col_names.empty()) {
+            return core::error_t{core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"keyed read: no key columns given", resource}};
         }
         const auto& cols = entry->storage->columns();
         out_indices.reserve(key_col_names.size());
@@ -1559,14 +1575,42 @@ namespace services::disk {
                 }
             }
             if (col_idx == cols.size()) {
-                return false;
+                std::pmr::string what{"keyed read: table has no column ", resource};
+                what.append(kname.c_str());
+                return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
             }
             out_indices.push_back(static_cast<std::uint64_t>(col_idx));
         }
-        return true;
+        return core::error_t::no_error();
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+    // Validate storage column ORDINALS for a keyed catalog read. The catalog reads address
+    // columns by position (components/catalog/helpers.hpp), so no name crosses the mailbox;
+    // what makes a position an identity is catalog::system_schemas::column_order_is_pinned.
+    // Bounds are still checked: a stale constant must fail loudly, not silently read a
+    // neighbouring column.
+    static core::error_t validate_key_col_indices(const collection_storage_entry_t* entry,
+                                                  const std::pmr::vector<std::uint64_t>& key_col_indices,
+                                                  std::pmr::memory_resource* resource) {
+        if (entry == nullptr || entry->storage == nullptr) {
+            return core::error_t{core::error_code_t::missing_table,
+                                 std::pmr::string{"keyed read: storage is not owned by this agent", resource}};
+        }
+        if (key_col_indices.empty()) {
+            return core::error_t{core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"keyed read: no key columns given", resource}};
+        }
+        const auto ncols = entry->storage->columns().size();
+        for (const auto idx : key_col_indices) {
+            if (idx >= ncols) {
+                return core::error_t{core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"keyed read: key column index out of range", resource}};
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
     agent_disk_t::scan_by_keys_inner(components::catalog::oid_t table_oid,
                                      std::pmr::vector<std::string> key_col_names,
                                      components::vector::data_chunk_t keys,
@@ -1579,16 +1623,13 @@ namespace services::disk {
         result.reserve(keys.size());
 
         // Resolve the key column NAMES to storage indices once (same column set for every key).
-        // A not-owned / record-only / empty-names / unknown-column entry degrades the whole batch
-        // to one empty row per key.
+        // A read that cannot be performed is an error, never an empty answer.
         auto it = storages_.find(table_oid);
         const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
         std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        if (!resolve_key_col_indices(entry, key_col_names, key_col_indices)) {
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                result.emplace_back();
-            }
-            co_return std::move(result);
+        if (auto resolved = resolve_key_col_indices(entry, key_col_names, key_col_indices, resource());
+            resolved.contains_error()) {
+            co_return resolved;
         }
 
         // Delegate the actual match to the streaming SINGLE-PASS hash semi-join: ONE streamed
@@ -1600,87 +1641,222 @@ namespace services::disk {
         co_return fk_hash_semijoin(resource(), *entry->storage, key_col_indices, keys, txn);
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::read_chunks_by_key_inner(components::catalog::oid_t table_oid,
-                                           std::pmr::vector<std::string> key_col_names,
+                                           std::pmr::vector<std::uint64_t> key_col_indices,
                                            components::vector::data_chunk_t keys,
+                                           std::pmr::vector<std::uint64_t> projected_cols,
                                            components::table::transaction_data txn) {
         // Single key-tuple: `keys` already carries exactly one row, so it IS the 1-row
         // batch view the plural read_chunks_by_keys_inner expects. Delegate to it inline
         // on this same agent thread (its resolve/filter/scan_local body never crosses the
         // mailbox) and unwrap the single entry.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
-        auto r = co_await read_chunks_by_keys_inner(table_oid, std::move(key_col_names), std::move(keys), txn);
-        co_return r.empty() ? std::move(empty) : std::move(r[0]);
+        auto r = co_await read_chunks_by_keys_inner(table_oid,
+                                                    std::move(key_col_indices),
+                                                    std::move(keys),
+                                                    std::move(projected_cols),
+                                                    txn);
+        if (r.has_error()) {
+            co_return r.error();
+        }
+        co_return r.value().empty() ? std::move(empty) : std::move(r.value()[0]);
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
     agent_disk_t::read_chunks_by_keys_inner(components::catalog::oid_t table_oid,
-                                            std::pmr::vector<std::string> key_col_names,
+                                            std::pmr::vector<std::uint64_t> key_col_indices,
                                             components::vector::data_chunk_t keys,
+                                            std::pmr::vector<std::uint64_t> projected_cols,
                                             components::table::transaction_data txn) {
         // result[i] = matched chunks for key-tuple i; one (possibly empty) entry per key,
-        // preserving input order. Name→index resolution runs once for the whole batch, then
-        // each key gets an eq-AND filtered scan via scan_local (D6: no self-send).
+        // preserving input order. Key columns arrive as storage ORDINALS, so there is no name
+        // resolution here at all; each key gets an eq-AND filtered scan via scan_local
+        // (D6: no self-send).
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
         result.reserve(keys.size());
 
-        // Resolve the key column NAMES to storage indices once (same column set for every key).
-        // A not-owned / record-only / empty-names / unknown-column entry degrades the whole batch
-        // to one empty entry per key.
         auto it = storages_.find(table_oid);
         const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
-        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        if (!resolve_key_col_indices(entry, key_col_names, key_col_indices)) {
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                result.emplace_back();
-            }
-            co_return std::move(result);
+        if (auto valid = validate_key_col_indices(entry, key_col_indices, resource()); valid.contains_error()) {
+            co_return valid;
         }
 
-        // Columnar keys: column j == key_col_names[j], row i == key-tuple i. Arity is uniform
+        // Columnar keys: column j == key_col_indices[j], row i == key-tuple i. Arity is uniform
         // across the chunk, so a mismatch (chunk column count != resolved key columns) voids the
         // whole batch with one empty entry per key. Each filter constant is the single
         // materialization of a key cell (keys.value(ki, i)): the filter API requires a
         // logical_value_t, so this is the irreducible floor — no row-major keys cross the mailbox.
         const std::uint64_t nkeys = keys.size();
         if (keys.column_count() != key_col_indices.size()) {
-            for (std::uint64_t i = 0; i < nkeys; ++i) {
-                result.emplace_back();
+            co_return core::error_t{core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"keyed read: key chunk arity does not match key columns",
+                                                     resource()}};
+        }
+        // ONE pass for the whole batch. The key tuple becomes the same thing a pushed WHERE is —
+        // `col == k0 AND col == k1 ...` as a graph with the key cells bound as parameters — and the
+        // batch becomes the OR of those tuples, so N keys cost ONE scan instead of N.
+        //
+        // This is not trading a pushed-down filter for a full pass: there is no pruning to lose.
+        // check_zonemap_segments (row_group.cpp) unconditionally returns true while a filter is
+        // only a graph, so every per-key "filtered scan" already read the whole table and merely
+        // selected rows afterwards. N keys therefore meant N full passes over a pg_* table, all
+        // serialized on the catalog agent — measured at +2 passes per foreign key per statement.
+        //
+        // Attribution back to individual keys runs the SAME engine the scan itself uses
+        // (expressions::run_graph, as in row_group_t::filter_indexing), not a hand-rolled cell
+        // comparison, so a row lands in exactly the buckets its own predicate accepts.
+        namespace expr = components::expressions;
+        const std::size_t narity = key_col_indices.size();
+
+        // Parameter ids are uint16: the combined filter needs nkeys * arity of them.
+        if (nkeys * narity > std::numeric_limits<std::uint16_t>::max()) {
+            co_return core::error_t{core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"keyed read: key batch too large to bind", resource()}};
+        }
+
+        auto make_eq_child = [&](std::size_t col, std::uint16_t param_id) {
+            expr::key_t column{resource()};
+            column.set_path(std::pmr::vector<size_t>{{key_col_indices[col]},
+                                                     std::pmr::polymorphic_allocator<size_t>{resource()}});
+            return expr::make_compare_expression(resource(),
+                                                 expr::compare_type::eq,
+                                                 column,
+                                                 core::parameter_id_t{param_id});
+        };
+
+        // Per-key filters: needed for attribution, and for nkeys == 1 the single one IS the scan
+        // filter (the OR of one tuple is that tuple), so the degenerate case builds exactly what
+        // the old code built.
+        std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
+        key_filters.reserve(nkeys);
+        components::types::parameter_map_t all_parameters{resource()};
+        auto all_predicate = expr::make_compare_union_expression(
+            resource(),
+            nkeys == 1 ? expr::compare_type::union_and : expr::compare_type::union_or);
+
+        for (std::uint64_t i = 0; i < nkeys; ++i) {
+            components::types::parameter_map_t key_parameters{resource()};
+            auto key_predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
+            auto tuple_predicate = nkeys == 1
+                                       ? nullptr
+                                       : expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
+            for (std::size_t ki = 0; ki < narity; ++ki) {
+                const auto cell = keys.value(ki, i);
+                key_parameters.emplace(core::parameter_id_t{static_cast<std::uint16_t>(ki)}, cell);
+                const auto global_id = static_cast<std::uint16_t>(i * narity + ki);
+                all_parameters.emplace(core::parameter_id_t{global_id}, cell);
+                key_predicate->append_child(make_eq_child(ki, static_cast<std::uint16_t>(ki)));
+                if (tuple_predicate) {
+                    tuple_predicate->append_child(make_eq_child(ki, global_id));
+                } else {
+                    all_predicate->append_child(make_eq_child(ki, global_id));
+                }
             }
+            if (tuple_predicate) {
+                all_predicate->append_child(std::move(tuple_predicate));
+            }
+            auto key_built =
+                expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), entry->storage->types());
+            if (key_built.has_error()) {
+                co_return key_built.error();
+            }
+            key_filters.emplace_back(
+                std::make_unique<components::table::table_filter_t>(std::move(key_parameters),
+                                                                    components::graph_execution_context{},
+                                                                    std::move(key_built.value()),
+                                                                    expr::condition_kind::computed));
+            result.emplace_back();
+        }
+
+        std::unique_ptr<components::table::table_filter_t> scan_filter;
+        if (nkeys == 1) {
+            scan_filter = std::move(key_filters.front());
+        } else {
+            auto all_built =
+                expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), entry->storage->types());
+            if (all_built.has_error()) {
+                co_return all_built.error();
+            }
+            scan_filter = std::make_unique<components::table::table_filter_t>(std::move(all_parameters),
+                                                                              components::graph_execution_context{},
+                                                                              std::move(all_built.value()),
+                                                                              expr::condition_kind::computed);
+        }
+
+        // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
+        // A scan_error here is a real io_error / data_corruption from a failed block pin. It used
+        // to become an empty entry, i.e. "this key matched nothing" — the caller then reported a
+        // corrupt catalog as a missing database.
+#ifdef DEV_MODE
+        g_catalog_key_scans.fetch_add(1, std::memory_order_relaxed);
+#endif
+        // Projection comes from the CALLER: only it knows which columns it reads. An empty set
+        // means "all columns" (full_scan's contract), which is what every caller that cannot
+        // prove its set passes. Non-projected columns stay ordinal-stable placeholders, so a
+        // caller that projects too narrowly reads an empty column instead of a value — hence
+        // the rule that a set is passed only where it is enumerable from the code.
+        std::vector<std::size_t> scan_projection(projected_cols.begin(), projected_cols.end());
+        // The key columns are read by the filter itself, so they must survive the projection.
+        for (const auto key_col : key_col_indices) {
+            if (!scan_projection.empty() &&
+                std::find(scan_projection.begin(), scan_projection.end(), key_col) == scan_projection.end()) {
+                scan_projection.push_back(static_cast<std::size_t>(key_col));
+            }
+        }
+        auto scan_r = scan_local(table_oid,
+                                 scan_filter.get(),
+                                 int64_t{-1},
+                                 scan_projection.empty() ? nullptr : &scan_projection,
+                                 txn);
+        if (scan_r.has_error()) {
+            co_return scan_r.error();
+        }
+        auto matched = std::move(scan_r.value());
+
+        if (nkeys == 1) {
+            // The scan filter WAS key 0's predicate, so every returned row is key 0's. Running the
+            // same predicate again would return the same rows at the cost of another evaluation.
+            result[0] = std::move(matched);
             co_return std::move(result);
         }
-        // The key tuple becomes the same thing a pushed WHERE is: `col == k0 AND col == k1 ...` as one
-        // graph, with the key cells bound as its parameters.
-        namespace expr = components::expressions;
-        for (std::uint64_t i = 0; i < nkeys; ++i) {
-            components::types::parameter_map_t parameters{resource()};
-            auto predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
-            for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
-                const core::parameter_id_t id{static_cast<uint16_t>(ki)};
-                parameters.emplace(id, keys.value(ki, i));
-                expr::key_t column{resource()};
-                column.set_path(std::pmr::vector<size_t>{{key_col_indices[ki]},
-                                                         std::pmr::polymorphic_allocator<size_t>{resource()}});
-                predicate->append_child(expr::make_compare_expression(resource(), expr::compare_type::eq, column, id));
-            }
-            auto built = expr::build_condition_graph(resource(), parameters, predicate.get(), entry->storage->types());
-            if (built.has_error()) {
-                result.emplace_back();
+
+        for (auto& chunk : matched) {
+            const auto rows = chunk.size();
+            if (rows == 0) {
                 continue;
             }
-            auto filter = std::make_unique<components::table::table_filter_t>(std::move(parameters),
-                                                                              components::graph_execution_context{},
-                                                                              std::move(built.value()),
-                                                                              expr::condition_kind::computed);
-            // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
-            // Catalog-read path: a scan_error degrades this key's entry to empty, matching the
-            // not-owned/record-only fallback (callers handle empty entries).
-            auto scan_r = scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
-            if (scan_r.has_error()) {
-                result.emplace_back();
-            } else {
-                result.emplace_back(std::move(scan_r.value()));
+            // Hoisted: data_chunk_t::types() copies a complex_logical_type per column, and each
+            // copy heap-allocates its alias (plan defect G8). Once per chunk, not once per key.
+            const auto chunk_types = chunk.types();
+            for (std::uint64_t i = 0; i < nkeys; ++i) {
+                auto decided = expr::run_graph(key_filters[i]->graph.get(),
+                                               key_filters[i]->parameters,
+                                               chunk,
+                                               key_filters[i]->context);
+                if (decided.has_error()) {
+                    co_return decided.error();
+                }
+                const auto& decisions = decided.value().data.front();
+                // UNKNOWN drops the row, exactly as false does — same reading as filter_indexing.
+                components::vector::indexing_vector_t selected(resource(), rows);
+                std::uint64_t count = 0;
+                for (std::uint64_t r = 0; r < rows; ++r) {
+                    if (!decisions.is_null(r) && decisions.get_value<bool>(r)) {
+                        selected.set_index(count, r);
+                        ++count;
+                    }
+                }
+                if (count == 0) {
+                    continue;
+                }
+                components::vector::data_chunk_t out{resource(), chunk_types, count};
+                for (std::size_t c = 0; c < chunk.column_count(); ++c) {
+                    components::vector::vector_ops::copy(chunk.data[c], out.data[c], selected, count, 0, 0);
+                }
+                components::vector::vector_ops::copy(chunk.row_ids, out.row_ids, selected, count, 0, 0);
+                out.set_cardinality(count);
+                result[i].push_back(std::move(out));
             }
         }
         co_return std::move(result);

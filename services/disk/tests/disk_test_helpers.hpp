@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cassert>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/oid_batch.hpp>
@@ -19,6 +21,16 @@
 #include <vector>
 
 namespace disk_test_helpers {
+
+    // Unwrap a keyed catalog read in a test. These reads now carry a core::error_t for
+    // "the read could not be performed"; no test here expects that, and silently
+    // substituting an empty vector would turn a broken read into a passing "not found".
+    template<typename T>
+    T read_ok(core::result_wrapper_t<T> r) {
+        assert(!r.has_error() && "disk_test_helpers::read_ok: keyed catalog read failed");
+        return std::move(r.value());
+    }
+
 
     using namespace services::disk;
     namespace catalog = components::catalog;
@@ -412,17 +424,17 @@ namespace disk_test_helpers {
         constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
         components::types::logical_value_t toid_lv(&fx.resource, table_oid);
         components::types::logical_value_t name_lv(&fx.resource, field_name);
-        std::pmr::vector<std::string> reg_keys{&fx.resource};
-        reg_keys.emplace_back("relid");
-        reg_keys.emplace_back("attname");
+        std::pmr::vector<std::uint64_t> reg_keys{&fx.resource};
+        reg_keys.emplace_back(components::catalog::pg_computed_column_col::relid);
+        reg_keys.emplace_back(components::catalog::pg_computed_column_col::attname);
         std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
         reg_vals.emplace_back(toid_lv);
         reg_vals.emplace_back(name_lv);
-        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key,
+        auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                  auto_ctx(),
                                  pg_cc,
                                  std::move(reg_keys),
-                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(reg_vals)));
+                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(reg_vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::int64_t max_version = -1;
         catalog::oid_t latest_atttypid = catalog::INVALID_OID;
@@ -481,17 +493,17 @@ namespace disk_test_helpers {
         constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
         components::types::logical_value_t toid_lv(&fx.resource, table_oid);
         components::types::logical_value_t name_lv(&fx.resource, field_name);
-        std::pmr::vector<std::string> unreg_keys{&fx.resource};
-        unreg_keys.emplace_back("relid");
-        unreg_keys.emplace_back("attname");
+        std::pmr::vector<std::uint64_t> unreg_keys{&fx.resource};
+        unreg_keys.emplace_back(components::catalog::pg_computed_column_col::relid);
+        unreg_keys.emplace_back(components::catalog::pg_computed_column_col::attname);
         std::pmr::vector<components::types::logical_value_t> unreg_vals{&fx.resource};
         unreg_vals.emplace_back(toid_lv);
         unreg_vals.emplace_back(name_lv);
-        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key,
+        auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                  auto_ctx(),
                                  pg_cc,
                                  std::move(unreg_keys),
-                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(unreg_vals)));
+                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(unreg_vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;

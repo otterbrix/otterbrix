@@ -180,9 +180,11 @@ TEST_CASE("components::sql::sequence") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = result.sub_queries.back();
-        // DROP SEQUENCE is wrapped in sequence_t(resolve_ns, resolve_table, drop_sequence).
-        REQUIRE(node->type() == node_type::sequence_t);
-        REQUIRE(node->to_string() == "$sequence[3]");
+        // DROP SEQUENCE registers a namespace + table lookup; the drop node itself
+        // is the plan root and carries the names.
+        REQUIRE(node->type() == node_type::drop_t);
+        REQUIRE(result.catalog_resolves.namespaces->entries().size() == 1);
+        REQUIRE(result.catalog_resolves.tables->entries().size() == 1);
     }
 }
 
@@ -198,8 +200,8 @@ TEST_CASE("components::sql::view") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = result.sub_queries.back();
-        REQUIRE(node->type() == node_type::sequence_t);
-        REQUIRE(node->to_string() == "$sequence[2]");
+        REQUIRE(node->type() == node_type::create_view_t);
+        REQUIRE(result.catalog_resolves.namespaces->entries().size() == 1);
     }
 
     SECTION("CREATE VIEW with raw_sql extracts query") {
@@ -210,8 +212,7 @@ TEST_CASE("components::sql::view") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        REQUIRE(result.sub_queries.back()->type() == node_type::sequence_t);
-        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back()->children().back());
+        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back());
         REQUIRE(view_node->type() == node_type::create_view_t);
         REQUIRE(view_node->query_sql() == "SELECT id, name FROM db.tbl WHERE id > 10");
     }
@@ -224,9 +225,10 @@ TEST_CASE("components::sql::view") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = result.sub_queries.back();
-        // DROP VIEW is wrapped in sequence_t(resolve_ns, resolve_table, drop_view).
-        REQUIRE(node->type() == node_type::sequence_t);
-        REQUIRE(node->to_string() == "$sequence[3]");
+        // DROP VIEW registers a namespace + table lookup; the drop node is the root.
+        REQUIRE(node->type() == node_type::drop_t);
+        REQUIRE(result.catalog_resolves.namespaces->entries().size() == 1);
+        REQUIRE(result.catalog_resolves.tables->entries().size() == 1);
     }
 }
 
@@ -312,9 +314,10 @@ TEST_CASE("components::sql::macro") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = result.sub_queries.back();
-        // DROP FUNCTION is wrapped in sequence_t(resolve_ns, resolve_table, drop_macro).
-        REQUIRE(node->type() == node_type::sequence_t);
-        REQUIRE(node->to_string() == "$sequence[3]");
+        // DROP FUNCTION registers a namespace + table lookup; the drop node is the root.
+        REQUIRE(node->type() == node_type::drop_t);
+        REQUIRE(result.catalog_resolves.namespaces->entries().size() == 1);
+        REQUIRE(result.catalog_resolves.tables->entries().size() == 1);
     }
 
     SECTION("DROP FUNCTION simple name") {
@@ -324,8 +327,11 @@ TEST_CASE("components::sql::macro") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = result.sub_queries.back();
-        // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
-        REQUIRE(node->type() == node_type::sequence_t);
+        // No db prefix → the table lookup carries an empty dbname, and no namespace
+        // lookup is registered at all.
+        REQUIRE(node->type() == node_type::drop_t);
+        REQUIRE(result.catalog_resolves.namespaces == nullptr);
+        REQUIRE(result.catalog_resolves.tables->entries().size() == 1);
     }
 }
 

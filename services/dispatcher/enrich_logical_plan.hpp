@@ -7,8 +7,6 @@
 // does pure structural rewrite reading those fields — no external context
 // parameter needed.
 
-#include "plan_resolve_index.hpp"
-
 #include <actor-zeta.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
@@ -29,27 +27,17 @@
 
 namespace services::dispatcher {
 
-    // Walks the plan tree and fills catalog metadata fields into DML nodes
-    // (node_insert_t, node_update_t, node_delete_t).  DDL nodes are left
-    // untouched — they go through execute_ddl_inline unchanged.
+    // STEP 1 of the two-step plan preparation: resolve everything, replace unknowns
+    // with knowns.
     //
-    // Precondition: validate_schema has already co_awaited get_table() for every
-    // table referenced in the plan, so try_get_table() hits the cache synchronously.
-    //
-    // `idx` supplies the plan-tree resolve map (built once by the executor via
-    // gather_plan_resolve_index) used to stamp table_oid / namespace_oid and
-    // read table metadata without async catalog probes. Recursive calls thread
-    // the same pointer through children.
-    //
-    // Returns a no-error error_t (core::error_t::no_error()) on success.
-    // On failure the returned error_t::contains_error() is true and the caller
-    // must surface it (enrich silently dropped errors before this channel).
+    // Afterwards the plan is SELF-CONTAINED: STEP 2 (validate_schema) reads only the
+    // plan, so a query that needed no resolves at all validates through exactly the
+    // same code path.
     [[nodiscard]] actor_zeta::unique_future<core::error_t>
     enrich_plan(std::pmr::memory_resource* resource,
                 components::logical_plan::node_ptr root,
-                actor_zeta::address_t disk_address,
                 components::execution_context_t ctx,
-                const services::catalog_resolve::plan_resolve_index_t* idx,
+                const components::logical_plan::catalog_resolves_t* resolves,
                 actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
                 services::context_storage_t* collections_ctx = nullptr);
 
@@ -59,12 +47,15 @@ namespace services::dispatcher {
 // Pure functions over plan trees / lookup paths — no member-state access.
 namespace services::catalog_resolve {
 
-    // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer
-    // nodes (drop/create/DML/alter) inside each sequence_t. Idempotent.
-    // Dispatcher invokes this AFTER resolve and BEFORE validate so check_node
-    // and tbl_md_for_oid see stamped OIDs on consumer nodes whose name
-    // fields are no longer present.
-    void stamp_oids_from_resolves(components::logical_plan::node_t* root);
+    // Copy resolved catalog data onto the consumer nodes that named it. Binding is
+    // by name, so it depends on no node order and no sibling. Idempotent.
+    void bind_catalog_data(components::logical_plan::node_t* root,
+                           const components::logical_plan::catalog_resolves_t& resolves);
+
+    // Register a lookup for every target the plan tree names
+    void register_plan_targets(std::pmr::memory_resource* resource,
+                               const components::logical_plan::node_t* root,
+                               components::logical_plan::catalog_resolves_t* resolves);
 
     // SELECT-time view expansion. Result of expand_view_body():
     // a fresh logical plan parsed/transformed from the view's body SQL,
@@ -76,12 +67,25 @@ namespace services::catalog_resolve {
         bool had_expansion{false};
         components::logical_plan::node_ptr expanded_plan;
         components::logical_plan::parameter_node_ptr expanded_params;
+        // The view body's own catalog lookups; the caller merges them into the
+        // outer plan's and runs another resolve round for whatever is new.
+        std::optional<components::logical_plan::catalog_resolves_t> expanded_resolves;
         components::cursor::cursor_t_ptr error;
     };
 
-    // Find the FIRST table-kind catalog_resolve_t with relkind='v' (and
-    // non-empty view_sql) in `root`'s direct children. Returns nullptr if none.
-    components::logical_plan::node_catalog_resolve_t* find_first_view_resolve(components::logical_plan::node_t* root);
+    // Append every entry of `src` into `dest`. Entries dedupe, so a table both
+    // plans reference stays one lookup.
+    void merge_catalog_resolves(std::pmr::memory_resource* resource,
+                                components::logical_plan::catalog_resolves_t& dest,
+                                const components::logical_plan::catalog_resolves_t& src);
+
+    // The resolved view (relkind='v', non-empty view_sql) that `root` actually
+    // reads from, or nullptr. Matched against the names `root` references, NOT
+    // taken as "the first view in the plan": the resolve entries are shared by
+    // every sub-query, so a sibling sub-query's view must not be expanded here.
+    const components::logical_plan::resolve_entry_t*
+    find_view_entry(const components::logical_plan::catalog_resolves_t& resolves,
+                    const components::logical_plan::node_t* root);
 
     // Parse view body SQL and transform it into a fresh logical plan. The
     // transformer is instantiated per-call (its mutable state lives on the
@@ -89,40 +93,27 @@ namespace services::catalog_resolve {
     // use `resource`.
     view_expansion_result_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql);
 
-    // Collect catalog_resolve_*_t nodes whose oid hasn't been stamped yet
-    // (i.e. need a fresh resolve round). Operates on direct children of
-    // sequence_t roots; sub-plan splicing places them at the front so a
-    // shallow scan suffices.
-    std::vector<components::logical_plan::node_ptr> extract_unresolved_resolves(components::logical_plan::node_t* root);
+    // True when any entry still carries no resolved result
+    bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
 
-    // When the SQL transformer wraps a DML/DDL plan in
-    //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <real_root>)
-    // drop_* nodes no longer carry user-typed dbname/relname; their sibling
-    // resolve_namespace / resolve_table nodes inside the wrapping sequence_t
-    // do. Extract (db, rel) from the resolve siblings so routing code that
-    // still needs names (qualified_name_t for table_id, catalog-resolve
-    // lookups, etc.) keeps working.
-    std::pair<std::string, std::string>
-    drop_target_names_from_resolves(const components::logical_plan::node_t* plan_root);
-
-    // Probe `name` in the plan-tree idx across the dbname search path.
-    // The transformer emits resolve_type for every (dbname, name) tuple
-    // we expect to find here (CREATE TABLE column UDT, CREATE TYPE
-    // collision check, DROP TYPE existence check). search_dbnames carries
-    // dbname strings ordered by precedence.
-    struct plan_resolve_index_t;
+    // Probe `name` across the dbname search path. The transformer registers a type
+    // entry for every (dbname, name) tuple we expect to find here (CREATE TABLE
+    // column UDT, CREATE TYPE collision check, DROP TYPE existence check).
+    // search_dbnames carries dbname strings ordered by precedence.
     const components::logical_plan::resolved_type_metadata_t*
-    probe_type_in_path(const plan_resolve_index_t* idx,
+    probe_type_in_path(const components::logical_plan::catalog_resolves_t& resolves,
                        std::string_view name,
                        std::span<const std::string> search_dbnames);
 
-    // String-based search path for plan-tree idx lookup. Deduplicates
-    // entries (when target_dbname is already "public" / "pg_catalog").
+    // Type-name search path. Deduplicates entries (when target_dbname is already
+    // "public" / "pg_catalog").
     std::vector<std::string> build_type_search_path_str(std::string_view target_dbname);
 
 } // namespace services::catalog_resolve
 
-// Lets dispatcher code keep calling stamp_oids_from_resolves() unqualified.
+// Lets dispatcher code call the plan-preparation helpers unqualified.
 namespace services::dispatcher {
-    using catalog_resolve::stamp_oids_from_resolves;
+    using catalog_resolve::bind_catalog_data;
+    using catalog_resolve::merge_catalog_resolves;
+    using catalog_resolve::register_plan_targets;
 } // namespace services::dispatcher

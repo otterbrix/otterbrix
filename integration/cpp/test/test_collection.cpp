@@ -64,8 +64,7 @@ TEST_CASE("integration::cpp::test_collection") {
     {
         {
             auto chunk = gen_data_chunk(50, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -81,8 +80,7 @@ TEST_CASE("integration::cpp::test_collection") {
     INFO("insert_more");
     {
         auto chunk = gen_data_chunk(50, 50, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -312,8 +310,7 @@ TEST_CASE("integration::cpp::test_collection") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto drop = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto drop = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 components::logical_plan::make_node_drop(dispatcher->resource(),
@@ -325,8 +322,7 @@ TEST_CASE("integration::cpp::test_collection") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto drop = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto drop = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 components::logical_plan::make_node_drop(dispatcher->resource(),

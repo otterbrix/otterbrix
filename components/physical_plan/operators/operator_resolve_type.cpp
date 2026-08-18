@@ -16,69 +16,37 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace components::operators {
 
     namespace catalog = components::catalog;
     namespace types = components::types;
 
-    namespace {
-        // pg_type output schema: (oid uint32, typname string,
-        // typnamespace uint32, typdefspec string). Built once into the cached
-        // member (TASK C10).
-        void build_output_schema(std::pmr::vector<types::complex_logical_type>& out_types) {
-            out_types.reserve(4);
-            out_types.emplace_back(types::logical_type::UINTEGER);       // oid
-            out_types.emplace_back(types::logical_type::STRING_LITERAL); // typname
-            out_types.emplace_back(types::logical_type::UINTEGER);       // typnamespace
-            out_types.emplace_back(types::logical_type::STRING_LITERAL); // typdefspec
-        }
-    } // namespace
-
     operator_resolve_type_t::operator_resolve_type_t(std::pmr::memory_resource* resource,
                                                      log_t log,
-                                                     catalog::oid_t namespace_oid,
-                                                     std::string name)
+                                                     components::logical_plan::node_catalog_resolve_t* node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_type)
-        , namespace_oid_(namespace_oid)
-        , name_(std::move(name))
+        , node_(node)
         , output_schema_(resource) {
-        build_output_schema(output_schema_);
-    }
-
-    operator_resolve_type_t::operator_resolve_type_t(std::pmr::memory_resource* resource,
-                                                     log_t log,
-                                                     std::string dbname,
-                                                     std::string name,
-                                                     components::logical_plan::node_catalog_resolve_t* target_node)
-        : read_write_operator_t(resource, std::move(log), operator_type::resolve_type)
-        , namespace_oid_(catalog::INVALID_OID)
-        , dbname_(std::move(dbname))
-        , name_(std::move(name))
-        , target_node_(target_node)
-        , output_schema_(resource) {
-        build_output_schema(output_schema_);
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+        output_schema_.back().set_alias("type_oid");
     }
 
     actor_zeta::unique_future<void> operator_resolve_type_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgType = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
 
-        // Output schema is cached on the operator (output_schema_), built once
-        // in the constructor (TASK C10).
-
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Dbname-form (back-pointer ctor) — resolve namespace_oid from
-        // dbname before pg_type scan. "public" / "pg_catalog" are well-known
-        // constants and don't need a disk roundtrip; arbitrary names go
-        // through pg_namespace.
-        if (target_node_ && namespace_oid_ == catalog::INVALID_OID) {
-            if (dbname_ == "public" || dbname_.empty()) {
-                namespace_oid_ = catalog::well_known_oid::public_namespace;
-            } else if (dbname_ == "pg_catalog") {
-                namespace_oid_ = catalog::well_known_oid::pg_catalog_namespace;
+        for (auto& entry : node_->entries()) {
+            // Resolve the entry's namespace first. "public" / "pg_catalog" are
+            // well-known constants and don't need a disk roundtrip; arbitrary names
+            // go through pg_namespace.
+            auto namespace_oid = catalog::INVALID_OID;
+            if (entry.dbname == "public" || entry.dbname.empty()) {
+                namespace_oid = catalog::well_known_oid::public_namespace;
+            } else if (entry.dbname == "pg_catalog") {
+                namespace_oid = catalog::well_known_oid::pg_catalog_namespace;
             } else if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 std::pmr::vector<std::string> ns_keys(resource_);
                 ns_keys.emplace_back("nspname");
@@ -88,19 +56,19 @@ namespace components::operators {
                                      exec_ctx,
                                      kPgNamespace,
                                      std::move(ns_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}));
+                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}));
                 auto ns_batches = co_await std::move(nf);
-                if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {
-                    if (!ns_batches[0].is_null(0, 0)) {
-                        namespace_oid_ = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
-                    }
+                if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
+                    !ns_batches[0].is_null(0, 0)) {
+                    namespace_oid = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
                 }
             }
-        }
+            if (namespace_oid == catalog::INVALID_OID || ctx->disk_address == actor_zeta::address_t::empty_address()) {
+                continue;
+            }
 
-        vector::data_chunk_t chunk(resource_, output_schema_, /*capacity=*/1);
-
-        if (namespace_oid_ != catalog::INVALID_OID && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            // pg_type columns, by the order system_table_schemas.cpp persists them:
+            //   0 oid, 1 typname, 2 typnamespace, 3 typdefspec.
             std::pmr::vector<std::string> typ_keys(resource_);
             typ_keys.emplace_back("typname");
             typ_keys.emplace_back("typnamespace");
@@ -110,57 +78,40 @@ namespace components::operators {
                 exec_ctx,
                 kPgType,
                 std::move(typ_keys),
-                components::operators::make_key_chunk(resource_, std::string_view{name_}, namespace_oid_));
+                components::operators::make_key_chunk(resource_, std::string_view{entry.type_name}, namespace_oid));
             auto batches = co_await std::move(tf);
 
-            if (!batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4) {
-                const auto& batch = batches.front();
-                const bool has_v3 = !batch.is_null(3, 0);
-                if (!batch.is_null(0, 0) && !batch.is_null(1, 0) && !batch.is_null(2, 0)) {
-                    auto v0 = batch.get_value<std::uint32_t>(0, 0);
-                    auto v1 = batch.get_value<std::string_view>(1, 0);
-                    auto v2 = batch.get_value<std::uint32_t>(2, 0);
-                    auto v3 = has_v3 ? batch.get_value<std::string_view>(3, 0) : std::string_view{};
-                    set_uint32(chunk, 0, 0, v0);
-                    set_str(chunk, 1, 0, v1, resource_);
-                    set_uint32(chunk, 2, 0, v2);
-                    // Preserve original behaviour: when typdefspec is null,
-                    // still write an empty string (not a null cell) so any
-                    // downstream consumer sees the same shape it used to.
-                    if (has_v3) {
-                        set_str(chunk, 3, 0, v3, resource_);
-                    } else {
-                        set_str(chunk, 3, 0, std::string_view{}, resource_);
-                    }
-                    chunk.set_cardinality(1);
+            // A miss leaves the entry at INVALID_OID with no type_md — that is how
+            // "type is not registered" is reported.
+            if (batches.empty() || batches.front().size() == 0 || batches.front().column_count() < 4) {
+                continue;
+            }
+            const auto& batch = batches.front();
+            if (batch.is_null(0, 0) || batch.is_null(1, 0) || batch.is_null(2, 0)) {
+                continue;
+            }
 
-                    // Stamp resolved metadata on the logical node so
-                    // enrich / validate / resolve_type.cpp can read it via
-                    // plan_resolve_index.
-                    if (target_node_) {
-                        components::logical_plan::resolved_type_metadata_t md;
-                        md.type_oid = static_cast<catalog::oid_t>(v0);
-                        md.namespace_oid = static_cast<catalog::oid_t>(v2);
-                        md.name = std::string(v1);
-                        if (has_v3) {
-                            md.typdefspec = std::string(v3);
-                        }
-                        if (!md.typdefspec.empty()) {
-                            md.type = catalog::decode_type_spec(resource_, md.typdefspec);
-                        } else {
-                            const auto lt = catalog::oid_to_builtin_type(md.type_oid);
-                            if (lt != types::logical_type::UNKNOWN) {
-                                md.type = types::complex_logical_type{lt};
-                            }
-                        }
-                        target_node_->set_type_oid(md.type_oid);
-                        target_node_->set_resolved_type_metadata(std::move(md));
-                    }
+            components::logical_plan::resolved_type_metadata_t md;
+            md.type_oid = static_cast<catalog::oid_t>(batch.get_value<std::uint32_t>(0, 0));
+            md.name = std::string(batch.get_value<std::string_view>(1, 0));
+            md.namespace_oid = static_cast<catalog::oid_t>(batch.get_value<std::uint32_t>(2, 0));
+            if (!batch.is_null(3, 0)) {
+                md.typdefspec = std::string(batch.get_value<std::string_view>(3, 0));
+            }
+            if (!md.typdefspec.empty()) {
+                md.type = catalog::decode_type_spec(resource_, md.typdefspec);
+            } else {
+                const auto lt = catalog::oid_to_builtin_type(md.type_oid);
+                if (lt != types::logical_type::UNKNOWN) {
+                    md.type = types::complex_logical_type{lt};
                 }
             }
+            entry.type_oid = md.type_oid;
+            entry.type_md = std::move(md);
         }
 
-        set_output(make_operator_data(resource_, std::move(chunk)));
+        // 0-row sink output: the resolved data lives in the node's entries.
+        output_ = make_operator_data(resource_, output_schema_, 0);
         mark_executed();
     }
 

@@ -264,7 +264,7 @@ namespace {
             }
             auto create_node =
                 logical_plan::make_node_create_collection(res, core::relname_t{uid}, std::move(columns), {});
-            auto wrapped = sql::transform::maybe_wrap_with_catalog_resolve_namespace(res, kExtDb, create_node);
+            auto wrapped = sql::transform::name_catalog_target(kExtDb, {}, create_node);
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(
                 session,

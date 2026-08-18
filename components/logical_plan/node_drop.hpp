@@ -20,22 +20,35 @@ namespace components::logical_plan {
         index
     };
 
-    // Flat DROP node carrying the target kind plus the role-named OID fields
-    // each variant uses.
+    // Flat DROP node carrying the target kind plus the role-named name and OID
+    // fields each variant uses.
     //
     // Field usage by kind:
+    //   dbname_ / relname_  — the user-typed target name; how enrich finds this
+    //                         node's entry among the plan's resolved tables
+    //   index_name_    — index only (the index is its own pg_class row, so DROP
+    //                    INDEX names two things: the parent table and the index)
     //   namespace_oid_ — collection, database, index
     //   type_oid_      — type
     //   index_oid_     — index
     //   table_oid()    — collection, view, sequence, macro, index (base field)
     //   runtime_index_name_ — index only
-    // The OIDs are stamped by enrich_logical_plan from the sibling
-    // catalog_resolve_* nodes; they are INVALID_OID at parse time.
+    // The OIDs are stamped by enrich_logical_plan from the plan's resolved
+    // catalog entries; they are INVALID_OID at parse time.
     class node_drop_t final : public node_t {
     public:
         node_drop_t(std::pmr::memory_resource* resource, drop_target_kind kind);
 
         drop_target_kind kind() const noexcept { return kind_; }
+
+        // Target name, as written. Kept on the node so enrich binds it to a
+        // resolved entry by name — no positional coupling to any other node.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+        const std::string& relname() const noexcept { return relname_; }
+        void set_relname(std::string relname) { relname_ = std::move(relname); }
+        const std::string& index_name() const noexcept { return index_name_; }
+        void set_index_name(std::string name) { index_name_ = std::move(name); }
 
         // namespace_oid: collection / database / index
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
@@ -64,6 +77,9 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         const drop_target_kind kind_;
+        std::string dbname_;
+        std::string relname_;
+        std::string index_name_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};

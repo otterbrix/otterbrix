@@ -22,10 +22,16 @@ namespace components::logical_plan {
 
         const std::string& macroname() const noexcept { return macroname_; }
 
+        // Namespace the macro is created in, as written. Kept on the node so enrich
+        // binds it to a resolved namespace entry by name and stamps namespace_oid().
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
         std::string macroname_;
         std::vector<std::string> parameters_;
         std::string body_sql_;

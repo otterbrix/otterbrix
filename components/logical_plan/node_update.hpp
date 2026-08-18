@@ -21,6 +21,13 @@ namespace components::logical_plan {
                                const std::pmr::vector<expressions::expression_ptr>& updates,
                                bool upsert = false);
 
+        // The update target, as written. Kept on the node so enrich binds it to a
+        // resolved entry by name rather than inferring it from a child.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+        const std::string& relname() const noexcept { return relname_; }
+        void set_relname(std::string relname) { relname_ = std::move(relname); }
+
         const std::pmr::vector<expressions::expression_ptr>& updates() const;
         std::pmr::vector<expressions::expression_ptr>& updates();
         bool upsert() const;
@@ -53,6 +60,8 @@ namespace components::logical_plan {
         }
 
     private:
+        std::string dbname_;
+        std::string relname_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         bool upsert_;

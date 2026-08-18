@@ -29,10 +29,16 @@ namespace components::logical_plan {
 
         const std::string& seqname() const noexcept { return seqname_; }
 
+        // Namespace the sequence is created in, as written. Kept on the node so
+        // enrich binds it to a resolved namespace entry and stamps namespace_oid().
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
         std::string seqname_;
         int64_t start_;
         int64_t increment_;

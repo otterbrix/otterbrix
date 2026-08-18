@@ -58,6 +58,8 @@ namespace services {
         std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
         std::pmr::vector<components::index::index_description_t> indexed_descriptions;
         const components::logical_plan::storage_parameters* parameters = nullptr;
+        // Every catalog lookup the plan depends on, owned by the execution_plan_t
+        const components::logical_plan::catalog_resolves_t* catalog_resolves = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's
         // operator_resolve_table_t. Plan generators (transfer_scan in
         // create_plan_match / create_plan_aggregate) use it to forward live

@@ -2,7 +2,13 @@
 
 #include <components/logical_plan/identifier_types.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_delete.hpp>
+#include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_update.hpp>
 #include <components/types/logical_value.hpp>
 #include <core/date/date_parse.hpp>
 
@@ -861,129 +867,114 @@ namespace components::sql::transform {
         }
     }
 
-    logical_plan::node_ptr wrap_with_catalog_resolve_types(std::pmr::memory_resource* resource,
-                                                           const std::vector<std::string>& type_names,
-                                                           logical_plan::node_ptr main_node) {
-        if (!main_node || type_names.empty()) {
-            return main_node;
-        }
-        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
-        for (const auto& name : type_names) {
-            seq->append_child(logical_plan::make_node_catalog_resolve_type(resource,
-                                                                           core::dbname_t{std::string{"public"}},
-                                                                           core::typename_t{name}));
-        }
-        if (main_node->type() == logical_plan::node_type::sequence_t) {
-            for (auto& child : main_node->children()) {
-                seq->append_child(child);
-            }
-            return seq;
-        }
-        seq->append_child(std::move(main_node));
-        return seq;
-    }
-
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(std::pmr::memory_resource* resource,
-                                                                 const std::string& dbname,
-                                                                 const std::string& relname,
-                                                                 logical_plan::node_ptr main_node,
-                                                                 constraint_resolve_kind with_constraints) {
-        if (!main_node) {
-            return main_node;
-        }
-        // Build sequence_t([resolve_namespace?], [resolve_table?],
-        //                  [resolve_constraint?], main_node).
-        // Empty dbname/relname means the caller doesn't have a target identity
-        // (e.g. parameter-only statements, schemaless DDL) — skip the resolve
-        // node so the wrapped plan still carries useful structure.
-        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
-        logical_plan::node_catalog_resolve_t* ns_node_ptr = nullptr;
-        if (!dbname.empty()) {
-            auto ns_node = logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname});
-            ns_node_ptr = ns_node.get();
-            seq->append_child(std::move(ns_node));
-        }
-        logical_plan::node_catalog_resolve_t* table_node_ptr = nullptr;
-        if (!relname.empty()) {
-            auto table_node = logical_plan::make_node_catalog_resolve_table(resource,
-                                                                            core::dbname_t{dbname},
-                                                                            core::relname_t{relname});
-            table_node_ptr = table_node.get();
-            // Namespace fast path: the ns sibling executes first in Pass 1, so
-            // operator_resolve_table_t can read its stamp instead of doing its
-            // own pg_namespace scan (it still self-resolves when the link is
-            // absent or unstamped — the link is never a correctness dependency).
-            table_node_ptr->set_target(ns_node_ptr);
-            seq->append_child(std::move(table_node));
-        }
-        if (with_constraints != constraint_resolve_kind::none && table_node_ptr) {
-            const auto dir = (with_constraints == constraint_resolve_kind::outgoing)
-                                 ? logical_plan::resolve_direction::outgoing
-                                 : logical_plan::resolve_direction::referencing;
-            seq->append_child(logical_plan::make_node_catalog_resolve_constraint(resource, table_node_ptr, dir));
-        }
-        seq->append_child(std::move(main_node));
-        return seq;
-    }
-
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(std::pmr::memory_resource* resource,
-                                                                     const std::string& dbname,
-                                                                     logical_plan::node_ptr main_node) {
-        if (!main_node) {
-            return main_node;
-        }
-        if (dbname.empty()) {
-            return main_node;
-        }
-        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
-        seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname}));
-        seq->append_child(std::move(main_node));
-        return seq;
-    }
-
     logical_plan::node_ptr
-    maybe_wrap_with_catalog_resolve_tables(std::pmr::memory_resource* resource,
-                                           std::vector<std::pair<std::string, std::string>> targets,
-                                           logical_plan::node_ptr main_node) {
-        if (!main_node || targets.empty()) {
-            return main_node;
+    name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node) {
+        if (!node) {
+            return node;
         }
-        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
-        // Dedupe dbname for namespace resolves; preserve table order.
-        std::vector<std::pair<std::string, logical_plan::node_catalog_resolve_t*>> seen_dbs;
-        for (const auto& [db, rel] : targets) {
-            if (db.empty())
-                continue;
-            bool already = false;
-            for (const auto& s : seen_dbs) {
-                if (s.first == db) {
-                    already = true;
-                    break;
-                }
+        switch (node->type()) {
+            case logical_plan::node_type::insert_t: {
+                auto* n = static_cast<logical_plan::node_insert_t*>(node.get());
+                n->set_dbname(dbname);
+                n->set_relname(relname);
+                break;
             }
-            if (already)
-                continue;
-            auto ns_node = logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{db});
-            seen_dbs.emplace_back(db, ns_node.get());
-            seq->append_child(std::move(ns_node));
-        }
-        for (auto& [db, rel] : targets) {
-            if (rel.empty())
-                continue;
-            auto table_node =
-                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel});
-            // Namespace fast path (see maybe_wrap_with_catalog_resolve_table):
-            // link each table node to the deduped ns sibling of its dbname.
-            for (const auto& s : seen_dbs) {
-                if (s.first == db) {
-                    table_node->set_target(s.second);
-                    break;
-                }
+            case logical_plan::node_type::update_t: {
+                auto* n = static_cast<logical_plan::node_update_t*>(node.get());
+                n->set_dbname(dbname);
+                n->set_relname(relname);
+                break;
             }
-            seq->append_child(std::move(table_node));
+            case logical_plan::node_type::delete_t: {
+                auto* n = static_cast<logical_plan::node_delete_t*>(node.get());
+                n->set_dbname(dbname);
+                n->set_relname(relname);
+                break;
+            }
+            case logical_plan::node_type::drop_t: {
+                auto* n = static_cast<logical_plan::node_drop_t*>(node.get());
+                n->set_dbname(dbname);
+                n->set_relname(relname);
+                break;
+            }
+            case logical_plan::node_type::create_collection_t: {
+                auto* n = static_cast<logical_plan::node_create_collection_t*>(node.get());
+                n->set_dbname(dbname);
+                break;
+            }
+            case logical_plan::node_type::create_index_t: {
+                auto* n = static_cast<logical_plan::node_create_index_t*>(node.get());
+                n->set_dbname(dbname);
+                n->set_relname(relname);
+                break;
+            }
+            default:
+                // already carry their own names.
+                break;
         }
-        seq->append_child(std::move(main_node));
-        return seq;
+        return node;
+    }
+
+    void register_catalog_resolve_types(std::pmr::memory_resource* resource,
+                                        logical_plan::catalog_resolves_t* resolves,
+                                        const std::vector<std::string>& type_names) {
+        if (type_names.empty()) {
+            return;
+        }
+        auto& node = resolves->ensure(resource, logical_plan::resolve_kind::type);
+        for (const auto& name : type_names) {
+            logical_plan::resolve_entry_t entry;
+            entry.dbname = "public";
+            entry.type_name = name;
+            node.add(std::move(entry));
+        }
+    }
+
+    void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
+                                            logical_plan::catalog_resolves_t* resolves,
+                                            const std::string& dbname) {
+        if (dbname.empty()) {
+            return;
+        }
+        logical_plan::resolve_entry_t entry;
+        entry.dbname = dbname;
+        resolves->ensure(resource, logical_plan::resolve_kind::namespace_).add(std::move(entry));
+    }
+
+    void register_catalog_resolve_table(std::pmr::memory_resource* resource,
+                                        logical_plan::catalog_resolves_t* resolves,
+                                        const std::string& dbname,
+                                        const std::string& relname,
+                                        constraint_resolve_kind with_constraints) {
+        // An empty dbname/relname means the caller has no target identity (e.g.
+        // parameter-only statements, schemaless DDL) — nothing to resolve.
+        register_catalog_resolve_namespace(resource, resolves, dbname);
+        if (relname.empty()) {
+            return;
+        }
+        logical_plan::resolve_entry_t table_entry;
+        table_entry.dbname = dbname;
+        table_entry.relname = relname;
+        const auto table_index =
+            resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
+
+        if (with_constraints == constraint_resolve_kind::none) {
+            return;
+        }
+        logical_plan::resolve_entry_t constraint_entry;
+        constraint_entry.target = table_index;
+        constraint_entry.direction = (with_constraints == constraint_resolve_kind::outgoing)
+                                         ? logical_plan::resolve_direction::outgoing
+                                         : logical_plan::resolve_direction::referencing;
+        resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+    }
+
+    void register_catalog_resolve_tables(std::pmr::memory_resource* resource,
+                                         logical_plan::catalog_resolves_t* resolves,
+                                         const std::vector<std::pair<std::string, std::string>>& targets) {
+        for (const auto& [dbname, relname] : targets) {
+            register_catalog_resolve_table(resource, resolves, dbname, relname, constraint_resolve_kind::none);
+        }
     }
 
 } // namespace components::sql::transform

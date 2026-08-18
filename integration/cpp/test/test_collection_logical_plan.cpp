@@ -18,10 +18,9 @@
 #include <core/operations_helper.hpp>
 #include <variant>
 
-// DML nodes don't carry (db, rel); wrap with the catalog-resolve sequence
-// so enrich stamps table_oid()/table_oid_from() at runtime.
-#define WRAP_DML_TARGET(DB, REL, NODE)                                                                                 \
-    components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(), DB, REL, NODE)
+// Name the DML node's target so the executor registers its catalog lookup and
+// enrich stamps table_oid() from the resolved entry.
+#define WRAP_DML_TARGET(DB, REL, NODE) test_dml_target(NODE, DB, REL)
 
 static const database_name_t table_database_name = "table_testdatabase";
 static const collection_name_t table_collection_name = "table_testcollection";

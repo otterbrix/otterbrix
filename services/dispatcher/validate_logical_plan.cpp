@@ -7,7 +7,6 @@
 #include "logical_plan/node_create_index.hpp"
 #include "logical_plan/node_insert.hpp"
 #include "logical_plan/node_update.hpp"
-#include "plan_resolve_index.hpp"
 #include "resolve_arithmetic.hpp"
 #include "resolve_function.hpp"
 
@@ -1757,7 +1756,6 @@ namespace services::dispatcher {
 
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(std::pmr::memory_resource* resource,
-                        const impl::plan_resolve_index_t* idx,
                         const components::casts::cast_registry_t* cast_registry,
                         node_match_t* node,
                         const storage_parameters& parameters,
@@ -1766,7 +1764,7 @@ namespace services::dispatcher {
                         bool same_schema) {
             if (node->expressions().empty()) {
                 // physical plan reinterprets this as default scan
-                const auto* tbl = impl::tbl_md_for(idx, node->dbname(), node->relname());
+                const auto* tbl = node->table_metadata();
                 if (tbl && tbl->relkind != 'g') {
                     named_schema result(resource);
                     const auto& table_alias = node->result_alias().empty() ? node->relname() : node->result_alias();
@@ -1962,16 +1960,16 @@ namespace services::dispatcher {
 
     } // namespace impl
 
-    // ---- V4 plan-tree idx-based check_*_exists ----
+    // ---- Existence checks over the plan's resolved catalog entries ----
 
     core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
-                                         const impl::plan_resolve_index_t* idx,
+                                         const catalog_resolves_t* resolves,
                                          const components::catalog::table_id& id) {
         if (id.database().empty()) {
             return core::error_t(core::error_code_t::database_not_exists,
                                  std::pmr::string{"database does not exist", resource});
         }
-        if (impl::ns_oid_for_dbname(idx, id.database()) == components::catalog::INVALID_OID) {
+        if (!resolves || resolves->namespace_oid(id.database()) == components::catalog::INVALID_OID) {
             return core::error_t(core::error_code_t::database_not_exists,
                                  std::pmr::string{"database does not exist", resource});
         }
@@ -1979,13 +1977,12 @@ namespace services::dispatcher {
     }
 
     core::error_t check_collection_exists(std::pmr::memory_resource* resource,
-                                          const impl::plan_resolve_index_t* idx,
+                                          const catalog_resolves_t* resolves,
                                           const components::catalog::table_id& id) {
-        if (auto err = check_namespace_exists(resource, idx, id); err.contains_error()) {
+        if (auto err = check_namespace_exists(resource, resolves, id); err.contains_error()) {
             return err;
         }
-        const auto* tbl = impl::tbl_md_for(idx, id.database(), std::string_view(id.table_name()));
-        if (!tbl) {
+        if (!resolves->table_md(id.database(), std::string_view(id.table_name()))) {
             return core::error_t(core::error_code_t::table_not_exists,
                                  std::pmr::string{"collection does not exist", resource});
         }
@@ -1993,7 +1990,7 @@ namespace services::dispatcher {
     }
 
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
-                                    const impl::plan_resolve_index_t* idx,
+                                    const catalog_resolves_t* resolves,
                                     const std::string& alias,
                                     std::span<const std::string> search_dbnames) {
         if (components::catalog::pg_name_to_logical_type(alias) != components::types::logical_type::UNKNOWN) {
@@ -2001,18 +1998,11 @@ namespace services::dispatcher {
         }
         static const std::string kPublic{"public"};
         static const std::string kPgCatalog{"pg_catalog"};
-        if (search_dbnames.empty()) {
-            const std::string default_path[] = {kPublic, kPgCatalog};
-            for (const auto& db : default_path) {
-                if (impl::type_md_for(idx, std::string_view(db), std::string_view(alias))) {
-                    return core::error_t::no_error();
-                }
-            }
-        } else {
-            for (const auto& db : search_dbnames) {
-                if (impl::type_md_for(idx, std::string_view(db), std::string_view(alias))) {
-                    return core::error_t::no_error();
-                }
+        const std::string default_path[] = {kPublic, kPgCatalog};
+        const auto path = search_dbnames.empty() ? std::span<const std::string>(default_path) : search_dbnames;
+        for (const auto& db : path) {
+            if (resolves && resolves->type_md(std::string_view(db), std::string_view(alias))) {
+                return core::error_t::no_error();
             }
         }
         return core::error_t(core::error_code_t::schema_error,
@@ -2021,15 +2011,17 @@ namespace services::dispatcher {
 
     namespace {
         // Reverse-lookup: namespace_oid -> dbname. Linear scan over the small
-        // plan-resolve index; only invoked when a node carries a valid
+        // namespace entry list; only invoked when a node carries a valid
         // table_oid and we need to populate table_dbnames for the UDT type
         // probe in check_node. Returns empty string_view if not found.
-        std::string_view dbname_for_ns_oid(const impl::plan_resolve_index_t* idx, components::catalog::oid_t ns_oid) {
-            if (!idx)
+        std::string_view dbname_for_ns_oid(const catalog_resolves_t* resolves, components::catalog::oid_t ns_oid) {
+            if (!resolves || !resolves->namespaces) {
                 return {};
-            for (const auto& [name, oid] : idx->ns_by_dbname) {
-                if (oid == ns_oid)
-                    return name;
+            }
+            for (const auto& entry : resolves->namespaces->entries()) {
+                if (entry.namespace_oid == ns_oid) {
+                    return entry.dbname;
+                }
             }
             return {};
         }
@@ -2064,17 +2056,10 @@ namespace services::dispatcher {
     }
 
     core::error_t validate_types(std::pmr::memory_resource* resource,
-                                 const impl::plan_resolve_index_t* idx,
+                                 const catalog_resolves_t* resolves,
                                  node_t* logical_plan,
                                  const components::graph_execution_context& execution_context) {
         const auto session_tz = execution_context.timezone_offset;
-        impl::plan_resolve_index_t local_idx;
-        if (idx == nullptr) {
-            impl::gather_plan_resolve_index(logical_plan, &local_idx);
-            if (!local_idx.empty()) {
-                idx = &local_idx;
-            }
-        }
 
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         std::set<std::string> table_dbnames;
@@ -2094,7 +2079,7 @@ namespace services::dispatcher {
                     break;
             }
             if (auto oid = node->table_oid(); oid != components::catalog::INVALID_OID) {
-                const auto* tbl = impl::tbl_md_for_oid(idx, oid);
+                const auto* tbl = resolves ? resolves->table_md(oid) : nullptr;
                 if (!tbl) {
                     result = core::error_t(core::error_code_t::table_not_exists,
                                            std::pmr::string{"collection does not exist", resource});
@@ -2105,7 +2090,7 @@ namespace services::dispatcher {
                     for (const auto& column : tbl->columns) {
                         encountered_types.emplace_back(column.type);
                     }
-                    if (auto ns_name = dbname_for_ns_oid(idx, tbl->namespace_oid); !ns_name.empty()) {
+                    if (auto ns_name = dbname_for_ns_oid(resolves, tbl->namespace_oid); !ns_name.empty()) {
                         table_dbnames.emplace(ns_name);
                     }
                 }
@@ -2114,14 +2099,17 @@ namespace services::dispatcher {
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
 
-                // Probe plan-tree idx by dbname strings.
+                // Probe the plan's resolved type entries by dbname.
                 auto type_visible = [&](std::string_view name) {
+                    if (!resolves) {
+                        return false;
+                    }
                     for (const auto& db : table_dbnames) {
-                        if (impl::type_md_for(idx, std::string_view(db), name))
+                        if (resolves->type_md(std::string_view(db), name))
                             return true;
                     }
-                    return impl::type_md_for(idx, std::string_view{"public"}, name) ||
-                           impl::type_md_for(idx, std::string_view{"pg_catalog"}, name);
+                    return resolves->type_md(std::string_view{"public"}, name) ||
+                           resolves->type_md(std::string_view{"pg_catalog"}, name);
                 };
 
                 // Raw data is a batch of ≤CAP chunks sharing one column shape; coerce each.
@@ -2210,7 +2198,7 @@ namespace services::dispatcher {
                                 }
                                 column = std::move(new_column);
                             } else if (!check_type_exists(resource,
-                                                          idx,
+                                                          resolves,
                                                           it->type_name(),
                                                           std::span<const std::string>())
                                             .contains_error()) {
@@ -2320,21 +2308,11 @@ namespace services::dispatcher {
     // wrapper below (which stamps), so every node's output schema is recorded.
     [[nodiscard]] static core::result_wrapper_t<named_schema>
     validate_schema_impl(std::pmr::memory_resource* resource,
-                         const impl::plan_resolve_index_t* idx,
+                         const catalog_resolves_t* resolves,
                          const components::casts::cast_registry_t* cast_registry,
                          node_t* node,
-                         const components::logical_plan::storage_parameters& parameters) {
-        // `idx` is supplied by the dispatcher.
-        // Legacy harnesses may pass nullptr — fall back to a locally-gathered
-        // index so internal callers still get plan-tree lookups.
-        impl::plan_resolve_index_t local_idx;
-        if (idx == nullptr) {
-            impl::gather_plan_resolve_index(node, &local_idx);
-            if (!local_idx.empty()) {
-                idx = &local_idx;
-            }
-        }
-
+                         const components::logical_plan::storage_parameters& parameters,
+                         cte_schemas_t* cte_schemas) {
         named_schema result{resource};
 
         switch (node->type()) {
@@ -2351,14 +2329,18 @@ namespace services::dispatcher {
             case node_type::extension_t: {
                 const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
                 if (!node->children().empty()) {
-                    auto child =
-                        validate_schema(resource, idx, cast_registry, node->children().front().get(), parameters);
+                    auto child = validate_schema(resource,
+                                                 resolves,
+                                                 cast_registry,
+                                                 node->children().front().get(),
+                                                 parameters,
+                                                 cte_schemas);
                     if (child.has_error()) {
                         return child;
                     }
                     return result; // empty = affected-count / NoData
                 }
-                const auto* tbl = impl::tbl_md_for(idx, ext->dbname(), ext->relname());
+                const auto* tbl = node->table_metadata();
                 if (!tbl) {
                     return core::error_t(
                         core::error_code_t::table_not_exists,
@@ -2443,7 +2425,8 @@ namespace services::dispatcher {
                 }
 
                 if (node_data) {
-                    auto node_data_res = validate_schema(resource, idx, cast_registry, node_data, parameters);
+                    auto node_data_res =
+                        validate_schema(resource, resolves, cast_registry, node_data, parameters, cte_schemas);
                     if (node_data_res.has_error()) {
                         return node_data_res;
                     } else {
@@ -2455,7 +2438,7 @@ namespace services::dispatcher {
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     // there will be a scan
-                    const auto* tbl = impl::tbl_md_for(idx, agg_dbname_s, agg_relname_s);
+                    const auto* tbl = node->table_metadata();
                     if (tbl) {
                         relkind_computed = (tbl->relkind == 'g');
                         // Both relkinds ('g' and non-'g') build the schema identically
@@ -2466,8 +2449,8 @@ namespace services::dispatcher {
                     } else {
                         // Distinguish missing database from missing collection
                         // so callers (and tests) get the right error code.
-                        if (impl::ns_oid_for_dbname(idx, std::string_view(agg_dbname_s)) ==
-                            components::catalog::INVALID_OID) {
+                        if (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
+                                             components::catalog::INVALID_OID) {
                             std::pmr::string msg{"database does not exist: ", resource};
                             msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
                             return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
@@ -2604,7 +2587,6 @@ namespace services::dispatcher {
                         e = impl::rewrite_multitype_null_checks(resource, e, incoming_schema);
                     }
                     auto res = impl::validate_schema(resource,
-                                                     idx,
                                                      cast_registry,
                                                      node_match,
                                                      parameters,
@@ -3561,8 +3543,12 @@ namespace services::dispatcher {
                                          "appear on the right side of a RIGHT or FULL join",
                                          resource});
                 }
-                auto left_schema =
-                    validate_schema(resource, idx, cast_registry, node->children().front().get(), parameters);
+                auto left_schema = validate_schema(resource,
+                                                   resolves,
+                                                   cast_registry,
+                                                   node->children().front().get(),
+                                                   parameters,
+                                                   cte_schemas);
                 if (left_schema.has_error()) {
                     return left_schema;
                 }
@@ -3596,8 +3582,12 @@ namespace services::dispatcher {
                     }
                     inner_parameters = &lateral_parameters;
                 }
-                auto right_schema =
-                    validate_schema(resource, idx, cast_registry, node->children().back().get(), *inner_parameters);
+                auto right_schema = validate_schema(resource,
+                                                    resolves,
+                                                    cast_registry,
+                                                    node->children().back().get(),
+                                                    *inner_parameters,
+                                                    cte_schemas);
                 if (right_schema.has_error()) {
                     return right_schema;
                 }
@@ -3628,15 +3618,19 @@ namespace services::dispatcher {
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
-                const auto* tbl_ins = impl::tbl_md_for_oid(idx, insert_node->table_oid());
+                const auto* tbl_ins = insert_node->table_metadata();
                 if (!tbl_ins) {
                     // node_insert_t carries only the (unresolved) table oid, no names.
                     return core::error_t(core::error_code_t::table_not_exists,
                                          std::pmr::string{"INSERT target collection does not exist", resource});
                 }
 
-                auto incoming_schema =
-                    validate_schema(resource, idx, cast_registry, node->children().front().get(), parameters);
+                auto incoming_schema = validate_schema(resource,
+                                                       resolves,
+                                                       cast_registry,
+                                                       node->children().front().get(),
+                                                       parameters,
+                                                       cte_schemas);
                 if (incoming_schema.has_error()) {
                     return incoming_schema;
                 } else {
@@ -3844,7 +3838,7 @@ namespace services::dispatcher {
                 // Update/delete nodes no longer carry relname; pull
                 // the target table name from the resolved metadata (populated
                 // by Pass 1 via the sibling resolve_table).
-                const auto* tbl_upd = impl::tbl_md_for_oid(idx, node->table_oid());
+                const auto* tbl_upd = node->table_metadata();
                 const std::string target_relname = tbl_upd ? tbl_upd->name : std::string{};
                 if (tbl_upd && tbl_upd->relkind != 'g') {
                     for (const auto& column : tbl_upd->columns) {
@@ -3914,7 +3908,8 @@ namespace services::dispatcher {
                     // carries from an internal join — otherwise a source column sharing a
                     // name with a target column would resolve to the target index and read
                     // OOB on the (differently shaped) source chunk at runtime.
-                    auto source_res = validate_schema(resource, idx, cast_registry, node_data, parameters);
+                    auto source_res =
+                        validate_schema(resource, resolves, cast_registry, node_data, parameters, cte_schemas);
                     if (source_res.has_error()) {
                         return source_res;
                     }
@@ -3929,7 +3924,6 @@ namespace services::dispatcher {
                 }
                 if (node_match) {
                     auto node_match_res = impl::validate_schema(resource,
-                                                                idx,
                                                                 cast_registry,
                                                                 node_match,
                                                                 parameters,
@@ -4044,7 +4038,7 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
-                const auto* tbl_idx = impl::tbl_md_for_oid(idx, idx_node->table_oid());
+                const auto* tbl_idx = idx_node->table_metadata();
                 if (!tbl_idx) {
                     // node_create_index_t carries only the index name, no table names.
                     return core::error_t(core::error_code_t::table_not_exists,
@@ -4084,22 +4078,31 @@ namespace services::dispatcher {
                 break;
             case node_type::create_matview_t:
             case node_type::refresh_matview_t:
-                // Schema derivation happens in enrich's stamp_oids_from_resolves;
-                // planner reads stamped inferred_columns / source metadata. No
-                // per-clause schema validation needed at this layer (the body
-                // plan is validated via its own catalog_resolve_table sibling
-                // which Pass 1 has stamped before this validate runs).
+                // Schema derivation happens in enrich (Step 1); the planner reads
+                // the stamped inferred_columns / source metadata. No per-clause
+                // schema validation needed at this layer — the body plan's source
+                // table was resolved and pasted onto the node before this runs.
                 break;
             case node_type::union_t: {
                 if (node->children().size() < 2 || !node->children()[0] || !node->children()[1]) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"UNION requires both operands to be present", resource});
                 }
-                auto left_res = validate_schema(resource, idx, cast_registry, node->children()[0].get(), parameters);
+                auto left_res = validate_schema(resource,
+                                                resolves,
+                                                cast_registry,
+                                                node->children()[0].get(),
+                                                parameters,
+                                                cte_schemas);
                 if (left_res.has_error()) {
                     return left_res;
                 }
-                auto right_res = validate_schema(resource, idx, cast_registry, node->children()[1].get(), parameters);
+                auto right_res = validate_schema(resource,
+                                                 resolves,
+                                                 cast_registry,
+                                                 node->children()[1].get(),
+                                                 parameters,
+                                                 cte_schemas);
                 if (right_res.has_error()) {
                     return right_res;
                 }
@@ -4148,7 +4151,7 @@ namespace services::dispatcher {
                     if (!*it)
                         continue;
                     if (!is_catalog_resolve((*it)->type())) {
-                        return validate_schema(resource, idx, cast_registry, it->get(), parameters);
+                        return validate_schema(resource, resolves, cast_registry, it->get(), parameters, cte_schemas);
                     }
                 }
                 // All children are catalog_resolve_* — no consumer, empty schema.
@@ -4161,27 +4164,38 @@ namespace services::dispatcher {
                         std::pmr::string{"recursive CTE requires both anchor and recursive members", resource});
                 }
                 const auto* cte_node = static_cast<const components::logical_plan::node_recursive_cte_t*>(node);
-                auto anchor_res = validate_schema(resource, idx, cast_registry, node->children()[0].get(), parameters);
+                auto anchor_res = validate_schema(resource,
+                                                  resolves,
+                                                  cast_registry,
+                                                  node->children()[0].get(),
+                                                  parameters,
+                                                  cte_schemas);
                 if (anchor_res.has_error()) {
                     return anchor_res;
                 }
 
-                // Build the CTE column schema from the anchor result and store in a
-                // modified idx so that node_cte_scan_t inside the recursive member can
-                // look it up without any parameter threading.
-                impl::plan_resolve_index_t idx_with_cte = idx ? *idx : impl::plan_resolve_index_t{};
+                // Publish the CTE column schema derived from the anchor result so
+                // node_cte_scan_t inside the recursive member can look it up.
+                if (!cte_schemas) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"recursive CTE reached without a CTE schema map", resource});
+                }
                 {
-                    catalog_resolve::cte_schema_t cte_cols;
+                    cte_schema_t cte_cols;
                     for (const auto& entry : anchor_res.value()) {
                         cte_cols.push_back(
                             {std::pmr::string{entry.type.has_alias() ? entry.type.alias() : "", resource}, entry.type});
                     }
-                    idx_with_cte.cte_schemas[cte_node->cte_name()] = std::move(cte_cols);
+                    (*cte_schemas)[cte_node->cte_name()] = std::move(cte_cols);
                 }
                 // Validate recursive member — sets expression paths for SELECT/WHERE/JOIN ON.
                 // Errors here indicate a schema mismatch between anchor and recursive member.
-                auto recursive_res =
-                    validate_schema(resource, &idx_with_cte, cast_registry, node->children()[1].get(), parameters);
+                auto recursive_res = validate_schema(resource,
+                                                     resolves,
+                                                     cast_registry,
+                                                     node->children()[1].get(),
+                                                     parameters,
+                                                     cte_schemas);
                 if (recursive_res.has_error()) {
                     return recursive_res;
                 }
@@ -4195,13 +4209,13 @@ namespace services::dispatcher {
                 return anchor_res;
             }
             case node_type::cte_scan_t: {
-                if (!idx) {
+                if (!cte_schemas) {
                     return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"cte_scan_t reached without resolve index", resource});
+                                         std::pmr::string{"cte_scan_t reached without a CTE schema map", resource});
                 }
                 const auto* scan_node = static_cast<const components::logical_plan::node_cte_scan_t*>(node);
-                auto it = idx->cte_schemas.find(scan_node->cte_name());
-                if (it == idx->cte_schemas.end()) {
+                auto it = cte_schemas->find(scan_node->cte_name());
+                if (it == cte_schemas->end()) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"cte_scan_t: no schema for CTE '" + scan_node->cte_name() + "'", resource});
@@ -4234,13 +4248,19 @@ namespace services::dispatcher {
     // return path of validate_schema_impl's switch and every recursive child call. Error
     // or empty-schema (DDL/control) results leave the node unstamped, so consumers
     // degrade to today's data-derived behavior rather than a hard failure.
-    core::result_wrapper_t<named_schema>
-    validate_schema(std::pmr::memory_resource* resource,
-                    const impl::plan_resolve_index_t* idx,
-                    const components::casts::cast_registry_t* cast_registry,
-                    node_t* node,
-                    const components::logical_plan::storage_parameters& parameters) {
-        auto res = validate_schema_impl(resource, idx, cast_registry, node, parameters);
+    core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                         const catalog_resolves_t* resolves,
+                                                         const components::casts::cast_registry_t* cast_registry,
+                                                         node_t* node,
+                                                         const components::logical_plan::storage_parameters& parameters,
+                                                         cte_schemas_t* cte_schemas) {
+        // Owned here so a caller that never mentions CTEs need not carry the map;
+        // recursion below always threads a non-null pointer.
+        cte_schemas_t local_cte_schemas;
+        if (cte_schemas == nullptr) {
+            cte_schemas = &local_cte_schemas;
+        }
+        auto res = validate_schema_impl(resource, resolves, cast_registry, node, parameters, cte_schemas);
         if (!res.has_error() && !res.value().empty()) {
             // Carry the resolved column types (the codebase idiom for a column-type list
             // is std::pmr::vector<complex_logical_type>). Keep each type's alias: it is the

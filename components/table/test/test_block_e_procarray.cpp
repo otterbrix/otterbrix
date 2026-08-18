@@ -160,25 +160,30 @@ namespace components::table::test_block_e {
     }
 
     TEST_CASE("Block E db_oid resolve via catalog_resolve_database", "[block_e][b14c]") {
-        // Exercise node_catalog_resolve_t (resolve_kind::database) set/get in isolation;
-        // operator_resolve_database stamps the resolved oid via set_database_oid.
+        // Exercise a resolve_kind::database entry's request/result fields in isolation;
+        // operator_resolve_database stamps the resolved oid into database_oid.
         using namespace components::logical_plan;
         using namespace components::catalog;
 
         core::pmr::otterbrix_resource resource;
 
-        // Fresh node defaults to INVALID_OID.
-        auto node = make_node_catalog_resolve_database(&resource, core::dbname_t{"main"});
-        REQUIRE(node->dbname() == "main");
-        REQUIRE(node->database_oid() == INVALID_OID);
+        auto node = make_node_catalog_resolve(&resource, resolve_kind::database);
+        resolve_entry_t request;
+        request.dbname = "main";
+        const auto index = node->add(std::move(request));
+        auto& entry = node->entries()[index];
 
-        node->set_database_oid(well_known_oid::main_database);
-        REQUIRE(node->database_oid() == well_known_oid::main_database);
+        // A fresh entry defaults to INVALID_OID.
+        REQUIRE(entry.dbname == "main");
+        REQUIRE(entry.database_oid == INVALID_OID);
+
+        entry.database_oid = well_known_oid::main_database;
+        REQUIRE(entry.database_oid == well_known_oid::main_database);
 
         // Re-stamping is allowed (last-write-wins) — the planner re-runs resolve
         // after invalidation.
-        node->set_database_oid(oid_t{42});
-        REQUIRE(node->database_oid() == 42);
+        entry.database_oid = oid_t{42};
+        REQUIRE(node->entries()[index].database_oid == 42);
     }
 
 } // namespace components::table::test_block_e

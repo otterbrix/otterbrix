@@ -45,8 +45,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     INFO("insert test data");
     {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -775,8 +774,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         // Insert main collection data
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -869,8 +867,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     INFO("insert test data");
     {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -958,8 +955,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     INFO("insert test data");
     {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -1071,8 +1067,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     INFO("insert test data");
     {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -1263,8 +1258,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     INFO("insert test data");
     {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));

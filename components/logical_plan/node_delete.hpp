@@ -15,6 +15,13 @@ namespace components::logical_plan {
                                const node_match_ptr& match,
                                const node_limit_ptr& limit);
 
+        // The delete target, as written. Kept on the node so enrich binds it to a
+        // resolved entry by name rather than inferring it from a child.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+        const std::string& relname() const noexcept { return relname_; }
+        void set_relname(std::string relname) { relname_ = std::move(relname); }
+
         std::pmr::vector<expressions::expression_ptr>& returning();
         const std::pmr::vector<expressions::expression_ptr>& returning() const;
 
@@ -40,6 +47,8 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
+        std::string relname_;
         std::vector<catalog::fk_info_t> referencing_fks_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         std::int64_t oid_col_idx_{-1};

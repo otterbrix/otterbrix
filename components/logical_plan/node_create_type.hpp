@@ -20,10 +20,16 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
+        // Namespace the type is created in, as written. Kept on the node so enrich
+        // binds it to a resolved namespace entry by name and stamps namespace_oid().
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+
     private:
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
 
+        std::string dbname_;
         types::complex_logical_type type_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
     };

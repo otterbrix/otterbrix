@@ -187,8 +187,7 @@ TEST_CASE("integration::cpp::test_udfs") {
         // same `ins` would replay against an emptied chunk.
         for (int batch = 0; batch < 2; ++batch) {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));

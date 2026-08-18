@@ -27,35 +27,18 @@ namespace components::planner::optimizer {
         using CExpr = expressions::compare_expression_t;
         using KeyT = expressions::key_t;
 
-        // oid → column_count map built once from the plan tree's
-        // catalog_resolve_table_t siblings. Pure index-based projection
-        // works because all chunks share the table's canonical schema
-        // (verified for both relkind='r' and relkind='g').
+        // oid → column_count map built once from the plan's resolved table
+        // entries. Pure index-based projection works because all chunks share
+        // the table's canonical schema (verified for relkind='r' and 'g').
         using table_cols_map = std::unordered_map<components::catalog::oid_t, size_t>;
 
-        // Walks the plan once, collecting column counts from every
-        // catalog_resolve_table_t::resolved_metadata().
-        void collect_table_md(const logical_plan::node_ptr& root, table_cols_map& out) {
-            if (!root)
+        void collect_table_md(const logical_plan::catalog_resolves_t* resolves, table_cols_map& out) {
+            if (!resolves || !resolves->tables) {
                 return;
-            std::vector<const logical_plan::node_t*> stack;
-            stack.push_back(root.get());
-            while (!stack.empty()) {
-                const auto* n = stack.back();
-                stack.pop_back();
-                if (!n)
-                    continue;
-                if (n->type() == logical_plan::node_type::catalog_resolve_t) {
-                    const auto* rt = static_cast<const logical_plan::node_catalog_resolve_t*>(n);
-                    if (rt->kind() == logical_plan::resolve_kind::table) {
-                        const auto& md_opt = rt->resolved_metadata();
-                        if (md_opt && md_opt->table_oid != components::catalog::INVALID_OID) {
-                            out[md_opt->table_oid] = md_opt->columns.size();
-                        }
-                    }
-                }
-                for (const auto& c : n->children()) {
-                    stack.push_back(c.get());
+            }
+            for (const auto& entry : resolves->tables->entries()) {
+                if (entry.table_md.has_value() && entry.table_md->table_oid != components::catalog::INVALID_OID) {
+                    out[entry.table_md->table_oid] = entry.table_md->columns.size();
                 }
             }
         }
@@ -595,14 +578,13 @@ namespace components::planner::optimizer {
 
     } // namespace
 
-    void prune_columns(const logical_plan::node_ptr& root) {
+    void prune_columns(const logical_plan::node_ptr& root, const logical_plan::catalog_resolves_t* resolves) {
         if (!root)
             return;
 
-        // Build oid → column_count map from sibling catalog_resolve_table_t
-        // nodes that enrich already populated with resolved_metadata().
+        // Build oid → column_count map from the plan's resolved table entries.
         table_cols_map md;
-        collect_table_md(root, md);
+        collect_table_md(resolves, md);
 
         // BFS over the whole plan, processing every aggregate_t we encounter.
         std::vector<logical_plan::node_ptr> stack{root};

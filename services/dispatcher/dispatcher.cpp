@@ -700,30 +700,32 @@ namespace services::dispatcher {
     }
 
     namespace {
-        // Wrap a register/unregister-cast leaf in a sequence that first resolves any
-        // UDT source/target type names against the catalog, so execute_plan_full's
-        // resolve/validate pass turns them into real types (or leaves UNKNOWN → rejected).
+        // Build a register/unregister-cast plan that first resolves any UDT
+        // source/target type names against the catalog, so execute_plan_full's
+        // resolve pass turns them into real types (or leaves UNKNOWN → rejected).
         components::logical_plan::execution_plan_t
         make_cast_resolve_plan(std::pmr::memory_resource* resource,
                                components::logical_plan::node_ptr leaf,
                                const components::types::complex_logical_type& source,
                                const components::types::complex_logical_type& target) {
-            auto seq = boost::intrusive_ptr(new components::logical_plan::node_sequence_t(resource));
-            seq->append_child(
-                components::logical_plan::make_node_catalog_resolve_namespace(resource,
-                                                                              core::dbname_t{std::string{"public"}}));
+            components::logical_plan::execution_plan_t plan{resource,
+                                                            std::move(leaf),
+                                                            components::logical_plan::make_parameter_node(resource)};
+            components::logical_plan::resolve_entry_t namespace_entry;
+            namespace_entry.dbname = "public";
+            plan.catalog_resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
+                .add(std::move(namespace_entry));
             for (const auto* type : {&source, &target}) {
-                if (type->type() == components::types::logical_type::UNKNOWN) {
-                    seq->append_child(components::logical_plan::make_node_catalog_resolve_type(
-                        resource,
-                        core::dbname_t{std::string{"public"}},
-                        core::typename_t{std::string(type->type_name())}));
+                if (type->type() != components::types::logical_type::UNKNOWN) {
+                    continue;
                 }
+                components::logical_plan::resolve_entry_t type_entry;
+                type_entry.dbname = "public";
+                type_entry.type_name = type->type_name();
+                plan.catalog_resolves.ensure(resource, components::logical_plan::resolve_kind::type)
+                    .add(std::move(type_entry));
             }
-            seq->append_child(std::move(leaf));
-            return components::logical_plan::execution_plan_t{resource,
-                                                              seq,
-                                                              components::logical_plan::make_parameter_node(resource)};
+            return plan;
         }
     } // namespace
 

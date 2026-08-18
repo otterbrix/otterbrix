@@ -10,13 +10,22 @@ using namespace components::logical_plan;
 using namespace components::types;
 using namespace components::sql::transform;
 
-#define TEST_TRANSFORMER_OK(QUERY, EXPECTED)                                                                           \
+// Entries registered on one resolve slot (0 when the plan needs no lookup of
+// that kind).
+inline std::size_t entry_count(const node_catalog_resolve_ptr& node) { return node ? node->entries().size() : 0; }
+
+// The transformer does not wrap plans: sub_queries.back() IS the consumer node,
+// and the catalog lookups it needs live on the plan. Assert both — this is what
+// the old "$sequence[N]" child-count assertions were really pinning down.
+#define TEST_TRANSFORMER_OK(QUERY, ROOT_TYPE, NS_COUNT, TBL_COUNT)                                                     \
     SECTION(QUERY) {                                                                                                   \
         auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().sub_queries.back();                                                                 \
-        REQUIRE(node->to_string() == EXPECTED);                                                                        \
+        const auto& plan = result.value();                                                                             \
+        REQUIRE(plan.sub_queries.back()->type() == ROOT_TYPE);                                                         \
+        REQUIRE(entry_count(plan.catalog_resolves.namespaces) == NS_COUNT);                                            \
+        REQUIRE(entry_count(plan.catalog_resolves.tables) == TBL_COUNT);                                               \
     }
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
@@ -48,16 +57,15 @@ TEST_CASE("components::sql::database") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", R"_($sequence[2])_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", R"_($sequence[2])_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", R"_($sequence[2])_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($sequence[2])_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($sequence[2])_");
-    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($sequence[2])_");
-    // DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
-    // so result.sub_queries.back()->to_string() returns the sequence wrapper. Underlying drop_database
-    // carries only namespace_oid (INVALID_OID/0 at parse time).
-    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", node_type::create_database_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", node_type::create_database_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", node_type::create_database_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", node_type::create_database_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", node_type::create_database_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", node_type::create_database_t, 1, 0);
+    // DROP DATABASE registers only its namespace lookup; the drop node carries the
+    // dbname and gets namespace_oid pasted on by enrich.
+    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", node_type::drop_t, 1, 0);
 }
 
 TEST_CASE("components::sql::table") {
@@ -71,7 +79,8 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[2])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::create_collection_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
     }
 
     SECTION("create with schema") {
@@ -80,23 +89,24 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[2])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::create_collection_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
     }
 
-    TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($sequence[2])_");
-    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: table_name)_");
+    TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", node_type::create_collection_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 0, 0);
 
-    // DROP TABLE is wrapped in sequence_t(resolve_ns?, resolve_table?, drop_collection).
-    // The drop node itself carries no user-typed names; routing is OID-only
-    // after enrich stamps namespace_oid + table_oid.
+    // DROP TABLE registers a namespace + table lookup; the drop node carries the
+    // names and gets namespace_oid + table_oid pasted on by enrich.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        // result.sub_queries.back() is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
     }
 
     SECTION("drop with schema") {
@@ -105,12 +115,15 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
     }
 
-    TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($sequence[3])_");
-    // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
-    TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", node_type::drop_t, 1, 1);
+    // No db prefix → the table lookup carries an empty dbname, and no namespace
+    // lookup is registered at all.
+    TEST_TRANSFORMER_OK("DROP TABLE table_name", node_type::drop_t, 0, 1);
 
     TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name(test integer, test1 string)",
                                    [](const std::pmr::vector<complex_logical_type>& sch) {
@@ -245,7 +258,9 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::create_index_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
     }
 
     SECTION("create with schema") {
@@ -255,20 +270,24 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::create_index_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
     }
 
-    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", node_type::create_index_t, 1, 1);
 
-    // DROP INDEX is wrapped in sequence_t(resolve_ns, resolve_table_parent,
-    // resolve_table_index, drop_index). The drop node carries no user-typed names.
+    // DROP INDEX names TWO pg_class rows — the parent table and the index — so it
+    // registers two table lookups, and the drop node carries both names.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[4])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 2);
     }
 
     SECTION("drop with schema") {
@@ -277,10 +296,12 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[4])_");
+        REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
+        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 2);
     }
 
-    TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($sequence[4])_");
+    TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", node_type::drop_t, 1, 2);
 }
 
 TEST_CASE("components::sql::types") {
@@ -289,17 +310,17 @@ TEST_CASE("components::sql::types") {
     transform::transformer transformer(&resource);
 
     // CREATE TYPE is wrapped in sequence_t(resolve_ns?, resolve_field_types..., create_type).
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);", R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);", node_type::create_type_t, 1, 0);
 
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');", R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');", node_type::create_type_t, 1, 0);
 
     // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
-    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", node_type::drop_t, 1, 0);
 
     // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_type, create_collection).
-    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 0, 0);
 
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
-    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", node_type::insert_t, 0, 1);
 }

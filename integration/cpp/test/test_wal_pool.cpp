@@ -41,8 +41,7 @@ static const collection_name_t collection_name_2 = "testcollection2";
 #define FILL_COLLECTION_WAL(DB, COLL, COUNT)                                                                           \
     do {                                                                                                               \
         auto chunk = gen_data_chunk(COUNT, dispatcher->resource());                                                    \
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(                                  \
-            dispatcher->resource(),                                                                                    \
+        auto ins = components::sql::transform::name_catalog_target(                                                    \
             DB,                                                                                                        \
             COLL,                                                                                                      \
             components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \

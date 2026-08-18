@@ -60,8 +60,7 @@ constexpr int kDocuments = 100;
 #define FILL_COLLECTION()                                                                                              \
     do {                                                                                                               \
         auto chunk = gen_data_chunk(kDocuments, dispatcher->resource());                                               \
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(                                  \
-            dispatcher->resource(),                                                                                    \
+        auto ins = components::sql::transform::name_catalog_target(                                                    \
             database_name,                                                                                             \
             collection_name,                                                                                           \
             components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \
@@ -80,10 +79,7 @@ constexpr int kDocuments = 100;
                                                                      core::indexname_t{INDEX_NAME},                    \
                                                                      components::logical_plan::index_type::single);    \
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
-        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(),          \
-                                                                                      database_name,                   \
-                                                                                      collection_name,                 \
-                                                                                      node);                           \
+        auto plan = components::sql::transform::name_catalog_target(database_name, collection_name, node);             \
         dispatcher->execute_plan(session,                                                                              \
                                  components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
     } while (false)
@@ -95,10 +91,7 @@ constexpr int kDocuments = 100;
                                                                      core::indexname_t{INDEX_NAME},                    \
                                                                      components::logical_plan::index_type::single);    \
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
-        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(),          \
-                                                                                      database_name,                   \
-                                                                                      collection_name,                 \
-                                                                                      node);                           \
+        auto plan = components::sql::transform::name_catalog_target(database_name, collection_name, node);             \
         auto res = dispatcher->execute_plan(                                                                           \
             session,                                                                                                   \
             components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});                        \
@@ -114,17 +107,14 @@ constexpr int kDocuments = 100;
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        /* drop_index carries no names; wrap with resolve_table siblings so resolve stamps OIDs. */                    \
+        /* DROP INDEX names two pg_class rows: the parent table and the index itself. */                               \
         auto node = components::logical_plan::make_node_drop(dispatcher->resource(),                                   \
                                                              components::logical_plan::drop_target_kind::index);       \
-        std::vector<std::pair<std::string, std::string>> targets;                                                      \
-        targets.emplace_back(database_name, collection_name);                                                          \
-        targets.emplace_back(database_name, std::string{INDEX_NAME});                                                  \
-        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_tables(dispatcher->resource(),         \
-                                                                                       std::move(targets),             \
-                                                                                       node);                          \
+        node->set_dbname(database_name);                                                                               \
+        node->set_relname(collection_name);                                                                            \
+        node->set_index_name(std::string{INDEX_NAME});                                                                 \
         dispatcher->execute_plan(session,                                                                              \
-                                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
+                                 components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});   \
     } while (false)
 
 #define CHECK_FIND_ALL()                                                                                               \
@@ -403,8 +393,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto del = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto del = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 components::logical_plan::make_node_delete(
@@ -455,8 +444,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 components::expressions::scalar_type::constant,
                 components::expressions::key_t{dispatcher->resource(), "count"});
             update_expr->append_param(id_par{2});
-            auto upd = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto upd = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 components::logical_plan::make_node_update(

@@ -109,10 +109,6 @@ namespace components::sql::transform {
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
-        // Identity travels via the catalog-resolve wrap; the update node itself
-        // carries only payload + table_oid() (stamped at enrich time from the
-        // sibling resolve_table for the target, and table_oid_from() for the
-        // UPDATE ... FROM source).
         auto upd_limit = build_dml_limit(node.limitCount,
                                          core::dbname_t{names.left_name.dbname},
                                          core::relname_t{names.left_name.relname},
@@ -121,6 +117,8 @@ namespace components::sql::transform {
             return nullptr;
         }
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
+        upd->set_dbname(names.left_name.dbname);
+        upd->set_relname(names.left_name.relname);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
         // resolve_table splice is needed.
@@ -133,13 +131,14 @@ namespace components::sql::transform {
                 return nullptr;
             }
         }
-        // Catalog-resolve wrap for UPDATE target table. Emit
-        // resolve_constraint(outgoing) so enrich reads FKs from the plan tree
-        // (FK info stamped by operator_resolve_constraint_t).
-        return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                     names.left_name.dbname,
-                                                     names.left_name.relname,
-                                                     std::move(upd),
-                                                     constraint_resolve_kind::outgoing);
+        // Catalog-resolve for the UPDATE target table, with the outgoing
+        // constraint gather so enrich reads FKs stamped by
+        // operator_resolve_constraint_t.
+        register_catalog_resolve_table(resource_,
+                                       &catalog_resolves_,
+                                       names.left_name.dbname,
+                                       names.left_name.relname,
+                                       constraint_resolve_kind::outgoing);
+        return upd;
     }
 } // namespace components::sql::transform

@@ -72,6 +72,12 @@ namespace services::index {
         };
 
         struct decoded_entry_t {
+            // False when the slot could not be decoded (a corrupt page): the caller skips the
+            // entry instead of receiving a throw. This class reports failure by value — its
+            // public API already does (put/erase/rehash return bool, get returns optional), and
+            // an exception here would unwind through an actor coroutine whose
+            // unhandled_exception() is empty, turning a bad page into a hang.
+            bool valid{false};
             uint16_t stored_key_len{0};
             uint32_t full_key_len{0};
             uint8_t entry_flags{0};
@@ -119,8 +125,8 @@ namespace services::index {
 
         uint32_t hash_key(std::string_view key) const;
 
-        void read_page(uint64_t page_id, byte_buffer_t& page) const;
-        void write_page(uint64_t page_id, const byte_buffer_t& page);
+        [[nodiscard]] bool read_page(uint64_t page_id, byte_buffer_t& page) const;
+        [[nodiscard]] bool write_page(uint64_t page_id, const byte_buffer_t& page);
         void init_empty_page(byte_buffer_t& page) const;
 
         uint16_t page_count(const byte_buffer_t& page) const;
@@ -160,7 +166,7 @@ namespace services::index {
         byte_buffer_t
         make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const;
         uint64_t allocate_overflow_page();
-        void persist_header();
+        [[nodiscard]] bool persist_header();
 
         std::filesystem::path file_path_;
         full_key_loader_t key_loader_;

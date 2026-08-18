@@ -105,7 +105,11 @@ namespace services::index {
     disk_hash_table_t::~disk_hash_table_t() {
         std::unique_lock lock(mutex_);
         if (file_) {
-            persist_header();
+            // Closing flush: nothing above can act on a failure here, but the value is not dropped
+            // silently either.
+            if (!persist_header()) {
+                assert(false && "disk_hash_table: header flush failed on close");
+            }
             sync_files();
         }
     }
@@ -135,19 +139,31 @@ namespace services::index {
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
         while (true) {
-            read_page(page_id, page);
+            // Bail on a failed read: this loop is `while (true)`, so ignoring the failure would
+            // spin on a stale page forever. That is exactly what happened when the throws were
+            // first turned into return values without touching the callers.
+            if (!read_page(page_id, page)) {
+                return false;
+            }
             bool changed = false;
             if (try_insert_payload_in_page(page, key_hash, payload, changed)) {
-                if (changed) {
-                    write_page(page_id, page);
+                if (changed && !write_page(page_id, page)) {
+                    return false;
                 }
                 return true;
             }
             auto overflow = page_overflow(page);
             if (overflow == 0) {
                 const auto new_page = allocate_overflow_page();
+                if (new_page == 0) {
+                    // Allocation failed (page 0 is the header, never an overflow page), so there
+                    // is nowhere to put this payload.
+                    return false;
+                }
                 set_page_overflow(page, new_page);
-                write_page(page_id, page);
+                if (!write_page(page_id, page)) {
+                    return false;
+                }
                 page_id = new_page;
                 continue;
             }
@@ -170,7 +186,9 @@ namespace services::index {
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
         while (page_id != 0) {
-            read_page(page_id, page);
+            if (!read_page(page_id, page)) {
+                break; // unreadable page: stop walking this chain
+            }
             const auto cnt = page_count(page);
             for (uint16_t i = 0; i < cnt; ++i) {
                 auto slot = read_slot(page, i);
@@ -178,6 +196,9 @@ namespace services::index {
                     continue;
                 }
                 const auto entry = decode_entry(page, slot);
+                if (!entry.valid) {
+                    continue; // corrupt slot: skip it rather than read past the page
+                }
                 if (!keys_equal(key, entry, lock_bitcask)) {
                     continue;
                 }
@@ -211,11 +232,15 @@ namespace services::index {
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
         while (page_id != 0) {
-            read_page(page_id, page);
+            if (!read_page(page_id, page)) {
+                break; // unreadable page: stop walking this chain
+            }
             bool erased = false;
             if (try_erase_in_page(page, key, key_hash, expected_value, lock_bitcask, erased)) {
                 if (erased) {
-                    write_page(page_id, page);
+                    if (!write_page(page_id, page)) {
+                        return false;
+                    }
                     if (entry_count_ > 0) {
                         --entry_count_;
                     }
@@ -242,7 +267,9 @@ namespace services::index {
         for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
             uint64_t page_id = bucket_primary_page_id(bucket);
             while (page_id != 0) {
-                read_page(page_id, page);
+                if (!read_page(page_id, page)) {
+                    break; // unreadable page: stop walking this chain
+                }
                 const auto cnt = page_count(page);
                 for (uint16_t i = 0; i < cnt; ++i) {
                     const auto slot = read_slot(page, i);
@@ -253,6 +280,9 @@ namespace services::index {
                         continue;
                     }
                     const auto entry = decode_entry(page, slot);
+                    if (!entry.valid) {
+                        continue; // corrupt slot: skip it rather than read past the page
+                    }
                     cb(value_ref_t{entry.value,
                                    entry.log_file_id,
                                    entry.log_offset,
@@ -287,7 +317,9 @@ namespace services::index {
 
     bool disk_hash_table_t::rehash_unlocked(uint32_t new_bucket_count) {
         if (new_bucket_count == 0) {
-            throw std::runtime_error("disk_hash_table: rehash bucket_count must be > 0");
+            // Caller bug, not an environmental failure — but reported by value like the rest
+            // of this class rather than thrown.
+            return false;
         }
         if (new_bucket_count <= header_.bucket_count_value) {
             return false;
@@ -299,7 +331,15 @@ namespace services::index {
         } reset{rehash_in_progress_};
         bool changed = false;
         while (header_.bucket_count_value < new_bucket_count) {
-            changed = split_one_bucket_unlocked() || changed;
+            if (!split_one_bucket_unlocked()) {
+                // Every false from a split means no split happened -- a bad state, a failed page
+                // write, or the failpoint. The loop condition only advances when a split
+                // succeeds, so continuing here spins forever; it used to be an exception that
+                // unwound straight out of this loop.
+                sync_files();
+                return false;
+            }
+            changed = true;
         }
         sync_files();
         return changed;
@@ -311,19 +351,21 @@ namespace services::index {
         }
         const uint32_t base = 1U << header_.level_value;
         if (base == 0 || header_.split_bucket_value >= base) {
-            throw std::runtime_error("disk_hash_table: invalid linear hash state");
+            return false;
         }
         const uint32_t split_bucket = header_.split_bucket_value;
         const uint32_t new_bucket = base + split_bucket;
         if (new_bucket != header_.bucket_count_value) {
-            throw std::runtime_error("disk_hash_table: inconsistent bucket progression");
+            return false;
         }
         const uint64_t mod = static_cast<uint64_t>(base) << 1U;
 
         byte_buffer_t empty(memory_resource_);
         empty.resize(page_size);
         init_empty_page(empty);
-        write_page(bucket_primary_page_id(new_bucket), empty);
+        if (!write_page(bucket_primary_page_id(new_bucket), empty)) {
+            return false;
+        }
 
         uint64_t page_id = bucket_primary_page_id(split_bucket);
         byte_buffer_t page(memory_resource_);
@@ -333,7 +375,9 @@ namespace services::index {
         // Phase 1 (copy): move-candidates are appended to the new bucket, source remains intact.
         // A crash here is safe because lookups still use the old addressing state.
         while (page_id != 0) {
-            read_page(page_id, page);
+            if (!read_page(page_id, page)) {
+                break; // unreadable page: stop walking this chain
+            }
             const auto cnt = page_count(page);
             for (uint16_t i = 0; i < cnt; ++i) {
                 const auto slot = read_slot(page, i);
@@ -360,7 +404,8 @@ namespace services::index {
             // unreachable duplicates.
             sync_files();
             if (split_crash_failpoint("after_copy_sync")) {
-                throw std::runtime_error("disk_hash_table: simulated crash after copy sync");
+                // Failpoint: the simulated crash aborts the split by failing it.
+                return false;
             }
         }
 
@@ -374,10 +419,13 @@ namespace services::index {
         }
 
         if (durable_commit) {
-            persist_header();
+            if (!persist_header()) {
+                return false;
+            }
             sync_files();
             if (split_crash_failpoint("after_header_sync")) {
-                throw std::runtime_error("disk_hash_table: simulated crash after header sync");
+                // Failpoint: see above.
+                return false;
             }
         }
 
@@ -418,7 +466,9 @@ namespace services::index {
         if (changed) {
             // Publish all split data first, then atomically advance addressing state.
             // Single sync barrier at the end of batch.
-            persist_header();
+            if (!persist_header()) {
+                return false;
+            }
             sync_files();
         }
         return changed;
@@ -500,12 +550,18 @@ namespace services::index {
         if (!open_error_.empty()) {
             return;
         }
-        persist_header();
+        if (!persist_header()) {
+            open_error_ = "disk_hash_table: failed to write header";
+            return;
+        }
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
         for (uint32_t i = 0; i < header_.bucket_count_value; ++i) {
             init_empty_page(page);
-            write_page(bucket_primary_page_id(i), page);
+            if (!write_page(bucket_primary_page_id(i), page)) {
+                open_error_ = "disk_hash_table: failed to initialize bucket page";
+                return;
+            }
         }
         entry_count_ = 0;
         sync_files();
@@ -559,7 +615,7 @@ namespace services::index {
             return 0;
         }
         if (header_.level_value > 31) {
-            throw std::runtime_error("disk_hash_table: invalid linear hash level");
+            assert(false && "disk_hash_table: invalid linear hash level");
         }
         const uint32_t base = 1U << header_.level_value;
         uint32_t bucket = key_hash % base;
@@ -572,7 +628,7 @@ namespace services::index {
 
     void disk_hash_table_t::initialize_linear_state_from_bucket_count() {
         if (header_.bucket_count_value == 0) {
-            throw std::runtime_error("disk_hash_table: bucket_count must be > 0");
+            assert(false && "disk_hash_table: bucket_count must be > 0");
         }
         uint32_t base = 1;
         uint32_t level = 0;
@@ -591,7 +647,9 @@ namespace services::index {
         for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
             uint64_t page_id = bucket_primary_page_id(bucket);
             while (page_id != 0) {
-                read_page(page_id, page);
+                if (!read_page(page_id, page)) {
+                    break; // unreadable page: stop walking this chain
+                }
                 const auto cnt = page_count(page);
                 for (uint16_t i = 0; i < cnt; ++i) {
                     const auto slot = read_slot(page, i);
@@ -610,42 +668,44 @@ namespace services::index {
         return bucket_id_for_hash(key_hash) == bucket_id;
     }
 
-    void disk_hash_table_t::read_page(uint64_t page_id, byte_buffer_t& page) const {
+    bool disk_hash_table_t::read_page(uint64_t page_id, byte_buffer_t& page) const {
         if (page.size() != page_size) {
             page.resize(page_size);
         }
         if (is_overflow_page_id(page_id)) {
             const uint64_t physical = page_id - overflow_page_id_base;
             if (physical >= overflow_page_count()) {
-                throw std::runtime_error("disk_hash_table: overflow page read out of range");
+                return false;
             }
             if (!ovf_file_->read(page.data(), page_size, physical * page_size)) {
-                throw std::runtime_error("disk_hash_table: failed to read overflow page");
+                return false;
             }
-            return;
+            return true;
         }
         if (page_id >= main_page_count()) {
-            throw std::runtime_error("disk_hash_table: page read out of range");
+            return false;
         }
         if (!file_->read(page.data(), page_size, page_id * page_size)) {
-            throw std::runtime_error("disk_hash_table: failed to read page");
+            return false;
         }
+        return true;
     }
 
-    void disk_hash_table_t::write_page(uint64_t page_id, const byte_buffer_t& page) {
+    bool disk_hash_table_t::write_page(uint64_t page_id, const byte_buffer_t& page) {
         if (page.size() != page_size) {
-            throw std::runtime_error("disk_hash_table: invalid page size");
+            return false;
         }
         if (is_overflow_page_id(page_id)) {
             const uint64_t physical = page_id - overflow_page_id_base;
             if (!ovf_file_->write(const_cast<uint8_t*>(page.data()), page_size, physical * page_size)) {
-                throw std::runtime_error("disk_hash_table: failed to write overflow page");
+                return false;
             }
-            return;
+            return true;
         }
         if (!file_->write(const_cast<uint8_t*>(page.data()), page_size, page_id * page_size)) {
-            throw std::runtime_error("disk_hash_table: failed to write page");
+            return false;
         }
+        return true;
     }
 
     void disk_hash_table_t::init_empty_page(byte_buffer_t& page) const {
@@ -705,7 +765,7 @@ namespace services::index {
     disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const byte_buffer_t& page,
                                                                        const slot_t& slot) const {
         if (slot.offset + slot.length > page_size || slot.length < (2 + 4 + 1 + 8 + 4 + 8)) {
-            throw std::runtime_error("disk_hash_table: invalid entry slot");
+            return decoded_entry_t{};
         }
         const auto* p = page.data() + slot.offset;
         decoded_entry_t e{};
@@ -715,13 +775,14 @@ namespace services::index {
         const uint16_t header_len = 7;
         const uint16_t min_tail = 8 + 4 + 8;
         if (header_len + e.stored_key_len + min_tail > slot.length) {
-            throw std::runtime_error("disk_hash_table: invalid entry length");
+            return decoded_entry_t{};
         }
         e.stored_key = std::string_view(reinterpret_cast<const char*>(p + header_len), e.stored_key_len);
         const auto* vptr = p + header_len + e.stored_key_len;
         e.value = codec::read_le_ptr<int64_t>(vptr);
         e.log_file_id = codec::read_le_ptr<uint32_t>(vptr + 8);
         e.log_offset = codec::read_le_ptr<uint64_t>(vptr + 12);
+        e.valid = true;
         return e;
     }
 
@@ -784,6 +845,9 @@ namespace services::index {
                 continue;
             }
             const auto entry = decode_entry(page, slot);
+            if (!entry.valid) {
+                continue; // corrupt slot: skip it rather than read past the page
+            }
             if (!keys_equal(key, entry, lock_bitcask)) {
                 continue;
             }
@@ -830,11 +894,13 @@ namespace services::index {
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
         init_empty_page(page);
-        write_page(page_id, page);
+        if (!write_page(page_id, page)) {
+            return 0; // caller treats 0 as "no overflow page"
+        }
         return page_id;
     }
 
-    void disk_hash_table_t::persist_header() {
+    bool disk_hash_table_t::persist_header() {
         byte_buffer_t hdr(memory_resource_);
         hdr.resize(page_size, 0);
         codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
@@ -844,8 +910,9 @@ namespace services::index {
         codec::write_le_ptr<uint32_t>(hdr.data() + 32, header_.split_bucket_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 36, header_.hash_seed_value);
         if (!file_->write(hdr.data(), page_size, 0)) {
-            throw std::runtime_error("disk_hash_table: failed to write header page");
+            return false;
         }
+        return true;
     }
 
 } // namespace services::index

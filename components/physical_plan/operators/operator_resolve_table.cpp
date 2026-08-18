@@ -27,6 +27,21 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
+
+    // Small projection helpers, spelled out next to the reads they justify. A projection that
+    // is too narrow does not fail — the column comes back as an ordinal-stable placeholder and
+    // the consumer silently reads nothing — so each of these names exactly one consumed column.
+    std::pmr::vector<std::uint64_t> pg_class_oid_only(std::pmr::memory_resource* resource) {
+        std::pmr::vector<std::uint64_t> cols(resource);
+        cols.emplace_back(components::catalog::pg_class_col::oid);
+        return cols;
+    }
+
+    std::pmr::vector<std::uint64_t> pg_rewrite_action_only(std::pmr::memory_resource* resource) {
+        std::pmr::vector<std::uint64_t> cols(resource);
+        cols.emplace_back(components::catalog::pg_rewrite_col::ev_action);
+        return cols;
+    }
         // Output schema: (position int32, attoid uint32, attname string,
         // atttypid uint32, atttypspec string). Built once per operator into the
         // cached member (TASK C10) so even an empty result (table not found)
@@ -165,7 +180,10 @@ namespace components::operators {
                                                         kPgClass,
                                                         std::move(key_cols),
                                                         std::move(keys_chunk),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                                        // Only the oid is read from this lookup
+                                                        // (see the get_value below); the key
+                                                        // columns are added by the agent.
+                                                        pg_class_oid_only(resource_));
             auto lookup_batches_r = co_await std::move(lookup_f);
             if (lookup_batches_r.has_error()) {
                 // A pg_class read that failed is not "row not found": reporting it as a miss
@@ -259,7 +277,8 @@ namespace components::operators {
                                                kPgRewrite,
                                                std::move(pr_keys),
                                                components::operators::make_key_chunk(resource_, table_oid_),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                               // Only ev_action is read below.
+                                               pg_rewrite_action_only(resource_));
             auto pr_batches_r = co_await std::move(prf);
             if (pr_batches_r.has_error()) {
                 // A pg_rewrite read that failed is not "row not found": reporting it as a miss

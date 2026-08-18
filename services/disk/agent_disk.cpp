@@ -1850,8 +1850,20 @@ namespace services::disk {
                 if (count == 0) {
                     continue;
                 }
-                components::vector::data_chunk_t out{resource(), chunk_types, count};
+                // Built with the SAME projection as the scan. Building it full-width instead
+                // would allocate a buffer for a column the scan never materialized, and the
+                // copy silently skips a placeholder source — so the caller would read a
+                // zero-filled, non-NULL cell where the contract promises a placeholder. That
+                // is the projection contract's whole failure mode, arriving through the back
+                // door of the batched path.
+                components::vector::data_chunk_t out =
+                    scan_projection.empty()
+                        ? components::vector::data_chunk_t{resource(), chunk_types, count}
+                        : components::vector::data_chunk_t{resource(), chunk_types, scan_projection, count};
                 for (std::size_t c = 0; c < chunk.column_count(); ++c) {
+                    if (out.data[c].data() == nullptr && out.data[c].auxiliary() == nullptr) {
+                        continue; // placeholder on both sides: nothing to copy, ordinal preserved
+                    }
                     components::vector::vector_ops::copy(chunk.data[c], out.data[c], selected, count, 0, 0);
                 }
                 components::vector::vector_ops::copy(chunk.row_ids, out.row_ids, selected, count, 0, 0);

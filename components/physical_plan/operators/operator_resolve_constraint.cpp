@@ -23,6 +23,29 @@ namespace components::operators {
 
     namespace catalog = components::catalog;
 
+    namespace {
+        // FK attribute reads consume a proven subset of pg_attribute. The reads sit ~100 lines
+        // below the send, so each entry names its ordinal and why it is needed: a column left out
+        // of the projection comes back as an ordinal-stable placeholder and reads as empty, with
+        // no error anywhere.
+        std::pmr::vector<std::uint64_t> pg_attribute_fk_child_cols(std::pmr::memory_resource* resource) {
+            std::pmr::vector<std::uint64_t> cols(resource);
+            cols.emplace_back(catalog::pg_attribute_col::attoid);       // matched against the FK attoid list
+            cols.emplace_back(catalog::pg_attribute_col::attname);      // the name carried into fk_info
+            cols.emplace_back(catalog::pg_attribute_col::attnum);       // referencing direction only
+            cols.emplace_back(catalog::pg_attribute_col::attisdropped); // referencing direction only
+            cols.emplace_back(catalog::pg_attribute_col::attdefspec);   // referencing direction only
+            return cols;
+        }
+
+        std::pmr::vector<std::uint64_t> pg_attribute_fk_parent_cols(std::pmr::memory_resource* resource) {
+            std::pmr::vector<std::uint64_t> cols(resource);
+            cols.emplace_back(catalog::pg_attribute_col::attoid);
+            cols.emplace_back(catalog::pg_attribute_col::attname);
+            return cols;
+        }
+    } // namespace
+
     operator_resolve_constraint_t::operator_resolve_constraint_t(
         std::pmr::memory_resource* resource,
         log_t log,
@@ -223,7 +246,7 @@ namespace components::operators {
                                                      kPgAttribute,
                                                      std::move(attr_c_keys),
                                                      components::operators::make_keys_chunk(resource_, child_oids),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                                     pg_attribute_fk_child_cols(resource_));
 
             std::pmr::vector<std::uint64_t> attr_p_keys(resource_);
             attr_p_keys.emplace_back(catalog::pg_attribute_col::attrelid);
@@ -233,7 +256,7 @@ namespace components::operators {
                                                      kPgAttribute,
                                                      std::move(attr_p_keys),
                                                      components::operators::make_keys_chunk(resource_, parent_oids),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                                     pg_attribute_fk_parent_cols(resource_));
 
             auto child_results_r = co_await std::move(fut_attr_c);
             if (child_results_r.has_error()) {

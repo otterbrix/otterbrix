@@ -1,4 +1,5 @@
 #include "indexing_vector.hpp"
+#include <core/make_intrusive_ptr.hpp>
 
 namespace components::vector {
 
@@ -13,19 +14,19 @@ namespace components::vector {
 
     indexing_vector_t::indexing_vector_t(std::pmr::memory_resource* resource, uint64_t count)
         : resource_(resource)
-        , data_(std::make_shared<indexing_data>(resource, count))
+        , data_(core::make_intrusive_ptr<indexing_data>(resource, count))
         , indexing_(data_->data.get()) {}
 
     indexing_vector_t::indexing_vector_t(std::pmr::memory_resource* resource, uint64_t start, uint64_t count)
         : resource_(resource)
-        , data_(std::make_shared<indexing_data>(resource, count))
+        , data_(core::make_intrusive_ptr<indexing_data>(resource, count))
         , indexing_(data_->data.get()) {
         for (uint64_t i = 0; i < count; i++) {
             set_index(i, start + i);
         }
     }
 
-    indexing_vector_t::indexing_vector_t(std::shared_ptr<indexing_data> data) noexcept
+    indexing_vector_t::indexing_vector_t(boost::intrusive_ptr<indexing_data> data) noexcept
         : resource_(data->data.get_deleter().resource())
         , data_(std::move(data))
         , indexing_(data_->data.get()) {}
@@ -59,7 +60,7 @@ namespace components::vector {
     }
 
     void indexing_vector_t::reset(uint64_t count) {
-        data_ = std::make_shared<indexing_data>(resource(), count);
+        data_ = core::make_intrusive_ptr<indexing_data>(resource(), count);
         indexing_ = data_->data.get();
     }
 
@@ -78,10 +79,10 @@ namespace components::vector {
 
     const uint64_t* indexing_vector_t::data() const noexcept { return indexing_; }
 
-    std::shared_ptr<indexing_data> indexing_vector_t::slice(std::pmr::memory_resource* resource,
+    boost::intrusive_ptr<indexing_data> indexing_vector_t::slice(std::pmr::memory_resource* resource,
                                                             const indexing_vector_t& indexing,
                                                             uint64_t count) const {
-        auto data = std::make_shared<indexing_data>(resource, count);
+        auto data = core::make_intrusive_ptr<indexing_data>(resource, count);
         auto result_ptr = data->data.get();
         for (uint64_t i = 0; i < count; i++) {
             result_ptr[i] = get_index(indexing.get_index(i));

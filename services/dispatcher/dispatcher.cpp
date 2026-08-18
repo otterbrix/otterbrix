@@ -120,6 +120,23 @@ namespace services::dispatcher {
         // no mutex guards the phase logic (resource() is a thread-safe
         // synchronized_pool_resource).
         loop_thread_ = std::thread([this] {
+            // Idle waits. While work is IN FLIGHT a future completed on another thread
+            // notifies nobody, so readiness is found by this wait expiring — that
+            // expiry is the per-hop latency. When nothing is in flight only a new
+            // message can arrive and enqueue_impl DOES notify, so that tick is left
+            // as it was (shortening it burns CPU; lengthening it exposes the
+            // documented push-notify race to the first statement after a pause).
+            constexpr auto in_flight_wait = std::chrono::microseconds(5);
+            constexpr auto idle_wait = std::chrono::microseconds(100);
+            // The poke threshold below is a DURATION, converted to ticks here. Both
+            // numbers are load-bearing and measured: poking a stalled executor after
+            // ~100us gives p50 615us per statement; leaving it at the old ~2ms gives
+            // 4310us — WORSE than the 3470us baseline, because the shorter tick alone
+            // does not revive an executor parked busy && ready. Change one of these
+            // without the other and the win silently disappears.
+            constexpr auto poke_after = std::chrono::microseconds(100);
+            constexpr uint32_t stale_tick_threshold = poke_after / in_flight_wait;
+
             std::pmr::list<in_flight_entry_t> in_flight(resource());
             uint32_t loop_ticks = 0;
             while (loop_running_.load(std::memory_order_acquire)) {
@@ -206,14 +223,17 @@ namespace services::dispatcher {
                 bool any_stale = false;
                 for (auto& e : in_flight)
                     if (e.behavior && !e.behavior.done() && e.behavior.is_busy() && !e.behavior.is_awaited_ready() &&
-                        e.stale_ticks > 20) {
+                        e.stale_ticks > stale_tick_threshold) {
                         any_stale = true;
                         break;
                     }
                 if (any_stale) {
-                    // Routine firings are EXPECTED: any executor operation longer
-                    // than ~2ms (20 ticks x ~100us loop) trips the threshold, so a
-                    // healthy multi-row DML statement fires this several times.
+                    // Routine firings are EXPECTED and are on the critical path: the
+                    // executor parks busy && ready on a documented lost wakeup
+                    // (docs/actor-zeta-lost-wakeup.md, reproduced by the hidden
+                    // [lostwakeup] tests), and this poke is what revives it. Any
+                    // operation longer than poke_after trips it, so a healthy
+                    // multi-row DML statement fires this many times.
                     // Those log at trace. A slot that stays stale across hundreds
                     // of consecutive poke rounds is a genuine stall (a wedged
                     // executor, or a lost wakeup no poke can clear) — that one
@@ -222,7 +242,7 @@ namespace services::dispatcher {
                     bool escalate = false;
                     for (auto& e : in_flight) {
                         if (e.behavior && !e.behavior.done() && e.behavior.is_busy() &&
-                            !e.behavior.is_awaited_ready() && e.stale_ticks > 20) {
+                            !e.behavior.is_awaited_ready() && e.stale_ticks > stale_tick_threshold) {
                             if (++e.poke_rounds == escalate_poke_rounds) {
                                 escalate = true;
                             }
@@ -249,8 +269,18 @@ namespace services::dispatcher {
                 ++loop_ticks;
                 (void) loop_ticks;
                 std::unique_lock<std::mutex> lk(mutex_);
+                // A suspended coroutine's future is completed on ANOTHER thread and
+                // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
+                // readiness is discovered by this wait TIMING OUT. While work is in
+                // flight that timeout IS the per-hop latency, and a statement crosses
+                // ~20 hops: at 100us each that is the ~3.5ms per-statement floor
+                // (measured; shrinking it moved p50 to ~600us and bulk load 874->307ms).
+                // Idle is the opposite case: only a new message can arrive and that DOES
+                // notify, so the idle tick is left alone — shortening it would burn CPU
+                // for nothing, and lengthening it would expose the documented
+                // push-notify race to the first statement after a pause.
                 if (inbox_.empty()) {
-                    pump_cv_.wait_for(lk, std::chrono::microseconds(100));
+                    pump_cv_.wait_for(lk, in_flight.empty() ? idle_wait : in_flight_wait);
                 }
                 // NOTE: lock-free inbox trade — a push+notify may slip between
                 // empty() and wait_for; bounded by the 100µs timeout
@@ -475,10 +505,14 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        components::logical_plan::execution_plan_t plan) {
-        trace(log_,
-              "manager_dispatcher_t::execute_plan session: {}, {}",
-              session.data(),
-              plan.sub_queries.back()->to_string());
+        // Guarded at the CALL SITE: see wrapper_dispatcher_t::send_plan. The plan tree was
+        // being rendered into a string on every statement at every log level.
+        if (log_.should_log(log_t::level::trace)) {
+            trace(log_,
+                  "manager_dispatcher_t::execute_plan session: {}, {}",
+                  session.data(),
+                  plan.sub_queries.back()->to_string());
+        }
 
         // Pure session-hash routing — no plan inspection: the executor owns
         // optimize/resolve/validate/enrich/rewrites and the commit tails. The

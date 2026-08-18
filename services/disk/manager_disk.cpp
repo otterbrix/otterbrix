@@ -334,8 +334,18 @@ namespace services::disk {
                     }
                 }
                 std::unique_lock<std::mutex> lk(mutex_);
+                // A suspended coroutine's future is completed on ANOTHER thread and
+                // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
+                // readiness is discovered by this wait TIMING OUT. While work is in
+                // flight that expiry IS the per-hop latency, and a statement crosses
+                // ~20 hops. Idle is the opposite case: only a new message can arrive
+                // and that DOES notify, so the idle tick is left alone — shortening it
+                // burns CPU for nothing, lengthening it would expose the documented
+                // push-notify race to the first statement after a pause.
                 if (inbox_.empty())
-                    pump_cv_.wait_for(lk, std::chrono::microseconds(100));
+                    pump_cv_.wait_for(lk,
+                                      in_flight.empty() ? std::chrono::microseconds(100)
+                                                        : std::chrono::microseconds(5));
                 // lock-free inbox trade: a push+notify may slip between empty() and
                 // wait_for — bounded by the 100µs timeout (staleness, not loss).
             }

@@ -82,6 +82,16 @@ namespace components::logical_plan {
         }
         bool has_output_types() const noexcept { return !output_types_.empty(); }
 
+        // Does the target table carry any index? Stamped by enrich, which already asks the
+        // index manager for each table's keys. DML operators mirror rows into the index only
+        // when this says there is one to mirror into.
+        //
+        // Defaults to TRUE and stays true unless enrich says otherwise: an unstamped node must
+        // behave exactly as before (mirror), because the failure mode of guessing "no index" is
+        // a table that stays correct while its index silently goes stale.
+        bool table_has_indexes() const noexcept { return table_has_indexes_; }
+        void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
+
         std::string to_string() const;
         std::pmr::memory_resource* resource() const noexcept;
 
@@ -96,6 +106,8 @@ namespace components::logical_plan {
         // Resolved output column types (see output_types()). Allocated on this node's
         // resource (set in the ctor); empty until the validator stamps it.
         std::pmr::vector<components::types::complex_logical_type> output_types_;
+        // See table_has_indexes(). Conservative default: mirror unless proven unnecessary.
+        bool table_has_indexes_{true};
 
         void table_oid_dependencies_(std::unordered_set<components::catalog::oid_t>& upper_dependencies);
 
@@ -117,5 +129,13 @@ namespace components::logical_plan {
         stream << node->to_string();
         return stream;
     }
+
+#ifdef DEV_MODE
+    // Test-observable counter of plan-tree stringifications (see node.cpp). A trace argument
+    // is evaluated at the CALL SITE whatever the log level, so a plan rendered "only for a
+    // trace line" is still rendered when logging is off. Tests assert this stays at zero.
+    uint64_t node_to_string_calls() noexcept;
+    void reset_node_to_string_calls() noexcept;
+#endif
 
 } // namespace components::logical_plan

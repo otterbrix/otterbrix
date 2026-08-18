@@ -167,7 +167,17 @@ namespace services::wal {
                 // Idle: wait for an enqueue notify, or a bounded staleness window
                 // to re-check the inbox / behaviors that became ready off-thread.
                 std::unique_lock<std::mutex> lock(mutex_);
-                pump_cv_.wait_for(lock, std::chrono::microseconds(100));
+                // A suspended coroutine's future is completed on ANOTHER thread and
+                // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
+                // readiness is discovered by this wait TIMING OUT. While work is in
+                // flight that expiry IS the per-hop latency, and a statement crosses
+                // ~20 hops. Idle is the opposite case: only a new message can arrive
+                // and that DOES notify, so the idle tick is left alone — shortening it
+                // burns CPU for nothing, lengthening it would expose the documented
+                // push-notify race to the first statement after a pause.
+                pump_cv_.wait_for(lock,
+                                  in_flight.empty() ? std::chrono::microseconds(100)
+                                                    : std::chrono::microseconds(5));
             }
             // in_flight (and every message_ptr / behavior_t it owns) is destroyed
             // here, on the loop thread — never on a sender thread.

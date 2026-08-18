@@ -72,11 +72,14 @@ namespace components::operators {
                                            keys_,
                                            index_type_,
                                            ctx->execution_context.timezone_offset);
-        const auto id_index = co_await std::move(ixf);
+        auto id_index_result = co_await std::move(ixf);
 
-        if (id_index == components::index::INDEX_ID_UNDEFINED) {
-            set_error(core::error_t{core::error_code_t::index_create_fail,
-                                    std::pmr::string{"index already exists", resource_}});
+        if (id_index_result.has_error()) {
+            // Report the reason the manager gave. It used to be flattened to
+            // "index already exists", which was right for one cause and wrong for
+            // every other one — including a disk index whose storage failed to
+            // open, which did not even reach here.
+            set_error(id_index_result.error());
             co_return;
         }
 
@@ -184,7 +187,13 @@ namespace components::operators {
                                          std::move(idx_chunks),
                                          static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
                                          run_len);
-                    co_await std::move(irf);
+                    auto index_error = co_await std::move(irf);
+                    if (index_error.contains_error()) {
+                        // A backfill run that did not reach the index leaves the new index
+                        // incomplete; the CREATE INDEX must fail rather than publish it.
+                        set_error(std::move(index_error));
+                        co_return;
+                    }
                     run_start += run_len;
                 }
                 backfilled_count += sz;

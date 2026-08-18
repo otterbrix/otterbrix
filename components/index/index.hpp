@@ -125,9 +125,23 @@ namespace components::index {
         void revert_delete(uint64_t txn_id);
         void cleanup_versions(uint64_t lowest_active);
 
-        // Iterate pending entries for disk mirroring (must be called before commit clears them)
-        void for_each_pending_insert(uint64_t txn_id, const std::function<void(const value_t&, int64_t)>& fn) const;
-        void for_each_pending_delete(uint64_t txn_id, const std::function<void(const value_t&, int64_t)>& fn) const;
+        // One pending entry awaiting commit: the indexed key and the storage row it points at.
+        struct pending_entry_t {
+            value_t key;
+            int64_t row_index;
+        };
+        using pending_entries_t = std::pmr::vector<pending_entry_t>;
+
+        // Pending entries for disk mirroring (must be read before commit clears them).
+        //
+        // These RETURN the entries rather than taking a callback. The callback shape needed a
+        // concrete parameter type because the customization point below is virtual and a virtual
+        // method cannot be a template — which meant std::function, a forbidden type that also
+        // heap-allocates for a capturing lambda. Handing back the entries removes the callable
+        // from the interface entirely; the disk index materializes them anyway, since it stores
+        // keys encoded and has to decode them to produce a value_t.
+        pending_entries_t pending_inserts(uint64_t txn_id) const;
+        pending_entries_t pending_deletes(uint64_t txn_id) const;
 
         void clean_memory_to_new_elements(std::size_t count) noexcept;
 
@@ -158,10 +172,8 @@ namespace components::index {
         virtual void revert_insert_impl(uint64_t txn_id) = 0;
         virtual void revert_delete_impl(uint64_t txn_id) = 0;
         virtual void cleanup_versions_impl(uint64_t lowest_active) = 0;
-        virtual void for_each_pending_insert_impl(uint64_t txn_id,
-                                                  const std::function<void(const value_t&, int64_t)>& fn) const = 0;
-        virtual void for_each_pending_delete_impl(uint64_t txn_id,
-                                                  const std::function<void(const value_t&, int64_t)>& fn) const = 0;
+        virtual pending_entries_t pending_inserts_impl(uint64_t txn_id) const = 0;
+        virtual pending_entries_t pending_deletes_impl(uint64_t txn_id) const = 0;
 
         virtual void clean_memory_to_new_elements_impl(std::size_t count) = 0;
 

@@ -1,7 +1,9 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/physical_plan/operators/operator_update.hpp>
 #include <components/types/logical_value.hpp>
+#include <string>
 
 // UPDATE SET used to dispatch operators by their FIRST character: '?' matched
 // no case and left a null expression that the executor dereferenced (segfault
@@ -133,4 +135,61 @@ TEST_CASE("integration::cpp::test_update::set_null") {
     }
     // Nested-element NULL writes have no NA cast kernel: clean transform error.
     CHECK_FALSE(exec("UPDATE t.un SET x[1] = NULL;")->is_success());
+}
+
+// The matched-row gather must cost ONE indexed copy per column per scan batch.
+// It used to copy cell by cell: for every matched row it called the 5-arg
+// vector_ops::copy overload, which builds an indexing_vector_t sized to the row
+// offset (a pmr allocation plus a fill of `offset` entries) in order to move a
+// SINGLE cell. That is O(rows^2) index writes and O(rows) allocations per column,
+// and it dominated the UPDATE operator's profile. The buffered-gather pattern is
+// already used by operator_delete and by join_utils; this pins it for UPDATE.
+TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_update/gather_cost");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE g;")->is_success());
+    REQUIRE(exec("CREATE TABLE g.t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, e BIGINT);")->is_success());
+
+    constexpr int kRows = 5000;   // > 4 scan batches of DEFAULT_VECTOR_CAPACITY (1024)
+    constexpr int kBatch = 1000;
+    constexpr int kColumns = 6;
+    for (int base = 0; base < kRows; base += kBatch) {
+        std::string sql = "INSERT INTO g.t (id, a, b, c, d, e) VALUES ";
+        for (int i = 0; i < kBatch; ++i) {
+            const int v = base + i;
+            if (i != 0) {
+                sql += ", ";
+            }
+            sql += "(" + std::to_string(v) + ", " + std::to_string(v) + ", " + std::to_string(v) + ", " +
+                   std::to_string(v) + ", " + std::to_string(v) + ", " + std::to_string(v) + ")";
+        }
+        sql += ";";
+        REQUIRE(exec(sql)->is_success());
+    }
+
+    const auto copies_before = components::operators::update_gather_copy_calls();
+    REQUIRE(exec("UPDATE g.t SET a = a + 1;")->is_success());
+    const auto copies_after = components::operators::update_gather_copy_calls();
+
+    // One indexed copy per column per scan batch: ceil(5000/1024) = 5 batches x 6
+    // columns = 30. The bound leaves room for batch-boundary variation; a per-cell
+    // gather lands at 5000 x 6 = 30000 and blows straight through it.
+    const auto copies = copies_after - copies_before;
+    INFO("gather copies: " << copies);
+    CHECK(copies <= 64);
+
+    {
+        auto cur = exec("SELECT a FROM g.t WHERE id = 0;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 1); // the rows really were updated
+    }
 }

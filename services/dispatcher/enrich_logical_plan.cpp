@@ -271,6 +271,32 @@ namespace services::catalog_resolve {
     // fields are gone. Idempotent — INVALID_OID guards make repeat calls
     // no-ops. Called by the dispatcher (after resolve, before validate) and
     // again defensively by enrich_plan (second call is no-op).
+    // Mark every node whose target table is `table_oid` with whether that table has any index.
+    // Walks the whole tree by oid rather than trusting position: a statement can carry several
+    // tables, and the DML target is not necessarily the last one resolved.
+    void stamp_table_has_indexes(components::logical_plan::node_t* root,
+                                 components::catalog::oid_t table_oid,
+                                 bool has_indexes) {
+        using namespace components::logical_plan;
+        if (root == nullptr || table_oid == components::catalog::INVALID_OID) {
+            return;
+        }
+        std::queue<node_t*> q;
+        q.push(root);
+        while (!q.empty()) {
+            auto* n = q.front();
+            q.pop();
+            if (n->table_oid() == table_oid) {
+                n->set_table_has_indexes(has_indexes);
+            }
+            for (const auto& child : n->children()) {
+                if (child) {
+                    q.push(child.get());
+                }
+            }
+        }
+    }
+
     void stamp_oids_from_resolves(components::logical_plan::node_t* root) {
         using namespace components::logical_plan;
         if (!root)
@@ -1019,10 +1045,12 @@ namespace services::dispatcher {
                 keys_futures(resource);
             std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
                 desc_futures(resource);
+            std::pmr::vector<components::catalog::oid_t> queried_oids(resource);
             for (auto tbl_oid : root->table_oid_dependencies()) {
                 if (tbl_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
+                queried_oids.push_back(tbl_oid);
                 auto [_ik, ikf] =
                     actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
                 keys_futures.push_back(std::move(ikf));
@@ -1032,8 +1060,20 @@ namespace services::dispatcher {
                                                    tbl_oid);
                 desc_futures.push_back(std::move(idf));
             }
+            // Stamp "does this table have an index" onto every node targeting that table, by
+            // OID — not from collections_ctx->indexed_keys, which is overwritten per table
+            // (last table wins). A multi-table statement would otherwise judge its DML target
+            // by another table's index set, and guessing "no index" leaves the table correct
+            // while its index silently goes stale.
+            std::size_t oid_pos = 0;
             for (auto& ikf : keys_futures) {
-                collections_ctx->indexed_keys = co_await std::move(ikf);
+                auto keys = co_await std::move(ikf);
+                const bool has_indexes = !keys.empty();
+                if (oid_pos < queried_oids.size()) {
+                    catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[oid_pos], has_indexes);
+                }
+                ++oid_pos;
+                collections_ctx->indexed_keys = std::move(keys);
             }
             for (auto& idf : desc_futures) {
                 collections_ctx->indexed_descriptions = co_await std::move(idf);

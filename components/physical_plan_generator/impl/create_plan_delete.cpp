@@ -1,4 +1,8 @@
 #include "create_plan_delete.hpp"
+
+#include <algorithm>
+#include <limits>
+#include <vector>
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
 #include <components/expressions/compare_expression.hpp>
@@ -9,6 +13,65 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 
 namespace services::planner::impl {
+
+    namespace {
+        // Storage columns a DELETE actually consumes. Row ids travel in chunk.row_ids,
+        // never in a data column, so the only values anything downstream reads are:
+        //   - the key columns of every index on the table (the mirror removes the old
+        //     entries BY VALUE — prune one and the table stays right while the index
+        //     silently keeps a dead key);
+        //   - the parent key columns an FK cascade probes the child table with.
+        // RETURNING is arbitrary expressions, so its presence keeps the full scan
+        // rather than risk missing a referenced column.
+        //
+        // An EMPTY result means "read every column" downstream (full_scan's contract),
+        // so a DELETE that needs no value at all still asks for one column. The scan
+        // emits full-width chunks either way — non-projected columns are buffer-less
+        // placeholders — so ordinals stay stable and nothing above is remapped.
+        //
+        // Anything that cannot be proven (unknown schema, unresolved position) returns
+        // empty: this narrows what is read, it never guesses.
+        std::vector<size_t> delete_projection(const context_storage_t& context,
+                                              const components::logical_plan::node_delete_t* node_delete,
+                                              bool has_returning) {
+            if (has_returning) {
+                return {};
+            }
+            const auto* metadata = context.table_metadata_for(node_delete->table_oid());
+            if (metadata == nullptr) {
+                return {};
+            }
+
+            std::vector<size_t> required;
+            for (const auto& keys : context.indexed_keys) {
+                for (const auto& key : keys) {
+                    const auto name = key.as_string();
+                    const auto column = std::find_if(metadata->columns.begin(),
+                                                     metadata->columns.end(),
+                                                     [&](const auto& c) { return c.attname == name; });
+                    if (column == metadata->columns.end() || column->chunk_position < 0) {
+                        return {};
+                    }
+                    required.push_back(static_cast<size_t>(column->chunk_position));
+                }
+            }
+            for (const auto& fk : node_delete->referencing_fks()) {
+                for (const auto position : fk.parent_col_indices) {
+                    if (position == std::numeric_limits<std::size_t>::max()) {
+                        return {};
+                    }
+                    required.push_back(position);
+                }
+            }
+
+            std::sort(required.begin(), required.end());
+            required.erase(std::unique(required.begin(), required.end()), required.end());
+            if (required.empty()) {
+                required.push_back(0);
+            }
+            return required;
+        }
+    } // namespace
 
     components::operators::operator_ptr
     create_plan_delete(const context_storage_t& context,
@@ -29,6 +92,7 @@ namespace services::planner::impl {
         }
 
         auto returning = build_returning_columns(context.resource, node_delete->returning(), params);
+        const bool has_returning = !returning.empty();
 
         // Forward the plan-resolved RETURNING output types (stamped on the delete node by
         // validate_schema, in RETURNING projection order) onto the projection columns, so a
@@ -68,7 +132,9 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         std::move(returning)));
-            plan->set_children(create_plan_match(context, node_match, limit));
+        plan->set_table_has_indexes(node->table_has_indexes());
+            plan->set_children(
+                create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning)));
 
             return plan;
         }
@@ -84,6 +150,7 @@ namespace services::planner::impl {
                                                                                     std::move(returning),
                                                                                     *expr,
                                                                                     limit.limit()));
+        plan->set_table_has_indexes(node->table_has_indexes());
         plan->set_children(
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),

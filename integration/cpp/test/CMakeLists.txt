@@ -10,11 +10,14 @@ set( ${PROJECT_NAME}_SOURCES
         test_explain.cpp
         test_index.cpp
         test_insert.cpp
-        test_insert_type_promotion.cpp
-        test_statement_latency.cpp
-        test_log_laziness.cpp
-        test_catalog_scan_cost.cpp
+        test_delete_column_pruning.cpp
         test_index_create_failure.cpp
+        test_catalog_scan_cost.cpp
+        test_log_laziness.cpp
+        test_index_mirror_gate.cpp
+        test_insert_type_promotion.cpp
+        test_index_key_binding.cpp
+        test_statement_latency.cpp
         test_update.cpp
         test_wal_pool.cpp
         test_persistence.cpp

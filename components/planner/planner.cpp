@@ -28,6 +28,8 @@
 #include <logical_plan/node_update.hpp>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <algorithm>
+#include <string_view>
 
 namespace components::planner {
 
@@ -95,14 +97,37 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!upd->not_null_cols().empty() || !upd->unique_groups().empty()) {
+            // A UNIQUE / PK group none of whose columns this UPDATE writes cannot be
+            // violated by it — the stored key does not change. Such a group is dropped
+            // here, before the operator is spliced in, because its existing-row layer
+            // costs one FULL pass over the target table per 1024 written rows.
+            // Identity is the top-level column NAME on both sides: that is what the
+            // groups carry and what operator_unique_constraint_t resolves them by.
+            // A nested SET (SET a[0] = ...) still names column `a`, so writing into a
+            // key column's element keeps the group.
+            std::vector<std::vector<std::string>> live_unique_groups;
+            for (const auto& group : upd->unique_groups()) {
+                const bool touched = std::any_of(group.begin(), group.end(), [&](const std::string& col) {
+                    return std::any_of(upd->updates().begin(), upd->updates().end(), [&](const auto& update) {
+                        const auto& target = update->key().storage();
+                        return !target.empty() &&
+                               std::string_view{target.front().data(), target.front().size()} ==
+                                   std::string_view{col};
+                    });
+                });
+                if (touched) {
+                    live_unique_groups.push_back(group);
+                }
+            }
+
+            if (!upd->not_null_cols().empty() || !live_unique_groups.empty()) {
                 auto cc = boost::intrusive_ptr(
                     new logical_plan::node_check_constraint_t(r,
                                                               core::dbname_t{},
                                                               core::relname_t{},
                                                               std::vector<std::string>(upd->not_null_cols())));
                 // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
-                cc->set_unique_groups(upd->unique_groups());
+                cc->set_unique_groups(std::move(live_unique_groups));
                 cc->set_table_oid(upd->table_oid());
                 cc->set_column_defaults(upd->column_defaults());
                 // An UPDATE write-set is the gathered storage row — always named.

@@ -59,6 +59,7 @@ namespace services::planner::impl {
                                                                                         node_update->updates(),
                                                                                         node_update->upsert(),
                                                                                         std::move(returning)));
+        plan->set_table_has_indexes(node->table_has_indexes());
             plan->set_children(create_plan_match(context, node_match, limit));
 
             return plan;
@@ -74,6 +75,7 @@ namespace services::planner::impl {
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));
+        plan->set_table_has_indexes(node->table_has_indexes());
         plan->set_children(
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),

@@ -3,6 +3,7 @@
 #include <components/index/disk_hash_storage.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
@@ -29,6 +30,16 @@ namespace services::index {
         using value_ref_t = components::index::disk_hash_storage_t::value_ref_t;
         using full_key_loader_t = components::index::disk_hash_storage_t::full_key_loader_t;
         using byte_buffer_t = std::pmr::vector<uint8_t>;
+
+        // Factory returning the instance, or a core::error_t when the on-disk
+        // storage cannot be brought up (file/overflow-file open failure, an
+        // unreadable or incompatible header). Production code MUST use this: the
+        // direct ctor below aborts on the same failures, mirroring
+        // bitcask_index_disk_t::create vs its direct ctor.
+        [[nodiscard]] static core::result_wrapper_t<boost::intrusive_ptr<disk_hash_table_t>>
+        create(const std::filesystem::path& file_path,
+               uint32_t bucket_count,
+               std::pmr::memory_resource* memory_resource);
 
         explicit disk_hash_table_t(const std::filesystem::path& file_path,
                                    uint32_t bucket_count = default_bucket_count,
@@ -85,6 +96,15 @@ namespace services::index {
             uint32_t split_bucket_value{0};
             uint32_t hash_seed_value{0};
         };
+
+        // Tag ctor used by create(): runs the same open path but records the
+        // failure in open_error_ instead of aborting, so the factory can hand it
+        // back as a core::error_t.
+        struct defer_abort_tag {};
+        disk_hash_table_t(const std::filesystem::path& file_path,
+                          uint32_t bucket_count,
+                          std::pmr::memory_resource* memory_resource,
+                          defer_abort_tag);
 
         void open_or_create();
         void initialize_new_file();
@@ -155,6 +175,9 @@ namespace services::index {
         double max_load_factor_{0.75};
         std::atomic<bool> suppress_auto_rehash_{false};
         std::pmr::memory_resource* memory_resource_{nullptr};
+        // Empty while the storage opened cleanly; otherwise the reason, checked by
+        // create() and by the direct ctor (which aborts on it).
+        std::string open_error_;
     };
 
     using disk_hash_table_ptr = boost::intrusive_ptr<disk_hash_table_t>;

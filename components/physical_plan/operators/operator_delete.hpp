@@ -6,6 +6,15 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    // Test-observable count of MATERIALIZED columns the DELETE sink received, summed
+    // over pushed batches. A pruned scan leaves the unneeded columns as placeholders
+    // (index-stable, no buffer), so this drops to what DELETE actually reads: the
+    // index key columns, RETURNING columns and FK-cascade key columns. Row ids travel
+    // in chunk.row_ids, not in a column, so a plain DELETE needs no data column at all.
+    uint64_t delete_scanned_columns() noexcept;
+#endif
+
     class operator_delete final : public read_write_operator_t {
     public:
         operator_delete(std::pmr::memory_resource* resource,
@@ -31,6 +40,15 @@ namespace components::operators {
                         components::catalog::oid_t target_oid);
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
+
+
+        // Whether the target table has any index (stamped by enrich onto the plan node).
+
+        // False skips the index mirror entirely. Defaults to true: an unstamped plan must
+
+        // behave as before, because guessing "no index" leaves a stale index behind.
+
+        void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
         // STREAMING DML (STEP 3b). Both DELETE shapes that have a scan source are
         // SINKs on the LEFT (target) scan input:
@@ -91,6 +109,7 @@ namespace components::operators {
         expressions::condition_kind condition_{expressions::condition_kind::always};
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         std::pmr::vector<select_column_t> returning_;
+        bool table_has_indexes_{true};
         // separate from evaluation graph
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // SIMPLE-path staging (filled by consume_batch_, drained in

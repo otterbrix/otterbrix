@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/physical_plan/operators/operator_unique_constraint.hpp>
 #include <string>
 
 // End-to-end regression tests for UNIQUE / PRIMARY KEY constraint enforcement.
@@ -329,5 +330,53 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
         // 2001 is odd => it was inserted; a second copy collides against it.
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.big (id, name) VALUES (2001, 'dup');");
         REQUIRE(cur->is_error());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// An UPDATE that touches NO column of a UNIQUE / PRIMARY KEY group cannot make
+// that group collide: the stored key is unchanged. The existing-row layer used to
+// run anyway, and it costs one FULL pass over the target table per 1024 written
+// rows (manager_disk_t::scan_by_keys). On a 200k-row table an UPDATE of a non-key
+// column measured 519 ms with a PK against 57 ms without one — a 9x tax for a
+// check that cannot fail. The planner now drops such groups before the operator
+// is ever spliced in.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_existing_row_scan") {
+    auto config = make_test_config("/tmp/test_unique_constraint_e2e/update_off_key", /*disk_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.t (id bigint, payload bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.t ADD CONSTRAINT t_pk PRIMARY KEY (id);")->is_success());
+
+    constexpr int kRows = 3000; // spans several 1024-row write batches
+    {
+        std::string sql = "INSERT INTO TestDatabase.t (id, payload) VALUES ";
+        for (int i = 0; i < kRows; ++i) {
+            if (i != 0) {
+                sql += ", ";
+            }
+            sql += "(" + std::to_string(i) + ", " + std::to_string(i) + ")";
+        }
+        sql += ";";
+        REQUIRE(exec(dispatcher, sql)->is_success());
+    }
+
+    INFO("UPDATE of a non-key column must not scan the table for existing keys");
+    const auto scans_before = components::operators::unique_constraint_scan_sends();
+    REQUIRE(exec(dispatcher, "UPDATE TestDatabase.t SET payload = payload + 1;")->is_success());
+    const auto scans_after = components::operators::unique_constraint_scan_sends();
+    CHECK(scans_after == scans_before);
+
+    INFO("the key column is still protected: updating it into a duplicate fails");
+    REQUIRE(exec(dispatcher, "UPDATE TestDatabase.t SET id = 0 WHERE id = 1;")->is_error());
+
+    INFO("and the rows really were updated");
+    {
+        auto cur = exec(dispatcher, "SELECT payload FROM TestDatabase.t WHERE id = 5;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 6);
     }
 }

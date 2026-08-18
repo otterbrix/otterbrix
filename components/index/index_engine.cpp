@@ -1,4 +1,5 @@
 #include "index_engine.hpp"
+#include <atomic>
 
 #include <iostream>
 #include <utility>
@@ -9,6 +10,14 @@
 // index_engine no longer sends to manager_disk_t — disk persistence handled by manager_index_t
 
 namespace components::index {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_index_key_column_probes{0};
+    } // namespace
+    uint64_t index_key_column_probes() noexcept { return g_index_key_column_probes.load(std::memory_order_relaxed); }
+    void reset_index_key_column_probes() noexcept { g_index_key_column_probes.store(0, std::memory_order_relaxed); }
+#endif
 
     void find(const index_engine_ptr&, query_t, result_set_t*) {
         /// auto* index  = search_index(ptr, query);
@@ -44,34 +53,40 @@ namespace components::index {
         return {index_engine, core::pmr::deleter_t(resource)};
     }
 
-    bool is_match_column(const index_ptr& index, const components::vector::data_chunk_t& chunk) {
+    // Resolve, for ONE index, the chunk column that carries its key — or key_column_absent when
+    // the chunk does not carry every key column. This is the whole of what is_match_column and
+    // get_value_by_index used to do together, except it now runs once per chunk instead of twice
+    // per row, and the key name is built once instead of once per candidate column.
+    //
+    // Semantics are preserved exactly: ALL key columns must be present for the index to apply,
+    // and the value read is the FIRST key's column (multi-column index keys remain a TODO on the
+    // index side, as before).
+    static std::size_t resolve_key_column(const index_ptr& index, const components::vector::data_chunk_t& chunk) {
         auto keys = index->keys();
+        if (keys.first == keys.second) {
+            return index_engine_t::key_column_absent;
+        }
+        std::size_t first_key_column = index_engine_t::key_column_absent;
         for (auto key = keys.first; key != keys.second; ++key) {
-            bool key_found = false;
-            for (const auto& column : chunk.data) {
-                if (column.type().alias() == key->as_string()) {
-                    key_found = true;
+            const auto key_name = key->as_string();
+            std::size_t found = index_engine_t::key_column_absent;
+            for (std::size_t column = 0; column < chunk.data.size(); ++column) {
+#ifdef DEV_MODE
+                g_index_key_column_probes.fetch_add(1, std::memory_order_relaxed);
+#endif
+                if (chunk.data[column].type().alias() == key_name) {
+                    found = column;
                     break;
                 }
             }
-            if (!key_found) {
-                return false;
+            if (found == index_engine_t::key_column_absent) {
+                return index_engine_t::key_column_absent;
+            }
+            if (first_key_column == index_engine_t::key_column_absent) {
+                first_key_column = found;
             }
         }
-        return true;
-    }
-
-    value_t get_value_by_index(const index_ptr& index, const vector::data_chunk_t& chunk, size_t row) {
-        auto keys = index->keys();
-        if (keys.first != keys.second) {
-            //todo: multi values index
-            for (const auto& column : chunk.data) {
-                if (column.type().alias() == keys.first->as_string()) {
-                    return column.value(row);
-                }
-            }
-        }
-        return types::logical_value_t{chunk.resource(), types::complex_logical_type{types::logical_type::NA}};
+        return first_key_column;
     }
 
     index_engine_t::index_engine_t(std::pmr::memory_resource* resource)
@@ -148,29 +163,46 @@ namespace components::index {
 
     auto index_engine_t::has_index(const std::string& name) -> bool { return matching(name) == nullptr ? false : true; }
 
-    void index_engine_t::insert_row(const vector::data_chunk_t& chunk,
+    index_engine_t::chunk_key_binding_t index_engine_t::bind_chunk(const vector::data_chunk_t& chunk) const {
+        chunk_key_binding_t binding(resource_);
+        binding.reserve(storage_.size());
+        for (const auto& index : storage_) {
+            binding.push_back(resolve_key_column(index, chunk));
+        }
+        return binding;
+    }
+
+    void index_engine_t::insert_row(const chunk_key_binding_t& binding,
+                                    const vector::data_chunk_t& chunk,
                                     size_t chunk_row,
                                     int64_t storage_row,
                                     uint64_t txn_id,
                                     core::date::timezone_offset_t local_timezone) {
+        std::size_t slot = 0;
         for (auto& index : storage_) {
-            if (is_match_column(index, chunk)) {
-                auto key = get_value_by_index(index, chunk, chunk_row);
-                index->insert(key, storage_row, txn_id, local_timezone);
+            const auto column = slot < binding.size() ? binding[slot] : key_column_absent;
+            ++slot;
+            if (column == key_column_absent) {
+                continue;
             }
+            index->insert(chunk.data[column].value(chunk_row), storage_row, txn_id, local_timezone);
         }
     }
 
-    void index_engine_t::mark_delete_row(const vector::data_chunk_t& chunk,
+    void index_engine_t::mark_delete_row(const chunk_key_binding_t& binding,
+                                         const vector::data_chunk_t& chunk,
                                          size_t chunk_row,
                                          int64_t storage_row,
                                          uint64_t txn_id,
                                          core::date::timezone_offset_t local_timezone) {
+        std::size_t slot = 0;
         for (auto& index : storage_) {
-            if (is_match_column(index, chunk)) {
-                auto key = get_value_by_index(index, chunk, chunk_row);
-                index->mark_delete(key, storage_row, txn_id, local_timezone);
+            const auto column = slot < binding.size() ? binding[slot] : key_column_absent;
+            ++slot;
+            if (column == key_column_absent) {
+                continue;
             }
+            index->mark_delete(chunk.data[column].value(chunk_row), storage_row, txn_id, local_timezone);
         }
     }
 
@@ -233,42 +265,6 @@ namespace components::index {
             res.emplace_back(index->name());
         }
         return res;
-    }
-
-    void index_engine_t::for_each_disk_op(
-        const vector::data_chunk_t& chunk,
-        size_t row,
-        const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const {
-        for (const auto& index : storage_) {
-            if (index->is_disk() && is_match_column(index, chunk)) {
-                auto key = get_value_by_index(index, chunk, row);
-                fn(index->disk_agent(), key);
-            }
-        }
-    }
-
-    void index_engine_t::for_each_pending_disk_insert(
-        uint64_t txn_id,
-        const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const {
-        for (const auto& index : storage_) {
-            if (index->is_disk()) {
-                index->for_each_pending_insert(txn_id, [&](const value_t& key, int64_t row_index) {
-                    fn(index->disk_agent(), key, row_index);
-                });
-            }
-        }
-    }
-
-    void index_engine_t::for_each_pending_disk_delete(
-        uint64_t txn_id,
-        const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const {
-        for (const auto& index : storage_) {
-            if (index->is_disk()) {
-                index->for_each_pending_delete(txn_id, [&](const value_t& key, int64_t row_index) {
-                    fn(index->disk_agent(), key, row_index);
-                });
-            }
-        }
     }
 
     void set_disk_agent(const index_engine_ptr& ptr,

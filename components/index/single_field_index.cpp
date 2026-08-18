@@ -243,26 +243,30 @@ namespace components::index {
         }
     }
 
-    void
-    single_field_index_t::for_each_pending_insert_impl(uint64_t txn_id,
-                                                       const std::function<void(const value_t&, int64_t)>& fn) const {
+    index_t::pending_entries_t single_field_index_t::pending_inserts_impl(uint64_t txn_id) const {
+        pending_entries_t out{resource()};
         auto it = pending_inserts_.find(txn_id);
-        if (it == pending_inserts_.end())
-            return;
-        for (const auto& [key, row_index] : it->second) {
-            fn(key, row_index);
+        if (it == pending_inserts_.end()) {
+            return out;
         }
+        out.reserve(it->second.size());
+        for (const auto& [key, row_index] : it->second) {
+            out.push_back(pending_entry_t{key, row_index});
+        }
+        return out;
     }
 
-    void
-    single_field_index_t::for_each_pending_delete_impl(uint64_t txn_id,
-                                                       const std::function<void(const value_t&, int64_t)>& fn) const {
+    index_t::pending_entries_t single_field_index_t::pending_deletes_impl(uint64_t txn_id) const {
+        pending_entries_t out{resource()};
         auto it = pending_deletes_.find(txn_id);
-        if (it == pending_deletes_.end())
-            return;
-        for (const auto& [key, row_index] : it->second) {
-            fn(key, row_index);
+        if (it == pending_deletes_.end()) {
+            return out;
         }
+        out.reserve(it->second.size());
+        for (const auto& [key, row_index] : it->second) {
+            out.push_back(pending_entry_t{key, row_index});
+        }
+        return out;
     }
 
     void single_field_index_t::clean_memory_to_new_elements_impl(std::size_t) {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cassert>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -59,18 +60,46 @@ namespace services::index {
 
     disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
                                          uint32_t bucket_count,
-                                         std::pmr::memory_resource* memory_resource)
+                                         std::pmr::memory_resource* memory_resource,
+                                         defer_abort_tag)
         : file_path_(file_path)
         , overflow_file_path_(std::filesystem::path(file_path).concat(".ovf"))
         , memory_resource_(memory_resource) {
-        if (!memory_resource) {
-            throw std::runtime_error("disk_hash_table: resource required");
-        }
-        if (bucket_count == 0) {
-            throw std::runtime_error("disk_hash_table: bucket_count must be > 0");
-        }
+        // A missing resource or a zero bucket count is a caller bug, not an I/O
+        // failure: nothing can recover from it, and with no resource there is not
+        // even anything to build the message on. I/O failures below are different
+        // — they are environmental, so they travel as a value.
+        assert(memory_resource && "disk_hash_table: resource required");
+        assert(bucket_count > 0 && "disk_hash_table: bucket_count must be > 0");
         header_.bucket_count_value = bucket_count;
         open_or_create();
+    }
+
+    disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
+                                         uint32_t bucket_count,
+                                         std::pmr::memory_resource* memory_resource)
+        : disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}) {
+        if (!open_error_.empty()) {
+            // Direct ctor aborts on an unusable file; only create() turns the same
+            // failure into a core::error_t. Same split as bitcask_index_disk_t,
+            // and the reason it exists: a half-open table must never be handed to
+            // a caller that believes it has durable storage.
+            assert(false && "disk_hash_table: direct ctor could not open storage");
+            std::abort();
+        }
+    }
+
+    core::result_wrapper_t<boost::intrusive_ptr<disk_hash_table_t>>
+    disk_hash_table_t::create(const std::filesystem::path& file_path,
+                              uint32_t bucket_count,
+                              std::pmr::memory_resource* memory_resource) {
+        auto instance = boost::intrusive_ptr(
+            new disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}));
+        if (!instance->open_error_.empty()) {
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{instance->open_error_, memory_resource}};
+        }
+        return instance;
     }
 
     disk_hash_table_t::~disk_hash_table_t() {
@@ -437,13 +466,17 @@ namespace services::index {
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                           file_lock_type::NO_LOCK);
         if (!file_) {
-            throw std::runtime_error("disk_hash_table: failed to open file " + file_path_.string());
+            open_error_ = "disk_hash_table: failed to open file " + file_path_.string();
+            return;
         }
         if (file_->file_size() == 0) {
             initialize_new_file();
             return;
         }
         load_existing_file();
+        if (!open_error_.empty()) {
+            return;
+        }
         entry_count_ = count_entries_unlocked();
     }
 
@@ -453,7 +486,7 @@ namespace services::index {
                               file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                               file_lock_type::NO_LOCK);
         if (!ovf_file_) {
-            throw std::runtime_error("disk_hash_table: failed to open overflow file " + overflow_file_path_.string());
+            open_error_ = "disk_hash_table: failed to open overflow file " + overflow_file_path_.string();
         }
     }
 
@@ -464,6 +497,9 @@ namespace services::index {
         initialize_linear_state_from_bucket_count();
 
         open_overflow_file();
+        if (!open_error_.empty()) {
+            return;
+        }
         persist_header();
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
@@ -479,7 +515,8 @@ namespace services::index {
         byte_buffer_t hdr(memory_resource_);
         hdr.resize(page_size, 0);
         if (!file_->read(hdr.data(), page_size, 0)) {
-            throw std::runtime_error("disk_hash_table: failed to read header page");
+            open_error_ = "disk_hash_table: failed to read header page";
+            return;
         }
         header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
         header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
@@ -488,7 +525,8 @@ namespace services::index {
         header_.split_bucket_value = codec::read_le_ptr<uint32_t>(hdr.data() + 32);
         header_.hash_seed_value = hdr.size() >= 40 ? codec::read_le_ptr<uint32_t>(hdr.data() + 36) : 0;
         if (header_.page_size_value != page_size || header_.bucket_count_value == 0) {
-            throw std::runtime_error("disk_hash_table: incompatible header");
+            open_error_ = "disk_hash_table: incompatible header";
+            return;
         }
         const uint32_t base = header_.level_value > 31 ? 0 : (1U << header_.level_value);
         if (base == 0 || base > header_.bucket_count_value || header_.split_bucket_value > base ||

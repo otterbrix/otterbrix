@@ -32,46 +32,24 @@ namespace {
     // was left partially maintained, with no diagnostic anywhere — which is how a NULL key could
     // silently drop every row after it from the index.
     //
-    // The guard is now a CONVERSION BOUNDARY, not a swallow: it turns a throw into a
-    // core::error_t that the caller must handle. On the DML path that error reaches the
-    // statement, which fails — instead of the old behaviour, where the row was quietly missing
-    // from the index and only a log line said so.
+    // No guard, no catch: index maintenance no longer throws. The disk hash table reports
+    // failures by value and the key codec asserts on its own invariants while reporting corrupt
+    // payloads as NA, so there is nothing left to convert here.
     //
-    // Why a catch still exists here at all: the throw sources have not been removed. They live
-    // in the index implementations (disk_hash_table alone still throws in 17 places across its
-    // page I/O and rehash paths, and three tests pin that behaviour), so removing this boundary
-    // today would let an exception escape into an actor coroutine whose unhandled_exception() is
-    // empty — a hang instead of an error. De-throwing those layers is the remaining half of this
-    // item and is recorded as such; it is not silently assumed done.
+    // What used to live here was a try/catch that logged a throw and CONTINUED — which is how,
+    // in its own words, a NULL key could silently drop every row after it from the index. The
+    // error channel that replaced it (insert_rows/delete_rows/update_rows returning
+    // core::error_t, checked by four operators) stays: it is what makes a failure fail the
+    // statement instead of quietly leaving the table and its index disagreeing.
     template<typename Fn>
-    [[nodiscard]] core::error_t
-    guarded_index_row(log_t& log,
-                      const char* op,
-                      components::catalog::oid_t table_oid,
-                      int64_t row_id,
-                      std::pmr::memory_resource* resource,
-                      Fn&& fn) {
-        try {
-            fn();
-            return core::error_t::no_error();
-        } catch (const std::exception& e) {
-            error(log,
-                  "manager_index_t::{}: index maintenance FAILED for table oid {} row {} : {}",
-                  op,
-                  table_oid,
-                  row_id,
-                  e.what());
-            return core::error_t{core::error_code_t::other_error,
-                                 std::pmr::string{"index maintenance failed: ", resource}.append(e.what())};
-        } catch (...) {
-            error(log,
-                  "manager_index_t::{}: index maintenance FAILED for table oid {} row {} : unknown exception",
-                  op,
-                  table_oid,
-                  row_id);
-            return core::error_t{core::error_code_t::other_error,
-                                 std::pmr::string{"index maintenance failed: unknown exception", resource}};
-        }
+    [[nodiscard]] core::error_t guarded_index_row(log_t&,
+                                                  const char*,
+                                                  components::catalog::oid_t,
+                                                  int64_t,
+                                                  std::pmr::memory_resource*,
+                                                  Fn&& fn) {
+        fn();
+        return core::error_t::no_error();
     }
 
     value_t reverse_convert(std::pmr::memory_resource* r, const physical_value& pv) {

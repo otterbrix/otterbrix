@@ -24,6 +24,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_scan_pin_scope.cpp
         test_string_projection.cpp
         test_check_on_update.cpp
+        test_index_bootstrap_failure.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
         test_fk_check_on_update.cpp

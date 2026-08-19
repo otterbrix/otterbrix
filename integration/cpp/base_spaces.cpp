@@ -539,16 +539,21 @@ namespace otterbrix {
             if (row.type == components::logical_plan::index_type::hashed && !disk_config.path.empty()) {
                 const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) / index_name;
                 std::filesystem::create_directories(base);
-                try {
-                    shared_hash_storage = boost::intrusive_ptr(
-                        new services::index::disk_hash_table_t(base / "hash_index.bin",
-                                                               services::index::disk_hash_table_t::default_bucket_count,
-                                                               &resource));
-                } catch (const std::exception& e) {
-                    trace(log_,
+                // The direct ctor asserts and aborts on exactly the failures this bootstrap is
+                // meant to survive (unopenable file, unreadable or incompatible header), so it
+                // must not be used here: an index whose storage will not open costs a full scan,
+                // whereas aborting costs the whole engine its start.
+                auto storage = services::index::disk_hash_table_t::create(
+                    base / "hash_index.bin",
+                    services::index::disk_hash_table_t::default_bucket_count,
+                    &resource);
+                if (storage.has_error()) {
+                    error(log_,
                           "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",
                           index_name,
-                          e.what());
+                          storage.error().what);
+                } else {
+                    shared_hash_storage = std::move(storage.value());
                 }
             }
 

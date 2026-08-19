@@ -491,7 +491,6 @@ namespace services::disk {
                                        components::catalog::oid_t table_oid,
                                        std::unique_ptr<components::vector::data_chunk_t> data) {
         const auto txn = ctx.txn;
-        const auto session_tz = ctx.session_tz;
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1555,12 +1554,11 @@ namespace services::disk {
     // Resolve the key-column NAMES to storage column indices against an owned slice entry.
     // Fills out_indices in name order and returns no_error() on success.
     //
-    // Every failure here means the read CANNOT BE PERFORMED, which is a different fact from
-    // "the key matched nothing" — and the callers cannot tell them apart if both arrive as an
-    // empty result. They used to: this returned bool and the caller degraded the whole batch to
-    // one empty entry per key, so a corrupt or misrouted catalog read surfaced to the user as
-    // "Database does not exist". The causes are kept distinct because they are distinct: a
-    // misrouted oid is ours, an unknown column name is the caller's.
+    // Every failure here means the read CANNOT BE PERFORMED — a different fact from "the key
+    // matched nothing", and one that must not be collapsed into an empty result: that is how a
+    // corrupt or misrouted catalog read surfaces to the user as "Database does not exist". The
+    // causes are kept distinct because they are: a misrouted oid is ours, an unknown column
+    // name is the caller's.
     // Shared by scan_by_keys_inner and read_chunks_by_keys_inner.
     static core::error_t resolve_key_col_indices(const collection_storage_entry_t* entry,
                                                  const std::pmr::vector<std::string>& key_col_names,
@@ -1645,9 +1643,7 @@ namespace services::disk {
         // Delegate the actual match to the streaming SINGLE-PASS hash semi-join: ONE streamed
         // pass over the table per call, regardless of key count. The helper is a free function
         // so it can be driven directly by a counting storage in unit tests; scan_by_keys_inner
-        // is the sole production caller (single path, R6). The `result` reserved above is only
-        // consumed by the early-return (not-owned / unknown-column) branches; here the helper
-        // owns the reply.
+        // is the sole production caller (single path, R6).
         co_return fk_hash_semijoin(resource(), *entry->storage, key_col_indices, keys, txn);
     }
 
@@ -1659,8 +1655,8 @@ namespace services::disk {
                                            components::table::transaction_data txn) {
         // Single key-tuple: `keys` already carries exactly one row, so it IS the 1-row
         // batch view the plural read_chunks_by_keys_inner expects. Delegate to it inline
-        // on this same agent thread (its resolve/filter/scan_local body never crosses the
-        // mailbox) and unwrap the single entry.
+        // on this same agent thread (its whole body stays off the mailbox) and unwrap the
+        // single entry.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
         auto r = co_await read_chunks_by_keys_inner(table_oid,
                                                     std::move(key_col_indices),
@@ -1681,8 +1677,8 @@ namespace services::disk {
                                             components::table::transaction_data txn) {
         // result[i] = matched chunks for key-tuple i; one (possibly empty) entry per key,
         // preserving input order. Key columns arrive as storage ORDINALS, so there is no name
-        // resolution here at all; each key gets an eq-AND filtered scan via scan_local
-        // (D6: no self-send).
+        // resolution here at all; the whole batch is served by one scan_local call on this
+        // agent thread (no self-send).
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
         result.reserve(keys.size());
 
@@ -1693,8 +1689,8 @@ namespace services::disk {
         }
 
         // Columnar keys: column j == key_col_indices[j], row i == key-tuple i. Arity is uniform
-        // across the chunk, so a mismatch (chunk column count != resolved key columns) voids the
-        // whole batch with one empty entry per key. Each filter constant is the single
+        // across the chunk, so a mismatch (chunk column count != key columns) is an error, not an
+        // empty answer. Each filter constant is the single
         // materialization of a key cell (keys.value(ki, i)): the filter API requires a
         // logical_value_t, so this is the irreducible floor — no row-major keys cross the mailbox.
         const std::uint64_t nkeys = keys.size();
@@ -1707,11 +1703,9 @@ namespace services::disk {
         // `col == k0 AND col == k1 ...` as a graph with the key cells bound as parameters — and the
         // batch becomes the OR of those tuples, so N keys cost ONE scan instead of N.
         //
-        // This is not trading a pushed-down filter for a full pass: there is no pruning to lose.
-        // check_zonemap_segments (row_group.cpp) unconditionally returns true while a filter is
-        // only a graph, so every per-key "filtered scan" already read the whole table and merely
-        // selected rows afterwards. N keys therefore meant N full passes over a pg_* table, all
-        // serialized on the catalog agent — measured at +2 passes per foreign key per statement.
+        // No pruning is lost by this: check_zonemap_segments (row_group.cpp) unconditionally
+        // returns true while a filter is only a graph, so a per-key "filtered scan" also read
+        // the whole table and merely selected rows afterwards.
         //
         // Attribution back to individual keys runs the SAME engine the scan itself uses
         // (expressions::run_graph, as in row_group_t::filter_indexing), not a hand-rolled cell
@@ -1736,8 +1730,7 @@ namespace services::disk {
         };
 
         // Per-key filters: needed for attribution, and for nkeys == 1 the single one IS the scan
-        // filter (the OR of one tuple is that tuple), so the degenerate case builds exactly what
-        // the old code built.
+        // filter (the OR of one tuple is that tuple).
         std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
         key_filters.reserve(nkeys);
         components::types::parameter_map_t all_parameters{resource()};
@@ -1794,18 +1787,15 @@ namespace services::disk {
                                                                               expr::condition_kind::computed);
         }
 
-        // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
-        // A scan_error here is a real io_error / data_corruption from a failed block pin. It used
-        // to become an empty entry, i.e. "this key matched nothing" — the caller then reported a
-        // corrupt catalog as a missing database.
+        // No row limit (-1). A scan_error here is a real io_error / data_corruption from a failed
+        // block pin, never "this key matched nothing".
 #ifdef DEV_MODE
         g_catalog_key_scans.fetch_add(1, std::memory_order_relaxed);
 #endif
         // Projection comes from the CALLER: only it knows which columns it reads. An empty set
-        // means "all columns" (full_scan's contract), which is what every caller that cannot
-        // prove its set passes. Non-projected columns stay ordinal-stable placeholders, so a
-        // caller that projects too narrowly reads an empty column instead of a value — hence
-        // the rule that a set is passed only where it is enumerable from the code.
+        // means "all columns" (full_scan's contract) and is what a caller that cannot enumerate
+        // its set passes. Non-projected columns stay ordinal-stable placeholders, so a caller
+        // that projects too narrowly reads an empty column instead of a value.
         std::vector<std::size_t> scan_projection(projected_cols.begin(), projected_cols.end());
         // The key columns are read by the filter itself, so they must survive the projection.
         for (const auto key_col : key_col_indices) {
@@ -1837,7 +1827,7 @@ namespace services::disk {
                 continue;
             }
             // Hoisted: data_chunk_t::types() copies a complex_logical_type per column, and each
-            // copy heap-allocates its alias (plan defect G8). Once per chunk, not once per key.
+            // copy heap-allocates its alias. Once per chunk, not once per key.
             const auto chunk_types = chunk.types();
             for (std::uint64_t i = 0; i < nkeys; ++i) {
                 auto decided = expr::run_graph(key_filters[i]->graph.get(),
@@ -1860,12 +1850,10 @@ namespace services::disk {
                 if (count == 0) {
                     continue;
                 }
-                // Built with the SAME projection as the scan. Building it full-width instead
-                // would allocate a buffer for a column the scan never materialized, and the
-                // copy silently skips a placeholder source — so the caller would read a
-                // zero-filled, non-NULL cell where the contract promises a placeholder. That
-                // is the projection contract's whole failure mode, arriving through the back
-                // door of the batched path.
+                // Built with the SAME projection as the scan. Full-width instead would allocate
+                // a buffer for a column the scan never materialized, and the copy silently skips
+                // a placeholder source — the caller would then read a zero-filled, non-NULL cell
+                // where the contract promises a placeholder.
                 components::vector::data_chunk_t out =
                     scan_projection.empty()
                         ? components::vector::data_chunk_t{resource(), chunk_types, count}

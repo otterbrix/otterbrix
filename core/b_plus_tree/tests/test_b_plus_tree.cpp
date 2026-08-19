@@ -449,7 +449,6 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             REQUIRE(tree.unique_indices_count() == i + 1);
 
             // test iterators
-            uint64_t j = 0;
             for (auto block = tree.begin(); block != tree.end(); block++) {
                 for (auto it = block->begin(); it != block->end(); it++) {
                     auto test_item = std::find_if(test_data.begin(), test_data.end(), [it](const auto& item) {
@@ -460,10 +459,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
                             read_unaligned<uint64_t>(test_item->buffer));
                     REQUIRE(test_item->size == (*it).item.size);
                     REQUIRE(memcmp(test_item->buffer, (*it).item.data, (*it).item.size) == 0);
-                    j++;
                 }
             }
-            j = 0;
             for (auto block = tree.rbegin(); block != tree.rend(); block++) {
                 for (auto it = block->rbegin(); it != block->rend(); it++) {
                     auto test_item = std::find_if(test_data.begin(), test_data.end(), [it](const auto& item) {
@@ -474,7 +471,6 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
                             read_unaligned<uint64_t>(test_item->buffer));
                     REQUIRE(test_item->size == (*it).item.size);
                     REQUIRE(memcmp(test_item->buffer, (*it).item.data, (*it).item.size) == 0);
-                    j++;
                 }
             }
             REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
@@ -875,10 +871,9 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
     }
 }
 
-// split() and balance_with() shrink a block IN PLACE by moving items out of it, but two of the
-// three sites that do so never mark that block modified — so flush() never writes it and the file
-// keeps the pre-split bytes. The third site (balance_with's second branch) does set
-// `node->modified = true`, which is what shows the other two are omissions rather than intent.
+// split() and balance_with() shrink a block IN PLACE by moving items out of it, and two of the
+// three sites that do so never marked that block modified — so flush() never wrote it and the
+// file kept the pre-split bytes.
 //
 // Nothing noticed before because flush() rewrote every leaf's header unconditionally, and count()
 // reads that header — so the counters looked right while the block behind them was stale. These
@@ -935,7 +930,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
 
     // Flush BEFORE splitting. Without this the blocks still carry the `modified` flags set while
     // they were being filled, so the post-split flush writes the shrunk block for the wrong
-    // reason and the defect stays hidden. This is the step that makes the test reach it.
+    // reason and the defect stays hidden.
     REQUIRE(tree.flush());
     tree.clean_load();
 
@@ -1028,9 +1023,9 @@ TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") 
         key_getter,
         open_file(fs, high_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
 
-    // The sparse caller must hold the HIGH keys. balance_with has two mirrored branches, and only
-    // the `min_index() > other->max_index()` one is missing the mark — with the sparse side low,
-    // the run takes the other branch, which sets it, and the defect never shows.
+    // The sparse caller must hold the HIGH keys. balance_with has two mirrored branches, and the
+    // `min_index() > other->max_index()` one was the one missing the mark — with the sparse side
+    // low the run takes the other branch, which always set it, and the defect would not show.
     for (uint64_t i = 0; i < kFull; i++) {
         REQUIRE(high->append(test_data[i].buffer, test_data[i].size));
     }
@@ -1076,9 +1071,9 @@ TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") 
 
 // close_gaps_() relocates blocks inside the leaf file when a hole appears, rewriting each moved
 // block's file_offset in the header and marking its segment modified. But flush()'s writer is
-// gated on the block being RESIDENT (`segment->block.get()`), so a block that is only known by its
-// metadata — the normal state after lazy_load() — has its offset moved while its bytes stay where
-// they were. The next load then reads that block from an address nothing was ever written to.
+// gated on the block being RESIDENT (`segment->block.get()`), so a block known only by its
+// metadata — the normal state after lazy_load() — had its offset moved while its bytes stayed
+// where they were, and the next load read it from an address nothing was ever written to.
 TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = "segment_tree_close_gaps";
@@ -1160,9 +1155,9 @@ TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
     CHECK(actual == expected);
 }
 
-// remove_index() loads the FIRST block of the index range before touching it, but not the LAST.
-// The guard at the top of the function has no counterpart at `range.end - 1`, so when one index
-// spans more than one block and the tree is lazily loaded, the second dereference is on a null
+// remove_index() loaded the FIRST block of the index range before touching it, but not the LAST:
+// the guard at the top of the function had no counterpart at `range.end - 1`, so when one index
+// spans more than one block and the tree is lazily loaded, the second dereference was on a null
 // block. Every other site in the file loads first; this one was missed.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_the_range") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1229,9 +1224,9 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_
     }
 }
 
-// Both persistence layers write a fixed-size region but initialise only its head: segment_tree_t's
+// Both persistence layers write a fixed-size region but initialised only its head: segment_tree_t's
 // leaf header is allocated at 2 * DEFAULT_BLOCK_SIZE with three counters set, and btree_t::flush()
-// allocates METADATA_SIZE and fills two counters plus one id per leaf. The rest of each region is
+// allocates METADATA_SIZE and fills two counters plus one id per leaf. The rest of each region was
 // whatever the allocator handed over, and flush() writes the WHOLE region to disk.
 //
 // The test poisons the pool with a recognisable pattern, frees it so the tree gets that memory,
@@ -1353,9 +1348,7 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
         REQUIRE(tree.flush());
     }
 
-    // Phase 2: a FRESH leaf object over the existing file — the restart shape. dirty_ starts true
-    // because a leaf that was built rather than loaded has never been written, and clean_load()
-    // replaces its entire state with the file's without saying so.
+    // Phase 2: a FRESH leaf object over the existing file — the restart shape.
     {
         segment_tree_t reopened(&resource,
                                 key_getter,
@@ -1401,7 +1394,7 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
 //
 // The failure is injected by handing the leaf a read-only descriptor: pwrite() on an O_RDONLY fd
 // returns -1, and core::filesystem::write already reports that by value (it just had no one
-// listening). No root, no full filesystem, no failpoint machinery needed.
+// listening).
 TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = "segment_tree_io_failure";

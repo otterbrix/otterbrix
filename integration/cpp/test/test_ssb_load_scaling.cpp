@@ -9,19 +9,18 @@
 #include <string>
 #include <vector>
 
-// Why does loading SSB's lineorder never finish?
+// Loading SSB's lineorder must cost the same per row at the end as at the start.
 //
-// A full run took 8h38m without loading the table and without a single error: throughput fell from
-// 190 MB/min of disk growth to 6.5, and 55 MB of source CSV had turned into 12 GB on disk. The
-// out-of-memory failure that used to stop the load at 3255 rows is gone, so what is left is
-// something superlinear in the insert path itself. There are no checkpoints during a file's load
-// (csv_checkpoint_interval_bytes defaults to 0), no primary key and no index on the table, so
-// neither the per-batch unique-constraint scan nor index maintenance can be the cause.
+// It once took 8h38m without loading the table and without a single error: disk-growth throughput
+// fell from 190 MB/min to 6.5, and 55 MB of source CSV turned into 12 GB on disk. It was not the
+// insert path — there are no checkpoints during a file's load (csv_checkpoint_interval_bytes
+// defaults to 0), and the table has no primary key and no index, so neither the per-batch
+// unique-constraint scan nor index maintenance could be the cause. It was one checkpoint round per
+// COMMIT (see the round count checked at the end of measure_lineorder_load).
 //
 // This loads the real lineorder.tbl the same way the benchmark runner does — batched multi-row
-// INSERT through execute_sql — and reports wall time and on-disk bytes per slice. A flat cost per
-// slice means the load is linear and something else explains the 8 hours; a rising one names the
-// defect and gives the shape to fix.
+// INSERT through execute_sql — and reports wall time and on-disk bytes per slice, so a cost that
+// grows with the rows already loaded shows up as a curve rather than as a slow run.
 //
 // Hidden by default ([.]) and needs benchmark/data/ssb/lineorder.tbl. Run it with [ssbload].
 
@@ -79,8 +78,9 @@ namespace {
 //
 // The repo ships ~600k rows, roughly SF 0.1. The standard SSB scale factor 1 is ten times that, and
 // the buffer pool's ceiling is a hardwired 4 GiB, so "SSB passes" on the shipped data says nothing
-// about the real one. This loads the shipped file ten times over — the keys repeat, which does not
-// matter here because what is being tested is volume, not answers.
+// about the real one. This reloads the shipped file pass after pass and demands at least SF 1's worth
+// of rows — the keys repeat, which does not matter here because what is being tested is volume, not
+// answers.
 //
 // Hidden ([.]) and slow. Run it with [ssbcapacity].
 namespace {
@@ -91,10 +91,10 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_at_scale_factor_on
     probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity", true);
 }
 
-// The same volume with the WAL OFF. Buffer memory during a load is drained ONLY by a checkpoint —
-// block_handle_t::can_unload refuses to evict a block that has no disk copy, which is every transient
-// column segment — and with the WAL off there are no auto-checkpoints at all. If nothing else bounds
-// it, this must fail where the WAL-on case does not.
+// The same volume with the WAL OFF, where there are no auto-checkpoints at all: nothing reaches the
+// .otbx during the load, so the only thing that can reclaim buffer memory is spilling the transient
+// column segments (can_unload refuses a block with no disk copy). If that path regresses, this case
+// runs out of memory where the WAL-on one does not.
 TEST_CASE("integration::cpp::test_ssb_load_scaling::capacity_without_wal", "[.][ssbcapacity]") {
     probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity_nowal", false);
 }
@@ -213,12 +213,10 @@ namespace {
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = wal_on;
-    // The auto-checkpoint threshold is left at its production default on purpose. A checkpoint
-    // round copies every disk table's .otbx file whole, so it may happen once per threshold's worth
-    // of WAL and no more; the defect this guards against was the counter holding the WHOLE WAL
-    // directory size instead of the bytes written since the last checkpoint, which kept the
-    // threshold tripped forever once crossed and produced one round per COMMIT — 6006 of them for
-    // this table.
+    // The auto-checkpoint threshold is left at its production default on purpose: the defect this
+    // guards against — the counter holding the WHOLE WAL directory size instead of the bytes written
+    // since the last checkpoint, so the threshold stayed tripped forever once crossed — only shows
+    // up against the real threshold. The round count is checked at the end of this function.
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -274,7 +272,7 @@ namespace {
             auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
             if (!cur->is_error()) {
                 rows_in_slice += in_batch;
-                rows_total += in_batch;
+                rows_total += static_cast<uint64_t>(in_batch);
                 continue;
             }
             WARN("INSERT failed after " << rows_total << " rows (slice " << (slice + 1) << "): "
@@ -309,7 +307,7 @@ namespace {
     // The number that explains the curve. A checkpoint round copies every disk table's .otbx file
     // whole, so it may only happen once per auto_checkpoint_threshold_bytes of WAL — this load
     // writes a few times that, so a handful of rounds is expected. One per COMMIT is the defect,
-    // and with 100-row batches that is two hundred of them for this many rows.
+    // and with 100-row batches that is six thousand of them for this many rows.
     uint64_t total_rounds = 0;
     for (auto n : slice_checkpoints) {
         total_rounds += n;
@@ -325,8 +323,8 @@ namespace {
 // checkpoint). An explicit CHECKPOINT truncates the WAL through truncate_before without going
 // anywhere near that baseline, so the directory shrinks below it. Until the WAL grows back past the
 // stale, larger baseline the window reads zero and no automatic checkpoint fires — the table can
-// then run arbitrarily far behind the log. This is a defect the ORIGINAL total-size accounting could
-// not have had, so it comes with the fix and has to be closed by it.
+// then run arbitrarily far behind the log. Only the since-last-checkpoint accounting can fail this
+// way, so the guard belongs with it.
 TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not_suppress_the_automatic_one",
           "[.][ssbload]") {
     const std::filesystem::path source =

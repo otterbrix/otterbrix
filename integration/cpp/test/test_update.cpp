@@ -161,7 +161,6 @@ TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
 
     constexpr int kRows = 5000;   // > 4 scan batches of DEFAULT_VECTOR_CAPACITY (1024)
     constexpr int kBatch = 1000;
-    constexpr int kColumns = 6;
     for (int base = 0; base < kRows; base += kBatch) {
         std::string sql = "INSERT INTO g.t (id, a, b, c, d, e) VALUES ";
         for (int i = 0; i < kBatch; ++i) {

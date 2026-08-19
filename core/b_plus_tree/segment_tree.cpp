@@ -553,8 +553,8 @@ namespace core::b_plus_tree {
                     item_count -= node->block->count();
                     assert(segments_.begin()->block->count() != 0 && "incorrect node split");
                     assert(node->block->count() != 0 && "incorrect node split");
-                    // Same as in split(): the donor's block was shrunk in place. The mirrored
-                    // branch below already marks it; this one did not.
+                    // Same as in split(): the donor's block was shrunk in place, so it has to be
+                    // written.
                     node->modified = true;
                     other->update_metadata_(node, metadata);
                     header_->item_count_ += item_count;
@@ -815,16 +815,12 @@ namespace core::b_plus_tree {
         // nothing was being paid once per leaf on every statement.
         if (!dirty_.exchange(false, std::memory_order_acq_rel)) {
 #ifdef DEV_MODE
-            // Safety net for a coarse hand-maintained flag. If a mutation path ever forgets
-            // mark_dirty_(), the change would simply never reach the disk and would be lost at
-            // restart — silently, and long after the fact. These checks turn that into a loud
-            // failure in the test build instead.
-            // The condition mirrors the writer below (`block.get()` && `modified`): a segment that
-            // is marked modified while NOT resident is never written by flush() either, with or
-            // without this early return. That case is a separate, pre-existing defect —
-            // close_gaps_ relocates unloaded blocks and marks them modified, but the writer skips
-            // them — and asserting on it here would blame this skip for someone else's bug.
-            for (const auto& segment : segments_) {
+            // Safety net for a coarse hand-maintained flag: if a mutation path ever forgets
+            // mark_dirty_(), the change never reaches the disk and is lost at restart, silently.
+            // The condition mirrors the writer below (`block.get()` && `modified`) — a segment
+            // marked modified while NOT resident is not written by flush() with or without this
+            // early return, so it is not evidence of a missing mark_dirty_().
+            for ([[maybe_unused]] const auto& segment : segments_) {
                 assert(!(segment.block.get() && segment.modified) &&
                        "clean leaf carries a modified resident block — a mutation path forgot mark_dirty_()");
             }
@@ -838,11 +834,10 @@ namespace core::b_plus_tree {
 #endif
         close_gaps_();
 
-        // Every failure below leaves the leaf dirty again and returns false. The order matters: the
-        // dirty flag was cleared on entry (so a concurrent mutation during the write is not lost),
-        // so a failed write has to put it back, and a block's `modified` flag may only be cleared
-        // once its bytes actually reached the file. Otherwise a full disk reports success, the leaf
-        // calls itself clean, and the next flush skips it — the rows are then gone for good.
+        // Every failure below leaves the leaf dirty again and returns false: the dirty flag was
+        // cleared on entry (so a mutation during the write is not lost), and a block's `modified`
+        // flag may only be cleared once its bytes reached the file. Otherwise a full disk reports
+        // success, the leaf calls itself clean, the next flush skips it, and the rows are gone.
         bool ok = true;
 
         /*  header_  */
@@ -957,10 +952,7 @@ namespace core::b_plus_tree {
             }
         }
 
-        // Everything above replaced this leaf's state with the file's, so by definition it now
-        // matches the file and there is nothing to write. dirty_ starts true because a leaf that
-        // was BUILT has never been written; a leaf that was LOADED has. Without this, the first
-        // flush after any restart rewrote and fsynced every leaf of every index.
+        // Loaded state matches the file by definition — see clean_load().
         dirty_.store(false, std::memory_order_release);
     }
 
@@ -1138,10 +1130,9 @@ namespace core::b_plus_tree {
             for (block_metadata* it = metadata_begin_; it < metadata_end_; it++, i++) {
                 if (it->file_offset > gaps.front().offset) {
                     // Read the block in BEFORE its offset changes. Relocation only rewrites the
-                    // metadata; the bytes are moved by flush()'s writer, and that writer skips
-                    // segments whose block is not resident. Moving a non-resident block therefore
-                    // used to point its metadata at an address nothing was ever written to, and the
-                    // next load read whatever happened to be there.
+                    // metadata; the bytes are moved by flush()'s writer, which skips segments whose
+                    // block is not resident — so a relocated non-resident block would point its
+                    // metadata at an address nothing was ever written to.
                     if (!segments_[i].block) {
                         load_segment_(it);
                     }

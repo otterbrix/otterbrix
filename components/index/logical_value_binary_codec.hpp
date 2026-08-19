@@ -4,6 +4,7 @@
 #include <components/types/physical_value.hpp>
 
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <memory_resource>
 #include <stdexcept>
@@ -94,6 +95,9 @@ namespace components::index::codec {
                                                        read.template operator()<components::types::int128_t>());
             default:
                 assert(false && "logical value codec: unsupported DECIMAL physical storage during decode");
+                // NDEBUG compiles the assert out; without this the function falls off the end,
+                // which is undefined behaviour in exactly the build users ship.
+                std::abort();
         }
     }
 
@@ -250,6 +254,9 @@ namespace components::index::codec {
             }
             default:
                 assert(false && "logical value codec: unsupported physical key type during decode");
+                // NDEBUG compiles the assert out; without this the function falls off the end,
+                // which is undefined behaviour in exactly the build users ship.
+                std::abort();
         }
     }
 

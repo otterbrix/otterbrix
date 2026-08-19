@@ -400,8 +400,7 @@ namespace components::sql::transform {
                         // Evaluate constant arithmetic at parse time
                         // TODO: move column matching to validation/optimizer phase for complex path resolution
                         auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
-                        if (value.has_error()) {
-                            error_ = value.error();
+                        if (transform_failed(value)) {
                             return false;
                         }
                         auto it =
@@ -435,8 +434,7 @@ namespace components::sql::transform {
                         }
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                        if (value.has_error()) {
-                            error_ = value.error();
+                        if (transform_failed(value)) {
                             return false;
                         }
                         auto it =

@@ -37,6 +37,51 @@ namespace components::sql::transform {
                     return expressions::sort_null_order::nulls_default;
             }
         }
+
+        expressions::expression_ptr using_predicate(std::pmr::memory_resource* resource, PGList* using_clause) {
+            auto equate = [resource](const char* column) {
+                return make_compare_expression(resource,
+                                               compare_type::eq,
+                                               expressions::key_t{resource, column, expressions::side_t::left},
+                                               expressions::key_t{resource, column, expressions::side_t::right});
+            };
+            if (using_clause->lst.size() == 1) {
+                return equate(strVal(using_clause->lst.front().data));
+            }
+            auto conjunction = make_compare_union_expression(resource, compare_type::union_and);
+            for (const auto& column : using_clause->lst) {
+                conjunction->append_child(equate(strVal(column.data)));
+            }
+            return conjunction;
+        }
+
+        bool has_using_join(Node* item) {
+            if (!item || nodeTag(item) != T_JoinExpr) {
+                return false;
+            }
+            auto* join = pg_ptr_cast<JoinExpr>(item);
+            if (join->usingClause && !join->usingClause->lst.empty()) {
+                return true;
+            }
+            return has_using_join(join->larg) || has_using_join(join->rarg);
+        }
+
+        // The visible name of a table function that carries no alias is the
+        // function's own name.
+        std::string range_function_name(RangeFunction& node) {
+            if (!node.functions || node.functions->lst.empty()) {
+                return {};
+            }
+            auto* list = pg_ptr_cast<List>(node.functions->lst.front().data);
+            if (!list || list->lst.empty()) {
+                return {};
+            }
+            auto* call = pg_ptr_cast<FuncCall>(list->lst.front().data);
+            if (!call || !call->funcname || call->funcname->lst.empty()) {
+                return {};
+            }
+            return strVal(call->funcname->lst.front().data);
+        }
     } // namespace
 
     logical_plan::node_aggregate_ptr transformer::build_recursive_cte_ref(const std::string& cte_name,
@@ -76,159 +121,59 @@ namespace components::sql::transform {
         return agg;
     }
 
-    void transformer::join_dfs(std::pmr::memory_resource* resource,
-                               JoinExpr* join,
-                               logical_plan::node_join_ptr& node_join,
-                               name_collection_t& names,
-                               logical_plan::execution_plan_t* plan) {
-        if (nodeTag(join->larg) == T_JoinExpr) {
-            name_collection_t sub_query_names;
-            join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, sub_query_names, plan);
-
-            // Snapshot the inner JOIN's full visible scope BEFORE we overwrite
-            // sub_query_names.right_* with the outer JOIN's right side.
-            auto carry_alias = [&](const std::string& alias) {
-                if (!alias.empty()) {
-                    names.extra_left_aliases.push_back(alias);
+    logical_plan::node_ptr transformer::transform_from_element(Node* item,
+                                                               qualified_name& slot_name,
+                                                               std::string& slot_alias,
+                                                               name_collection_t& names,
+                                                               logical_plan::node_join_ptr& node_join,
+                                                               logical_plan::execution_plan_t* plan) {
+        slot_name = qualified_name{};
+        slot_alias.clear();
+        switch (nodeTag(item)) {
+            case T_RangeVar: {
+                auto* table = pg_ptr_cast<RangeVar>(item);
+                auto written = rangevar_to_qualified_name(table);
+                slot_alias = construct_alias(table->alias);
+                const std::string& visible = slot_alias.empty() ? written.relname : slot_alias;
+                // CTE name is a single segment and takes no qualification,
+                // so a qualified item ALWAYS names a table
+                const bool unqualified = written.dbname.empty() && written.schemaname.empty() && written.uuid.empty();
+                if (unqualified) {
+                    if (auto cte = cte_queries_.find(written.relname); cte != cte_queries_.end()) {
+                        slot_name.relname = written.relname;
+                        auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                        agg->append_child(transform_select(*cte->second, plan));
+                        if (has_error()) {
+                            return nullptr;
+                        }
+                        agg->children().back()->set_result_alias(visible);
+                        return agg;
+                    }
+                    if (recursive_cte_queries_.count(written.relname)) {
+                        slot_name.relname = written.relname;
+                        auto agg = build_recursive_cte_ref(written.relname, visible, plan);
+                        if (has_error()) {
+                            return nullptr;
+                        }
+                        return agg;
+                    }
                 }
-            };
-            auto carry_name = [&](const qualified_name& nm) {
-                if (!nm.relname.empty()) {
-                    names.extra_left_names.push_back(nm);
+                slot_name = std::move(written);
+                auto agg = logical_plan::make_node_aggregate(resource_,
+                                                             core::uid_t{slot_name.uuid},
+                                                             core::dbname_t{slot_name.dbname},
+                                                             core::relname_t{slot_name.relname});
+                if (!slot_alias.empty()) {
+                    agg->set_result_alias(slot_alias);
                 }
-            };
-
-            carry_alias(sub_query_names.left_alias);
-            carry_alias(sub_query_names.right_alias);
-            carry_name(sub_query_names.left_name);
-            carry_name(sub_query_names.right_name);
-            for (const auto& a : sub_query_names.extra_left_aliases) {
-                carry_alias(a);
+                return agg;
             }
-            for (const auto& nm : sub_query_names.extra_left_names) {
-                carry_name(nm);
-            }
-
-            auto prev = node_join;
-            auto j_type = jointype_to_ql(join);
-            if (j_type == logical_plan::join_type::invalid) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"invalid join type", resource_});
-                return;
-            }
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            node_join->append_child(prev);
-            if (nodeTag(join->rarg) == T_RangeVar) {
-                auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
-                sub_query_names.right_name = rangevar_to_qualified_name(table_r);
-                sub_query_names.right_alias = construct_alias(table_r->alias);
-                const std::string& effective_alias_r = sub_query_names.right_alias.empty()
-                                                           ? sub_query_names.right_name.relname
-                                                           : sub_query_names.right_alias;
-                if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
-                    auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                    agg_r->append_child(transform_select(*cte_it->second, plan));
-                    agg_r->children().back()->set_result_alias(effective_alias_r);
-                    node_join->append_child(std::move(agg_r));
-                } else if (recursive_cte_queries_.count(table_r->relname)) {
-                    auto agg_r = build_recursive_cte_ref(table_r->relname, effective_alias_r, plan);
-                    if (has_error()) {
-                        return;
-                    }
-                    node_join->append_child(std::move(agg_r));
-                } else {
-                    auto agg_r = logical_plan::make_node_aggregate(resource,
-                                                                   core::uid_t{sub_query_names.right_name.uuid},
-                                                                   core::dbname_t{sub_query_names.right_name.dbname},
-                                                                   core::relname_t{sub_query_names.right_name.relname});
-                    if (!sub_query_names.right_alias.empty()) {
-                        agg_r->set_result_alias(sub_query_names.right_alias);
-                    }
-                    node_join->append_child(std::move(agg_r));
-                }
-            } else if (nodeTag(join->rarg) == T_RangeFunction) {
-                auto func = pg_ptr_cast<RangeFunction>(join->rarg);
-                node_join->append_child(transform_function(*func, sub_query_names, plan->parameters.get()));
-            }
-            names.right_name = sub_query_names.right_name;
-            names.right_alias = sub_query_names.right_alias;
-        } else if (nodeTag(join->larg) == T_RangeVar) {
-            // bamboo end
-            auto table_l = pg_ptr_cast<RangeVar>(join->larg);
-            assert(!node_join);
-            names.left_name = rangevar_to_qualified_name(table_l);
-            names.left_alias = construct_alias(table_l->alias);
-            auto j_type = jointype_to_ql(join);
-            if (j_type == logical_plan::join_type::invalid) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"invalid join type", resource_});
-                return;
-            }
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            {
-                const std::string& effective_alias_l =
-                    names.left_alias.empty() ? names.left_name.relname : names.left_alias;
-                if (auto cte_it = cte_queries_.find(table_l->relname); cte_it != cte_queries_.end()) {
-                    auto agg_l = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                    agg_l->append_child(transform_select(*cte_it->second, plan));
-                    agg_l->children().back()->set_result_alias(effective_alias_l);
-                    node_join->append_child(std::move(agg_l));
-                } else if (recursive_cte_queries_.count(table_l->relname)) {
-                    auto agg_l = build_recursive_cte_ref(table_l->relname, effective_alias_l, plan);
-                    if (has_error()) {
-                        return;
-                    }
-                    node_join->append_child(std::move(agg_l));
-                } else {
-                    auto agg_l = logical_plan::make_node_aggregate(resource,
-                                                                   core::uid_t{names.left_name.uuid},
-                                                                   core::dbname_t{names.left_name.dbname},
-                                                                   core::relname_t{names.left_name.relname});
-                    if (!names.left_alias.empty()) {
-                        agg_l->set_result_alias(names.left_alias);
-                    }
-                    node_join->append_child(std::move(agg_l));
-                }
-            }
-            if (nodeTag(join->rarg) == T_RangeVar) {
-                auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
-                names.right_name = rangevar_to_qualified_name(table_r);
-                names.right_alias = construct_alias(table_r->alias);
-                const std::string& effective_alias_r =
-                    names.right_alias.empty() ? names.right_name.relname : names.right_alias;
-                if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
-                    auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                    agg_r->append_child(transform_select(*cte_it->second, plan));
-                    agg_r->children().back()->set_result_alias(effective_alias_r);
-                    node_join->append_child(std::move(agg_r));
-                } else if (recursive_cte_queries_.count(table_r->relname)) {
-                    auto agg_r = build_recursive_cte_ref(table_r->relname, effective_alias_r, plan);
-                    if (has_error()) {
-                        return;
-                    }
-                    node_join->append_child(std::move(agg_r));
-                } else {
-                    auto agg_r = logical_plan::make_node_aggregate(resource,
-                                                                   core::uid_t{names.right_name.uuid},
-                                                                   core::dbname_t{names.right_name.dbname},
-                                                                   core::relname_t{names.right_name.relname});
-                    if (!names.right_alias.empty()) {
-                        agg_r->set_result_alias(names.right_alias);
-                    }
-                    node_join->append_child(std::move(agg_r));
-                }
-            } else if (nodeTag(join->rarg) == T_RangeFunction) {
-                auto func = pg_ptr_cast<RangeFunction>(join->rarg);
-                node_join->append_child(transform_from_function(*func, names, node_join, plan));
-            } else if (nodeTag(join->rarg) == T_RangeSubselect) {
-                auto* sub_select = pg_ptr_cast<RangeSubselect>(join->rarg);
-                auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                if (sub_select->lateral) {
-                    // LATERAL: the subquery may reference the outer (left) relation.
-                    // Mark the join lateral and expose the outer scope (names) so
-                    // correlated column refs inside the subquery lower to parameters
-                    // (see try_lateral_correlate); the lateral join operator rebinds
-                    // them per outer row and re-runs this inner sub-plan.
+            case T_RangeSubselect: {
+                auto* sub = pg_ptr_cast<RangeSubselect>(item);
+                // A derived table fills no slot, its alias is its whole identity
+                slot_alias = construct_alias(sub->alias);
+                auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                if (sub->lateral && node_join) {
                     node_join->set_lateral(true);
                     auto* prev_outer = lateral_outer_names_;
                     auto* prev_join = lateral_join_;
@@ -238,95 +183,121 @@ namespace components::sql::transform {
                     lateral_outer_names_ = &names;
                     lateral_join_ = node_join.get();
                     lateral_plan_ = plan;
-                    agg_r->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), plan));
+                    agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub->subquery), plan));
                     lateral_outer_names_ = prev_outer;
                     lateral_join_ = prev_join;
                     lateral_plan_ = prev_plan;
                     lateral_correlation_map_ = std::move(prev_map);
-                    if (has_error()) {
-                        return;
-                    }
                 } else {
-                    agg_r->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), plan));
+                    agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub->subquery), plan));
                 }
 
-                if (sub_select->alias) {
-                    // Expose the derived table's alias as the join's right relation so a
-                    // join predicate (e.g. LATERAL … ON sub.v > 100) resolves sub.* to the
-                    // right/inner side. Set after the subquery is transformed so it does
-                    // not shadow the outer scope during LATERAL correlation resolution.
-                    names.right_alias = sub_select->alias->aliasname;
-                    agg_r->children().back()->set_result_alias(sub_select->alias->aliasname);
-                    if (sub_select->alias->colnames &&
-                        agg_r->children().back()->type() == logical_plan::node_type::data_t) {
-                        auto* data_node = reinterpret_cast<logical_plan::node_data_t*>(agg_r->children().back().get());
-                        if (sub_select->alias->colnames->lst.size() != data_node->data_chunk().column_count()) {
+                if (has_error()) {
+                    return nullptr;
+                }
+                if (sub->alias) {
+                    agg->children().back()->set_result_alias(sub->alias->aliasname);
+                    if (sub->alias->colnames && agg->children().back()->type() == logical_plan::node_type::data_t) {
+                        auto* data_node = reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get());
+                        if (sub->alias->colnames->lst.size() != data_node->data_chunk().column_count()) {
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
                                 std::pmr::string{"column names count has to equal actual column count", resource_});
-                            return;
+                            return nullptr;
                         }
                         // All chunks share the same column shape; alias every chunk's columns.
                         for (auto& chunk : data_node->chunks()) {
                             size_t column_index = 0;
-                            for (auto colname : sub_select->alias->colnames->lst) {
+                            for (auto colname : sub->alias->colnames->lst) {
                                 chunk.data[column_index].set_type_alias(strVal(colname.data));
                                 column_index++;
                             }
                         }
                     }
                 }
-                node_join->append_child(std::move(agg_r));
+                return agg;
             }
-        } else if (nodeTag(join->larg) == T_RangeFunction) {
-            assert(!node_join);
-            auto j_type = jointype_to_ql(join);
-            if (j_type == logical_plan::join_type::invalid) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"invalid join type", resource_});
-                return;
-            }
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            node_join->append_child(
-                transform_function(*pg_ptr_cast<RangeFunction>(join->larg), names, plan->parameters.get()));
-            if (nodeTag(join->rarg) == T_RangeVar) {
-                auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
-                names.right_name = rangevar_to_qualified_name(table_r);
-                names.right_alias = construct_alias(table_r->alias);
-                const std::string& effective_alias_r =
-                    names.right_alias.empty() ? names.right_name.relname : names.right_alias;
-                if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
-                    auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                    agg_r->append_child(transform_select(*cte_it->second, plan));
-                    agg_r->children().back()->set_result_alias(effective_alias_r);
-                    node_join->append_child(std::move(agg_r));
-                } else if (recursive_cte_queries_.count(table_r->relname)) {
-                    auto agg_r = build_recursive_cte_ref(table_r->relname, effective_alias_r, plan);
-                    if (has_error()) {
-                        return;
-                    }
-                    node_join->append_child(std::move(agg_r));
-                } else {
-                    auto agg_r = logical_plan::make_node_aggregate(resource,
-                                                                   core::uid_t{names.right_name.uuid},
-                                                                   core::dbname_t{names.right_name.dbname},
-                                                                   core::relname_t{names.right_name.relname});
-                    if (!names.right_alias.empty()) {
-                        agg_r->set_result_alias(names.right_alias);
-                    }
-                    node_join->append_child(std::move(agg_r));
+            case T_RangeFunction: {
+                auto* func = pg_ptr_cast<RangeFunction>(item);
+                slot_alias = construct_alias(func->alias);
+                if (slot_alias.empty()) {
+                    slot_name.relname = range_function_name(*func);
                 }
-            } else if (nodeTag(join->rarg) == T_RangeFunction) {
-                auto func = pg_ptr_cast<RangeFunction>(join->rarg);
-                node_join->append_child(transform_function(*func, names, plan->parameters.get()));
+                auto element = node_join ? transform_from_function(*func, names, node_join, plan)
+                                         : transform_function(*func, names, plan->parameters.get());
+                if (element && !slot_alias.empty()) {
+                    element->set_result_alias(slot_alias);
+                }
+                return element;
             }
-        } else {
-            error_ = core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"incorrect type for join join->larg node" + node_tag_to_string(nodeTag(join->larg)),
-                                 resource_});
+            default:
+                error_ = core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"unsupported FROM element " + node_tag_to_string(nodeTag(item)), resource_});
+                return nullptr;
+        }
+    }
+
+    void transformer::join_dfs(std::pmr::memory_resource* resource,
+                               JoinExpr* join,
+                               logical_plan::node_join_ptr& node_join,
+                               name_collection_t& names,
+                               logical_plan::execution_plan_t* plan) {
+        if (join->isNatural) {
+            // TODO: NATURAL needs the column lists of both sides to work out what it joins on
+            // for now transformer has no schemas
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                   std::pmr::string{"NATURAL JOIN is not supported: it needs the column lists of "
+                                                    "both sides. Name the columns with USING, or write the ON clause",
+                                                    resource_});
             return;
         }
+        const auto j_type = jointype_to_ql(join);
+        if (j_type == logical_plan::join_type::invalid) {
+            error_ =
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"invalid join type", resource_});
+            return;
+        }
+
+        if (nodeTag(join->larg) == T_JoinExpr) {
+            name_collection_t inner;
+            join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, inner, plan);
+            if (has_error()) {
+                return;
+            }
+            // Snapshot the inner join's visible scope before this level records
+            // its own right side. Name and alias travel together: an alias hides
+            // the relation name of its own element, nobody else's.
+            auto carry = [&](const qualified_name& nm, const std::string& alias) {
+                if (!nm.relname.empty() || !alias.empty()) {
+                    names.extra_left.push_back({nm, alias});
+                }
+            };
+            carry(inner.left_name, inner.left_alias);
+            carry(inner.right_name, inner.right_alias);
+            for (const auto& element : inner.extra_left) {
+                carry(element.name, element.alias);
+            }
+
+            auto prev = node_join;
+            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            node_join->append_child(prev);
+        } else {
+            assert(!node_join);
+            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            auto left = transform_from_element(join->larg, names.left_name, names.left_alias, names, node_join, plan);
+            if (!left) {
+                return;
+            }
+            node_join->append_child(left);
+        }
+
+        auto right = transform_from_element(join->rarg, names.right_name, names.right_alias, names, node_join, plan);
+        if (!right) {
+            return;
+        }
+        node_join->append_child(right);
+
         // on
         if (join->quals) {
             auto expr = transform_predicate(join->quals, names, plan);
@@ -334,6 +305,11 @@ namespace components::sql::transform {
                 return;
             }
             node_join->append_expression(expr);
+        } else if (join->usingClause && !join->usingClause->lst.empty()) {
+            node_join->append_expression(using_predicate(resource, join->usingClause));
+            for (const auto& column : join->usingClause->lst) {
+                names.using_columns.push_back({strVal(column.data), jointype_to_ql(join)});
+            }
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
         }
@@ -362,16 +338,13 @@ namespace components::sql::transform {
         // The synthesized tree mutates `from_items->lst.front()` so the existing
         // T_JoinExpr branch below picks it up unchanged.
 
-        // Arena (upstream=resource_) for temporary nodes
-        std::pmr::monotonic_buffer_resource transient(resource_);
         if (from_items->lst.size() > 1) {
-            auto* resource = &transient; // makeNode requires resource*
             auto it = from_items->lst.begin();
             Node* acc = pg_ptr_cast<Node>(it->data);
             ++it;
             for (; it != from_items->lst.end(); ++it) {
                 auto* rhs = pg_ptr_cast<Node>(it->data);
-                JoinExpr* synth = makeNode(resource, JoinExpr);
+                JoinExpr* synth = makeNode(resource_, JoinExpr);
                 synth->jointype = JOIN_INNER;
                 synth->isNatural = false;
                 synth->larg = acc;
@@ -389,69 +362,37 @@ namespace components::sql::transform {
         }
 
         auto from_first = from_items->lst.front().data;
-        if (nodeTag(from_first) == T_RangeVar) {
-            // from table_name
-            auto table = pg_ptr_cast<RangeVar>(from_first);
-            names.left_name = rangevar_to_qualified_name(table);
-            names.left_alias = construct_alias(table->alias);
-            const std::string& effective_alias = names.left_alias.empty() ? names.left_name.relname : names.left_alias;
-            if (auto cte_it = cte_queries_.find(table->relname); cte_it != cte_queries_.end()) {
-                agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                agg->append_child(transform_select(*cte_it->second, plan));
-                agg->children().back()->set_result_alias(effective_alias);
-            } else if (recursive_cte_queries_.count(table->relname)) {
-                agg = build_recursive_cte_ref(table->relname, effective_alias, plan);
-                if (has_error()) {
-                    return nullptr;
-                }
-            } else {
-                agg = logical_plan::make_node_aggregate(resource_,
-                                                        core::uid_t{names.left_name.uuid},
-                                                        core::dbname_t{names.left_name.dbname},
-                                                        core::relname_t{names.left_name.relname});
-                if (!names.left_alias.empty()) {
-                    agg->set_result_alias(names.left_alias);
-                }
-            }
-        } else if (nodeTag(from_first) == T_JoinExpr) {
+        if (nodeTag(from_first) == T_JoinExpr) {
             // from table_1 join table_2 on cond
             agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
             join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, names, plan);
-            agg->append_child(join);
-        } else if (nodeTag(from_first) == T_RangeFunction) {
-            agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-            auto range_func = *pg_ptr_cast<RangeFunction>(from_first);
-            names.left_alias = construct_alias(range_func.alias);
-            agg->append_child(transform_function(range_func, names, plan->parameters.get()));
-        } else if (nodeTag(from_first) == T_RangeSubselect) {
-            auto* sub_select = pg_ptr_cast<RangeSubselect>(from_first);
-            agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-            agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), plan));
-
-            if (sub_select->alias) {
-                agg->children().back()->set_result_alias(sub_select->alias->aliasname);
-                if (sub_select->alias->colnames && agg->children().back()->type() == logical_plan::node_type::data_t) {
-                    auto* data_node = reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get());
-                    if (sub_select->alias->colnames->lst.size() != data_node->data_chunk().column_count()) {
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"column names count has to equal actual column count", resource_});
-                        return nullptr;
-                    }
-                    // All chunks share the same column shape; alias every chunk's columns.
-                    for (auto& chunk : data_node->chunks()) {
-                        size_t column_index = 0;
-                        for (auto colname : sub_select->alias->colnames->lst) {
-                            chunk.data[column_index].set_type_alias(strVal(colname.data));
-                            column_index++;
-                        }
-                    }
-                }
+            if (has_error()) {
+                return nullptr;
             }
+            if (transform_failed(names.refuse_indistinguishable_elements(resource_))) {
+                return nullptr;
+            }
+            agg->append_child(join);
         } else {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"encountered unrecognized node", resource_});
-            return nullptr;
+            // A single FROM element goes through the same lowering as one inside
+            // a join, so a table, a CTE reference, a derived table and a table
+            // function are registered the same way in both places.
+            logical_plan::node_join_ptr no_join;
+            auto element = transform_from_element(pg_ptr_cast<Node>(from_first),
+                                                  names.left_name,
+                                                  names.left_alias,
+                                                  names,
+                                                  no_join,
+                                                  plan);
+            if (!element) {
+                return nullptr;
+            }
+            if (element->type() == logical_plan::node_type::aggregate_t) {
+                agg = logical_plan::node_aggregate_ptr(static_cast<logical_plan::node_aggregate_t*>(element.get()));
+            } else {
+                agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                agg->append_child(element);
+            }
         }
         return agg;
     }
@@ -610,7 +551,11 @@ namespace components::sql::transform {
                 return false;
             }
             if (nodeTag(res->val) == T_ColumnRef) {
-                out = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), nm);
+                auto resolved_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), nm);
+                if (transform_failed(resolved_res)) {
+                    return false;
+                }
+                out = std::move(resolved_res.value());
                 return true;
             }
             if (res->name) {
@@ -671,12 +616,17 @@ namespace components::sql::transform {
                     bool is_desc = sortby->sortby_dir == SORTBY_DESC;
                     column_ref_t field(resource_);
                     if (nodeTag(sortby->node) == T_ColumnRef) {
-                        field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
+                        auto resolved_res =
+                            columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
+                        if (transform_failed(resolved_res)) {
+                            return nullptr;
+                        }
+                        auto resolved = std::move(resolved_res.value());
+                        field = std::move(resolved);
                     } else if (nodeTag(sortby->node) == T_A_Indirection) {
                         auto res =
                             indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
-                        if (res.has_error()) {
-                            error_ = res.error();
+                        if (transform_failed(res)) {
                             return nullptr;
                         }
                         field = std::move(res.value());
@@ -754,8 +704,7 @@ namespace components::sql::transform {
                     size_t column_index = 0;
                     for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++column_index) {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                        if (value.has_error()) {
-                            error_ = value.error();
+                        if (transform_failed(value)) {
                             return nullptr;
                         }
                         if (column_index >= chunk.data.size()) {
@@ -833,8 +782,11 @@ namespace components::sql::transform {
                         for (const auto& arg : func->args->lst) {
                             auto arg_value = pg_ptr_cast<Node>(arg.data);
                             if (nodeTag(arg_value) == T_ColumnRef) {
-                                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_value), names);
-                                key.deduce_side(names);
+                                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_value), names);
+                                if (transform_failed(key_res)) {
+                                    return nullptr;
+                                }
+                                auto key = std::move(key_res.value());
                                 args.emplace_back(std::move(key.field));
                             } else if (nodeTag(arg_value) == T_A_Expr) {
                                 auto sub = pg_ptr_cast<A_Expr>(arg_value);
@@ -849,12 +801,10 @@ namespace components::sql::transform {
                                 // still a column, not a constant — reading it as one made the whole
                                 // statement fail to parse.
                                 auto key_res = node_to_field(resource_, arg_value, names);
-                                if (key_res.has_error()) {
-                                    error_ = key_res.error();
+                                if (transform_failed(key_res)) {
                                     return nullptr;
                                 }
                                 auto key = std::move(key_res.value());
-                                key.deduce_side(names);
                                 args.emplace_back(std::move(key.field));
                             } else if (nodeTag(arg_value) == T_FuncCall) {
                                 args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value),
@@ -900,6 +850,15 @@ namespace components::sql::transform {
                         auto col_ref = pg_ptr_cast<ColumnRef>(res->val);
                         // Check for star — add a star_expand marker (cleaned up below if it's the only expression)
                         if (col_ref->fields->lst.size() == 1 && nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
+                            if (node.fromClause && !node.fromClause->lst.empty() &&
+                                has_using_join(pg_ptr_cast<Node>(node.fromClause->lst.front().data))) {
+                                error_ = core::error_t(
+                                    core::error_code_t::unimplemented_yet,
+                                    std::pmr::string{"SELECT * over a USING join is not supported yet: the joined "
+                                                     "column would come back twice. Name the columns you want",
+                                                     resource_});
+                                return nullptr;
+                            }
                             select_node->append_expression(make_scalar_expression(resource_,
                                                                                   scalar_type::star_expand,
                                                                                   expressions::key_t{resource_}));
@@ -924,7 +883,11 @@ namespace components::sql::transform {
                         }
                         has_non_star = true;
                         {
-                            auto col = columnref_to_field(resource_, col_ref, names);
+                            auto col_res = columnref_to_field(resource_, col_ref, names);
+                            if (transform_failed(col_res)) {
+                                break;
+                            }
+                            auto col = std::move(col_res.value());
                             if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
                                 // Carry the table qualifier so validator can expand t.x.* by result_alias.
                                 std::pmr::vector<std::pmr::string> star_path{resource_};
@@ -965,13 +928,15 @@ namespace components::sql::transform {
                         auto cast = pg_ptr_cast<TypeCast>(res->val);
                         if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
                             auto target_type_res = get_type(resource_, cast->typeName);
-                            if (target_type_res.has_error()) {
-                                error_ = target_type_res.error();
+                            if (transform_failed(target_type_res)) {
                                 break;
                             }
-                            auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                            auto col_ref_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                            if (transform_failed(col_ref_res)) {
+                                break;
+                            }
+                            auto col_ref = std::move(col_ref_res.value());
                             auto field_name = std::string(col_ref.field.storage().back());
-                            col_ref.deduce_side(names);
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
                             auto conversion = make_cast_expression(resource_,
@@ -993,8 +958,7 @@ namespace components::sql::transform {
                                 nodeTag(sub->name->lst.front().data) == T_String &&
                                 is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
                                 auto target_type_res = get_type(resource_, cast->typeName);
-                                if (target_type_res.has_error()) {
-                                    error_ = target_type_res.error();
+                                if (transform_failed(target_type_res)) {
                                     break;
                                 }
                                 expressions::key_t field_key{resource_};
@@ -1141,64 +1105,44 @@ namespace components::sql::transform {
                         return nullptr;
                     }
                     case T_A_Indirection: {
-                        std::pmr::vector<std::pmr::string> path{resource_};
-                        A_Indirection* indirection = pg_ptr_cast<A_Indirection>(res->val);
-                        while (indirection) {
-                            auto& lst = indirection->indirection->lst;
-                            // reverse order to be consistent with indirections stacking
-                            for (auto it = lst.rbegin(); it != lst.crend(); ++it) {
-                                auto data = it->data;
-                                if (nodeTag(data) == T_A_Star) {
-                                    path.emplace_back("*");
-                                } else if (nodeTag(data) == T_A_Indices) {
-                                    auto indices = pg_ptr_cast<A_Indices>(data);
-                                    path.emplace_back(indices_to_str(resource_, indices));
-                                } else {
-                                    path.emplace_back(pmrStrVal(data, resource_));
-                                }
-                            }
-                            if (nodeTag(indirection->arg) == T_A_Indirection) {
-                                indirection = pg_ptr_cast<A_Indirection>(indirection->arg);
-                            } else if (nodeTag(indirection->arg) == T_FuncCall) {
-                                // function here is an aggregate_expr and field selection is a scalar_expr
-                                // TODO: proper expression chaining support
-                                error_ = core::error_t(
-                                    core::error_code_t::unimplemented_yet,
-                                    std::pmr::string{
-                                        "Otterbrix does not support field selection from function results for now",
-                                        resource_});
-                                return nullptr;
-                            } else if (nodeTag(indirection->arg) == T_ColumnRef) {
-                                auto* cref = pg_ptr_cast<ColumnRef>(indirection->arg);
-                                // (table_alias.struct_col).* needs schema-aware struct expansion;
-                                // not supported — surface explicitly instead of silent miswiring.
-                                if (cref->fields->lst.size() > 1 && !path.empty() && path.front() == "*") {
-                                    error_ = core::error_t(
-                                        core::error_code_t::unimplemented_yet,
-                                        std::pmr::string{"struct field wildcard (alias.struct).* not supported",
-                                                         resource_});
-                                    return nullptr;
-                                }
-                                path.emplace_back(pmrStrVal(cref->fields->lst.back().data, resource_));
-                                break;
-                            } else {
-                                error_ = core::error_t(
-                                    core::error_code_t::unimplemented_yet,
-                                    std::pmr::string{"Encountered unsupported expression on transform_select",
-                                                     resource_});
-                                return nullptr;
-                            }
+                        auto* indirection = pg_ptr_cast<A_Indirection>(res->val);
+                        Node* base = indirection->arg;
+                        while (nodeTag(base) == T_A_Indirection) {
+                            base = pg_ptr_cast<A_Indirection>(base)->arg;
                         }
-                        std::reverse(path.begin(), path.end());
-
-                        // Check for star via path
-                        if (path.size() == 1 && path[0] == "*") {
+                        if (nodeTag(base) == T_FuncCall) {
+                            // function here is an aggregate_expr and field selection is a scalar_expr
+                            // TODO: proper expression chaining support
+                            error_ = core::error_t(
+                                core::error_code_t::unimplemented_yet,
+                                std::pmr::string{
+                                    "Otterbrix does not support field selection from function results for now",
+                                    resource_});
+                            return nullptr;
+                        }
+                        // (table_alias.struct_col).* needs schema-aware struct expansion;
+                        // not supported — surface explicitly instead of silent miswiring.
+                        if (nodeTag(indirection->indirection->lst.back().data) == T_A_Star &&
+                            nodeTag(base) == T_ColumnRef && pg_ptr_cast<ColumnRef>(base)->fields->lst.size() > 1) {
+                            error_ = core::error_t(
+                                core::error_code_t::unimplemented_yet,
+                                std::pmr::string{"struct field wildcard (alias.struct).* not supported", resource_});
+                            return nullptr;
+                        }
+                        // The reference itself goes through the same reader as
+                        // every other clause uses, so a projection and a predicate
+                        // over one field cannot disagree about which field it is.
+                        auto col = node_to_field(resource_, res->val, names);
+                        if (transform_failed(col)) {
+                            return nullptr;
+                        }
+                        auto& field = col.value().field;
+                        if (field.storage().size() == 1 && field.storage().front() == "*") {
                             break; // skip star
                         }
                         has_non_star = true;
-                        select_node->append_expression(make_scalar_expression(resource_,
-                                                                              scalar_type::get_field,
-                                                                              expressions::key_t{std::move(path)}));
+                        select_node->append_expression(
+                            make_scalar_expression(resource_, scalar_type::get_field, std::move(field)));
                         break;
                     }
                     case T_CaseExpr: {
@@ -1223,6 +1167,9 @@ namespace components::sql::transform {
                         for (auto& arg_item : coalesce->args->lst) {
                             auto arg_node = pg_ptr_cast<Node>(arg_item.data);
                             expr->append_param(resolve_select_operand(arg_node, names, plan, coalesce_node));
+                            if (has_error()) {
+                                return nullptr;
+                            }
                         }
                         select_node->append_expression(expr);
                         break;
@@ -1437,10 +1384,13 @@ namespace components::sql::transform {
                     return nullptr;
                 }
 
-                group->append_expression(make_scalar_expression(
-                    resource_,
-                    scalar_type::group_field,
-                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(field.data), names).field));
+                auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(field.data), names);
+                if (transform_failed(key_res)) {
+                    return nullptr;
+                }
+                auto key = std::move(key_res.value());
+                group->append_expression(
+                    make_scalar_expression(resource_, scalar_type::group_field, std::move(key.field)));
             }
         }
 
@@ -1515,12 +1465,15 @@ namespace components::sql::transform {
                 std::pmr::vector<expressions::key_t> on_keys(resource_);
                 for (auto on_it : node.distinctClause->lst) {
                     if (nodeTag(on_it.data) == T_ColumnRef) {
-                        on_keys.emplace_back(
-                            columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(on_it.data), names).field);
+                        auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(on_it.data), names);
+                        if (transform_failed(key_res)) {
+                            return nullptr;
+                        }
+                        auto key = std::move(key_res.value());
+                        on_keys.emplace_back(std::move(key.field));
                     } else if (nodeTag(on_it.data) == T_A_Indirection) {
                         auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(on_it.data), names);
-                        if (res.has_error()) {
-                            error_ = res.error();
+                        if (transform_failed(res)) {
                             return nullptr;
                         }
                         on_keys.emplace_back(std::move(res.value().field));
@@ -1539,13 +1492,15 @@ namespace components::sql::transform {
                     for (auto sort_it : node.sortClause->lst) {
                         auto* sortby = pg_ptr_cast<SortBy>(sort_it.data);
                         if (nodeTag(sortby->node) == T_ColumnRef) {
-                            lead_sort_names.emplace_back(
-                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names)
-                                    .field.as_pmr_string());
+                            auto key_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
+                            if (transform_failed(key_res)) {
+                                return nullptr;
+                            }
+                            auto key = std::move(key_res.value());
+                            lead_sort_names.emplace_back(key.field.as_pmr_string());
                         } else if (nodeTag(sortby->node) == T_A_Indirection) {
                             auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
-                            if (res.has_error()) {
-                                error_ = res.error();
+                            if (transform_failed(res)) {
                                 return nullptr;
                             }
                             lead_sort_names.emplace_back(res.value().field.as_pmr_string());
@@ -1595,13 +1550,16 @@ namespace components::sql::transform {
                     return nullptr;
                 }
                 if (nodeTag(sort_node) == T_ColumnRef) {
-                    column_ref_t field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sort_node), names);
+                    auto field_res = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sort_node), names);
+                    if (transform_failed(field_res)) {
+                        return nullptr;
+                    }
+                    auto field = std::move(field_res.value());
                     sort_exprs.emplace_back(
                         make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
                 } else if (nodeTag(sort_node) == T_A_Indirection) {
                     auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sort_node), names);
-                    if (res.has_error()) {
-                        error_ = res.error();
+                    if (transform_failed(res)) {
                         return nullptr;
                     }
                     column_ref_t field = std::move(res.value());

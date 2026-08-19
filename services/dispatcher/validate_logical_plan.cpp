@@ -53,6 +53,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <source_location>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -77,20 +78,24 @@ namespace services::dispatcher {
         core::error_t no_operator_error(std::pmr::memory_resource* resource,
                                         components::expressions::scalar_type type,
                                         const components::types::complex_logical_type& lhs,
-                                        const components::types::complex_logical_type& rhs) {
+                                        const components::types::complex_logical_type& rhs,
+                                        std::source_location location = std::source_location::current()) {
             return core::error_t(core::error_code_t::arithmetics_failure,
                                  std::pmr::string{"operator " + to_string(type) + " is not defined for types " +
                                                       describe_type(lhs) + " and " + describe_type(rhs),
-                                                  resource});
+                                                  resource},
+                                 location);
         }
 
         core::error_t no_operator_error(std::pmr::memory_resource* resource,
                                         components::expressions::scalar_type type,
-                                        const components::types::complex_logical_type& operand) {
+                                        const components::types::complex_logical_type& operand,
+                                        std::source_location location = std::source_location::current()) {
             return core::error_t(
                 core::error_code_t::arithmetics_failure,
                 std::pmr::string{"operator " + to_string(type) + " is not defined for type " + describe_type(operand),
-                                 resource});
+                                 resource},
+                location);
         }
 
         // Records a conversion an operator needs by SPLICING a cast expression over the operand.
@@ -148,6 +153,15 @@ namespace services::dispatcher {
             return merged;
         }
 
+        [[nodiscard]] core::error_t ambiguous_key(std::pmr::memory_resource* resource,
+                                                  const components::expressions::key_t& key,
+                                                  std::source_location location = std::source_location::current()) {
+            return core::error_t(
+                core::error_code_t::ambiguous_name,
+                std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path", resource},
+                location);
+        }
+
         [[nodiscard]] core::result_wrapper_t<type_paths> find_types(std::pmr::memory_resource* resource,
                                                                     components::expressions::key_t& key,
                                                                     const named_schema& schema) {
@@ -192,12 +206,22 @@ namespace services::dispatcher {
                     }
                 }
             }
-            // Either unqualified, or the qualifier matched nothing because this schema
-            // carries no alias for it (raw node_data inputs have an empty result_alias):
-            // fall back to the by-name rules, which is what every key used to get. Decided
-            // once, before the loop: testing matches.empty() per iteration would stop at
-            // the first hit and hide the ambiguity that collecting every match detects.
-            const bool match_by_name = matches.empty();
+            // Either unqualified, or the qualifier names nothing this schema knows: a
+            // sub-plan's schema is labelled with the derived table's alias, so a reference
+            // written inside it against the inner relation's own name ('inner_t.k' against
+            // 'sub'.k) matches nothing here, and raw node_data inputs carry no alias at all.
+            // Both are resolved by the by-name rules, which is what every key used to get.
+            // A qualifier the schema does know is the opposite case: the relation is right
+            // here and simply has no such column, and answering with a same-named column of
+            // another relation is a wrong answer, not a fallback. Decided once, before the
+            // loop: testing matches.empty() per iteration would stop at the first hit and
+            // hide the ambiguity that collecting every match detects.
+            const bool schema_knows_qualifier =
+                truncated_key.has_qualifier() &&
+                std::any_of(schema.begin(), schema.end(), [&truncated_key](const type_from_t& entry) {
+                    return core::pmr::operator==(entry.result_alias, truncated_key.qualifier());
+                });
+            const bool match_by_name = matches.empty() && !schema_knows_qualifier;
             for (size_t i = 0; match_by_name && i < schema.size(); i++) {
                 if (truncated_key.storage().size() > 2 &&
                     core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
@@ -307,10 +331,7 @@ namespace services::dispatcher {
                     result = std::move(filtered);
                 }
                 if (result.size() > 1) {
-                    return core::error_t(core::error_code_t::ambiguous_name,
-                                         std::pmr::string{"path: \'" + truncated_key.as_string() +
-                                                              "\' is ambiguous. Use aliases or full path",
-                                                          resource});
+                    return ambiguous_key(resource, truncated_key);
                 }
             }
             if (!result.empty()) {
@@ -379,14 +400,15 @@ namespace services::dispatcher {
                 auto column_path_right = find_types(resource, key, schema_right);
                 // TODO Stop erasing errors from right and left
                 if (column_path_left.has_error() && column_path_right.has_error()) {
+                    if (column_path_left.error().type == core::error_code_t::ambiguous_name ||
+                        column_path_right.error().type == core::error_code_t::ambiguous_name) {
+                        return ambiguous_key(resource, key);
+                    }
                     return core::error_t(core::error_code_t::field_not_exists,
                                          std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
                 }
                 if (!same_schema && !column_path_left.has_error() && !column_path_right.has_error()) {
-                    return core::error_t(
-                        core::error_code_t::ambiguous_name,
-                        std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path",
-                                         resource});
+                    return ambiguous_key(resource, key);
                 }
                 if (column_path_left.has_error()) {
                     key.set_side(side_t::right);

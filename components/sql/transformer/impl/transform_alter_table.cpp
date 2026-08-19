@@ -44,8 +44,7 @@ namespace components::sql::transform {
                     PGListCell cell;
                     cell.data = cmd->def;
                     tmp.lst.push_back(cell);
-                    if (auto cols_res = get_column_definitions(resource_, tmp); cols_res.has_error()) {
-                        error_ = cols_res.error();
+                    if (auto cols_res = get_column_definitions(resource_, tmp); transform_failed(cols_res)) {
                         return nullptr;
                     } else {
                         if (cols_res.value().empty()) {
@@ -127,8 +126,7 @@ namespace components::sql::transform {
                                                                       logical_plan::node_ptr{std::move(fk_node)});
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
-                        if (auto expr_text = deparse_check_expr(resource_, constr->raw_expr); expr_text.has_error()) {
-                            error_ = expr_text.error();
+                        if (auto expr_text = deparse_check_expr(resource_, constr->raw_expr); transform_failed(expr_text)) {
                             return nullptr;
                         } else if (!expr_text.value().empty()) {
                             std::string con_name = constr->conname ? constr->conname : "";
@@ -147,6 +145,7 @@ namespace components::sql::transform {
                                              "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
                                              "column references, and constants",
                                              resource_});
+                        return nullptr;
                     }
                     if (constr->contype == CONSTR_UNIQUE || constr->contype == CONSTR_PRIMARY) {
                         // UNIQUE / PRIMARY KEY. The enforced columns live in constr->keys

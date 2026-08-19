@@ -26,9 +26,8 @@
 // Hidden by default ([.]) and needs benchmark/data/ssb/lineorder.tbl. Run it with [ssbload].
 
 namespace {
-    constexpr int kBatch = 1000;
-    constexpr int kSlice = 25000;
-    constexpr int kSlices = 8;
+    constexpr int kSlice = 50000;
+    constexpr int kSlices = 13; // 650k > the 600 598 rows of lineorder
 
     uint64_t directory_bytes(const std::filesystem::path& root) {
         std::error_code ec;
@@ -76,6 +75,108 @@ namespace {
     }
 } // namespace
 
+// Capacity probe: does the engine hold an SF=1-sized lineorder at all?
+//
+// The repo ships ~600k rows, roughly SF 0.1. The standard SSB scale factor 1 is ten times that, and
+// the buffer pool's ceiling is a hardwired 4 GiB, so "SSB passes" on the shipped data says nothing
+// about the real one. This loads the shipped file ten times over — the keys repeat, which does not
+// matter here because what is being tested is volume, not answers.
+//
+// Hidden ([.]) and slow. Run it with [ssbcapacity].
+namespace {
+    void probe_capacity(const std::filesystem::path& root, bool wal_on);
+} // namespace
+
+TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_at_scale_factor_one", "[.][ssbcapacity]") {
+    probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity", true);
+}
+
+// The same volume with the WAL OFF. Buffer memory during a load is drained ONLY by a checkpoint —
+// block_handle_t::can_unload refuses to evict a block that has no disk copy, which is every transient
+// column segment — and with the WAL off there are no auto-checkpoints at all. If nothing else bounds
+// it, this must fail where the WAL-on case does not.
+TEST_CASE("integration::cpp::test_ssb_load_scaling::capacity_without_wal", "[.][ssbcapacity]") {
+    probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity_nowal", false);
+}
+
+namespace {
+    void probe_capacity(const std::filesystem::path& root, bool wal_on) {
+    const std::filesystem::path source =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
+        "data" / "ssb" / "lineorder.tbl";
+    REQUIRE(std::filesystem::exists(source));
+
+    auto config = test_create_config(root);
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = wal_on;
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return d->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+    REQUIRE(exec("CREATE TABLE ssb.lineorder ("
+                 "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
+                 "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
+                 "lo_quantity bigint, lo_extendedprice bigint, lo_ordtotalprice bigint, lo_discount bigint, "
+                 "lo_revenue bigint, lo_supplycost bigint, lo_tax bigint, lo_commitdate bigint, "
+                 "lo_shipmode text);")
+                ->is_success());
+
+    static const std::string kColumns =
+        "(lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, lo_orderdate, lo_orderpriority, "
+        "lo_shippriority, lo_quantity, lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
+        "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode)";
+
+    uint64_t rows_total = 0;
+    std::string failure;
+    const auto start = std::chrono::steady_clock::now();
+    for (int pass = 0; pass < 70 && failure.empty(); ++pass) {
+        std::ifstream file(source);
+        REQUIRE(file.is_open());
+        std::string line;
+        std::getline(file, line); // header
+        while (failure.empty()) {
+            std::string values;
+            int in_batch = 0;
+            while (in_batch < 1000 && std::getline(file, line)) {
+                auto tuple = tuple_from_line(line);
+                if (tuple.empty()) {
+                    continue;
+                }
+                if (in_batch != 0) {
+                    values += ", ";
+                }
+                values += tuple;
+                ++in_batch;
+            }
+            if (in_batch == 0) {
+                break;
+            }
+            auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
+            if (cur->is_error()) {
+                failure = cur->get_error().what;
+                break;
+            }
+            rows_total += static_cast<uint64_t>(in_batch);
+        }
+        WARN("after pass " << (pass + 1) << ": " << rows_total << " rows, on disk "
+                           << (directory_bytes(root) / (1024 * 1024)) << " MiB");
+    }
+    const auto elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    WARN("loaded " << rows_total << " rows in " << elapsed << " s; failure: "
+                   << (failure.empty() ? std::string{"none"} : failure));
+    CHECK(failure.empty());
+    CHECK(rows_total >= 6000000);
+    WARN("ceiling probe: stopped at " << rows_total << " rows");
+    }
+} // namespace
+
 namespace {
     // The measurement body, shared by the two configurations below. The benchmark runner uses
     // batches of 100 rows and turns the WAL on; the first case here deliberately differs on both so
@@ -112,6 +213,12 @@ namespace {
     test_clear_directory(config);
     config.disk.on = true;
     config.wal.on = wal_on;
+    // The auto-checkpoint threshold is left at its production default on purpose. A checkpoint
+    // round copies every disk table's .otbx file whole, so it may happen once per threshold's worth
+    // of WAL and no more; the defect this guards against was the counter holding the WHOLE WAL
+    // directory size instead of the bytes written since the last checkpoint, which kept the
+    // threshold tripped forever once crossed and produced one round per COMMIT — 6006 of them for
+    // this table.
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -140,6 +247,8 @@ namespace {
 
     std::string line;
     bool exhausted = false;
+    uint64_t rows_total = 0;
+    uint64_t failed_at_row = 0;
     for (int slice = 0; slice < kSlices && !exhausted; ++slice) {
         services::disk::reset_table_checkpoints();
         const auto slice_start = std::chrono::steady_clock::now();
@@ -163,8 +272,16 @@ namespace {
                 break;
             }
             auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
-            REQUIRE(cur->is_success());
-            rows_in_slice += in_batch;
+            if (!cur->is_error()) {
+                rows_in_slice += in_batch;
+                rows_total += in_batch;
+                continue;
+            }
+            WARN("INSERT failed after " << rows_total << " rows (slice " << (slice + 1) << "): "
+                                        << cur->get_error().what);
+            failed_at_row = rows_total;
+            exhausted = true;
+            break;
         }
         const auto elapsed =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - slice_start).count();
@@ -173,11 +290,13 @@ namespace {
         slice_checkpoints.push_back(services::disk::table_checkpoints());
     }
 
-    REQUIRE(slice_ms.size() >= 4);
+    WARN("rows loaded in total: " << rows_total);
+    CHECK(failed_at_row == 0);
+    REQUIRE(slice_ms.size() >= 2);
     WARN(label);
     for (size_t i = 0; i < slice_ms.size(); ++i) {
         WARN("  slice " << (i + 1) << ": " << slice_ms[i] << " ms, on disk " << (slice_bytes[i] / (1024 * 1024))
-                        << " MiB, table checkpoints " << slice_checkpoints[i]);
+                        << " MiB, checkpoint rounds " << slice_checkpoints[i]);
     }
     INFO("first slice " << slice_ms.front() << " ms, last slice " << slice_ms.back() << " ms, ratio "
                         << (slice_ms.back() / slice_ms.front()));
@@ -186,5 +305,102 @@ namespace {
     // not get harder because rows already exist. The bound is deliberately loose — this is about
     // catching a growth curve, not about defending a constant.
     CHECK(slice_ms.back() < slice_ms.front() * 3.0);
+
+    // The number that explains the curve. A checkpoint round copies every disk table's .otbx file
+    // whole, so it may only happen once per auto_checkpoint_threshold_bytes of WAL — this load
+    // writes a few times that, so a handful of rounds is expected. One per COMMIT is the defect,
+    // and with 100-row batches that is two hundred of them for this many rows.
+    uint64_t total_rounds = 0;
+    for (auto n : slice_checkpoints) {
+        total_rounds += n;
+    }
+    WARN("total checkpoint rounds during the load: " << total_rounds);
+    CHECK(total_rounds <= 24);
     }
 } // namespace
+
+// An explicit CHECKPOINT must not switch the automatic one off.
+//
+// The auto-checkpoint window is measured as (current WAL directory size - size at the last
+// checkpoint). An explicit CHECKPOINT truncates the WAL through truncate_before without going
+// anywhere near that baseline, so the directory shrinks below it. Until the WAL grows back past the
+// stale, larger baseline the window reads zero and no automatic checkpoint fires — the table can
+// then run arbitrarily far behind the log. This is a defect the ORIGINAL total-size accounting could
+// not have had, so it comes with the fix and has to be closed by it.
+TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not_suppress_the_automatic_one",
+          "[.][ssbload]") {
+    const std::filesystem::path source =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
+        "data" / "ssb" / "lineorder.tbl";
+    REQUIRE(std::filesystem::exists(source));
+
+    auto config = test_create_config("/tmp/otterbrix/integration/test_ssb/explicit_checkpoint");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+    config.log.level = log_t::level::off;
+    // Small enough that a slice of rows crosses it several times over.
+    config.wal.auto_checkpoint_threshold_bytes = 2 * 1024 * 1024;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return d->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+    REQUIRE(exec("CREATE TABLE ssb.lineorder ("
+                 "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
+                 "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
+                 "lo_quantity bigint, lo_extendedprice bigint, lo_ordtotalprice bigint, lo_discount bigint, "
+                 "lo_revenue bigint, lo_supplycost bigint, lo_tax bigint, lo_commitdate bigint, "
+                 "lo_shipmode text);")
+                ->is_success());
+    static const std::string kColumns =
+        "(lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, lo_orderdate, lo_orderpriority, "
+        "lo_shippriority, lo_quantity, lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
+        "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode)";
+
+    std::ifstream file(source);
+    REQUIRE(file.is_open());
+    std::string line;
+    std::getline(file, line);
+    auto load_rows = [&](int rows) {
+        int done = 0;
+        while (done < rows) {
+            std::string values;
+            int in_batch = 0;
+            while (in_batch < 100 && std::getline(file, line)) {
+                auto tuple = tuple_from_line(line);
+                if (tuple.empty()) {
+                    continue;
+                }
+                if (in_batch != 0) {
+                    values += ", ";
+                }
+                values += tuple;
+                ++in_batch;
+            }
+            if (in_batch == 0) {
+                break;
+            }
+            REQUIRE(exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";")->is_success());
+            done += in_batch;
+        }
+    };
+
+    // Warm the WAL past the threshold so the automatic checkpoint is demonstrably working.
+    services::disk::reset_table_checkpoints();
+    load_rows(30000);
+    const auto rounds_before = services::disk::table_checkpoints();
+    WARN("automatic checkpoint rounds before the explicit one: " << rounds_before);
+    REQUIRE(rounds_before > 0); // otherwise the rest of this test proves nothing
+
+    REQUIRE(exec("CHECKPOINT;")->is_success());
+
+    services::disk::reset_table_checkpoints();
+    load_rows(30000);
+    const auto rounds_after = services::disk::table_checkpoints();
+    WARN("automatic checkpoint rounds after the explicit one: " << rounds_after);
+    CHECK(rounds_after > 0);
+}

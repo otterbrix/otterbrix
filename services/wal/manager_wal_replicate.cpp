@@ -401,8 +401,24 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Track WAL bytes for auto-checkpoint threshold.
-        wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
+        // Track WAL bytes for auto-checkpoint threshold — the bytes written SINCE the last
+        // checkpoint, which is what the threshold is defined against. Storing the total directory
+        // size here instead meant the threshold stayed tripped forever once crossed.
+        {
+            const auto total = total_wal_bytes();
+            auto base = wal_bytes_at_last_checkpoint_.load(std::memory_order_relaxed);
+            if (total < base) {
+                // The directory shrank behind us — something truncated the WAL without going through
+                // the checkpoint that owns this window. Re-baseline instead of measuring against a
+                // size that no longer exists, which would under-report growth until the WAL climbed
+                // back past it. No live path does this today (see
+                // test_ssb_load_scaling::explicit_checkpoint_does_not_suppress_the_automatic_one),
+                // but the subtraction has to be defined for an input that can occur.
+                wal_bytes_at_last_checkpoint_.store(total, std::memory_order_relaxed);
+                base = total;
+            }
+            wal_bytes_since_checkpoint_.store(total - base, std::memory_order_relaxed);
+        }
 
         // Auto-checkpoint trigger. needs_auto_checkpoint() compares WAL bytes
         // written SINCE the last checkpoint (not total WAL size) against the
@@ -532,6 +548,7 @@ namespace services::wal {
         //     no-disk test topology, NOT a fallback: without a disk checkpoint
         //     there is no safe truncation boundary, so we clear the guard and stop.
         if (manager_disk_ == actor_zeta::address_t::empty_address()) {
+            rebase_auto_checkpoint_window();
             auto_checkpoint_in_flight_ = false;
             co_return;
         }
@@ -571,7 +588,11 @@ namespace services::wal {
             co_await truncate_before(session, checkpoint_wal_id);
         }
 
-        // (e) Release the dedup guard.
+        // (e) Rebase the byte window on the post-truncate size and release the dedup guard. The
+        //     rebase must happen HERE rather than at trigger time: the truncate above is what
+        //     shrinks the directory, and a window based on the pre-truncate size would either
+        //     re-trip immediately or stay suppressed for a whole extra checkpoint's worth of WAL.
+        rebase_auto_checkpoint_window();
         auto_checkpoint_in_flight_ = false;
         co_return;
     }

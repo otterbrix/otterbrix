@@ -2,7 +2,27 @@
 #include <algorithm>
 #include <cstring>
 
+#ifdef DEV_MODE
+#include <atomic>
+#endif
+
 namespace core::b_plus_tree {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_leaf_flushes{0};
+        std::atomic<uint64_t> g_leaf_flushes_without_changes{0};
+    } // namespace
+
+    uint64_t leaf_flushes() noexcept { return g_leaf_flushes.load(std::memory_order_relaxed); }
+    uint64_t leaf_flushes_without_changes() noexcept {
+        return g_leaf_flushes_without_changes.load(std::memory_order_relaxed);
+    }
+    void reset_leaf_flushes() noexcept {
+        g_leaf_flushes.store(0, std::memory_order_relaxed);
+        g_leaf_flushes_without_changes.store(0, std::memory_order_relaxed);
+    }
+#endif
 
     segment_tree_t::iterator::iterator(segment_tree_t* seg_tree, segment_tree_t::block_metadata* metadata)
         : seg_tree_(seg_tree)
@@ -85,6 +105,11 @@ namespace core::b_plus_tree {
         , key_func_(func)
         , file_(std::move(file)) {
         header_ = static_cast<header_t*>(resource_->allocate(header_size, alignof(size_t)));
+        // flush() writes this whole region to disk, but only the counters and the metadata entries
+        // actually in use are ever assigned. Without zeroing, everything past metadata_end_ is
+        // whatever the pool handed over, and that heap content is written to the file — a leak, and
+        // the reason two runs of the same operations produced different bytes.
+        std::memset(static_cast<void*>(header_), 0, header_size);
         header_->segments_count_ = 0;
         header_->item_count_ = 0;
         header_->unique_id_count_ = 0;
@@ -105,6 +130,7 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::append(const index_t& index, item_data item) {
+        mark_dirty_();
         if (segments_.empty()) {
             segments_.reserve(2);
             string_storage_.reserve(2);
@@ -240,6 +266,7 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::remove(const index_t& index, item_data item) {
+        mark_dirty_();
         if (segments_.empty()) {
             return false;
         }
@@ -336,6 +363,7 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::remove_index(const index_t& index) {
+        mark_dirty_();
         if (segments_.empty()) {
             return false;
         }
@@ -374,6 +402,12 @@ namespace core::b_plus_tree {
         if (range.end - range.begin > 1) {
             metadata = range.end - 1;
             remove_node = segments_.begin() + (metadata - metadata_begin_);
+            // The range's FIRST block is loaded at the top of this function; its LAST one was not.
+            // After lazy_load() only the metadata is resident, so this dereference was on a null
+            // block whenever one index spanned more than a single block.
+            if (!remove_node->block) {
+                load_segment_(metadata);
+            }
             if (remove_node->block->unique_indices_count() == 1) {
                 // keep in delete range
             } else {
@@ -449,6 +483,10 @@ namespace core::b_plus_tree {
                                                                      std::chrono::system_clock::now(),
                                                                      true});
                 item_count -= node->block->count();
+                // split_uniques() moved items OUT of this block, so its bytes changed and it has to
+                // be written. Without this the file keeps the pre-split block and the moved items
+                // come back on the next load — present in both trees at once.
+                node->modified = true;
                 update_metadata_(node, metadata);
                 header_->item_count_ -= item_count;
                 header_->unique_id_count_ -= split_size;
@@ -462,6 +500,9 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::balance_with(std::unique_ptr<segment_tree_t>& other) {
+        // Both sides change: this leaf and the neighbour it trades blocks with.
+        mark_dirty_();
+        other->mark_dirty_();
         assert(min_index() > other->max_index() || max_index() < other->min_index());
         assert(header_->unique_id_count_ != other->header_->unique_id_count_ && header_->unique_id_count_ != 0 &&
                other->header_->unique_id_count_ != 0);
@@ -512,6 +553,9 @@ namespace core::b_plus_tree {
                     item_count -= node->block->count();
                     assert(segments_.begin()->block->count() != 0 && "incorrect node split");
                     assert(node->block->count() != 0 && "incorrect node split");
+                    // Same as in split(): the donor's block was shrunk in place. The mirrored
+                    // branch below already marks it; this one did not.
+                    node->modified = true;
                     other->update_metadata_(node, metadata);
                     header_->item_count_ += item_count;
                     header_->unique_id_count_ += rebalance_size;
@@ -572,6 +616,8 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::merge(std::unique_ptr<segment_tree_t>& other) {
+        mark_dirty_();
+        other->mark_dirty_();
         assert(header_->item_count_ != 0 && other->header_->item_count_ != 0);
         assert(min_index() > other->max_index() || max_index() < other->min_index());
 
@@ -762,11 +808,47 @@ namespace core::b_plus_tree {
 
     size_t segment_tree_t::unique_indices_count() const { return header_->unique_id_count_; }
 
-    void segment_tree_t::flush() {
+    bool segment_tree_t::flush() {
+        // A leaf nobody touched is already correct on disk: its blocks, its header and its length
+        // were written by the flush that made it clean. Rewriting it would cost a header write, a
+        // truncate and an fsync for nothing — and btree_t::flush() walks EVERY leaf, so that
+        // nothing was being paid once per leaf on every statement.
+        if (!dirty_.exchange(false, std::memory_order_acq_rel)) {
+#ifdef DEV_MODE
+            // Safety net for a coarse hand-maintained flag. If a mutation path ever forgets
+            // mark_dirty_(), the change would simply never reach the disk and would be lost at
+            // restart — silently, and long after the fact. These checks turn that into a loud
+            // failure in the test build instead.
+            // The condition mirrors the writer below (`block.get()` && `modified`): a segment that
+            // is marked modified while NOT resident is never written by flush() either, with or
+            // without this early return. That case is a separate, pre-existing defect —
+            // close_gaps_ relocates unloaded blocks and marks them modified, but the writer skips
+            // them — and asserting on it here would blame this skip for someone else's bug.
+            for (const auto& segment : segments_) {
+                assert(!(segment.block.get() && segment.modified) &&
+                       "clean leaf carries a modified resident block — a mutation path forgot mark_dirty_()");
+            }
+            assert(gap_tracker_.empty_spaces().size() <= 1 &&
+                   "clean leaf still has gaps to close — a mutation path forgot mark_dirty_()");
+#endif
+            return true;
+        }
+#ifdef DEV_MODE
+        bool wrote_any_block = false;
+#endif
         close_gaps_();
 
+        // Every failure below leaves the leaf dirty again and returns false. The order matters: the
+        // dirty flag was cleared on entry (so a concurrent mutation during the write is not lost),
+        // so a failed write has to put it back, and a block's `modified` flag may only be cleared
+        // once its bytes actually reached the file. Otherwise a full disk reports success, the leaf
+        // calls itself clean, and the next flush skips it — the rows are then gone for good.
+        bool ok = true;
+
         /*  header_  */
-        file_->write(static_cast<void*>(header_), header_size, 0);
+        if (!file_->write(static_cast<void*>(header_), header_size, 0)) {
+            ok = false;
+        }
 
         /*  BLOCKS  */
         // TODO: it would be faster to flush blocks in offset order, instead of their id
@@ -776,14 +858,35 @@ namespace core::b_plus_tree {
             if (segment->block.get()) {
                 assert(segment->block->count() != 0 && "block is empty");
                 if (segment->modified) {
+#ifdef DEV_MODE
+                    wrote_any_block = true;
+#endif
                     segment->block->recalculate_checksum();
-                    file_->write(segment->block->internal_buffer(), metadata->size, metadata->file_offset);
-                    segment->modified = false;
+                    if (file_->write(segment->block->internal_buffer(), metadata->size, metadata->file_offset)) {
+                        segment->modified = false;
+                    } else {
+                        ok = false;
+                    }
                 }
             }
         }
-        file_->truncate(static_cast<int64_t>(gap_tracker_.empty_spaces().front().offset));
-        file_->sync();
+        if (!file_->truncate(static_cast<int64_t>(gap_tracker_.empty_spaces().front().offset))) {
+            ok = false;
+        }
+        if (!file_->sync()) {
+            ok = false;
+        }
+        if (!ok) {
+            // Not durable: make sure the next flush tries again instead of skipping the leaf.
+            mark_dirty_();
+        }
+#ifdef DEV_MODE
+        g_leaf_flushes.fetch_add(1, std::memory_order_relaxed);
+        if (!wrote_any_block) {
+            g_leaf_flushes_without_changes.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
+        return ok;
     }
 
     void segment_tree_t::clean_load() {
@@ -822,6 +925,12 @@ namespace core::b_plus_tree {
                 metadata->max_index = index_t(*string_storage_.back().second);
             }
         }
+
+        // Everything above replaced this leaf's state with the file's, so by definition it now
+        // matches the file and there is nothing to write. dirty_ starts true because a leaf that
+        // was BUILT has never been written; a leaf that was LOADED has. Without this, the first
+        // flush after any restart rewrote and fsynced every leaf of every index.
+        dirty_.store(false, std::memory_order_release);
     }
 
     void segment_tree_t::lazy_load() {
@@ -847,6 +956,12 @@ namespace core::b_plus_tree {
                 segments_.back().block = nullptr;
             }
         }
+
+        // Everything above replaced this leaf's state with the file's, so by definition it now
+        // matches the file and there is nothing to write. dirty_ starts true because a leaf that
+        // was BUILT has never been written; a leaf that was LOADED has. Without this, the first
+        // flush after any restart rewrote and fsynced every leaf of every index.
+        dirty_.store(false, std::memory_order_release);
     }
 
     segment_tree_t::metadata_range segment_tree_t::find_range_(const index_t& index) const {
@@ -865,6 +980,7 @@ namespace core::b_plus_tree {
 
     // TODO: add neighbouring blocks merging if needed
     void segment_tree_t::remove_range_(metadata_range range) {
+        mark_dirty_();
         if (range.begin == range.end) {
             return;
         }
@@ -925,7 +1041,15 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::unload_old_segments_() {
-        close_gaps_();
+        // Not just a memory eviction: it WRITES the evicted blocks to the file and clears their
+        // `modified` flags, without writing the header and without fsync. So after an unload the
+        // leaf looks unmodified while its file still needs the header and the sync.
+        mark_dirty_();
+        // Deliberately does NOT close gaps. close_gaps_ now loads a block before relocating it,
+        // and load_segment_ calls this function when the allocation fails — closing gaps here
+        // would close that loop. Skipping it is safe: every block below is written at its current
+        // metadata offset, which stays valid whether or not the file has holes in it. Compaction
+        // is flush()'s job, and flush() calls close_gaps_ itself.
         std::vector<std::pair<std::chrono::time_point<std::chrono::system_clock>, size_t>> blocks_to_unload;
         blocks_to_unload.reserve(segments_.size());
         for (size_t i = 0; i < segments_.size(); i++) {
@@ -950,6 +1074,8 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::insert_segment_(it pos, node_t&& node) {
+        // Changes header_->segments_count_ and the block metadata array, which live in the header.
+        mark_dirty_();
         node.last_used = std::chrono::system_clock::now();
         auto index = pos - segments_.begin();
         block_metadata* metadata = metadata_begin_ + index;
@@ -964,6 +1090,7 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::remove_segment_(it pos) {
+        mark_dirty_();
         auto index = pos - segments_.begin();
         block_metadata* metadata = metadata_begin_ + index;
         gap_tracker_.remove_gap({metadata->file_offset, metadata->size});
@@ -976,6 +1103,7 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::update_metadata_(it pos, block_metadata* metadata) {
+        mark_dirty_();
         using components::types::physical_type;
         index_t min_index = pos->block->min_index();
         auto index_storage = string_storage_.begin() + (pos - segments_.begin());
@@ -1002,8 +1130,21 @@ namespace core::b_plus_tree {
         while (gaps.size() > 1) {
             // TODO: try to close gaps with existing blocks
             size_t i = 0;
+            // Moves blocks inside the file: both the metadata (which lives in the header) and the
+            // affected blocks have to be rewritten. Marked here rather than at function entry —
+            // flush() calls close_gaps_() itself, and marking unconditionally would make every
+            // leaf dirty again on every flush.
+            mark_dirty_();
             for (block_metadata* it = metadata_begin_; it < metadata_end_; it++, i++) {
                 if (it->file_offset > gaps.front().offset) {
+                    // Read the block in BEFORE its offset changes. Relocation only rewrites the
+                    // metadata; the bytes are moved by flush()'s writer, and that writer skips
+                    // segments whose block is not resident. Moving a non-resident block therefore
+                    // used to point its metadata at an address nothing was ever written to, and the
+                    // next load read whatever happened to be there.
+                    if (!segments_[i].block) {
+                        load_segment_(it);
+                    }
                     it->file_offset -= gaps.front().size;
                     segments_[i].modified = true;
                 }

@@ -89,7 +89,7 @@ namespace core::b_plus_tree {
             size_t count() const override;
             size_t unique_entry_count() const override;
             uint64_t segment_tree_id() const;
-            void flush() const;
+            [[nodiscard]] bool flush() const;
             void load();
 
             segment_tree_t::iterator begin() const { return segment_tree_->begin(); }
@@ -198,7 +198,9 @@ namespace core::b_plus_tree {
 
         // full flush and load for now
         // TODO: flush and load only modified leaves
-        void flush();
+        // Persist every dirty leaf and the tree metadata. Returns false if any of it failed to
+        // reach the disk; the failed leaves stay dirty for the next attempt.
+        [[nodiscard]] bool flush();
         void load();
 
         bool contains_index(const index_t& index);

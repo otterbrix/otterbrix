@@ -370,7 +370,7 @@ namespace services::index {
         if (hash_index_) {
             hash_index_->set_full_key_loader(nullptr);
         }
-        force_flush();
+        auto ignored_flush_error = force_flush();
     }
 
     void bitcask_index_disk_t::install_hash_key_loader() {
@@ -1023,9 +1023,10 @@ namespace services::index {
         }
     }
 
-    void bitcask_index_disk_t::force_flush() {
+    core::error_t bitcask_index_disk_t::force_flush() {
         std::unique_lock lock(mutex_);
         force_flush_unlocked();
+        return core::error_t::no_error();
     }
 
     void bitcask_index_disk_t::force_flush_unlocked() {

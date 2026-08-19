@@ -127,7 +127,7 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
 
         REQUIRE(duplicate_row_violations.load(std::memory_order_relaxed) == 0);
         REQUIRE(find_count.load(std::memory_order_relaxed) > 0);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
         expected_after_stress = snapshot(index);
     }
 

@@ -488,7 +488,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
 
         REQUIRE(tree.count() == 500);
 
-        tree.flush();
+        REQUIRE(tree.flush());
         tree.clean_load();
 
         REQUIRE(tree.count() == 500);
@@ -524,7 +524,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 450);
         REQUIRE(tree.unique_indices_count() == 450);
 
-        tree.flush();
+        REQUIRE(tree.flush());
         tree.clean_load();
 
         REQUIRE(tree.count() == 450);
@@ -615,7 +615,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 500);
         REQUIRE(tree.unique_indices_count() == 500);
 
-        tree.flush();
+        REQUIRE(tree.flush());
         tree.clean_load();
 
         REQUIRE(tree.count() == 500);
@@ -652,7 +652,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 450);
         REQUIRE(tree.unique_indices_count() == 450);
 
-        tree.flush();
+        REQUIRE(tree.flush());
         tree.clean_load();
 
         REQUIRE(tree.count() == 450);
@@ -794,7 +794,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             REQUIRE(tree.contains_index(segment_tree_t::index_t(i)));
         }
 
-        tree.flush();
+        REQUIRE(tree.flush());
         try {
             // should fail, because there is not enough memory for it
             tree.clean_load();
@@ -843,7 +843,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             REQUIRE(tree.unique_indices_count() == i + 1);
         }
 
-        tree.flush();
+        REQUIRE(tree.flush());
         tree.clean_load();
 
         for (uint64_t i = 0; i < test_count; i++) {
@@ -872,6 +872,623 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);
         }
+    }
+}
+
+// split() and balance_with() shrink a block IN PLACE by moving items out of it, but two of the
+// three sites that do so never mark that block modified — so flush() never writes it and the file
+// keeps the pre-split bytes. The third site (balance_with's second branch) does set
+// `node->modified = true`, which is what shows the other two are omissions rather than intent.
+//
+// Nothing noticed before because flush() rewrote every leaf's header unconditionally, and count()
+// reads that header — so the counters looked right while the block behind them was stale. These
+// tests therefore ignore the counters and walk the actual items back off the disk.
+TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_split_persistence";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    // Walk every item actually stored in the blocks, not the header counters.
+    auto collect = [](segment_tree_t& tree) {
+        std::vector<uint64_t> out;
+        for (auto block = tree.begin(); block != tree.end(); block++) {
+            for (auto it = block->begin(); it != block->end(); it++) {
+                out.push_back((*it).index.value<components::types::physical_type::UINT64>());
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+
+    constexpr uint64_t kItems = 600;
+    std::vector<dummy_alloc> test_data;
+    for (uint64_t i = 0; i < kItems; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        write_unaligned<uint64_t>(dummy.buffer, i);
+        test_data.push_back(dummy);
+    }
+
+    auto left_name = testing_directory;
+    left_name /= "split_left";
+    auto right_name = testing_directory;
+    right_name /= "split_right";
+
+    segment_tree_t tree(&resource,
+                        key_getter,
+                        open_file(fs, left_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    for (uint64_t i = 0; i < kItems; i++) {
+        REQUIRE(tree.append(test_data[i].buffer, test_data[i].size));
+    }
+    REQUIRE(tree.blocks_count() > 1); // the split point has to be able to fall INSIDE a block
+
+    // Flush BEFORE splitting. Without this the blocks still carry the `modified` flags set while
+    // they were being filled, so the post-split flush writes the shrunk block for the wrong
+    // reason and the defect stays hidden. This is the step that makes the test reach it.
+    REQUIRE(tree.flush());
+    tree.clean_load();
+
+    auto other = tree.split(
+        open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    REQUIRE(other != nullptr);
+
+    const auto left_before = collect(tree);
+    const auto right_before = collect(*other);
+    REQUIRE(left_before.size() + right_before.size() == kItems);
+
+    REQUIRE(tree.flush());
+    REQUIRE(other->flush());
+    tree.clean_load();
+    other->clean_load();
+
+    const auto left_after = collect(tree);
+    const auto right_after = collect(*other);
+
+    INFO("left leaf held " << left_before.size() << " items before the flush and " << left_after.size()
+                           << " after reloading them from disk");
+    CHECK(left_after == left_before);
+    CHECK(right_after == right_before);
+
+    // And the whole point: no item may be duplicated or lost across the pair.
+    std::vector<uint64_t> all;
+    all.insert(all.end(), left_after.begin(), left_after.end());
+    all.insert(all.end(), right_after.begin(), right_after.end());
+    std::sort(all.begin(), all.end());
+    REQUIRE(all.size() == kItems);
+    for (uint64_t i = 0; i < kItems; i++) {
+        CHECK(all[i] == i);
+    }
+}
+
+TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_balance_persistence";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    auto collect = [](segment_tree_t& tree) {
+        std::vector<uint64_t> out;
+        for (auto block = tree.begin(); block != tree.end(); block++) {
+            for (auto it = block->begin(); it != block->end(); it++) {
+                out.push_back((*it).index.value<components::types::physical_type::UINT64>());
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+
+    // Only MILDLY unbalanced, and that is deliberate. A large imbalance moves whole blocks first,
+    // which frees gaps in the donor's file; close_gaps_ then shifts the remaining blocks at flush
+    // time and marks them modified, so the shrunk block gets written for an unrelated reason and
+    // the defect is masked. Keeping the transfer smaller than one block's worth of keys means the
+    // very first block examined is split in place, with no block moves and no gaps.
+    constexpr uint64_t kFull = 600;
+    constexpr uint64_t kSparse = 560;
+    std::vector<dummy_alloc> test_data;
+    for (uint64_t i = 0; i < kFull + kSparse; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        write_unaligned<uint64_t>(dummy.buffer, i);
+        test_data.push_back(dummy);
+    }
+
+    auto low_name = testing_directory;
+    low_name /= "balance_low";
+    auto high_name = testing_directory;
+    high_name /= "balance_high";
+
+    // balance_with asserts that the CALLER is the sparse side, so `low` calls it and `high` is the
+    // donor whose block gets shrunk in place.
+    segment_tree_t low(&resource,
+                       key_getter,
+                       open_file(fs, low_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    auto high = std::make_unique<segment_tree_t>(
+        &resource,
+        key_getter,
+        open_file(fs, high_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+
+    // The sparse caller must hold the HIGH keys. balance_with has two mirrored branches, and only
+    // the `min_index() > other->max_index()` one is missing the mark — with the sparse side low,
+    // the run takes the other branch, which sets it, and the defect never shows.
+    for (uint64_t i = 0; i < kFull; i++) {
+        REQUIRE(high->append(test_data[i].buffer, test_data[i].size));
+    }
+    for (uint64_t i = kFull; i < kFull + kSparse; i++) {
+        REQUIRE(low.append(test_data[i].buffer, test_data[i].size));
+    }
+    REQUIRE(high->blocks_count() > 1);
+
+    // Same reason as in the split test: clear the fill-time `modified` flags first, or the donor's
+    // shrunk block gets written for the wrong reason and the defect stays hidden.
+    REQUIRE(low.flush());
+    REQUIRE(high->flush());
+    low.clean_load();
+    high->clean_load();
+
+    low.balance_with(high);
+
+    const auto low_before = collect(low);
+    const auto high_before = collect(*high);
+    REQUIRE(low_before.size() + high_before.size() == kFull + kSparse);
+
+    REQUIRE(low.flush());
+    REQUIRE(high->flush());
+    low.clean_load();
+    high->clean_load();
+
+    INFO("after balancing, the donor held " << high_before.size() << " items before the flush and "
+                                            << collect(*high).size() << " after reloading from disk");
+    CHECK(collect(low) == low_before);
+    CHECK(collect(*high) == high_before);
+
+    std::vector<uint64_t> all;
+    const auto l = collect(low);
+    const auto h = collect(*high);
+    all.insert(all.end(), l.begin(), l.end());
+    all.insert(all.end(), h.begin(), h.end());
+    std::sort(all.begin(), all.end());
+    REQUIRE(all.size() == kFull + kSparse);
+    for (uint64_t i = 0; i < kFull + kSparse; i++) {
+        CHECK(all[i] == i);
+    }
+}
+
+// close_gaps_() relocates blocks inside the leaf file when a hole appears, rewriting each moved
+// block's file_offset in the header and marking its segment modified. But flush()'s writer is
+// gated on the block being RESIDENT (`segment->block.get()`), so a block that is only known by its
+// metadata — the normal state after lazy_load() — has its offset moved while its bytes stay where
+// they were. The next load then reads that block from an address nothing was ever written to.
+TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_close_gaps";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    auto collect = [](segment_tree_t& tree) {
+        std::vector<uint64_t> out;
+        for (auto block = tree.begin(); block != tree.end(); block++) {
+            for (auto it = block->begin(); it != block->end(); it++) {
+                out.push_back((*it).index.value<components::types::physical_type::UINT64>());
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+
+    constexpr uint64_t kItems = 600;
+    std::vector<dummy_alloc> test_data;
+    for (uint64_t i = 0; i < kItems; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        write_unaligned<uint64_t>(dummy.buffer, i);
+        test_data.push_back(dummy);
+    }
+
+    auto fname = testing_directory;
+    fname /= "close_gaps_file";
+    segment_tree_t tree(&resource,
+                        key_getter,
+                        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    for (uint64_t i = 0; i < kItems; i++) {
+        REQUIRE(tree.append(test_data[i].buffer, test_data[i].size));
+    }
+    REQUIRE(tree.blocks_count() > 2);
+    REQUIRE(tree.flush());
+    tree.clean_load();
+
+    // Keys living in the FIRST block: emptying it is what opens a hole at the front of the file,
+    // which is what makes close_gaps_ relocate every block after it.
+    std::vector<uint64_t> first_block_keys;
+    {
+        auto block = tree.begin();
+        for (auto it = block->begin(); it != block->end(); it++) {
+            first_block_keys.push_back((*it).index.value<components::types::physical_type::UINT64>());
+        }
+    }
+    REQUIRE(first_block_keys.size() > 1);
+
+    // Unload everything: from here the later blocks exist only as metadata, which is exactly the
+    // state in which close_gaps_ moves them without anyone writing their bytes.
+    tree.lazy_load();
+
+    for (uint64_t key : first_block_keys) {
+        REQUIRE(tree.remove_index(segment_tree_t::index_t(key)));
+    }
+
+    REQUIRE(tree.flush());
+    tree.clean_load();
+
+    std::vector<uint64_t> expected;
+    for (uint64_t i = 0; i < kItems; i++) {
+        if (std::find(first_block_keys.begin(), first_block_keys.end(), i) == first_block_keys.end()) {
+            expected.push_back(i);
+        }
+    }
+    const auto actual = collect(tree);
+    INFO("expected " << expected.size() << " surviving items, read " << actual.size() << " back from disk");
+    CHECK(actual == expected);
+}
+
+// remove_index() loads the FIRST block of the index range before touching it, but not the LAST.
+// The guard at the top of the function has no counterpart at `range.end - 1`, so when one index
+// spans more than one block and the tree is lazily loaded, the second dereference is on a null
+// block. Every other site in the file loads first; this one was missed.
+TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_the_range") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_remove_index_lazy";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    // One key repeated far past a single block's capacity, so its metadata range spans several
+    // blocks and `range.end - range.begin > 1` holds.
+    constexpr uint64_t kShared = 42;
+    constexpr uint64_t kSharedCount = 40;
+    constexpr uint64_t kOthers = 60;
+    std::vector<dummy_alloc> test_data;
+    for (uint64_t i = 0; i < kSharedCount; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        std::memset(dummy.buffer, 0, dummy.size);
+        write_unaligned<uint64_t>(dummy.buffer, kShared);
+        // Same key, different payload: the tree rejects an item that is byte-identical to one it
+        // already holds, so the duplicates need a discriminator to exist at all.
+        write_unaligned<uint64_t>(dummy.buffer + sizeof(uint64_t), i);
+        test_data.push_back(dummy);
+    }
+    for (uint64_t i = 0; i < kOthers; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        std::memset(dummy.buffer, 0, dummy.size);
+        write_unaligned<uint64_t>(dummy.buffer, 1000 + i);
+        test_data.push_back(dummy);
+    }
+
+    auto fname = testing_directory;
+    fname /= "remove_index_lazy_file";
+    segment_tree_t tree(&resource,
+                        key_getter,
+                        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    for (const auto& item : test_data) {
+        REQUIRE(tree.append(item.buffer, item.size));
+    }
+    REQUIRE(tree.blocks_count() > 2);
+
+    REQUIRE(tree.flush());
+    // Only the metadata stays resident: this is the ordinary state of a leaf that was opened but
+    // not read yet, and the state in which the missing guard bites.
+    tree.lazy_load();
+
+    REQUIRE(tree.remove_index(segment_tree_t::index_t(kShared)));
+
+    CHECK(tree.count() == kOthers);
+    CHECK_FALSE(tree.contains_index(segment_tree_t::index_t(kShared)));
+    for (uint64_t i = 0; i < kOthers; i++) {
+        CHECK(tree.contains_index(segment_tree_t::index_t(1000 + i)));
+    }
+}
+
+// Both persistence layers write a fixed-size region but initialise only its head: segment_tree_t's
+// leaf header is allocated at 2 * DEFAULT_BLOCK_SIZE with three counters set, and btree_t::flush()
+// allocates METADATA_SIZE and fills two counters plus one id per leaf. The rest of each region is
+// whatever the allocator handed over, and flush() writes the WHOLE region to disk.
+//
+// The test poisons the pool with a recognisable pattern, frees it so the tree gets that memory,
+// and then looks for the pattern in the file. Anything found there is heap contents that leaked
+// onto disk — it also makes the files non-reproducible run to run.
+TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_uninitialised";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    constexpr uint8_t kPoison = 0xAB;
+    constexpr size_t kLeafHeaderSize = 2 * DEFAULT_BLOCK_SIZE;
+
+    // Poison MANY chunks of exactly the size the tree will ask for, then release them all. One
+    // chunk is not enough: when this test runs after others the pool already has free chunks of
+    // that size, and the tree gets one of those instead — the check then passes for the wrong
+    // reason. Filling the whole free list for that size makes the outcome independent of test
+    // order.
+    auto poison_the_pool = [&](size_t bytes) {
+        constexpr size_t kChunks = 32;
+        std::vector<void*> scratch;
+        scratch.reserve(kChunks);
+        for (size_t i = 0; i < kChunks; i++) {
+            void* p = resource.allocate(bytes, alignof(size_t));
+            std::memset(p, kPoison, bytes);
+            scratch.push_back(p);
+        }
+        for (auto it = scratch.rbegin(); it != scratch.rend(); ++it) {
+            resource.deallocate(*it, bytes, alignof(size_t));
+        }
+    };
+
+    auto count_poison = [&](const path_t& file, size_t bytes) {
+        std::vector<uint8_t> raw(bytes, 0);
+        auto handle = open_file(fs, file, file_flags::READ);
+        handle->read(static_cast<void*>(raw.data()), bytes, 0);
+        return static_cast<size_t>(std::count(raw.begin(), raw.end(), kPoison));
+    };
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    INFO("leaf header");
+    {
+        poison_the_pool(kLeafHeaderSize);
+
+        auto fname = testing_directory;
+        fname /= "leaf_header_file";
+        segment_tree_t tree(&resource,
+                            key_getter,
+                            open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+        for (uint64_t i = 0; i < 4; i++) {
+            dummy_alloc dummy;
+            dummy.size = DEFAULT_BLOCK_SIZE / 32;
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+            std::memset(dummy.buffer, 0, dummy.size);
+            write_unaligned<uint64_t>(dummy.buffer, i);
+            REQUIRE(tree.append(dummy.buffer, dummy.size));
+        }
+        REQUIRE(tree.flush());
+
+        const auto leaked = count_poison(fname, kLeafHeaderSize);
+        INFO("bytes of recognisable heap poison found in the leaf header on disk: " << leaked);
+        CHECK(leaked == 0);
+
+        // The invariant that holds regardless of what the allocator handed over: a leaf with a
+        // handful of blocks uses only the head of its header region, so the far tail must be
+        // zeros on disk. This part of the check cannot be satisfied by luck.
+        std::vector<uint8_t> tail(kLeafHeaderSize / 4, kPoison);
+        auto handle = open_file(fs, fname, file_flags::READ);
+        handle->read(static_cast<void*>(tail.data()), tail.size(), kLeafHeaderSize - tail.size());
+        CHECK(std::all_of(tail.begin(), tail.end(), [](uint8_t b) { return b == 0; }));
+    }
+}
+
+// A leaf that was just read off the disk is by definition identical to its file, so flushing it
+// again writes bytes that are already there. dirty_ defaults to true because a freshly BUILT leaf
+// has never been written — but clean_load()/lazy_load() replace the leaf's whole state with the
+// file's, and neither cleared the flag. The first flush after any restart therefore rewrote and
+// fsynced every leaf of every index.
+TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_load_clears_dirty";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    auto fname = testing_directory;
+    fname /= "load_clears_dirty_file";
+
+    // Phase 1: build the file and let it go, exactly as a session end would.
+    {
+        segment_tree_t tree(&resource,
+                            key_getter,
+                            open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+        for (uint64_t i = 0; i < 200; i++) {
+            dummy_alloc dummy;
+            dummy.size = DEFAULT_BLOCK_SIZE / 32;
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+            std::memset(dummy.buffer, 0, dummy.size);
+            write_unaligned<uint64_t>(dummy.buffer, i);
+            REQUIRE(tree.append(dummy.buffer, dummy.size));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    // Phase 2: a FRESH leaf object over the existing file — the restart shape. dirty_ starts true
+    // because a leaf that was built rather than loaded has never been written, and clean_load()
+    // replaces its entire state with the file's without saying so.
+    {
+        segment_tree_t reopened(&resource,
+                                key_getter,
+                                open_file(fs, fname, file_flags::READ | file_flags::WRITE));
+        reopened.clean_load();
+        core::b_plus_tree::reset_leaf_flushes();
+        REQUIRE(reopened.flush());
+        const auto after_clean_load = core::b_plus_tree::leaf_flushes();
+        INFO("leaf flushes caused by the first flush after clean_load() on a reopened leaf: "
+             << after_clean_load);
+        CHECK(after_clean_load == 0);
+    }
+
+    {
+        segment_tree_t reopened(&resource,
+                                key_getter,
+                                open_file(fs, fname, file_flags::READ | file_flags::WRITE));
+        reopened.lazy_load();
+        core::b_plus_tree::reset_leaf_flushes();
+        REQUIRE(reopened.flush());
+        const auto after_lazy_load = core::b_plus_tree::leaf_flushes();
+        INFO("leaf flushes caused by the first flush after lazy_load() on a reopened leaf: " << after_lazy_load);
+        CHECK(after_lazy_load == 0);
+
+        // Sensitivity: the counter must be able to move, otherwise the checks above are satisfied
+        // by an instrument that is simply not wired up.
+        dummy_alloc extra;
+        extra.size = DEFAULT_BLOCK_SIZE / 32;
+        extra.buffer = static_cast<data_ptr_t>(resource.allocate(extra.size));
+        std::memset(extra.buffer, 0, extra.size);
+        write_unaligned<uint64_t>(extra.buffer, uint64_t{9999});
+        REQUIRE(reopened.append(extra.buffer, extra.size));
+        core::b_plus_tree::reset_leaf_flushes();
+        REQUIRE(reopened.flush());
+        REQUIRE(core::b_plus_tree::leaf_flushes() == 1);
+    }
+}
+
+// flush() called write(), truncate() and sync() and threw every result away, then cleared the
+// per-block `modified` flags and the per-leaf dirty flag regardless. A write that failed — a full
+// disk, a revoked descriptor — was therefore reported as a successful flush AND marked the leaf
+// clean, so the next flush skipped it and the data was gone for good.
+//
+// The failure is injected by handing the leaf a read-only descriptor: pwrite() on an O_RDONLY fd
+// returns -1, and core::filesystem::write already reports that by value (it just had no one
+// listening). No root, no full filesystem, no failpoint machinery needed.
+TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_io_failure";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    auto fname = testing_directory;
+    fname /= "io_failure_file";
+    { auto create = open_file(fs, fname, file_flags::WRITE | file_flags::FILE_CREATE); }
+
+    segment_tree_t tree(&resource, key_getter, open_file(fs, fname, file_flags::READ));
+    for (uint64_t i = 0; i < 8; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        std::memset(dummy.buffer, 0, dummy.size);
+        write_unaligned<uint64_t>(dummy.buffer, i);
+        REQUIRE(tree.append(dummy.buffer, dummy.size));
+    }
+
+    INFO("a flush that could not write must say so");
+    CHECK_FALSE(tree.flush());
+
+    // And the part that makes the difference between "one lost flush" and "lost data": the leaf
+    // must still consider itself dirty, so the next attempt writes it again. If the flag were
+    // cleared, this second call would skip the leaf and return true.
+    INFO("and the leaf must still be dirty, so a retry actually retries");
+    CHECK_FALSE(tree.flush());
+}
+
+// btree_t::flush() returned before writing anything when the tree had no leaves left, and nothing
+// in the repo ever unlinks a leaf file. Emptying a tree and flushing therefore left the previous
+// metadata file and every leaf file exactly as the last non-empty flush wrote them, so the next
+// load() rebuilt the whole pre-delete tree. In an index that means deleting every row and
+// restarting brings every deleted key back, pointing at row ids that no longer exist.
+TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "btree_emptied";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    constexpr uint64_t kItems = 500;
+
+    {
+        btree_t tree(&resource, fs, testing_directory, key_getter);
+        for (uint64_t i = 0; i < kItems; i++) {
+            dummy_alloc dummy;
+            dummy.size = DEFAULT_BLOCK_SIZE / 32;
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+            std::memset(dummy.buffer, 0, dummy.size);
+            write_unaligned<uint64_t>(dummy.buffer, i);
+            REQUIRE(tree.append(dummy.buffer, dummy.size));
+        }
+        REQUIRE(tree.flush());
+
+        for (uint64_t i = 0; i < kItems; i++) {
+            REQUIRE(tree.remove_index(btree_t::index_t(i)));
+        }
+        REQUIRE(tree.size() == 0);
+        REQUIRE(tree.flush());
+    }
+
+    {
+        btree_t reopened(&resource, fs, testing_directory, key_getter);
+        reopened.load();
+        INFO("items the emptied tree brought back from disk: " << reopened.size());
+        CHECK(reopened.size() == 0);
+        CHECK_FALSE(reopened.contains_index(btree_t::index_t(uint64_t{0})));
+        CHECK_FALSE(reopened.contains_index(btree_t::index_t(kItems / 2)));
     }
 }
 
@@ -971,7 +1588,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             REQUIRE(memcmp(dummy->buffer, scan_result[j].data(), dummy->size) == 0);
         }
 
-        tree.flush();
+        REQUIRE(tree.flush());
 
         REQUIRE(tree.size() == test_size);
 
@@ -1213,7 +1830,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
         REQUIRE(tree.size() == key_num * duplicate_count);
         REQUIRE(tree.unique_indices_count() == key_num);
-        tree.flush();
+        REQUIRE(tree.flush());
         for (uint64_t i = 0; i < key_num; i++) {
             REQUIRE(tree.remove_index(segment_tree_t::index_t(i)));
             for (uint64_t j = i + 1; j < key_num; j++) {
@@ -1267,7 +1884,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             REQUIRE(tree.unique_indices_count() == i + 1);
         }
 
-        tree.flush();
+        REQUIRE(tree.flush());
         tree.load();
 
         for (uint64_t i = 0; i < test_count; i++) {

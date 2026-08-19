@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory_resource>
@@ -11,6 +12,19 @@
 #include <core/file/file_system.hpp>
 
 namespace core::b_plus_tree {
+
+#ifdef DEV_MODE
+    // Test-observable count of LEAF flushes. One segment_tree_t is one B+tree leaf and owns one
+    // file, and segment_tree_t::flush() unconditionally rewrites that file's header, truncates it
+    // and fsyncs it — only the per-block writes are guarded by `modified`. btree_t::flush() walks
+    // every leaf, so a single changed row currently fsyncs the whole index.
+    //
+    // `leaf_flushes_without_changes` counts the flushes that wrote no block at all: pure waste,
+    // and the number a fix has to drive to zero.
+    uint64_t leaf_flushes() noexcept;
+    uint64_t leaf_flushes_without_changes() noexcept;
+    void reset_leaf_flushes() noexcept;
+#endif
 
     class gap_tracker_t {
     public:
@@ -311,8 +325,10 @@ namespace core::b_plus_tree {
         size_t blocks_count() const;
         size_t count() const;
         size_t unique_indices_count() const;
-        // flush to disk
-        void flush();
+        // Persist to disk. Returns false when any of the writes, the truncate or the fsync failed;
+        // the leaf then stays dirty so the next flush retries it, and the caller must treat the
+        // data as NOT durable.
+        [[nodiscard]] bool flush();
         // load all tree segment at once from scratch
         void clean_load();
         // clear current blocks, load only block's metadata
@@ -327,6 +343,17 @@ namespace core::b_plus_tree {
         r_iterator rend() const { return r_iterator({const_cast<segment_tree_t*>(this), metadata_begin_ - 1}); }
 
     private:
+        // Set whenever anything this leaf's FILE would have to reflect has changed: a block's
+        // contents, the header (segment count / per-block metadata), the on-disk layout, or a
+        // write that has not been fsynced yet. flush() writes the file only when it is set and
+        // clears it afterwards, so a leaf nobody touched costs nothing instead of an fsync.
+        //
+        // It is deliberately coarse — one bit per leaf, set from every mutation path rather than
+        // derived at flush time. Deriving it would have to re-read state the mutation already
+        // knows about, and a wrong derivation loses data silently at restart. mark_dirty_() is the
+        // single place that sets it so the paths are greppable.
+        void mark_dirty_() noexcept { dirty_.store(true, std::memory_order_release); }
+
         metadata_range find_range_(const index_t& index) const;
         void remove_range_(metadata_range range);
         [[nodiscard]] node_t construct_new_node_(const index_t& index, item_data item);
@@ -338,6 +365,18 @@ namespace core::b_plus_tree {
         void remove_segment_(it pos);
         void update_metadata_(it pos, block_metadata* metadata);
         void close_gaps_();
+
+        // Atomic, and flush() CLEARS IT BEFORE writing rather than after. btree_t::flush() locks
+        // only tree_mutex_ and explicitly does not lock the leaves, while btree_t::append() releases
+        // its node locks before mutating the leaf — so a writer can be inside a leaf while that leaf
+        // is being flushed. Clearing after the write would drop a mark_dirty_() raised during it and
+        // lose that change forever; clearing first only ever costs one redundant flush.
+        //
+        // In otterbrix the disk index is owned by a single actor (index_disk_ is a unique_ptr member
+        // of index_agent_disk_t, never handed out, and every mutation arrives through serialized
+        // mailbox handlers), so the race cannot happen there. core/b_plus_tree is a standalone
+        // library with its own locking and its own multithreaded test, and must not depend on that.
+        std::atomic<bool> dirty_{true}; // a freshly built leaf has never been written
 
         std::pmr::memory_resource* resource_;
         index_t (*key_func_)(const item_data&);

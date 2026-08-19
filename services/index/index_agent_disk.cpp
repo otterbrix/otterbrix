@@ -136,8 +136,9 @@ namespace services::index {
         for (const auto& [key, row_id] : values) {
             index_disk_->insert_bulk_unchecked(key, row_id);
         }
-        index_disk_->force_flush();
-        co_return core::error_t::no_error();
+        // The rows are only in the index once this succeeds. Reporting no_error on a failed flush
+        // would leave the statement believing the index matches the table when it does not.
+        co_return index_disk_->force_flush();
     }
 
     index_agent_disk_t::unique_future<core::error_t>
@@ -160,8 +161,7 @@ namespace services::index {
         for (const auto& [key, row_id] : values) {
             index_disk_->remove_bulk_unchecked(key, row_id);
         }
-        index_disk_->force_flush();
-        co_return core::error_t::no_error();
+        co_return index_disk_->force_flush();
     }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
@@ -170,7 +170,12 @@ namespace services::index {
         // in manager_index_t::flush_all_indexes before this became a mailbox op).
         trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
         if (index_disk_ && !is_dropped_) {
-            index_disk_->force_flush();
+            // Checkpoint path, not a statement: there is no cursor to fail here, so the result is
+            // recorded rather than propagated. The DML paths above DO propagate it.
+            auto flush_error = index_disk_->force_flush();
+            if (flush_error.type != core::error_code_t::none) {
+                error(log_, "index_agent_disk_t::force_flush: {}", flush_error.what);
+            }
         }
         co_return;
     }

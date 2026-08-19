@@ -262,7 +262,7 @@ namespace core::b_plus_tree {
     size_t btree_t::leaf_node_t::count() const { return segment_tree_->count(); }
     size_t btree_t::leaf_node_t::unique_entry_count() const { return segment_tree_->unique_indices_count(); }
     uint64_t btree_t::leaf_node_t::segment_tree_id() const { return segment_tree_id_; }
-    void btree_t::leaf_node_t::flush() const { segment_tree_->flush(); }
+    bool btree_t::leaf_node_t::flush() const { return segment_tree_->flush(); }
     void btree_t::leaf_node_t::load() { segment_tree_->lazy_load(); }
 
     /* btree */
@@ -741,9 +741,35 @@ namespace core::b_plus_tree {
         result.erase(std::unique(result.begin(), result.end()), result.end());
     }
 
-    void btree_t::flush() {
+    bool btree_t::flush() {
+        // An emptied tree MUST still be written. Returning here left the previous metadata file and
+        // every leaf file exactly as the last non-empty flush wrote them, and the next load()
+        // rebuilt the whole pre-delete tree — deleting every row of an indexed table and restarting
+        // brought every deleted key back. The leaf files themselves are not unlinked here: the
+        // metadata no longer names them, so load() ignores them, and removing files is a separate
+        // step that must not run before the new metadata is durable.
         if (leaf_nodes_count_ == 0) {
-            return;
+            std::filesystem::path empty_name = storage_directory_;
+            empty_name /= std::filesystem::path(metadata_file_name_);
+            size_t* empty_buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
+            std::memset(static_cast<void*>(empty_buffer), 0, METADATA_SIZE);
+            *empty_buffer = item_count_;
+            *(empty_buffer + 1) = leaf_nodes_count_;
+            bool empty_ok = true;
+            std::unique_ptr<core::filesystem::file_handle_t> empty_file =
+                open_file(fs_, empty_name, file_flags::WRITE | file_flags::FILE_CREATE);
+            if (empty_file == nullptr) {
+                empty_ok = false;
+            } else {
+                if (!empty_file->write(static_cast<void*>(empty_buffer), METADATA_SIZE, 0)) {
+                    empty_ok = false;
+                }
+                if (!empty_file->sync()) {
+                    empty_ok = false;
+                }
+            }
+            resource_->deallocate(static_cast<void*>(empty_buffer), METADATA_SIZE);
+            return empty_ok;
         }
 
         std::filesystem::path file_name = storage_directory_;
@@ -760,23 +786,42 @@ namespace core::b_plus_tree {
         leaf_node_t* node = first_leaf;
 
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
+        // The whole buffer is written to the metadata file, but only two counters and one id per
+        // leaf are filled in; the tail would otherwise be uninitialised heap on disk.
+        std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         *buffer = item_count_;
         *(buffer + 1) = leaf_nodes_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
 
         // save each segment tree
+        bool ok = true;
         while (node) {
-            node->flush();
+            ok = node->flush() && ok;
             *buffer_writer = node->segment_tree_id();
             buffer_writer++;
             node = static_cast<leaf_node_t*>(node->right_node_);
         }
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);
-        file->write(static_cast<void*>(buffer), METADATA_SIZE, 0);
+        if (file == nullptr) {
+            // open_file reports failure by returning nullptr; this was dereferenced unchecked, so an
+            // unwritable directory or an exhausted descriptor table crashed the process instead of
+            // failing the flush.
+            ok = false;
+        } else {
+            if (!file->write(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
+                ok = false;
+            }
+            // The leaves are fsynced individually; without this the list that names them stayed in
+            // the page cache, so a crash could leave leaf files no metadata refers to.
+            if (!file->sync()) {
+                ok = false;
+            }
+        }
 
         tree_mutex_.unlock();
         resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+        return ok;
     }
 
     void btree_t::load() {
@@ -792,6 +837,9 @@ namespace core::b_plus_tree {
         }
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
+        // The whole buffer is written to the metadata file, but only two counters and one id per
+        // leaf are filled in; the tail would otherwise be uninitialised heap on disk.
+        std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         if (!file->read(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
@@ -800,6 +848,15 @@ namespace core::b_plus_tree {
 
         item_count_ = *buffer;
         leaf_nodes_count_ = *(buffer + 1);
+        if (leaf_nodes_count_ == 0) {
+            // Nothing to rebuild. Falling through would allocate a zero-length node array and then
+            // read *nodes_layer out of it — the early return in flush() used to hide that by never
+            // writing a zero-leaf metadata file in the first place.
+            root_ = nullptr;
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            tree_mutex_.unlock();
+            return;
+        }
         uint64_t* buffer_reader = reinterpret_cast<uint64_t*>(buffer + 2);
 
         // with some index manipulations, all could be done in one layer

@@ -195,6 +195,18 @@ namespace components::catalog {
                                                   set_bool(c, 7, i, false); // attisdropped
                                                   set_str(c, 8, i, a.typspec, r);
                                                   set_str(c, 9, i, a.defspec, r);
+                                                  // MVCC visibility, both NOT NULL and both read by
+                                                  // operator_resolve_table on every catalog lookup.
+                                                  // A newly created table's columns are visible to
+                                                  // every snapshot (added_at 0) and not dropped
+                                                  // (dropped_at 0). These were not written at all:
+                                                  // the reader saw zeros only because vector_t
+                                                  // memsets the buffer it allocates, which made the
+                                                  // visibility of every column of every table rest
+                                                  // on an initialisation that exists for unrelated
+                                                  // reasons.
+                                                  set_i64(c, 10, i, 0); // added_at_commit_id
+                                                  set_i64(c, 11, i, 0); // dropped_at_commit_id
                                               }
                                           });
                 result.push_back(make_write(pg_attribute_full, std::move(chunk)));

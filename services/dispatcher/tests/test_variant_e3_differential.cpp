@@ -30,6 +30,19 @@ using namespace components::types;
 
 namespace {
 
+    // A run that dies before its destructor — a failing REQUIRE aborts, a crash, a kill, a timeout —
+    // leaves its disk directory behind. The fixture then boots the NEXT run's catalog from those
+    // files instead of creating a fresh one, so a later, unrelated run fails and looks like a
+    // regression. Clearing on the way IN as well as on the way OUT makes the fixture idempotent:
+    // what it does depends on the code under test, not on how the previous run happened to end.
+    // Placed in the member-initializer list so it runs BEFORE manager_disk_t is constructed over
+    // this path. test_wal_manager already does the same thing in its constructor body.
+    const std::string& scrubbed(const std::string& path) {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+        return path;
+    }
+
     // Mirrors test_dispatcher_catalog.cpp's actor-mixin wiring (manager_dispatcher
     // + manager_wal + manager_disk on one scheduler_test_t). The name must stay
     // distinct from that file's fixture: both TUs share one Catch2 target, so a
@@ -38,7 +51,7 @@ namespace {
         differential_fixture(std::pmr::memory_resource* resource, const std::string& disk_path)
             : actor_zeta::actor::actor_mixin<differential_fixture>()
             , resource_(resource)
-            , disk_path_(disk_path)
+            , disk_path_(scrubbed(disk_path))
             , log_(initialization_logger("python", "/tmp/docker_logs/"))
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))

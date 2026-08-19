@@ -274,11 +274,9 @@ TEST_CASE("integration::cpp::test_join") {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
-            query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
-                  << "." << collection_name_1 << " ON " << collection_name_1 << ".key_1"
-                  << " >= " << collection_name_1 + ".key_2"
-                  << " AND " << collection_name_1 << ".key_1"
-                  << " <= " << collection_name_1 + ".key_2;";
+            query << "SELECT * FROM " << database_name + "." << collection_name_1 << " AS a INNER JOIN "
+                  << database_name << "." << collection_name_1 << " AS b"
+                  << " ON a.key_1 >= b.key_2 AND a.key_1 <= b.key_2;";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 101);

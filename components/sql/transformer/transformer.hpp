@@ -53,6 +53,19 @@ namespace components::sql::transform {
     private:
         bool has_error() const noexcept;
 
+        template<class T>
+        bool transform_failed(const core::result_wrapper_t<T>& result) {
+            return transform_failed(result.error());
+        }
+
+        // For a check that answers with a refusal rather than a value.
+        bool transform_failed(const core::error_t& error) {
+            if (error.contains_error() && !has_error()) {
+                error_ = error;
+            }
+            return has_error();
+        }
+
         logical_plan::node_ptr transform_create_database(CreatedbStmt& node);
         logical_plan::node_ptr transform_drop_database(DropdbStmt& node);
         logical_plan::node_ptr transform_checkpoint(CheckPointStmt& node);
@@ -293,6 +306,13 @@ namespace components::sql::transform {
         std::string get_str_value(Node* node);
 
         core::parameter_id_t add_param_value(Node* node, logical_plan::parameter_node_t* params);
+
+        logical_plan::node_ptr transform_from_element(Node* item,
+                                                      qualified_name& slot_name,
+                                                      std::string& slot_alias,
+                                                      name_collection_t& names,
+                                                      logical_plan::node_join_ptr& node_join,
+                                                      logical_plan::execution_plan_t* plan);
 
         // While transforming the body of a LATERAL subquery, a column reference
         // qualified by an OUTER-scope relation (and not shadowed by an inner one) is

@@ -27,6 +27,7 @@ One thing to keep in mind: message should be initialized with resource, that wil
 * Avoid repeating between error code and message, e.g. error_code_t::table_not_exists with message: "table not exists"
 * Avoid using memory_resource from 'message', because in 'no_error' state it is set to 'std::pmr::null_memory_resource()'
 * Avoid using error_code_t::other_error **if you know** what actually caused that error
+* A helper that builds an error_t for its callers should take 'std::source_location location = std::source_location::current()' as its last parameter and pass it to the constructor. Without it every error the helper produces reports the helper itself as **origin**, and all its call sites become indistinguishable in a trace. The constructor accepts the location in every build configuration, Release included, even though only Debug stores it
 
 ### core::result_wrapper_t<T>
 
@@ -56,3 +57,4 @@ result_wrapper_t technically does not have a default state (there is either a va
 * Using std::string error_t could be 'constexpr', optimizing return of no_error() and result_wrapper_t with value
 * error_t does not fit requirements for actor_zeta::unique_future<T>, and has to be wrapper in something (here result_wrapper_t<void> could be useful)
 * result_wrapper_t is most useful in Debug build, but we do not run it on CI/CD currently, and it is possible to miss errors, if not checked locally
+* **origin** is only stored in Debug, so a Release build cannot tell where an error came from beyond its message

@@ -16,6 +16,111 @@
 #include <cstdlib>
 
 namespace components::sql::transform {
+    namespace {
+        struct element_view_t {
+            const qualified_name* name;
+            const std::string* alias;
+            expressions::side_t side;
+
+            bool exists() const noexcept { return !name->relname.empty() || !alias->empty(); }
+            const std::string& visible_name() const noexcept { return transform::visible_name(*name, *alias); }
+        };
+
+        std::vector<element_view_t> elements_of(const name_collection_t& names) {
+            std::vector<element_view_t> elements;
+            elements.reserve(names.extra_left.size() + 2);
+            elements.push_back({&names.left_name, &names.left_alias, expressions::side_t::left});
+            for (const auto& element : names.extra_left) {
+                elements.push_back({&element.name, &element.alias, expressions::side_t::left});
+            }
+            elements.push_back({&names.right_name, &names.right_alias, expressions::side_t::right});
+            return elements;
+        }
+
+        bool answers(const element_view_t& element, const column_ref_t& ref) {
+            auto slot_answers = [](const std::string& reference, const std::string& element) {
+                return reference.empty() || reference == element;
+            };
+
+            if (!element.alias->empty()) {
+                // An alias replaces the relation name and takes no qualification
+                // of its own, so only a bare `alias.col` reaches it.
+                return ref.uid.empty() && ref.db.empty() && ref.schema.empty() && ref.table == *element.alias;
+            }
+            return slot_answers(ref.uid, element.name->uuid) && slot_answers(ref.db, element.name->dbname) &&
+                   slot_answers(ref.schema, element.name->schemaname) && slot_answers(ref.table, element.name->relname);
+        }
+
+        std::string dotted(std::initializer_list<const std::string*> slots) {
+            std::string text;
+            for (const std::string* slot : slots) {
+                if (slot->empty()) {
+                    continue;
+                }
+                if (!text.empty()) {
+                    text += '.';
+                }
+                text += *slot;
+            }
+            return text;
+        }
+
+        std::string spell(const qualified_name& name) {
+            return dotted({&name.uuid, &name.dbname, &name.schemaname, &name.relname});
+        }
+
+        std::string spell(const element_view_t& element) {
+            return element.alias->empty() ? spell(*element.name) : *element.alias;
+        }
+
+        std::string spell(const column_ref_t& ref) {
+            const std::string qualification = dotted({&ref.uid, &ref.db, &ref.schema, &ref.table});
+            const std::string column = ref.field.as_string();
+            return qualification.empty() ? column : qualification + "." + column;
+        }
+
+        enum class refusal_reason
+        {
+            ambiguous,                // more than one element answered
+            no_such_name,             // no element carries that name at all
+            qualification_differs,    // an element has the relation name, written another way
+            hidden_by_alias,          // an element has the relation name but wears an alias
+            alias_is_not_qualifiable, // the name is an alias, and the reference qualified it
+        };
+
+        core::error_t refusal(std::pmr::memory_resource* resource,
+                              const column_ref_t& ref,
+                              refusal_reason reason,
+                              const std::string& detail) {
+            const std::string reference = spell(ref);
+            const std::string column = ref.field.as_string();
+            std::string message;
+            switch (reason) {
+                case refusal_reason::ambiguous:
+                    message = "column reference \"" + reference + "\" is ambiguous: " + detail + " all answer to it";
+                    return core::error_t{core::error_code_t::ambiguous_name, std::pmr::string{message, resource}};
+                case refusal_reason::hidden_by_alias:
+                    message = "invalid reference to FROM-clause entry for \"" + reference +
+                              "\": the table is there under the alias \"" + detail + "\" — write \"" + detail + "." +
+                              column + "\"";
+                    break;
+                case refusal_reason::alias_is_not_qualifiable:
+                    message = "invalid reference to FROM-clause entry for \"" + reference + "\": \"" + detail +
+                              "\" is an alias and takes no qualification — write \"" + detail + "." + column + "\"";
+                    break;
+                case refusal_reason::qualification_differs:
+                    message = "invalid reference to FROM-clause entry for \"" + reference +
+                              "\": no element of FROM is written that way, the nearest is \"" + detail + "\"";
+                    break;
+                default:
+                    message = "invalid reference to FROM-clause entry for \"" + reference +
+                              "\": no element of FROM carries that name";
+                    break;
+            }
+            return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{message, resource}};
+        }
+    } // namespace
+
     bool string_to_double(const char* buf, size_t len, double& result /*, char decimal_separator = '.'*/) {
         // Skip leading spaces
         while (len > 0 && std::isspace(*buf)) {
@@ -51,124 +156,165 @@ namespace components::sql::transform {
     }
 
     bool name_collection_t::is_left_table(const std::string& name) const {
-        if (name == left_name.relname || name == left_alias) {
+        if (name.empty()) {
+            return false;
+        }
+        if (name == visible_name(left_name, left_alias)) {
             return true;
         }
-        for (const auto& alias : extra_left_aliases) {
-            if (alias == name) {
-                return true;
-            }
-        }
-        for (const auto& nm : extra_left_names) {
-            if (nm.relname == name) {
-                return true;
-            }
-        }
-        return false;
+        return std::any_of(extra_left.begin(), extra_left.end(), [&name](const from_element_t& element) {
+            return element.visible_name() == name;
+        });
     }
 
     bool name_collection_t::is_right_table(const std::string& name) const {
-        return name == right_name.relname || name == right_alias;
+        return !name.empty() && name == visible_name(right_name, right_alias);
     }
 
-    bool name_collection_t::is_left_table(const std::string& dbname, const std::string& name) const {
-        if (dbname.empty()) {
-            return is_left_table(name);
+    core::result_wrapper_t<expressions::side_t> name_collection_t::resolve(std::pmr::memory_resource* resource,
+                                                                           const column_ref_t& ref) const {
+        const auto elements = elements_of(*this);
+
+        const element_view_t* answered = nullptr;
+        std::string answering;
+        size_t count = 0;
+        for (const auto& element : elements) {
+            if (!element.exists() || !answers(element, ref)) {
+                continue;
+            }
+            ++count;
+            answered = &element;
+            if (!answering.empty()) {
+                answering += ", ";
+            }
+            answering += spell(element);
         }
-        if (name == left_name.relname && (left_name.dbname.empty() || left_name.dbname == dbname)) {
-            return true;
+        if (count == 1) {
+            return answered->side;
         }
-        for (const auto& nm : extra_left_names) {
-            if (nm.relname == name && (nm.dbname.empty() || nm.dbname == dbname)) {
-                return true;
+        if (count > 1) {
+            return refusal(resource, ref, refusal_reason::ambiguous, answering);
+        }
+
+        for (const auto& element : elements) {
+            if (element.exists() && !element.alias->empty() && *element.alias == ref.table) {
+                return refusal(resource, ref, refusal_reason::alias_is_not_qualifiable, *element.alias);
             }
         }
-        return false;
-    }
-
-    bool name_collection_t::is_right_table(const std::string& dbname, const std::string& name) const {
-        if (dbname.empty()) {
-            return is_right_table(name);
+        for (const auto& element : elements) {
+            if (!element.exists() || element.name->relname != ref.table) {
+                continue;
+            }
+            if (!element.alias->empty()) {
+                return refusal(resource, ref, refusal_reason::hidden_by_alias, *element.alias);
+            }
+            return refusal(resource, ref, refusal_reason::qualification_differs, spell(*element.name));
         }
-        return name == right_name.relname && (right_name.dbname.empty() || right_name.dbname == dbname);
+        return refusal(resource, ref, refusal_reason::no_such_name, {});
     }
 
-    expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
-        return deduce_side(names, std::string{}, target_name);
-    }
-
-    expressions::side_t
-    deduce_side(const name_collection_t& names, const std::string& dbname, const std::string& target_name) {
-        if (target_name.empty()) {
-            return expressions::side_t::undefined;
+    core::error_t name_collection_t::refuse_indistinguishable_elements(std::pmr::memory_resource* resource) const {
+        const auto elements = elements_of(*this);
+        for (auto outer = elements.begin(); outer != elements.end(); ++outer) {
+            if (!outer->exists()) {
+                continue;
+            }
+            for (auto inner = std::next(outer); inner != elements.end(); ++inner) {
+                if (!inner->exists() || inner->visible_name() != outer->visible_name()) {
+                    continue;
+                }
+                const bool same_qualification = outer->name->uuid == inner->name->uuid &&
+                                                outer->name->dbname == inner->name->dbname &&
+                                                outer->name->schemaname == inner->name->schemaname;
+                if (!outer->alias->empty() || !inner->alias->empty() || same_qualification) {
+                    return core::error_t{core::error_code_t::ambiguous_name,
+                                         std::pmr::string{"table name \"" + outer->visible_name() +
+                                                              "\" specified more than once — give one of them an alias",
+                                                          resource}};
+                }
+            }
         }
-        if (names.is_left_table(dbname, target_name)) {
-            return expressions::side_t::left;
-        } else if (names.is_right_table(dbname, target_name)) {
-            return expressions::side_t::right;
-        } else {
-            return expressions::side_t::undefined;
-        }
+        return core::error_t::no_error();
     }
 
-    void column_ref_t::deduce_side(const name_collection_t& names) {
-        field.set_side(transform::deduce_side(names, db, table));
+    const name_collection_t::using_column_t* name_collection_t::using_column(std::string_view name) const {
+        const auto found = std::find_if(using_columns.begin(), using_columns.end(), [name](const auto& column) {
+            return column.name == name;
+        });
+        return found == using_columns.end() ? nullptr : &*found;
     }
 
-    column_ref_t
+    core::result_wrapper_t<column_ref_t>
     columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names) {
-        auto lst = ref->fields->lst;
-        if (lst.empty()) {
+        const auto& segments = ref->fields->lst;
+        if (segments.empty()) {
             return column_ref_t(resource);
-        } else if (lst.size() == 1) {
-            return column_ref_t{{}, expressions::key_t(resource, strVal(lst.back().data))};
-        } else {
-            auto it = lst.begin();
-            std::string db_name;
-            std::string table_name;
-            std::pmr::vector<std::pmr::string> field_path(resource);
-            expressions::side_t side = expressions::side_t::undefined;
-
-            if (names.is_left_table(strVal(lst.begin()->data))) {
-                table_name = strVal(it->data);
-                ++it;
-                side = expressions::side_t::left;
-            } else if (names.is_right_table(strVal(lst.begin()->data))) {
-                table_name = strVal(it->data);
-                ++it;
-                side = expressions::side_t::right;
-            } else if (lst.size() >= 3) {
-                // db.table.x style: first elem is database; check if second elem matches a known table.
-                // Matched WITH the database, so two same-named tables from different databases do not
-                // both answer to the bare relname and collapse onto the same side.
-                db_name = strVal(it->data);
-                auto second_it = std::next(it);
-                const char* second_name = strVal(second_it->data);
-                if (names.is_left_table(db_name, second_name)) {
-                    ++it;
-                    table_name = strVal(it->data);
-                    ++it;
-                    side = expressions::side_t::left;
-                } else if (names.is_right_table(db_name, second_name)) {
-                    ++it;
-                    table_name = strVal(it->data);
-                    ++it;
-                    side = expressions::side_t::right;
-                } else {
-                    db_name.clear();
-                }
-            }
-            for (; it != lst.end(); ++it) {
-                if (nodeTag(it->data) == T_A_Star) {
-                    field_path.emplace_back(std::pmr::string{"*", resource});
-                } else {
-                    field_path.emplace_back(pmrStrVal(it->data, resource));
-                }
-            }
-            expressions::key_t field{std::move(field_path), side};
-            field.set_qualifier(table_name);
-            return {std::move(db_name), std::move(table_name), std::move(field)};
         }
+        if (segments.size() > MAX_COLUMN_REF_SEGMENTS) {
+            return core::error_t{core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"improper column reference (too many dotted names)", resource}};
+        }
+
+        column_ref_t out(resource);
+        auto it = segments.begin();
+        auto take = [&](std::string& slot) {
+            slot = strVal(it->data);
+            ++it;
+        };
+        switch (segments.size()) {
+            case 5:
+                take(out.uid);
+                take(out.db);
+                take(out.schema);
+                take(out.table);
+                break;
+            case 4:
+                take(out.db);
+                take(out.schema);
+                take(out.table);
+                break;
+            case 3:
+                take(out.db);
+                take(out.table);
+                break;
+            case 2:
+                take(out.table);
+                break;
+            default:
+                break;
+        }
+
+        std::pmr::vector<std::pmr::string> field_path(resource);
+        field_path.emplace_back(nodeTag(it->data) == T_A_Star ? std::pmr::string{"*", resource}
+                                                              : pmrStrVal(it->data, resource));
+        out.field = expressions::key_t{std::move(field_path)};
+
+        if (!out.is_qualified()) {
+            if (segments.size() == 1) {
+                if (const auto* column = names.using_column(out.field.storage().front())) {
+                    if (column->join == logical_plan::join_type::full) {
+                        return core::error_t{
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"column \'" + std::string(out.field.storage().front()) +
+                                                 "\' is merged by FULL JOIN ... USING, where its value is COALESCE of "
+                                                 "both sides — write that COALESCE explicitly",
+                                             resource}};
+                    }
+                    // The other side is the padded one on an outer join, so the
+                    // value lives here; on an inner join the two are equal.
+                    out.field.set_side(column->join == logical_plan::join_type::right ? expressions::side_t::right
+                                                                                      : expressions::side_t::left);
+                }
+            }
+            return out;
+        }
+        out.field.set_qualifier(out.table);
+        auto side = names.resolve(resource, out);
+        if (side.has_error()) {
+            return side.error();
+        }
+        out.field.set_side(side.value());
+        return out;
     }
 
     core::result_wrapper_t<column_ref_t> indirection_to_field(std::pmr::memory_resource* resource,
@@ -176,7 +322,11 @@ namespace components::sql::transform {
                                                               const name_collection_t& names) {
         column_ref_t ref(resource);
         if (nodeTag(indirection->arg) == T_ColumnRef) {
-            ref = columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names);
+            auto base = columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names);
+            if (base.has_error()) {
+                return base.error();
+            }
+            ref = std::move(base.value());
         } else if (nodeTag(indirection->arg) == T_A_Indirection) {
             auto base = indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names);
             if (base.has_error()) {
@@ -187,11 +337,14 @@ namespace components::sql::transform {
             return core::error_t{core::error_code_t::sql_parse_error,
                                  std::pmr::string{"field selection is supported only on a column reference", resource}};
         }
-        auto key = indirection->indirection->lst.back().data;
-        if (nodeTag(key) == T_A_Indices) {
-            ref.field.storage().emplace_back(indices_to_str(resource, pg_ptr_cast<A_Indices>(key)));
-        } else {
-            ref.field.storage().emplace_back(pmrStrVal(key, resource));
+        for (const auto& step : indirection->indirection->lst) {
+            if (nodeTag(step.data) == T_A_Indices) {
+                ref.field.storage().emplace_back(indices_to_str(resource, pg_ptr_cast<A_Indices>(step.data)));
+            } else if (nodeTag(step.data) == T_A_Star) {
+                ref.field.storage().emplace_back(std::pmr::string{"*", resource});
+            } else {
+                ref.field.storage().emplace_back(pmrStrVal(step.data, resource));
+            }
         }
         return ref;
     }

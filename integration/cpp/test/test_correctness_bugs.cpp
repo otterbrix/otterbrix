@@ -709,6 +709,137 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
     REQUIRE(reverts_after == reverts_before + 1);
 }
 
+// Issue #551: the physical revert of a CHECK-rejected INSERT truncated the segment's
+// row count but left the string dictionary size untouched. String offsets are stored
+// as the CUMULATIVE dictionary size at append time and scan derives each length as
+// offset[row] - offset[row-1], so the next accepted row's offset still included the
+// rejected row's payload — its string came back concatenated with the rejected one
+// ('clean' + 'REJECTED' = 'cleanREJECTED').
+TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_leak_string_payload") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_string_leak");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.a (id bigint, name text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "ALTER TABLE t.a ADD CONSTRAINT chk_id CHECK (id > 0);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');");
+        INFO("CHECK-violating INSERT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (2, 'clean');")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.a;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const int name_col = find_column(*cur, "name");
+        REQUIRE(name_col >= 0);
+        auto name = cur->value(static_cast<uint64_t>(name_col), 0);
+        INFO("name value: '" << name.value<std::string_view>() << "'");
+        REQUIRE(name.value<std::string_view>() == "clean");
+    }
+}
+
+// Mid-segment variants of the #551 revert: the segment is NOT empty after the revert,
+// so the dictionary size must be rolled back to the LAST KEPT row's offset (not zero).
+// The kept row being a plain string exercises the positive cumulative offset; the kept
+// row being NULL exercises the offset-copy path (a NULL append copies the previous
+// row's offset, which must still be treated as the dictionary usage to keep).
+TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segment_keeps_prior_strings") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_string_leak_mid_segment");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.a (id bigint, name text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "ALTER TABLE t.a ADD CONSTRAINT chk_id CHECK (id > 0);")->is_success());
+    }
+
+    SECTION("last kept row is a plain string") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (1, 'keep');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (2, 'clean');")->is_success());
+        }
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM t.a ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        INFO("row0: '" << cur->value(0, 0).value<std::string_view>() << "' row1: '"
+                       << cur->value(0, 1).value<std::string_view>() << "'");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "keep");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "clean");
+    }
+
+    SECTION("last kept row is NULL") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (1, 'keep');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id) VALUES (3);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (2, 'clean');")->is_success());
+        }
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM t.a ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        INFO("row0: '" << cur->value(0, 0).value<std::string_view>() << "' row1: '"
+                       << cur->value(0, 1).value<std::string_view>() << "'");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "keep");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "clean");
+        REQUIRE(cur->value(0, 2).is_null());
+    }
+}
+
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_physical_append") {
     auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_reverts_physical_append");
     test_clear_directory(config);
@@ -753,6 +884,162 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_p
 
     INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
     REQUIRE(reverts_after == reverts_before + 1);
+}
+
+// Issue #552: an FK-rejected DELETE stamps MVCC delete marks (deleter = the failed
+// statement's txn id) before the constraint check runs, and the autocommit failed-
+// statement path never un-stamped them (only explicit ROLLBACK did). The aborted txn
+// never commits so the row stays VISIBLE, but chunk_vector_info::delete_rows skips any
+// already-stamped slot — the next UPDATE's delete-half silently no-ops while its
+// append-half succeeds (duplicate row), and the row can never be deleted again.
+TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_updatable_and_deletable") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/fk_rejected_delete_row_identity");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.p (id bigint, val text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.ch (id bigint, pid bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "ALTER TABLE db.ch ADD CONSTRAINT fk_c "
+                                  "FOREIGN KEY (pid) REFERENCES db.p (id);")
+                    ->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.p (id, val) VALUES (1, 'p1');")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.ch (id, pid) VALUES (10, 1);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "DELETE FROM db.p WHERE id = 1;");
+        INFO("FK-violating DELETE error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "UPDATE db.p SET val = 'renamed' WHERE id = 1;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const int val_col = find_column(*cur, "val");
+        REQUIRE(val_col >= 0);
+        INFO("val: '" << cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() << "'");
+        REQUIRE(cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() == "renamed");
+    }
+    // The row must also still be deletable once the FK obstacle is removed.
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "DELETE FROM db.ch WHERE id = 10;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "DELETE FROM db.p WHERE id = 1;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+// UPDATE variant of #552: a constraint-rejected UPDATE's delete-half stamps the same
+// MVCC delete marks (operator_update pushes the same dml_deletes tombstone), so the
+// failed-statement un-stamp must fire for it too — otherwise the next UPDATE
+// duplicates the row exactly as in the DELETE case. NOT NULL is the rejecting
+// constraint here: rewrite_update wires not_null_cols into the UPDATE plan (CHECK
+// expressions are a known gap on the UPDATE path and never reject).
+TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves_row_updatable") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/rejected_update_row_identity");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.p (id bigint, val text NOT NULL);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.p (id, val) VALUES (1, 'p1');")->is_success());
+    }
+    const auto reverts_before = services::collection::executor::dml_appends_reverted();
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE db.p SET val = NULL, id = 77 WHERE id = 1;");
+        INFO("NOT-NULL-violating UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+    const auto reverts_after = services::collection::executor::dml_appends_reverted();
+    INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
+    REQUIRE(reverts_after == reverts_before + 1);
+    // The failed UPDATE must leave the table exactly as it was: one row (1, 'p1').
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const int id_col = find_column(*cur, "id");
+        REQUIRE(id_col >= 0);
+        REQUIRE(cur->value(static_cast<uint64_t>(id_col), 0).value<int64_t>() == 1);
+        const int val_col = find_column(*cur, "val");
+        REQUIRE(val_col >= 0);
+        REQUIRE(!cur->value(static_cast<uint64_t>(val_col), 0).is_null());
+        REQUIRE(cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() == "p1");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "UPDATE db.p SET val = 'renamed' WHERE id = 1;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const int val_col = find_column(*cur, "val");
+        REQUIRE(val_col >= 0);
+        REQUIRE(!cur->value(static_cast<uint64_t>(val_col), 0).is_null());
+        INFO("val: '" << cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() << "'");
+        REQUIRE(cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() == "renamed");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "DELETE FROM db.p WHERE id = 1;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
 }
 
 // A scalar aggregate over a COLUMN argument (not count(*)) over an EMPTY table must

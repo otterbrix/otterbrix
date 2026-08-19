@@ -70,22 +70,29 @@ namespace core {
         std::pmr::string what;
 #if not defined(NDEBUG)
         std::source_location error_origin{};
+#endif
 
         explicit error_t(error_code_t type,
                          const std::pmr::string& what,
-                         std::source_location location = std::source_location::current())
+                         [[maybe_unused]] std::source_location location = std::source_location::current())
             : type(type)
             , what(what)
-            , error_origin(location) {
+#if not defined(NDEBUG)
+            , error_origin(location)
+#endif
+        {
             assert(type != error_code_t::none &&
                    "no error state of error_t can only be created using no_error() constructor");
         }
         explicit error_t(error_code_t type,
                          std::pmr::string&& what,
-                         std::source_location location = std::source_location::current())
+                         [[maybe_unused]] std::source_location location = std::source_location::current())
             : type(type)
             , what(std::move(what))
-            , error_origin(location) {
+#if not defined(NDEBUG)
+            , error_origin(location)
+#endif
+        {
             assert(type != error_code_t::none &&
                    "no error state of error_t can only be created using no_error() constructor");
         }
@@ -93,35 +100,19 @@ namespace core {
         error_t& operator=(const error_t& other) {
             type = other.type;
             reconstruct_string(other.what);
+#if not defined(NDEBUG)
             error_origin = other.error_origin;
-            return *this;
-        }
-        error_t& operator=(error_t&& other) noexcept {
-            type = other.type;
-            reconstruct_string(std::move(other.what));
-            error_origin = std::move(other.error_origin);
-            return *this;
-        }
-#else
-
-        explicit error_t(error_code_t type, const std::pmr::string& what)
-            : type(type)
-            , what(what) {}
-        explicit error_t(error_code_t type, std::pmr::string&& what)
-            : type(type)
-            , what(std::move(what)) {}
-
-        error_t& operator=(const error_t& other) {
-            type = other.type;
-            reconstruct_string(other.what);
-            return *this;
-        }
-        error_t& operator=(error_t&& other) noexcept {
-            type = other.type;
-            reconstruct_string(std::move(other.what));
-            return *this;
-        }
 #endif
+            return *this;
+        }
+        error_t& operator=(error_t&& other) noexcept {
+            type = other.type;
+            reconstruct_string(std::move(other.what));
+#if not defined(NDEBUG)
+            error_origin = std::move(other.error_origin);
+#endif
+            return *this;
+        }
 
         error_t(const error_t&) = default;
         error_t(error_t&&) noexcept = default;

@@ -25,8 +25,7 @@ namespace components::sql::transform {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
         auto col_defs = get_column_definitions(resource_, *coldefs);
-        if (col_defs.has_error()) {
-            error_ = col_defs.error();
+        if (transform_failed(col_defs)) {
             return nullptr;
         }
 
@@ -40,8 +39,7 @@ namespace components::sql::transform {
         }
 
         auto constraints = extract_table_constraints(resource_, *coldefs);
-        if (constraints.has_error()) {
-            error_ = constraints.error();
+        if (transform_failed(constraints)) {
             return nullptr;
         }
 

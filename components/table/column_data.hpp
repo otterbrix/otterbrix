@@ -9,6 +9,17 @@
 
 namespace components::table {
 
+#ifdef DEV_MODE
+    // Test-observable count of segment transitions performed while SOMEONE ELSE still holds a pin on
+    // the segment's block. The swap drops that block_handle_t, so an outstanding buffer_handle_t is
+    // left pointing at freed memory and unpins it when it is destroyed. Must stay at zero.
+    uint64_t transitions_with_live_pin() noexcept;
+    // Total transitions performed, so a test can tell "no offending transition" apart from
+    // "no transition at all" — a zero-vs-zero comparison proves nothing.
+    uint64_t segment_transitions() noexcept;
+    void reset_transitions_with_live_pin() noexcept;
+#endif
+
     struct persistent_column_data_t;
 
     namespace storage {

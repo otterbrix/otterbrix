@@ -1,5 +1,7 @@
 #include "row_group.hpp"
 
+#include <atomic>
+
 #include <algorithm>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_manager.hpp>
@@ -16,6 +18,48 @@
 #include <components/vector/vector_operations.hpp>
 
 namespace components::table {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_gathered_borrowed_strings{0};
+        std::atomic<uint64_t> g_predicate_row_fetches{0};
+        std::atomic<uint64_t> g_string_materializations{0};
+        std::atomic<uint64_t> g_gather_rows_fetched{0};
+        std::atomic<uint64_t> g_escaping_borrowed_cells{0};
+    } // namespace
+
+    uint64_t gathered_borrowed_strings() noexcept {
+        return g_gathered_borrowed_strings.load(std::memory_order_relaxed);
+    }
+    uint64_t string_materializations() noexcept {
+        return g_string_materializations.load(std::memory_order_relaxed);
+    }
+    void note_string_materialization() noexcept {
+        g_string_materializations.fetch_add(1, std::memory_order_relaxed);
+    }
+    uint64_t gather_rows_fetched() noexcept {
+        return g_gather_rows_fetched.load(std::memory_order_relaxed);
+    }
+    void note_gather_row_fetched() noexcept {
+        g_gather_rows_fetched.fetch_add(1, std::memory_order_relaxed);
+    }
+    uint64_t escaping_borrowed_cells() noexcept {
+        return g_escaping_borrowed_cells.load(std::memory_order_relaxed);
+    }
+    void note_escaping_borrowed_cells(uint64_t cells) noexcept {
+        g_escaping_borrowed_cells.fetch_add(cells, std::memory_order_relaxed);
+    }
+    uint64_t predicate_row_fetches() noexcept {
+        return g_predicate_row_fetches.load(std::memory_order_relaxed);
+    }
+    void reset_gathered_borrowed_strings() noexcept {
+        g_gathered_borrowed_strings.store(0, std::memory_order_relaxed);
+        g_predicate_row_fetches.store(0, std::memory_order_relaxed);
+        g_string_materializations.store(0, std::memory_order_relaxed);
+        g_gather_rows_fetched.store(0, std::memory_order_relaxed);
+        g_escaping_borrowed_cells.store(0, std::memory_order_relaxed);
+    }
+#endif
 
     row_group_t::row_group_t(collection_t* collection, int64_t start, uint64_t count)
         : segment_base_t(start, count)
@@ -225,6 +269,9 @@ namespace components::table {
         column_fetch_state fetch_state;
         for (size_t column : referenced) {
             for (uint64_t row = 0; row < count; row++) {
+#ifdef DEV_MODE
+                g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
+#endif
                 get_column(column).fetch_row(fetch_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
                 if (fetch_state.fetch_error.contains_error()) {
                     return fetch_state.fetch_error;
@@ -398,6 +445,21 @@ namespace components::table {
                                 const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
                                 const uint64_t off = state.column_scans[i].result_offset;
                                 column_fetch_state fetch_state;
+                                // This chunk is returned to the caller; our pins are not. Strings
+                                // must be copied into the result rather than borrowed from a block
+                                // we are about to release.
+                                fetch_state.result_outlives_pins = true;
+#ifdef DEV_MODE
+                                // Guards the line above rather than the gather itself: if the flag
+                                // is ever dropped, every string cell this branch fills goes back to
+                                // being a view into a block whose pin dies with fetch_state.
+                                if (!fetch_state.result_outlives_pins &&
+                                    result.data[out_idx].type().to_physical_type() ==
+                                        types::physical_type::STRING) {
+                                    g_gathered_borrowed_strings.fetch_add(approved_tuple_count,
+                                                                          std::memory_order_relaxed);
+                                }
+#endif
                                 for (uint64_t k = 0; k < approved_tuple_count; k++) {
                                     col_data.fetch_row(fetch_state,
                                                        static_cast<int64_t>(base + indexing.get_index(k)),
@@ -496,8 +558,19 @@ namespace components::table {
                                 const std::vector<storage_index_t>& column_ids,
                                 int64_t row_id,
                                 vector::data_chunk_t& result,
-                                uint64_t result_idx) {
+                                uint64_t result_idx,
+                                const std::vector<size_t>& projected_cols) {
         for (uint64_t col_idx = 0; col_idx < column_ids.size(); col_idx++) {
+            // The mapping below is POSITIONAL — column_ids[i] lands in result.data[i] — so a caller
+            // that wants fewer columns cannot simply pass a shorter list: that compacts the chunk and
+            // every consumer indexing by ordinal reads the wrong column. Skipping here instead leaves
+            // the unwanted slots as the untouched stubs they already are, and every wanted column
+            // keeps its ordinal.
+            if (!projected_cols.empty() &&
+                std::find(projected_cols.begin(), projected_cols.end(), static_cast<size_t>(col_idx)) ==
+                    projected_cols.end()) {
+                continue;
+            }
             auto& column = column_ids[col_idx];
             auto& result_vector = result.data[col_idx];
             assert(result_vector.get_vector_type() == vector::vector_type::FLAT);

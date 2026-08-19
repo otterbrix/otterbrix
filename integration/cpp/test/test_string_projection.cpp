@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/row_group.hpp>
+#include <chrono>
 #include <string>
 
 // Two defects on one site: the gather-by-row-id path behind storage_fetch.
@@ -107,6 +108,19 @@ TEST_CASE("integration::cpp::test_string_projection::unprojected_columns_are_not
     }
     const auto wasted = components::table::string_materializations();
     const auto gathered = components::table::gather_rows_fetched();
+
+    uint64_t elapsed_us = 0;
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int rep = 0; rep < 5; ++rep) {
+            auto cur = exec("SELECT SUM(v) FROM p.t WHERE id > 45000;");
+            REQUIRE(cur->is_success());
+        }
+        elapsed_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+                .count()) / 5;
+    }
+    WARN("indexed selective query: " << elapsed_us << " us per run");
 
     REQUIRE(gathered > 0);
     WARN("SELECT SUM(v) materialized " << wasted << " strings from two columns it never names, over "

@@ -31,6 +31,16 @@
 
 namespace services::disk {
 
+#ifdef DEV_MODE
+    // Test-observable count of checkpoint ROUNDS reaching this agent. A round copies the .otbx
+    // file of every disk table in the agent's slice whole (copy_file to .prev, then remove), so it
+    // costs O(data) and a load that triggers one per commit is quadratic in the rows already
+    // written. Counted per round rather than per table so the number does not move when the
+    // catalog gains a table.
+    uint64_t table_checkpoints() noexcept;
+    void reset_table_checkpoints() noexcept;
+#endif
+
     using path_t = std::filesystem::path;
     using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
 
@@ -276,7 +286,10 @@ namespace services::disk {
         //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks
         //   (empty when the agent doesn't own the OID).
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-        storage_fetch_inner(components::catalog::oid_t table_oid, components::vector::vector_t row_ids, uint64_t count);
+        storage_fetch_inner(components::catalog::oid_t table_oid,
+                            components::vector::vector_t row_ids,
+                            uint64_t count,
+                            std::vector<size_t> projected_cols);
 
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
         // Not-owned OIDs return an empty/zero sentinel.

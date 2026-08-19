@@ -62,7 +62,8 @@ namespace components::table {
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,
                    uint64_t fetch_count,
-                   column_fetch_state& state);
+                   column_fetch_state& state,
+                   const std::vector<size_t>& projected_cols);
 
         std::unique_ptr<table_delete_state>
         initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);

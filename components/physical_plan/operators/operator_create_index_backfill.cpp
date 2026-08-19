@@ -321,7 +321,10 @@ namespace components::operators {
                                                      ctx->session,
                                                      rec.table_oid,
                                                      std::move(fetch_ids),
-                                                     static_cast<uint64_t>(rec.physical_row_ids.size()));
+                                                     static_cast<uint64_t>(rec.physical_row_ids.size()),
+                                                     // No projection: the backfill hands whole rows
+                                                     // to the index engine's chunk binding.
+                                                     std::vector<size_t>{});
                     fetch_futures.push_back(std::move(ff));
                     fetch_slots.push_back(r);
                 }

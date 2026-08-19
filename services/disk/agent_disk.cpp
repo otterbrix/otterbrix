@@ -14,6 +14,15 @@
 
 namespace services::disk {
 
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_table_checkpoints{0};
+    } // namespace
+
+    uint64_t table_checkpoints() noexcept { return g_table_checkpoints.load(std::memory_order_relaxed); }
+    void reset_table_checkpoints() noexcept { g_table_checkpoints.store(0, std::memory_order_relaxed); }
+#endif
+
     using namespace core::filesystem;
 
     // Test-observable counter of ROWS shipped in the last aggregate-pushdown reduce reply
@@ -953,7 +962,8 @@ namespace services::disk {
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_fetch_inner(components::catalog::oid_t table_oid,
                                       components::vector::vector_t row_ids,
-                                      uint64_t count) {
+                                      uint64_t count,
+                                      std::vector<size_t> projected_cols) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
@@ -980,7 +990,7 @@ namespace services::disk {
             components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
             std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
             components::vector::data_chunk_t chunk(resource(), types, n);
-            entry->storage->fetch(chunk, window_ids, n);
+            entry->storage->fetch(chunk, window_ids, n, projected_cols);
             std::memcpy(chunk.row_ids.data(), ids + offset, n * sizeof(int64_t));
             out.emplace_back(std::move(chunk));
         }
@@ -1934,6 +1944,9 @@ namespace services::disk {
         //   for checkpointing, but an IN_MEMORY twin flips has_in_memory so
         //   checkpoint_all can gate WAL-floor sealing without a separate sync
         //   slice read (folded from has_in_memory_inner_sync).
+#ifdef DEV_MODE
+        g_table_checkpoints.fetch_add(1, std::memory_order_relaxed);
+#endif
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         bool has_in_memory = false;
         for (auto& [tbl_oid, entry] : storages_) {

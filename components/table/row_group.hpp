@@ -9,6 +9,29 @@ namespace components::vector {
 }
 
 namespace components::table {
+
+#ifdef DEV_MODE
+    // Test-observable count of STRING columns filled by the late-materialisation gather.
+    //
+    // That gather calls fetch_row, whose string leg writes a view BORROWED from the pinned block,
+    // while its column_fetch_state — and therefore the pin — dies at the end of the gather block.
+    // The result chunk outlives both. fetch_string_owned's own comment states the hazard: the block
+    // may later be evicted and reloaded at a different address, and a borrowed view then dangles.
+    // Must stay at zero.
+    uint64_t gathered_borrowed_strings() noexcept;
+    // Per-row fetches issued by the in-memory predicate evaluation. Each one currently pins and
+    // unpins the segment's block, because the five fixed-width fetch functions ignore the handle
+    // cache that evaluate_predicate's hoisted column_fetch_state exists to provide.
+    uint64_t predicate_row_fetches() noexcept;
+    // Pins taken by the per-row fixed-size fetch, wherever it is called from.
+    uint64_t string_materializations() noexcept;
+    uint64_t gather_rows_fetched() noexcept;
+    uint64_t escaping_borrowed_cells() noexcept;
+    void note_escaping_borrowed_cells(uint64_t cells) noexcept;
+    void note_gather_row_fetched() noexcept;
+    void note_string_materialization() noexcept;
+    void reset_gathered_borrowed_strings() noexcept;
+#endif
     class row_version_manager_t;
 
     constexpr static uint64_t MAX_ROW_GROUP_SIZE = uint64_t(1) << 30;
@@ -66,7 +89,8 @@ namespace components::table {
                        const std::vector<storage_index_t>& column_ids,
                        int64_t row_id,
                        vector::data_chunk_t& result,
-                       uint64_t result_idx);
+                       uint64_t result_idx,
+                       const std::vector<size_t>& projected_cols);
 
         void append_version_info(transaction_data txn, uint64_t count);
 

@@ -333,8 +333,9 @@ namespace components::table {
                              const std::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
-                             column_fetch_state& state) {
-        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state);
+                             column_fetch_state& state,
+                             const std::vector<size_t>& projected_cols) {
+        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(

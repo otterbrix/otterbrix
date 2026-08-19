@@ -155,7 +155,10 @@ namespace services::planner::impl {
                                                                                               value,
                                                                                               ctype,
                                                                                               preferred_index_type,
-                                                                                              limit));
+                                                                                              limit,
+                                                                                              // Same set full_scan gets in the sibling branch below: one
+                                                                                              // table, one consumer, one projection.
+                                                                                              projected_cols));
                         }
                     }
 

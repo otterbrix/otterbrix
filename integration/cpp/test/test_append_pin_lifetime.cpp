@@ -63,7 +63,7 @@ TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_und
 
     const auto offending = components::table::transitions_with_live_pin();
     const auto total = components::table::segment_transitions();
-    INFO("segment transitions: " << total << ", of which under a live pin: " << offending);
+    WARN("on-fill transitions: " << total << ", of them under a live append pin: " << offending);
     // Positive control: zero offending transitions out of zero transitions proves nothing.
     REQUIRE(total > 0);
     CHECK(offending == 0);

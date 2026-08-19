@@ -229,10 +229,14 @@ namespace services::disk {
                                  components::table::transaction_data txn);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // projected_cols holds storage chunk indices; EMPTY means every column, matching
+        // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come
+        // back as buffer-less stubs, so the reply is indexed the same way either way.
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
-                      uint64_t count);
+                      uint64_t count,
+                      std::vector<size_t> projected_cols);
         actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 

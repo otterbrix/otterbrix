@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/table/row_group.hpp>
 #include "storage.hpp"
 #include <components/table/data_table.hpp>
 #include <components/table/table_state.hpp>
@@ -199,14 +200,40 @@ namespace components::storage {
             return table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
         }
 
-        void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
+        void fetch(vector::data_chunk_t& output,
+                   const vector::vector_t& row_ids,
+                   uint64_t count,
+                   const std::vector<size_t>& projected_cols) override {
             table::column_fetch_state state;
+            // The chunk we fill is returned to the caller and then moved across a mailbox; the pins
+            // taken below die with `state` when this function returns. Without this flag the string
+            // leg writes views BORROWED from those blocks, and once the pin is gone the block can be
+            // evicted — or, since the pool learned to spill, written to the scratch file and reloaded
+            // at a different address — leaving the caller reading freed memory. row_group_t's gather
+            // sets the same flag for the same reason.
+            state.result_outlives_pins = true;
+#ifdef DEV_MODE
+            // Guards the line above rather than the fetch itself: drop the flag and every string
+            // cell below goes back to being a view into a block this call stops pinning.
+            if (!state.result_outlives_pins) {
+                uint64_t string_cols = 0;
+                for (size_t i = 0; i < table_.column_count(); i++) {
+                    if (output.data[i].type().to_physical_type() == types::physical_type::STRING) {
+                        string_cols++;
+                    }
+                }
+                table::note_escaping_borrowed_cells(string_cols * count);
+            }
+#endif
             std::vector<table::storage_index_t> column_indices;
             column_indices.reserve(table_.column_count());
             for (size_t i = 0; i < table_.column_count(); i++) {
                 column_indices.emplace_back(static_cast<int64_t>(i));
             }
-            table_.fetch(output, column_indices, row_ids, count, state);
+            // The list stays FULL WIDTH and the projection is applied as a skip below it, because the
+            // fetch mapping is positional: a shorter list would compact the chunk and shift every
+            // column a consumer addresses by ordinal.
+            table_.fetch(output, column_indices, row_ids, count, state, projected_cols);
         }
 
         void scan_segment(int64_t start,

@@ -676,7 +676,8 @@ namespace services::disk {
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
-                      uint64_t count);
+                      uint64_t count,
+                      std::vector<size_t> projected_cols);
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
         // Appends every chunk in order. Appends within one txn are contiguous, so the

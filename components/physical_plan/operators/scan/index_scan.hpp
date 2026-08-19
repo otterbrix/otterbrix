@@ -18,7 +18,8 @@ namespace components::operators {
                    const types::logical_value_t& value,
                    expressions::compare_type compare_type,
                    components::logical_plan::index_type preferred_index_type,
-                   logical_plan::limit_t limit);
+                   logical_plan::limit_t limit,
+                   std::vector<size_t> projected_cols);
 
         const expressions::key_t& key() const { return key_; }
         const types::logical_value_t& value() const { return value_; }
@@ -83,6 +84,10 @@ namespace components::operators {
         const expressions::compare_type compare_type_;
         const components::logical_plan::index_type preferred_index_type_;
         const logical_plan::limit_t limit_;
+        // Storage chunk indices this scan's consumers actually read; EMPTY means every column.
+        // Without it the point-fetch behind this source pulls the whole row — including text
+        // columns the statement never names, each of which costs a heap copy per matched row.
+        const std::vector<size_t> projected_cols_;
 
         // Buffered point-fetch state:
         //   opened_   : false until the first source_next runs open_index_window (the one-shot

@@ -96,6 +96,7 @@ namespace services::collection::executor {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<executor_t, &executor_t::execute_plan_full>,
             actor_zeta::msg_id<executor_t, &executor_t::register_udf>,
+            actor_zeta::msg_id<executor_t, &executor_t::unregister_udf>,
             actor_zeta::msg_id<executor_t, &executor_t::register_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
@@ -221,6 +222,10 @@ namespace services::collection::executor {
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf>: {
+                co_await actor_zeta::dispatch(this, &executor_t::unregister_udf, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_cast>: {
@@ -1117,9 +1122,13 @@ namespace services::collection::executor {
                         if (vt_err.contains_error()) {
                             error = make_cursor(resource(), vt_err);
                         } else {
-                            auto schema_res = services::dispatcher::validate_schema(resource(),
-                                                                                    &plan.catalog_resolves,
-                                                                                    &cast_registry_,
+                            services::dispatcher::validation::validation_context_t validation_context{
+                                resource(),
+                                &plan.catalog_resolves,
+                                cast_registry_,
+                                function_registry_,
+                                context_storage.execution_context};
+                            auto schema_res = services::dispatcher::validate_schema(validation_context,
                                                                                     plan.sub_queries.back().get(),
                                                                                     plan.parameters->parameters());
                             if (schema_res.has_error()) {
@@ -1223,10 +1232,14 @@ namespace services::collection::executor {
                         validate_params.parameters.find(m.id)->second =
                             components::types::logical_value_t(resource(), plan.sub_queries[i]->output_types().front());
                     }
+                    services::dispatcher::validation::validation_context_t validation_context{
+                        resource(),
+                        &plan.catalog_resolves,
+                        cast_registry_,
+                        function_registry_,
+                        context_storage.execution_context};
                     auto schema_res =
-                        services::dispatcher::validate_schema(resource(),
-                                                              &plan.catalog_resolves,
-                                                              &cast_registry_,
+                        services::dispatcher::validate_schema(validation_context,
                                                               plan.sub_queries.back().get(),
                                                               overridden ? validate_params : bound_params);
                     if (schema_res.has_error()) {
@@ -1962,8 +1975,29 @@ namespace services::collection::executor {
         trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
         std::string name = function->name();
         auto signatures = function->get_signatures();
+        for (const auto& [registered_name, uid] : function_registry_.get_functions()) {
+            if (registered_name != name) {
+                continue;
+            }
+            const auto* registered = function_registry_.get_function(uid);
+            if (registered == nullptr ||
+                components::compute::check_signature_conflicts(registered->get_signatures(), signatures)) {
+                continue;
+            }
+            co_return std::make_unique<function_result_t>(core::error_t(
+                core::error_code_t::function_registry_error,
+                std::pmr::string{"function '" + name + "' is already registered with this signature", resource()}));
+        }
         auto res = function_registry_.add_function(std::move(function));
         co_return std::make_unique<function_result_t>(std::move(res));
+    }
+
+    executor_t::unique_future<bool>
+    executor_t::unregister_udf(components::session::session_id_t session,
+                               std::string name,
+                               std::pmr::vector<components::types::complex_logical_type> inputs) {
+        trace(log_, "executor::unregister_udf, session: {}, {}", session.data(), name);
+        co_return function_registry_.remove_function_by_signature(name, inputs);
     }
 
     executor_t::unique_future<bool> executor_t::register_cast(components::session::session_id_t session,

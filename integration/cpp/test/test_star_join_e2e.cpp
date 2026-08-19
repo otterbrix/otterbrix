@@ -38,6 +38,20 @@ namespace {
         (void) loaded;
         return &registry;
     }
+
+    // Validation reads its registries and execution context from the caller, so the test
+    // supplies its own rather than relying on a process-wide default.
+    services::dispatcher::validation::validation_context_t
+    test_validation_context(std::pmr::memory_resource* resource) {
+        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
+        static const components::graph_execution_context execution_context{};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(functions);
+            return true;
+        }();
+        (void) loaded;
+        return {resource, nullptr, *test_cast_registry(), functions, execution_context};
+    }
 } // namespace
 
 using namespace components;
@@ -307,7 +321,7 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     agg->append_child(select);
 
     auto validated =
-        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
+        services::dispatcher::validate_schema(test_validation_context(res), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);

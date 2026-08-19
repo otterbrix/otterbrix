@@ -46,6 +46,18 @@ namespace {
         (void) loaded;
         return &registry;
     }
+
+    services::dispatcher::validation::validation_context_t
+    test_validation_context(std::pmr::memory_resource* resource) {
+        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
+        static const components::graph_execution_context execution_context{};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(functions);
+            return true;
+        }();
+        (void) loaded;
+        return {resource, nullptr, *test_cast_registry(), functions, execution_context};
+    }
 } // namespace
 
 using namespace components::logical_plan;
@@ -1303,11 +1315,8 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
         make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
 
     // Drive the REAL validator: stamps key.side()/key.path() and output_types().
-    auto validated = services::dispatcher::validate_schema(&resource,
-                                                           nullptr,
-                                                           test_cast_registry(),
-                                                           outer.get(),
-                                                           params->parameters());
+    auto validated =
+        services::dispatcher::validate_schema(test_validation_context(&resource), outer.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // Precondition the promote rule relies on: the scans carry their columns in
     // output_types() (left_width == 2, right_width == 1).
@@ -1651,7 +1660,7 @@ namespace {
         outer->append_child(uni);
         outer->append_child(make_node_match(r, core::dbname_t{database_name}, core::relname_t{collection_name}, where));
         auto validated =
-            services::dispatcher::validate_schema(r, nullptr, test_cast_registry(), outer.get(), params->parameters());
+            services::dispatcher::validate_schema(test_validation_context(r), outer.get(), params->parameters());
         REQUIRE_FALSE(validated.has_error());
         return outer;
     }

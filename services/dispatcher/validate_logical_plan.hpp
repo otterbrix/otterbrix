@@ -11,6 +11,8 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <services/dispatcher/validation/context.hpp>
+#include <services/dispatcher/validation/schema.hpp>
 
 #include <span>
 #include <string_view>
@@ -40,22 +42,11 @@ namespace services::dispatcher {
     using cte_schema_t = std::vector<cte_schema_column_t>;
     using cte_schemas_t = std::unordered_map<std::pmr::string, cte_schema_t>;
 
-    using column_path = std::pmr::vector<size_t>;
-    struct type_from_t {
-        std::string result_alias;
-        components::types::complex_logical_type type;
-        components::expressions::side_t side = components::expressions::side_t::undefined;
-        // Set when this column is a bare NULL literal (a scalar constant whose value is NULL, whose type was
-        // defaulted to text). Lets a UNION reconcile the column to the other branch's type (PostgreSQL).
-        bool from_null_literal = false;
-    };
-    struct type_path_t {
-        column_path path;
-        components::types::complex_logical_type type;
-    };
-
-    using named_schema = std::pmr::vector<type_from_t>;
-    using type_paths = std::pmr::vector<type_path_t>;
+    using validation::column_path;
+    using validation::named_schema;
+    using validation::type_from_t;
+    using validation::type_path_t;
+    using validation::type_paths;
 
     // Existence checks — return no_error() on success, an error on failure.
     [[nodiscard]] core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
@@ -83,32 +74,10 @@ namespace services::dispatcher {
                                                         const components::graph_execution_context& execution_context,
                                                         std::vector<components::table::column_definition_t>& columns);
 
-    namespace impl {
-        [[nodiscard]] core::error_t
-        resolve_scalar_output_type(std::pmr::memory_resource* resource,
-                                   const components::casts::cast_registry_t* cast_registry,
-                                   components::expressions::scalar_expression_t* scalar_expr,
-                                   const named_schema& schema,
-                                   const components::logical_plan::storage_parameters& parameters,
-                                   const named_schema* schema_right = nullptr,
-                                   bool same_schema = true,
-                                   bool* saw_reduction = nullptr);
-
-        [[nodiscard]] core::error_t
-        resolve_compare_output_type(std::pmr::memory_resource* resource,
-                                    const components::casts::cast_registry_t* cast_registry,
-                                    components::expressions::compare_expression_t* compare_expr,
-                                    const named_schema& schema,
-                                    const components::logical_plan::storage_parameters& parameters);
-    } // namespace impl
-
-    // `cast_registry` is the sole source of the casts INSERT/UPDATE column coercion is
-    // stamped from. `cte_schemas` carries recursive-CTE anchor schemas between the
-    // recursive_cte_t and cte_scan_t arms; callers pass a default-constructed map.
+    // `cte_schemas` carries recursive-CTE anchor schemas between the recursive_cte_t and
+    // cte_scan_t arms; callers pass nullptr and the map is owned internally.
     [[nodiscard]] core::result_wrapper_t<named_schema>
-    validate_schema(std::pmr::memory_resource* resource,
-                    const catalog_resolves_t* resolves,
-                    const components::casts::cast_registry_t* cast_registry,
+    validate_schema(const validation::validation_context_t& context,
                     components::logical_plan::node_t* node,
                     const components::logical_plan::storage_parameters& parameters,
                     cte_schemas_t* cte_schemas = nullptr);

@@ -27,6 +27,8 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/resolve_arithmetic.cpp
        dispatcher/resolve_function.cpp
        dispatcher/validate_logical_plan.cpp
+       dispatcher/validation/schema.cpp
+       dispatcher/validation/resolve_expression.cpp
 
     # index
         index/bitcask_task_executor.cpp

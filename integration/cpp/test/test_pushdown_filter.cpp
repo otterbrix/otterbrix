@@ -32,6 +32,20 @@ namespace {
         (void) loaded;
         return &registry;
     }
+
+    // Validation reads its registries and execution context from the caller, so the test
+    // supplies its own rather than relying on a process-wide default.
+    services::dispatcher::validation::validation_context_t
+    test_validation_context(std::pmr::memory_resource* resource) {
+        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
+        static const components::graph_execution_context execution_context{};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(functions);
+            return true;
+        }();
+        (void) loaded;
+        return {resource, nullptr, *test_cast_registry(), functions, execution_context};
+    }
 } // namespace
 
 using namespace components::logical_plan;
@@ -593,7 +607,7 @@ TEST_CASE("kernel_bug_proof::join_keeps_all_physical_columns") {
                                                     key(&resource, "val", side_t::right)));
 
     components::logical_plan::storage_parameters params(&resource);
-    auto res = services::dispatcher::validate_schema(&resource, nullptr, test_cast_registry(), join.get(), params);
+    auto res = services::dispatcher::validate_schema(test_validation_context(&resource), join.get(), params);
     REQUIRE_FALSE(res.has_error());
 
     auto& schema = res.value();
@@ -614,7 +628,7 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
     agg->append_child(select);
 
     components::logical_plan::storage_parameters params(&resource);
-    auto res = services::dispatcher::validate_schema(&resource, nullptr, test_cast_registry(), agg.get(), params);
+    auto res = services::dispatcher::validate_schema(test_validation_context(&resource), agg.get(), params);
     REQUIRE_FALSE(res.has_error());
 
     auto& schema = res.value();

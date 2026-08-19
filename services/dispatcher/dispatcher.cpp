@@ -648,6 +648,25 @@ namespace services::dispatcher {
                                          std::pmr::vector<components::types::complex_logical_type> inputs) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
+        // every per-executor registry has to drop the overload
+        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
+        ack_futures.reserve(executor_addresses_.size());
+        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
+                executor_addresses_[i],
+                &collection::executor::executor_t::unregister_udf,
+                session,
+                function_name,
+                std::pmr::vector<components::types::complex_logical_type>{inputs.begin(), inputs.end(), resource()});
+            if (needs_sched && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            ack_futures.push_back(std::move(fut));
+        }
+        for (auto& fut : ack_futures) {
+            co_await std::move(fut);
+        }
+
         // Operator-pipeline path. The logical leaf node_unregister_udf_t
         // carries the (name, inputs) signature; the operator probes
         // function_registry_t::get_default(), removes the matching overload,

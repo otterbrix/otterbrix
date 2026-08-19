@@ -17,6 +17,18 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_mirror_gate.cpp
         test_insert_type_promotion.cpp
         test_index_key_binding.cpp
+        test_s3_commit_scaling.cpp
+        test_s3_cleanup_scaling.cpp
+        test_index_flush_scope.cpp
+        test_ssb_load_scaling.cpp
+        test_scan_pin_scope.cpp
+        test_string_projection.cpp
+        test_check_on_update.cpp
+        test_append_pin_lifetime.cpp
+        test_gather_string_lifetime.cpp
+        test_fk_check_on_update.cpp
+        test_inline_constraints.cpp
+        test_text_column_storage.cpp
         test_statement_latency.cpp
         test_update.cpp
         test_wal_pool.cpp

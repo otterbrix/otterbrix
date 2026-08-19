@@ -94,6 +94,14 @@ namespace {
 } // anonymous namespace
 
 namespace services::index {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_index_repopulations{0};
+    } // namespace
+    uint64_t index_repopulations() noexcept { return g_index_repopulations.load(std::memory_order_relaxed); }
+    void reset_index_repopulations() noexcept { g_index_repopulations.store(0, std::memory_order_relaxed); }
+#endif
     manager_index_t::manager_index_t(std::pmr::memory_resource* resource,
                                      actor_zeta::scheduler_raw scheduler,
                                      log_t& log,
@@ -1267,6 +1275,9 @@ namespace services::index {
                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                       uint64_t row_count,
                                       core::date::timezone_offset_t session_tz) {
+#ifdef DEV_MODE
+        g_index_repopulations.fetch_add(1, std::memory_order_relaxed);
+#endif
         trace(log_, "manager_index_t::repopulate_table: oid={} rows={}", static_cast<unsigned>(table_oid), row_count);
 
         auto it = engines_.find(table_oid);

@@ -1,4 +1,5 @@
 #include "row_version_manager.hpp"
+#include <atomic>
 
 #include <cassert>
 #include <cstdlib>
@@ -6,6 +7,17 @@
 #include "collection.hpp"
 
 namespace components::table {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_version_slots_visited{0};
+        std::atomic<uint64_t> g_cleanup_slots_visited{0};
+    } // namespace
+    uint64_t version_slots_visited() noexcept { return g_version_slots_visited.load(std::memory_order_relaxed); }
+    void reset_version_slots_visited() noexcept { g_version_slots_visited.store(0, std::memory_order_relaxed); }
+    uint64_t cleanup_slots_visited() noexcept { return g_cleanup_slots_visited.load(std::memory_order_relaxed); }
+    void reset_cleanup_slots_visited() noexcept { g_cleanup_slots_visited.store(0, std::memory_order_relaxed); }
+#endif
 
     // ProcArray canonical visibility filter:
     //   1. If id == this txn's own transaction_id → self-write, always visible.
@@ -199,6 +211,9 @@ namespace components::table {
         if (!any_deleted) {
             return;
         }
+#ifdef DEV_MODE
+        g_version_slots_visited.fetch_add(vector::DEFAULT_VECTOR_CAPACITY, std::memory_order_relaxed);
+#endif
         for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
             if (deleted[i] == txn_id) {
                 deleted[i] = commit_id;
@@ -214,6 +229,9 @@ namespace components::table {
         if (!any_deleted) {
             return;
         }
+#ifdef DEV_MODE
+        g_version_slots_visited.fetch_add(vector::DEFAULT_VECTOR_CAPACITY, std::memory_order_relaxed);
+#endif
         for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
             if (deleted[i] == txn_id) {
                 deleted[i] = NOT_DELETED_ID;
@@ -318,6 +336,9 @@ namespace components::table {
         if (!any_deleted) {
             return 0;
         }
+#ifdef DEV_MODE
+        g_cleanup_slots_visited.fetch_add(max_count, std::memory_order_relaxed);
+#endif
         uint64_t delete_count = 0;
         for (uint64_t i = 0; i < max_count; i++) {
             if (deleted[i] < TRANSACTION_ID_START) {

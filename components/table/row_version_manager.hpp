@@ -9,6 +9,27 @@
 #include <vector>
 
 namespace components::table {
+
+#ifdef DEV_MODE
+    // Test-observable count of VERSION SLOTS visited while committing or reverting a
+    // transaction's deletes (chunk_vector_info::commit_all_deletes / revert_all_deletes).
+    // Measured: committing a one-row DELETE visits 1024 slots — one vector — whatever the table
+    // size, so the COMMIT walk is already proportional to the rows touched.
+    uint64_t version_slots_visited() noexcept;
+    void reset_version_slots_visited() noexcept;
+
+    // Test-observable count of version slots visited by the CLEANUP side —
+    // chunk_vector_info::committed_deleted_count, which agent_disk_t::maybe_cleanup_inner reaches
+    // through collection_t/row_group_t::committed_row_count to decide whether to compact.
+    //
+    // This is a DIFFERENT walk from the one above and needs its own counter: the commit stamps
+    // only the vectors the transaction touched, while the cleanup re-counts EVERY vector that
+    // still carries a committed tombstone. On a fresh table that is nearly nothing; the open
+    // question is a table whose tombstones have piled up (UPDATE is tombstone+append here), where
+    // the count would grow pass over pass and every later commit would pay for it.
+    uint64_t cleanup_slots_visited() noexcept;
+    void reset_cleanup_slots_visited() noexcept;
+#endif
     namespace storage {
         struct meta_block_pointer_t;
     } // namespace storage

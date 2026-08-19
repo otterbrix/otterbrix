@@ -28,6 +28,14 @@
 
 namespace services::index {
 
+#ifdef DEV_MODE
+    // Test-observable count of full index repopulations (clear + rebuild). Called by VACUUM and
+    // CHECKPOINT; a DELETE must not cause one, so a test can tell "the delete rebuilt the index"
+    // apart from "the shutdown checkpoint did", which a profile cannot.
+    uint64_t index_repopulations() noexcept;
+    void reset_index_repopulations() noexcept;
+#endif
+
     // INDEXES_METADATA_FILENAME retired. Index metadata lives in
     // pg_catalog.pg_index now; this constant is kept as a comment so anyone reading
     // legacy data dirs can still recognize the filename.

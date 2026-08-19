@@ -71,8 +71,14 @@ namespace components::vector {
         : vector_type_(type.type() == types::logical_type::NA ? vector_type::CONSTANT : vector_type::FLAT)
         , type_(std::move(type))
         , data_(nullptr)
-        , validity_(type_.type() == types::logical_type::NA ? validity_mask_t{resource, nullptr}
-                                                            : validity_mask_t{resource, capacity}) {
+        // A mask is only built when it will be kept. With create_data the body calls
+        // validity_.reset() a few lines down, so building one here allocated a buffer, filled it,
+        // and threw it away — on every vector the query path makes. reset() still runs and still
+        // establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY); the only thing
+        // skipped is the allocation nobody ever read.
+        , validity_(type_.type() == types::logical_type::NA || create_data
+                        ? validity_mask_t{resource, nullptr}
+                        : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
             return;
         }

@@ -172,7 +172,37 @@ namespace components::table::storage {
             return buffer_handle_t(this, buffer_.get());
         }
 
-        if (block_id_ < MAXIMUM_BLOCK) {
+        if (has_temp_copy()) {
+            // Spilled: rebuild a buffer of THIS handle's type (never a block_t — the destructor and
+            // the eviction queues both key off buffer_type_) and read the scratch slot back into it.
+            // memory_usage_ is the size this handle was created with, which is what
+            // construct_manager_buffer derives its allocation from. Do NOT feed it the buffer's
+            // size() — resize() reports the size available AFTER alignment, so the derived
+            // allocation comes out larger than the original and the assert inside trips.
+            //
+            // reusable_buffer is deliberately not consumed here: pin() sizes it against
+            // memory_usage_ (a user size) while construct_manager_buffer compares allocations, so
+            // adopting it would compare two different units. Letting it go costs one allocation on
+            // a path that has just done disk I/O.
+            // temp_user_size_ is the buffer's own size() as recorded at spill time. Rebuilding from
+            // it reproduces the identical allocation: size() is (allocation - header), and the
+            // allocation is already sector-aligned, so aligning it up again is a no-op.
+            auto restored = block_manager.buffer_manager.construct_manager_buffer(temp_user_size_,
+                                                                                  nullptr,
+                                                                                  buffer_type_);
+            if (!block_manager.buffer_manager.buffer_pool().read_temporary(temp_slot_,
+                                                                          restored->internal_buffer(),
+                                                                          temp_size_)) {
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"block_handle_t: spilled buffer could not be read back",
+                                                      block_manager.buffer_manager.resource()});
+            }
+            // The slot is released once the bytes are back in memory: the buffer may now be written
+            // to, so the copy on disk is stale from this moment on.
+            block_manager.buffer_manager.buffer_pool().release_temporary(temp_slot_, temp_size_);
+            clear_temp_copy();
+            buffer_ = std::move(restored);
+        } else if (block_id_ < MAXIMUM_BLOCK) {
             auto block = allocate_block(block_manager, std::move(reusable_buffer), block_id_);
             // Disk reload: surface a checksum/IO failure as a value (data_corruption/io_error) rather than
             // throwing. The block stays UNLOADED on error.
@@ -194,7 +224,9 @@ namespace components::table::storage {
             return nullptr;
         }
         assert(!unswizzled_);
-        assert(can_unload());
+        // Either the bytes are already on disk, or they were just written to the pool's scratch
+        // file. Dropping a buffer that is in neither state loses rows.
+        assert(can_unload() || has_temp_copy());
 
         memory_charge_.resize(0);
         state_ = block_state::UNLOADED;

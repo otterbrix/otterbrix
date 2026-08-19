@@ -234,3 +234,48 @@ TEST_CASE("buffer manager: pool exhaustion of pinned managed blocks returns out_
 
     // pins/handles destructors release the blocks at scope end.
 }
+
+// unpin() forgets to release a reader on a TINY_BUFFER.
+//
+// block_handle_t::load() increments readers_ on every pin for EVERY buffer type
+// (block_handle.cpp:171), but standard_buffer_manager_t::unpin() returns early for
+// file_buffer_type::TINY_BUFFER before decrementing (standard_buffer_manager.cpp). So a small
+// buffer's reader count climbs by one per pin and never comes back down.
+//
+// It is invisible today only because can_unload() rejects such blocks earlier anyway: they are
+// transient, hence non-reloadable, hence never eviction candidates whatever readers_ says. It stops
+// being invisible the moment a block CAN be spilled to a temporary file and made reloadable — a
+// permanently non-zero readers_ would then pin it in memory forever and silently defeat the spill.
+// So this is a prerequisite for that work, not a cosmetic fix.
+TEST_CASE("buffer manager: unpinning a tiny buffer releases its reader", "[step1]") {
+    using namespace components::table::storage;
+
+    test_env_t env(uint64_t(1) << 24);
+    const uint64_t block_alloc = env.buffer_manager.block_allocation_size();
+    env.buffer_pool.maximum_memory = 8 * block_alloc;
+
+    const uint64_t block_size = env.buffer_manager.block_size();
+    // Smaller than a block: register_transient_memory routes this to register_small_memory, which
+    // produces a TINY_BUFFER.
+    const uint64_t tiny_size = block_size / 32;
+    REQUIRE(tiny_size > 0);
+
+    auto handle_result = env.buffer_manager.register_transient_memory(tiny_size, block_size);
+    REQUIRE_FALSE(handle_result.has_error());
+    std::shared_ptr<block_handle_t> handle = std::move(handle_result.value());
+    REQUIRE(handle != nullptr);
+    REQUIRE(handle->buffer_type() == file_buffer_type::TINY_BUFFER);
+
+    // A freshly registered handle is already LOADED with one reader held by the registration.
+    const int32_t readers_at_rest = handle->readers();
+
+    for (int i = 0; i < 5; ++i) {
+        auto pinned = env.buffer_manager.pin(handle);
+        REQUIRE_FALSE(pinned.has_error());
+        REQUIRE(pinned.value().is_valid());
+    }
+
+    INFO("readers after five balanced pin/unpin pairs: " << handle->readers() << ", at rest it was "
+                                                         << readers_at_rest);
+    CHECK(handle->readers() == readers_at_rest);
+}

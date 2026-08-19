@@ -1,10 +1,21 @@
 #include "standard_buffer_manager.hpp"
 
+#include <atomic>
+
 #include "buffer_handle.hpp"
 #include "buffer_pool.hpp"
 #include "in_memory_block_manager.hpp"
 
 namespace components::table::storage {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_buffer_pins{0};
+    } // namespace
+
+    uint64_t buffer_pins() noexcept { return g_buffer_pins.load(std::memory_order_relaxed); }
+    void reset_buffer_pins() noexcept { g_buffer_pins.store(0, std::memory_order_relaxed); }
+#endif
 
     standard_buffer_manager_t::standard_buffer_manager_t(std::pmr::memory_resource* resource,
                                                          core::filesystem::local_file_system_t& fs,
@@ -80,7 +91,13 @@ namespace components::table::storage {
     core::result_wrapper_t<std::shared_ptr<block_handle_t>>
     standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
         assert(size < block_size());
-        auto reservation = evict_blocks_or_error(tag, size, nullptr);
+        // Charge and record the ALLOCATION, not the requested size — the same as register_memory
+        // does for the managed path. A tiny buffer really occupies allocation_size(size) bytes, and
+        // recording the smaller number broke the invariant pin() asserts after a reload
+        // (memory_usage == buffer->allocation_size()). Nothing reloaded a tiny buffer before the
+        // spill path existed, which is why the mismatch had never surfaced.
+        const auto alloc_size = allocation_size(size);
+        auto reservation = evict_blocks_or_error(tag, alloc_size, nullptr);
         if (reservation.has_error()) {
             return reservation.convert_error<std::shared_ptr<block_handle_t>>();
         }
@@ -92,7 +109,7 @@ namespace components::table::storage {
                                                        tag,
                                                        std::move(buffer),
                                                        destroy_buffer_condition::BLOCK,
-                                                       size,
+                                                       alloc_size,
                                                        std::move(reservation.value()));
         return result;
     }
@@ -246,6 +263,9 @@ namespace components::table::storage {
     }
 
     core::result_wrapper_t<buffer_handle_t> standard_buffer_manager_t::pin(std::shared_ptr<block_handle_t>& handle) {
+#ifdef DEV_MODE
+        g_buffer_pins.fetch_add(1, std::memory_order_relaxed);
+#endif
         buffer_handle_t buf;
 
         uint64_t required_memory;
@@ -314,16 +334,27 @@ namespace components::table::storage {
         bool purge = false;
         {
             auto lock = handle->get_lock();
-            if (!handle->get_buffer(lock) || handle->buffer_type() == file_buffer_type::TINY_BUFFER) {
+            if (!handle->get_buffer(lock)) {
                 return;
             }
+            // The reader count is ALWAYS released, whatever the buffer type. Bailing out early for
+            // TINY_BUFFER skipped the decrement as well as the queueing, so every pin of a small
+            // buffer added a reader that never came back — load() increments readers_ for every type
+            // (block_handle.cpp), so the count climbed monotonically. Harmless while such blocks are
+            // non-reloadable and therefore never eviction candidates; fatal the moment a block can be
+            // spilled and made reloadable, because a permanently non-zero readers_ would pin it in
+            // memory for good. What is type-specific is only what happens once the count reaches
+            // zero, which is decided below.
             assert(handle->readers() > 0);
             auto new_readers = handle->decrement_readers();
             if (new_readers == 0) {
                 if (!handle->is_reloadable()) {
-                    // Managed in-memory block (no disk copy): never queue, never unload on unpin -- it cannot be
-                    // reloaded. Keep it resident. (can_unload() already rejects it, so this just avoids needless
-                    // eviction-queue churn.)
+                    // No disk copy — but that no longer means "keep it resident forever". The pool
+                    // can write such a buffer to its scratch file and take the memory back, so it
+                    // belongs in the eviction queue like any other candidate. Leaving it out was
+                    // what left the queue empty exactly when a bulk load needed to make room.
+                    auto sp = handle->shared_from_this();
+                    purge = buffer_pool_.add_to_eviction_queue(sp);
                 } else if (handle->must_add_to_eviction_queue()) {
                     auto sp = handle->shared_from_this();
                     purge = buffer_pool_.add_to_eviction_queue(sp);

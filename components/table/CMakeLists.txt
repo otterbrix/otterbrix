@@ -30,6 +30,7 @@ set(SOURCE_${PROJECT_NAME}
         storage/buffer_manager.cpp
         storage/standard_buffer_manager.cpp
         storage/buffer_pool.cpp
+        storage/temporary_spill_file.cpp
         storage/single_file_block_manager.cpp
         storage/metadata_manager.cpp
         storage/metadata_writer.cpp

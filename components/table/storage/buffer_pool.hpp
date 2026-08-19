@@ -1,5 +1,7 @@
 #pragma once
 
+#include "temporary_spill_file.hpp"
+
 #include "block_handle.hpp"
 
 #include <array>
@@ -20,6 +22,8 @@ namespace components::table::storage {
         uint64_t handle_sequence_number;
 
         bool can_unload(block_handle_t& handle);
+        // Same staleness check as can_unload, but accepts a transient block the pool can spill.
+        bool can_evict(block_handle_t& handle);
         std::shared_ptr<block_handle_t> try_get_block_handle();
     };
 
@@ -97,6 +101,15 @@ namespace components::table::storage {
         // Returns out_of_memory when eviction cannot free enough for the new limit. maximum_memory is
         // restored on the second-pass failure before returning the error.
         [[nodiscard]] core::result_wrapper_t<bool> set_limit(uint64_t limit);
+
+        // Scratch space for transient buffers pushed out of memory. A transient buffer has no block
+        // in the .otbx yet, so it cannot simply be dropped — this is where it goes instead, and it is
+        // why the pool can now make room at all rather than reporting out_of_memory.
+        [[nodiscard]] bool read_temporary(uint64_t slot, std::byte* data, uint64_t size) {
+            return spill_file_.read(slot, data, size);
+        }
+        void release_temporary(uint64_t slot, uint64_t size) { spill_file_.release(slot, size); }
+        uint64_t spilled_bytes() const noexcept { return spill_file_.bytes_in_use(); }
 
         void set_allocator_bulk_dealloc_flush_threashold(uint64_t threshold);
         uint64_t get_allocator_bulk_dealloc_flush_threashold();
@@ -179,6 +192,7 @@ namespace components::table::storage {
         std::pmr::memory_resource* resource;
         std::mutex limit_lock;
         std::atomic<uint64_t> maximum_memory;
+        temporary_spill_file_t spill_file_;
         std::atomic<uint64_t> allocator_bulk_deallocation_flush_threshold;
         bool track_eviction_timestamps;
         std::vector<std::unique_ptr<eviction_queue_t>> queues;

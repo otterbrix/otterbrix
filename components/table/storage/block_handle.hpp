@@ -12,6 +12,10 @@
 
 namespace components::table::storage {
 
+    // "no scratch-file copy". Matches temporary_spill_file_t::INVALID_SLOT; kept here so
+    // block_handle.hpp does not have to include the spill file's header.
+    inline constexpr uint64_t INVALID_TEMP_SLOT = UINT64_MAX;
+
     class block_manager_t;
     class buffer_pool_t;
     class buffer_handle_t;
@@ -109,6 +113,39 @@ namespace components::table::storage {
         // Same condition load() uses.
         bool is_reloadable() const { return block_id_ < MAXIMUM_BLOCK; }
 
+        // Spill state. Deliberately SEPARATE from block_id_/is_reloadable(): that expression means
+        // four different things around the tree ("has a disk copy", "is shared/read-only", "already
+        // written through", "is a real .otbx id, free it on compact"), and widening it to cover
+        // temporary copies would silently flip all four. Worse, a temp id would then reach
+        // single_file_block_manager_t::block_location, where (2^62 + N) * block_size overflows onto
+        // exactly real block N — corruption that reads back with a valid checksum.
+        //
+        // So a spilled block keeps its transient identity and gains a slot in the pool's scratch
+        // file instead.
+        bool has_temp_copy() const { return temp_slot_ != INVALID_TEMP_SLOT; }
+        uint64_t temp_slot() const { return temp_slot_; }
+        uint64_t temp_size() const { return temp_size_; }
+        // `bytes` is what was written to the scratch file (the whole allocation); `user_size` is
+        // the logical size the buffer was created with. construct_manager_buffer() derives the
+        // allocation from the logical size and asserts they agree, so both have to be remembered.
+        void set_temp_copy(uint64_t slot, uint64_t bytes, uint64_t user_size) {
+            temp_slot_ = slot;
+            temp_size_ = bytes;
+            temp_user_size_ = user_size;
+        }
+        void clear_temp_copy() {
+            temp_slot_ = INVALID_TEMP_SLOT;
+            temp_size_ = 0;
+            temp_user_size_ = 0;
+        }
+
+        // A resident transient buffer nobody is reading can be written to the scratch file and its
+        // memory reclaimed. can_unload() covers the disk-backed case; this covers the case that used
+        // to have no answer at all and left the pool with nothing to evict.
+        bool can_spill() const {
+            return state_ == block_state::LOADED && readers_ == 0 && buffer_ != nullptr && !is_reloadable();
+        }
+
         uint64_t memory_usage() const { return memory_usage_; }
 
         bool is_unloaded() const { return state_ == block_state::UNLOADED; }
@@ -116,7 +153,9 @@ namespace components::table::storage {
         void set_eviction_queue_index(uint64_t index) {
             // can only be set once
             assert(eviction_queue_idx_ == INVALID_INDEX);
-            assert(buffer_type() == file_buffer_type::MANAGED_BUFFER);
+            // Any buffer type can be queued now that a transient one can be spilled; the queue is
+            // chosen by eviction_queue_for_handle, which already routes all three types.
+            assert(buffer_type() != file_buffer_type::BLOCK || is_reloadable());
             eviction_queue_idx_ = index;
         }
 
@@ -167,6 +206,9 @@ namespace components::table::storage {
         std::atomic<int64_t> lru_timestamp_msec_;
         std::atomic<destroy_buffer_condition> destroy_condition_;
         std::atomic<uint64_t> memory_usage_;
+        uint64_t temp_slot_{INVALID_TEMP_SLOT};
+        uint64_t temp_size_{0};
+        uint64_t temp_user_size_{0};
         buffer_pool_reservation_t memory_charge_;
         const char* unswizzled_;
         std::atomic<uint64_t> eviction_queue_idx_;

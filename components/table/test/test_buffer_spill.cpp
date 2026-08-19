@@ -81,10 +81,6 @@ TEST_CASE("buffer manager: transient buffers spill to disk instead of exhausting
 
     for (int i = 0; i < kBuffers; ++i) {
         auto created = env.buffer_manager.register_transient_memory(tiny_size, block_size);
-        WARN("allocating buffer " << i << ": pool used " << env.buffer_pool.used_memory() << ", spilled "
-                                  << env.buffer_pool.spilled_bytes() << ", error: "
-                                  << (created.has_error() ? std::string(created.error().what.c_str())
-                                                          : std::string("none")));
         INFO("allocating transient buffer " << i << " of " << kBuffers << " into a pool sized for 4");
         REQUIRE_FALSE(created.has_error());
         auto handle = std::move(created.value());
@@ -97,6 +93,12 @@ TEST_CASE("buffer manager: transient buffers spill to disk instead of exhausting
         }
         handles.push_back(std::move(handle));
     }
+
+    // Positive control: the point is that buffers went to disk, not that twelve small allocations
+    // happened to fit. Without this a pool that silently grew past its limit would pass.
+    INFO("bytes written to the scratch file: " << env.buffer_pool.spilled_bytes());
+    REQUIRE(env.buffer_pool.spilled_bytes() > 0);
+    CHECK(env.buffer_pool.used_memory() <= 4 * per_buffer);
 
     // Everything written must still be readable: whatever was pushed out has to come back intact.
     for (int i = 0; i < kBuffers; ++i) {

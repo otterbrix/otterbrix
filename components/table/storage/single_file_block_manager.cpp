@@ -26,6 +26,11 @@ namespace components::table::storage {
     single_file_block_manager_t::~single_file_block_manager_t() = default;
 
     uint64_t single_file_block_manager_t::block_location(uint64_t block_id) const {
+        // Only REAL block ids address this file. A transient/temporary id is >= MAXIMUM_BLOCK
+        // (1<<62), and the multiplication below then overflows and lands on a real block:
+        // (2^62 + N) * 2^18 mod 2^64 == N * 2^18. The checksum is recomputed on write, so the
+        // aliased block reads back as valid data and the corruption is silent. Refuse loudly.
+        assert(block_id < MAXIMUM_BLOCK && "block_location called with a non-file block id");
         return BLOCK_START + block_id * block_allocation_size();
     }
 
@@ -171,6 +176,9 @@ namespace components::table::storage {
     }
 
     void single_file_block_manager_t::mark_as_free(uint64_t block_id) {
+        // Same identity rule as block_location: a transient id here would put 2^62+N into the free
+        // list, and the next allocation would hand out an id that aliases a live block.
+        assert(block_id < MAXIMUM_BLOCK && "mark_as_free called with a non-file block id");
         std::lock_guard lock(allocation_lock_);
         used_blocks_.erase(block_id);
         modified_blocks_.erase(block_id);

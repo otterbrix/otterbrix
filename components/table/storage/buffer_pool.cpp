@@ -19,12 +19,21 @@ namespace components::table::storage {
         return handle.can_unload();
     }
 
+    bool buffer_eviction_node_t::can_evict(block_handle_t& handle) {
+        if (handle_sequence_number != handle.eviction_sequence_number()) {
+            return false;
+        }
+        return (handle.can_unload() || handle.can_spill());
+    }
+
     std::shared_ptr<block_handle_t> buffer_eviction_node_t::try_get_block_handle() {
         auto handle_ptr = handle.lock();
         if (!handle_ptr) {
             return nullptr;
         }
-        if (!can_unload(*handle_ptr)) {
+        // can_evict, not can_unload: a transient block the pool can spill is a legitimate candidate,
+        // and filtering it out here would leave the queue looking empty exactly when it matters.
+        if (!can_evict(*handle_ptr)) {
             return nullptr;
         }
         return handle_ptr;
@@ -152,7 +161,11 @@ namespace components::table::storage {
             }
 
             auto lock = handle->get_lock();
-            if (!node.can_unload(*handle)) {
+            // A candidate is either already backed by disk (can_unload) or transient and idle, in
+            // which case the pool writes it to its scratch file first (can_spill). Before the spill
+            // path existed only the first kind could ever be queued, which is why the queues were
+            // empty exactly when a bulk load needed them.
+            if (!node.can_evict(*handle)) {
                 decrement_dead_nodes();
                 continue;
             }
@@ -170,6 +183,7 @@ namespace components::table::storage {
         : eviction_queue_sizes({BLOCK_QUEUE_SIZE, MANAGED_BUFFER_QUEUE_SIZE, TINY_BUFFER_QUEUE_SIZE})
         , resource(resource)
         , maximum_memory(maximum_memory)
+        , spill_file_(resource)
         , allocator_bulk_deallocation_flush_threshold(allocator_bulk_deallocation_flush_threshold)
         , track_eviction_timestamps(track_eviction_timestamps) {
         for (uint8_t type_idx = 0; type_idx < FILE_BUFFER_TYPE_COUNT; type_idx++) {
@@ -242,22 +256,46 @@ namespace components::table::storage {
         temp_buffer_pool_reservation_t r(tag, *this, extra_memory);
         bool found = false;
 
-        if (memory_usage.used_memory(memory_usage_caches::NO_FLUSH) <= memory_limit) {
+        // FLUSH, not NO_FLUSH. update_used_memory accumulates small deltas in per-thread caches and
+        // only folds them into the base counter past a threshold, so the NO_FLUSH reading does not
+        // move as this loop frees memory. Reading it after every unload therefore never saw the
+        // limit satisfied: the pass emptied the whole queue and still reported failure. Take one
+        // accurate reading here and count what this pass frees locally.
+        const uint64_t used_now = memory_usage.used_memory(memory_usage_caches::FLUSH);
+        if (used_now <= memory_limit) {
             return {true, std::move(r)};
         }
+        const uint64_t to_free = used_now - memory_limit;
+        uint64_t freed = 0;
 
         queue.iterate_unloadable_blocks([&](buffer_eviction_node_t&,
                                             const std::shared_ptr<block_handle_t>& handle,
                                             std::unique_lock<std::mutex>& lock) {
-            if (buffer && handle->get_buffer(lock)->allocation_size() == extra_memory) {
+            // Transient buffer: its bytes exist nowhere else, so they go to the scratch file
+            // BEFORE the memory is taken away. A failed write leaves the block untouched and
+            // resident — losing rows to make room is never the right trade — and eviction simply
+            // moves on to the next candidate.
+            if (!handle->is_reloadable() && !handle->has_temp_copy()) {
+                auto& file_buffer = handle->get_buffer(lock);
+                auto slot = spill_file_.write(file_buffer->internal_buffer(), file_buffer->allocation_size());
+                if (slot.has_error()) {
+                    return true;
+                }
+                handle->set_temp_copy(slot.value(), file_buffer->allocation_size(), file_buffer->size());
+            }
+
+            const uint64_t reclaimed = handle->get_buffer(lock)->allocation_size();
+
+            if (buffer && reclaimed == extra_memory) {
                 *buffer = handle->unload_and_take_block(lock);
                 found = true;
                 return false;
             }
 
             handle->unload(lock);
+            freed += reclaimed;
 
-            if (memory_usage.used_memory(memory_usage_caches::NO_FLUSH) <= memory_limit) {
+            if (freed >= to_free) {
                 found = true;
                 return false;
             }

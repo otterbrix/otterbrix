@@ -820,14 +820,39 @@ namespace services::dispatcher { namespace {
                 enrich_update_sync(node, idx);
                 const auto tbl_oid = node->table_oid();
                 if (tbl_oid != components::catalog::INVALID_OID && idx) {
+                    const auto* md = tbl_md_for_oid(idx, tbl_oid);
                     if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid); it != idx->outgoing_fks_by_oid.end()) {
-                        node->set_outgoing_fks(it->second);
+                        auto fks = it->second;
+                        // Resolve the child column NAMES to their positions, the same way the INSERT
+                        // branch does through key_translation(). Handing the node unresolved foreign
+                        // keys left child_col_indices empty, and operator_fk_check reads that as "no
+                        // key column to address" and skips the row — so every row was skipped, the
+                        // qualifying count stayed zero, and zero is its success path. The check ran
+                        // and validated nothing.
+                        //
+                        // An UPDATE is fed the scanned base row, so a child column is at its storage
+                        // chunk_position rather than at a position in an INSERT tuple.
+                        if (md) {
+                            for (auto& fk : fks) {
+                                fk.child_col_indices.clear();
+                                for (const auto& col_name : fk.child_col_names) {
+                                    std::size_t pos = std::numeric_limits<std::size_t>::max();
+                                    for (const auto& col : md->columns) {
+                                        if (col.attname == col_name && col.chunk_position >= 0) {
+                                            pos = static_cast<std::size_t>(col.chunk_position);
+                                            break;
+                                        }
+                                    }
+                                    fk.child_col_indices.push_back(pos);
+                                }
+                            }
+                        }
+                        node->set_outgoing_fks(std::move(fks));
                     }
                     if (auto it = idx->unique_constraints_by_oid.find(tbl_oid);
                         it != idx->unique_constraints_by_oid.end()) {
                         node->set_unique_groups(it->second);
                     }
-                    const auto* md = tbl_md_for_oid(idx, tbl_oid);
                     if (auto it = idx->pk_columns_by_oid.find(tbl_oid);
                         it != idx->pk_columns_by_oid.end() && !it->second.empty()) {
                         auto nn = node->not_null_cols();

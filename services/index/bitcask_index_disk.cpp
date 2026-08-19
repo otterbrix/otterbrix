@@ -674,18 +674,23 @@ namespace services::index {
         }
     }
 
-    void bitcask_index_disk_t::append_snapshot(const value_t& key, const row_ids_t& rows) {
+    core::error_t bitcask_index_disk_t::append_snapshot(const value_t& key, const row_ids_t& rows) {
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, rows);
         const auto offset = file_->seek_position();
         write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
         const auto key_bytes = key_bytes_for_hash(key);
         erase_all_refs_for_key(key_bytes);
-        hash_index_->put(key_bytes,
-                         rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
-                         static_cast<uint32_t>(active_segment_id_),
-                         offset + sizeof(record_header_t));
+        if (!hash_index_->put(key_bytes,
+                              rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                              static_cast<uint32_t>(active_segment_id_),
+                              offset + sizeof(record_header_t))) {
+            ++active_segment_records_;
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"bitcask: hash index write failed", resource_}};
+        }
         ++active_segment_records_;
+        return core::error_t::no_error();
     }
 
     void bitcask_index_disk_t::append_tombstone(const value_t& key) {
@@ -905,7 +910,9 @@ namespace services::index {
                 continue;
             }
             rows.emplace_back(row_id);
-            append_snapshot(key, rows);
+            if (auto err = append_snapshot(key, rows); err.contains_error()) {
+                return err;
+            }
             mark_operation_dirty();
         }
         force_flush_unlocked();
@@ -944,7 +951,7 @@ namespace services::index {
             if (rows.empty()) {
                 append_tombstone(key);
             } else {
-                append_snapshot(key, rows);
+                note_write_error(append_snapshot(key, rows));
             }
             mark_operation_dirty();
         }
@@ -959,7 +966,7 @@ namespace services::index {
             return;
         }
         rows.emplace_back(value);
-        append_snapshot(key, rows);
+        note_write_error(append_snapshot(key, rows));
         mark_operation_dirty();
         flush_if_needed();
     }
@@ -970,7 +977,7 @@ namespace services::index {
         // Caller must ensure bulk_mode is enabled and keys are unique.
         row_ids_t rows(resource_);
         rows.emplace_back(value);
-        append_snapshot(key, rows);
+        note_write_error(append_snapshot(key, rows));
         mark_operation_dirty();
         // flush_if_needed() is skipped in bulk_mode anyway
     }
@@ -1000,7 +1007,7 @@ namespace services::index {
         if (rows.empty()) {
             append_tombstone(key);
         } else {
-            append_snapshot(key, rows);
+            note_write_error(append_snapshot(key, rows));
         }
         mark_operation_dirty();
         flush_if_needed();
@@ -1026,7 +1033,16 @@ namespace services::index {
     core::error_t bitcask_index_disk_t::force_flush() {
         std::unique_lock lock(mutex_);
         force_flush_unlocked();
-        return core::error_t::no_error();
+        // Hand over anything the void-returning write paths could not report themselves, once.
+        auto pending = pending_write_error_;
+        pending_write_error_ = core::error_t::no_error();
+        return pending;
+    }
+
+    void bitcask_index_disk_t::note_write_error(core::error_t err) {
+        if (err.contains_error() && !pending_write_error_.contains_error()) {
+            pending_write_error_ = std::move(err);
+        }
     }
 
     void bitcask_index_disk_t::force_flush_unlocked() {

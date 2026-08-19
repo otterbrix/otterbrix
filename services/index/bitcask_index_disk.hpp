@@ -136,7 +136,10 @@ namespace services::index {
         read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
         std::string key_bytes_for_hash(const value_t& key) const;
         void erase_all_refs_for_key(std::string_view key_bytes);
-        void append_snapshot(const value_t& key, const row_ids_t& rows);
+        // Reports a hash-index write failure instead of dropping it: the segment record is already
+        // durable at that point, so a lost index entry would leave the key unfindable while the
+        // statement reported success.
+        [[nodiscard]] core::error_t append_snapshot(const value_t& key, const row_ids_t& rows);
         void append_tombstone(const value_t& key);
         // M3.5: returns no_error() on a clean append, an index_create_fail
         // error if the txn-log file cannot be opened (the only recoverable IO
@@ -156,6 +159,7 @@ namespace services::index {
         [[nodiscard]] core::error_t write_applied_log_offset(uint64_t offset) const;
         void flush_if_needed();
         void force_flush_unlocked();
+        void note_write_error(core::error_t err);
         void install_hash_key_loader();
 
         std::filesystem::path path_;
@@ -166,6 +170,10 @@ namespace services::index {
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
         disk_hash_table_ptr hash_index_;
+        // Set when a hash-index write fails on a path whose caller returns void (the direct and
+        // bulk inserts, the startup rebuild, segment merge). force_flush() hands it to the caller,
+        // which is the first point on those paths that can report anything at all.
+        core::error_t pending_write_error_{core::error_t::no_error()};
         uint64_t next_timestamp_{0};
         std::atomic<uint64_t> next_segment_id_{regular_segment_id_start_};
         uint64_t active_segment_id_{0};

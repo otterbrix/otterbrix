@@ -443,26 +443,6 @@ namespace components::table {
         return found;
     }
 
-    void update_segment_t::cleanup_update_internal(update_info_t& info) {
-        assert(info.has_prev());
-        auto prev = info.prev;
-        {
-            auto pin = prev.pin();
-            auto& prev_info = pin.update_info();
-            prev_info.next = info.next;
-        }
-        if (info.has_next()) {
-            auto next = info.next;
-            auto next_pin = next.pin();
-            auto& next_info = next_pin.update_info();
-            next_info.prev = prev;
-        }
-    }
-
-    void update_segment_t::cleanup_update(update_info_t& info) {
-        cleanup_update_internal(info);
-    }
-
     core::string_buffer_t& update_segment_t::heap() noexcept { return heap_; }
 
     undo_buffer_pointer_t update_segment_t::update_node(uint64_t vector_idx) const {

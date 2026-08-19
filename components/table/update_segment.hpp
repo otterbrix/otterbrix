@@ -198,12 +198,10 @@ namespace components::table {
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
         bool row_is_updated(int64_t row_id);
 
-        void cleanup_update(update_info_t& info);
 
         core::string_buffer_t& heap() noexcept;
 
     private:
-        void cleanup_update_internal(update_info_t& info);
         undo_buffer_pointer_t update_node(uint64_t vector_idx) const;
         void initialize_update_info(uint64_t vector_idx);
         void initialize_update_info(update_info_t& info,

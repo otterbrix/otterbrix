@@ -213,7 +213,6 @@ namespace components::table {
         uint64_t
         scan_vector(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t target_scan);
 
-        void clear_updates();
         void fetch_updates(uint64_t vector_index,
                            vector::vector_t& result,
                            uint64_t result_offset,

@@ -44,7 +44,6 @@ namespace components::table::storage {
         void release(uint64_t slot, uint64_t size);
 
         uint64_t bytes_in_use() const noexcept { return bytes_in_use_; }
-        uint64_t file_size() const noexcept { return cursor_; }
 
     private:
         [[nodiscard]] bool ensure_open();

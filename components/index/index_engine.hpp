@@ -20,10 +20,9 @@ namespace components::vector {
 namespace components::index {
 
 #ifdef DEV_MODE
-    // Test-observable count of CHUNK COLUMN INSPECTIONS performed while matching an index key
-    // to a column. Each inspection compared a column alias against a freshly built std::string,
-    // and it ran per index PER ROW — twice, once to check the key is present and once to read
-    // it. Resolved once per chunk instead, this drops from O(rows) to O(chunks).
+    // Test-observable count of CHUNK COLUMN INSPECTIONS performed while matching an index key to
+    // a column. Resolved once per chunk this is O(chunks); a regression back to matching per row
+    // shows up as O(rows).
     uint64_t index_key_column_probes() noexcept;
     void reset_index_key_column_probes() noexcept;
 #endif
@@ -47,12 +46,11 @@ namespace components::index {
         std::pmr::memory_resource* resource() noexcept;
 
         // Which chunk column carries each index's key. Entry j corresponds to the j-th index in
-        // iteration order; key_column_absent means this chunk does not carry that index's key
-        // (the index is then skipped, exactly as the old per-row presence check did).
+        // iteration order; key_column_absent means this chunk does not carry that index's key and
+        // the index is skipped.
         //
         // Resolved ONCE per chunk: the answer is a property of the chunk's column layout, not of
-        // a row, and computing it per row meant walking the columns and building a std::string
-        // per comparison for every row.
+        // a row.
         using chunk_key_binding_t = std::pmr::vector<std::size_t>;
         static constexpr std::size_t key_column_absent = std::numeric_limits<std::size_t>::max();
 
@@ -80,29 +78,7 @@ namespace components::index {
         auto all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t>;
         auto all_indexed_descriptions() const -> std::pmr::vector<index_description_t>;
 
-        // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns.
-        //
-        // TEMPLATE, not std::function: these are ordinary (non-virtual) methods, so the callable
-        // can stay a type parameter — no erasure, no heap allocation for a capturing lambda, and
-        // the call is inlinable. std::function is forbidden by the project rules; a function
-        // pointer would erase just as much.
-        template<typename Fn>
-        void for_each_disk_op(const chunk_key_binding_t& binding,
-                              const vector::data_chunk_t& chunk,
-                              size_t row,
-                              Fn&& fn) const {
-            std::size_t slot = 0;
-            for (const auto& index : storage_) {
-                const auto column = slot < binding.size() ? binding[slot] : key_column_absent;
-                ++slot;
-                if (!index->is_disk() || column == key_column_absent) {
-                    continue;
-                }
-                fn(index->disk_agent(), chunk.data[column].value(row));
-            }
-        }
-
-        // Mirror pending txn entries to disk agents (call BEFORE commit clears pending maps)
+        // Mirror pending txn entries to disk agents (call BEFORE commit clears pending state).
         template<typename Fn>
         void for_each_pending_disk_insert(uint64_t txn_id, Fn&& fn) const {
             for (const auto& index : storage_) {

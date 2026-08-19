@@ -293,10 +293,9 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
-        // ONE statistics pass over the vector, not two. The column-wide and the per-segment
-        // statistics are the same computation over the same data, so the batch is computed once
-        // and merged into both: merge() accumulates null_count and folds min/max exactly as a
-        // second update() over the same rows would.
+        // ONE statistics pass over the vector, not two: the column-wide and the per-segment
+        // statistics are the same computation over the same rows, so the batch is computed once and
+        // merged into both — merge() accumulates null_count and folds min/max exactly as update() would.
         base_statistics_t batch_stats(resource_, type_.type());
         batch_stats.update(vector, count);
         statistics_.merge(batch_stats);
@@ -354,9 +353,8 @@ namespace components::table {
                 // evictable+reloadable segment (disk tables only; no-op for in-memory). A write/alloc failure
                 // surfaces as io_error/out_of_memory and aborts the append cleanly.
 #ifdef DEV_MODE
-                // The question this counter answers: at the moment the on-fill path hands the filled
-                // segment to the swap, is the append state's pin on that segment's block still live?
-                // If it is, the swap frees the block_handle_t underneath a live buffer_handle_t.
+                // Does the append state's pin on the filled segment's block outlive the handoff to
+                // the swap below? See transition_segment_to_disk for why that is fatal.
                 {
                     auto* filled = data_.segment_at(l, static_cast<int64_t>(filled_index));
                     g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
@@ -515,13 +513,10 @@ namespace components::table {
 
         // Size the segment to what it can actually hold, not to a whole block. A row group holds
         // DEFAULT_VECTOR_CAPACITY rows (collection_t's default), so a column's segment inside it
-        // never takes more than that many values — for a BIGINT column that is 8 KiB of data, which
-        // used to be given a 256 KiB block and leave 97% of it unused. The buffer pool then filled
-        // at a fixed ~16k blocks no matter how little data they held: loading a 17-column table ran
-        // out of its 4 GiB at 492 500 rows while holding only 493 MiB on disk.
-        //
-        // The formula is not new — the branch below already used it for the MAX_ROW_ID case; it
-        // simply was not applied to ordinary appends.
+        // never takes more than that many values — 8 KiB of data for a BIGINT column, against a
+        // 256 KiB block that would be 97% empty. Sizing by the block instead fills the buffer pool
+        // at a fixed ~16k blocks no matter how little data they hold: a 17-column table ran out of
+        // its 4 GiB at 492 500 rows while holding only 493 MiB on disk.
         const auto vector_segment_size = vector::DEFAULT_VECTOR_CAPACITY * type_size;
 
         uint64_t segment_size = block_size < vector_segment_size ? block_size : vector_segment_size;
@@ -670,12 +665,9 @@ namespace components::table {
         // column_segment_t / block_handle is then unreferenced -> its in-memory buffer is released; the
         // pool can later evict+reload the new disk-backed block. MVCC version info is keyed by row position
         // (unchanged: same start/count) so visibility is preserved.
-#ifdef DEV_MODE
-        // This function is careful with its OWN pin (released above, deliberately, so its raw pointer
-        // cannot dangle). It cannot be careful with anybody else's: the append state holds a
+        // Releasing our own pin above does not cover anybody else's: the append state holds a
         // buffer_handle_t on this same block across the whole call, and the swap below frees the
         // block_handle_t it points at.
-#endif
         data_.replace_segment_at_index(l, segment_index, std::move(new_segment));
         return true;
     }
@@ -750,18 +742,12 @@ namespace components::table {
                                                static_cast<uint64_t>(state.row_index));
             uint64_t result_offset = state.result_offset + initial_remaining - remaining;
             if (scan_count > 0) {
-                // scan() writes the whole [result_offset, result_offset + scan_count) range in one
-                // pass. There used to be a per-row fetch_row loop right here filling the same range
-                // first; every byte of its output was overwritten on the next line. It cost a pin
-                // and an unpin of the segment's block PER ROW — two mutex acquisitions, and on
-                // release an eviction-queue node allocated from the process-wide pool — and it
-                // constructed a fresh column_fetch_state per row, which also defeated the handle
-                // cache that state is there to provide. Measured: 400 578 pins to scan 200 000 rows
-                // where 195 segments were touched.
-                //
-                // Its one non-redundant effect, propagating a pin failure, is already covered:
-                // initialize_scan pins the same block once per segment and records the failure in
-                // state.scan_error, which this function checks before it gets here.
+                // scan() fills the whole [result_offset, result_offset + scan_count) range in one
+                // pass; do NOT precede it with a per-row fetch_row loop — its output is overwritten
+                // here, and each row costs a pin+unpin of the segment's block (two mutex
+                // acquisitions plus an eviction-queue node) and a fresh column_fetch_state that
+                // defeats the handle cache `state` exists to provide: 400 578 pins to scan
+                // 200 000 rows across 195 segments.
                 state.current->scan(state, scan_count, result, result_offset, scan_type);
 
                 state.row_index += static_cast<int64_t>(scan_count);
@@ -801,10 +787,6 @@ namespace components::table {
             fetch_updates(update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
         }
         return scan_count;
-    }
-
-    void column_data_t::clear_updates() {
-        updates_.reset();
     }
 
     void column_data_t::fetch_updates(uint64_t vector_index,

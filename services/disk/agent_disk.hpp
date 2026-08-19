@@ -32,11 +32,10 @@
 namespace services::disk {
 
 #ifdef DEV_MODE
-    // Test-observable count of checkpoint ROUNDS reaching this agent. A round copies the .otbx
-    // file of every disk table in the agent's slice whole (copy_file to .prev, then remove), so it
-    // costs O(data) and a load that triggers one per commit is quadratic in the rows already
-    // written. Counted per round rather than per table so the number does not move when the
-    // catalog gains a table.
+    // Test-observable count of checkpoint ROUNDS reaching this agent (rounds, not tables, so the
+    // number does not move when the catalog gains a table). A round copies the .otbx file of every
+    // disk table in the agent's slice whole (copy_file to .prev, then remove), so it costs O(data)
+    // and a load that triggers one per commit is quadratic in the rows already written.
     uint64_t table_checkpoints() noexcept;
     void reset_table_checkpoints() noexcept;
 #endif
@@ -44,12 +43,10 @@ namespace services::disk {
     using path_t = std::filesystem::path;
     using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
 
-    class manager_disk_t;
     using session_id_t = ::components::session::session_id_t;
     // Catalog-DDL _inner handlers take the same by-value context the manager routers do.
     using execution_context_t = ::components::execution_context_t;
 
-    class base_manager_disk_t;
 
     // Test-observable counter of ROWS the agent ships back for an aggregate-pushdown
     // reduce — the sum of data_chunk_t::size() over the FINAL aggregated chunks
@@ -68,10 +65,8 @@ namespace services::disk {
     void reset_pushdown_reply_rows() noexcept;
 
     // Test-observable counter of storage scans issued by the KEYED catalog read
-    // (read_chunks_by_keys_inner). Each bump is one full pass over a pg_* table: the
-    // keyed read builds one filter per key tuple, so a batch of N keys costs N passes.
-    // This is the instrument for "how much does a statement pay to resolve its catalog",
-    // and the acceptance measure for batching that loop into a single pass.
+    // (read_chunks_by_keys_inner). Each bump is one full pass over a pg_* table, and a whole
+    // batch of key tuples is answered in ONE pass — the count does not grow with key count.
     uint64_t catalog_key_scans() noexcept;
     void reset_catalog_key_scans() noexcept;
 #endif

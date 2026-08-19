@@ -12,13 +12,6 @@ namespace components::table::storage {
         assert(!this->handle.expired());
     }
 
-    bool buffer_eviction_node_t::can_unload(block_handle_t& handle) {
-        if (handle_sequence_number != handle.eviction_sequence_number()) {
-            return false;
-        }
-        return handle.can_unload();
-    }
-
     bool buffer_eviction_node_t::can_evict(block_handle_t& handle) {
         if (handle_sequence_number != handle.eviction_sequence_number()) {
             return false;
@@ -31,8 +24,7 @@ namespace components::table::storage {
         if (!handle_ptr) {
             return nullptr;
         }
-        // can_evict, not can_unload: a transient block the pool can spill is a legitimate candidate,
-        // and filtering it out here would leave the queue looking empty exactly when it matters.
+        // can_evict, not can_unload: a transient block the pool can spill is a candidate too.
         if (!can_evict(*handle_ptr)) {
             return nullptr;
         }
@@ -308,32 +300,6 @@ namespace components::table::storage {
         }
 
         return {found, std::move(r)};
-    }
-
-    uint64_t buffer_pool_t::purge_aged_blocks(uint32_t max_age_sec) {
-        int64_t now = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now())
-                          .time_since_epoch()
-                          .count();
-        int64_t limit = now - (static_cast<int64_t>(max_age_sec) * 1000);
-        uint64_t purged_bytes = 0;
-        for (auto& queue : queues) {
-            purged_bytes += purge_aged_blocks_internal(*queue, max_age_sec, now, limit);
-        }
-        return purged_bytes;
-    }
-
-    uint64_t buffer_pool_t::purge_aged_blocks_internal(eviction_queue_t& queue, uint32_t, int64_t now, int64_t limit) {
-        uint64_t purged_bytes = 0;
-        queue.iterate_unloadable_blocks([&](buffer_eviction_node_t&,
-                                            const std::shared_ptr<block_handle_t>& handle,
-                                            std::unique_lock<std::mutex>& lock) {
-            auto lru_timestamp_msec = handle->LRU_timestamp();
-            bool is_fresh = lru_timestamp_msec >= limit && lru_timestamp_msec <= now;
-            purged_bytes += handle->memory_usage();
-            handle->unload(lock);
-            return !is_fresh;
-        });
-        return purged_bytes;
     }
 
     void buffer_pool_t::purge_queue(const block_handle_t& handle) { eviction_queue_for_handle(handle).purge(); }

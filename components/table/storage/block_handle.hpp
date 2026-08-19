@@ -123,8 +123,6 @@ namespace components::table::storage {
         // So a spilled block keeps its transient identity and gains a slot in the pool's scratch
         // file instead.
         bool has_temp_copy() const { return temp_slot_ != INVALID_TEMP_SLOT; }
-        uint64_t temp_slot() const { return temp_slot_; }
-        uint64_t temp_size() const { return temp_size_; }
         // `bytes` is what was written to the scratch file (the whole allocation); `user_size` is
         // the logical size the buffer was created with. construct_manager_buffer() derives the
         // allocation from the logical size and asserts they agree, so both have to be remembered.
@@ -153,8 +151,9 @@ namespace components::table::storage {
         void set_eviction_queue_index(uint64_t index) {
             // can only be set once
             assert(eviction_queue_idx_ == INVALID_INDEX);
-            // Any buffer type can be queued now that a transient one can be spilled; the queue is
-            // chosen by eviction_queue_for_handle, which already routes all three types.
+            // A transient MANAGED/TINY buffer can be queued now that it can be spilled, and
+            // eviction_queue_for_handle routes all three buffer types. A BLOCK buffer is still
+            // queued only when it is reloadable.
             assert(buffer_type() != file_buffer_type::BLOCK || is_reloadable());
             eviction_queue_idx_ = index;
         }

@@ -94,16 +94,12 @@ TEST_CASE("catalog::system_schemas::pg_database_minimal_columns") {
 
 // 8. Column ORDER of the system tables is part of their contract.
 //
-// Every reader of pg_* addresses columns POSITIONALLY — manager_disk_bootstrap.cpp and
-// ddl_metadata_builder.cpp use literal indices for pg_index, operator_vacuum and the
-// computed-field operators use literals for pg_computed_column, and the keyed catalog
-// reads resolve a name to an index once and then index by it. Nothing pinned that order
-// until now: every assertion above is order-independent (name sets and counts), so
-// inserting a column in the middle of a schema would leave the whole suite green while
-// every positional reader silently shifted onto the wrong column.
-//
-// This is the guard the ordinal work depends on: identity by position is only safe if
-// the position is pinned somewhere that fails loudly when it moves.
+// Readers of pg_* address columns POSITIONALLY: literal indices in manager_disk_bootstrap.cpp
+// and ddl_metadata_builder.cpp for pg_index, in operator_vacuum and the computed-field
+// operators for pg_computed_column, and the keyed catalog reads pass column ordinals across
+// the mailbox. Every other assertion here is order-independent (name sets and counts), so
+// without this one, inserting a column in the middle of a schema leaves the whole suite green
+// while every positional reader silently shifts onto its neighbour.
 namespace {
     void require_layout(const char* table, std::initializer_list<const char*> expected) {
         const auto* def = find_system_table(table);
@@ -143,15 +139,11 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
 
 // 9. Every column-index constant names the column it points at.
 //
-// The keyed catalog reads address columns by ORDINAL — no name crosses the mailbox any
-// more — so components/catalog/helpers.hpp IS the identity of a catalog column. Test 8
-// above pins the layout of the tables it lists; this one closes the remaining half of the
-// pact by tying each CONSTANT to the schema it claims to mirror, for every table that has
-// constants. Reorder a schema, rename a column, or mistype an index, and the constant that
-// silently started pointing at its neighbour fails here instead of in a resolve.
-//
-// Generated against the schemas rather than hand-typed: a hand-written list is exactly the
-// kind of parallel copy that drifts.
+// The keyed catalog reads address columns by ORDINAL — no name crosses the mailbox — so
+// components/catalog/helpers.hpp IS the identity of a catalog column. Test 8 pins the layout
+// of the schemas it lists; this one ties each CONSTANT to the schema it claims to mirror, for
+// every table that has constants. Reorder a schema, rename a column or mistype an index, and the
+// constant that silently started pointing at its neighbour fails here instead of in a resolve.
 namespace {
     void require_col(const char* table, std::uint64_t position, const char* name) {
         const auto* def = find_system_table(table);

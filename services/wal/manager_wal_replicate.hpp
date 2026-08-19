@@ -146,9 +146,9 @@ namespace services::wal {
         // Global WAL ID counter — shared across all per-database workers.
         wal::id_t next_wal_id();
 
-        // Returns true (and resets the flag) if WAL bytes since last checkpoint exceeded the
-        // configured threshold. The caller (dispatcher execute_ddl_inline) then triggers
-        // checkpoint_all on disk and calls reset_auto_checkpoint_bytes() after the checkpoint.
+        // True when the WAL bytes written since the last checkpoint exceed the configured
+        // threshold. Reads only: the commit path resets the counter when it fires the
+        // auto-checkpoint, and run_auto_checkpoint rebases the window once the checkpoint lands.
         bool needs_auto_checkpoint() const noexcept {
             return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
                    wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
@@ -191,8 +191,8 @@ namespace services::wal {
 
         // Size of the WAL directory as of the last completed checkpoint. The "since" counter above
         // is the difference against this, which is what its name and the threshold contract say it
-        // is. It used to hold the TOTAL directory size instead: once the WAL had passed the
-        // threshold once, every later commit re-tripped it, and every trip copied each table's
+        // is. That counter used to hold the TOTAL directory size instead: once the WAL had passed
+        // the threshold once, every later commit re-tripped it, and every trip copied each table's
         // whole .otbx file — measured at one checkpoint per commit, 1009 of them for 10k rows.
         std::atomic<std::uintmax_t> wal_bytes_at_last_checkpoint_{0};
 

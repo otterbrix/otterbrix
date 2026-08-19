@@ -54,13 +54,11 @@ namespace components::index {
     }
 
     // Resolve, for ONE index, the chunk column that carries its key — or key_column_absent when
-    // the chunk does not carry every key column. This is the whole of what is_match_column and
-    // get_value_by_index used to do together, except it now runs once per chunk instead of twice
-    // per row, and the key name is built once instead of once per candidate column.
+    // the chunk does not carry every key column. Runs once per chunk, not once per row, and
+    // builds each key name once instead of once per candidate column.
     //
-    // Semantics are preserved exactly: ALL key columns must be present for the index to apply,
-    // and the value read is the FIRST key's column (multi-column index keys remain a TODO on the
-    // index side, as before).
+    // ALL key columns must be present for the index to apply, but the value read is the FIRST
+    // key's column: multi-column index keys are still a todo on the index side.
     static std::size_t resolve_key_column(const index_ptr& index, const components::vector::data_chunk_t& chunk) {
         auto keys = index->keys();
         if (keys.first == keys.second) {

@@ -13,8 +13,7 @@
 // against an empty index list.
 //
 // The guard on the other side matters just as much: an indexed table MUST still mirror, or the
-// table stays right while the index quietly goes stale. Both directions are asserted here, and
-// the indexed case reads back THROUGH an index scan rather than a table scan.
+// table stays right while the index quietly goes stale.
 TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips_the_index") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/plain");
     test_clear_directory(config);

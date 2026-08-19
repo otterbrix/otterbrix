@@ -209,9 +209,8 @@ TEST_CASE("metadata_reader: read past end of chain -> sticky data_corruption (er
 //
 // The victim is the allocator, not the table: the splat lands on the neighbouring pool
 // block's free-list pointer, so the process dies later, inside do_allocate, anywhere in
-// the program. That is why the observed crash was non-deterministic (5 runs of the same
-// 200k x 42-column load: 2 survived, 3 took SIGSEGV) and why the stack always pointed at
-// an innocent allocation site.
+// the program — which is why the crash was non-deterministic and the stack always pointed
+// at an innocent allocation site.
 //
 // A behavioural reproducer needs ~257 KB of checkpoint metadata (~6.4M cells) and still
 // only crashes some of the time, so the invariant itself is the test.
@@ -236,11 +235,11 @@ TEST_CASE("metadata: sub-blocks fit inside the block's usable region") {
     cleanup_test_file();
 }
 
-// The metadata sub-block stride is NOT stored in the file — metadata_manager_t recomputes
-// it from the block size on open. v1 files were written with a 4096-byte stride, v2 uses
-// 4088, so a v1 chain read by a v2 build would walk to wrong offsets and return garbage
-// rather than fail. The header version therefore has to be matched EXACTLY, and an older
-// file has to be refused through the error channel — there is no compatibility path.
+// The metadata sub-block stride is NOT stored in the file — metadata_manager_t recomputes it
+// from the block size on open. Pre-reset builds wrote it as 4096 under version 1; the current
+// format (CURRENT_VERSION == 0) uses 4088, so such a chain read by this build walks to wrong
+// offsets and returns garbage rather than failing. The version has to be matched EXACTLY and an
+// older file refused through the error channel — there is no compatibility path.
 TEST_CASE("metadata: a file from an older format version is refused") {
     using namespace components::table::storage;
     cleanup_test_file();

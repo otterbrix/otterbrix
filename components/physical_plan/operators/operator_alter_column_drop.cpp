@@ -64,8 +64,8 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
-            // A failed pg_attribute read is not a miss; treating it as one lets the
-            // operation proceed on data that was never read.
+            // A failed catalog read is not a miss; treating it as one lets the
+            // operation proceed on data that was never read (same below for pg_depend).
             set_error(attr_batches_r.error());
             co_return;
         }
@@ -121,8 +121,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
         auto dep_batches_r = co_await std::move(pdf);
         if (dep_batches_r.has_error()) {
-            // A failed pg_depend read is not a miss; treating it as one lets the
-            // operation proceed on data that was never read.
             set_error(dep_batches_r.error());
             co_return;
         }

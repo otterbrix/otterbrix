@@ -24,10 +24,9 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // FK attribute reads consume a proven subset of pg_attribute. The reads sit ~100 lines
-        // below the send, so each entry names its ordinal and why it is needed: a column left out
-        // of the projection comes back as an ordinal-stable placeholder and reads as empty, with
-        // no error anywhere.
+        // The projection for the FK pg_attribute reads below. Each entry says why it is needed: a
+        // column left out comes back as an ordinal-stable placeholder and reads as empty, with no
+        // error anywhere.
         std::pmr::vector<std::uint64_t> pg_attribute_fk_child_cols(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_attribute_col::attoid);       // matched against the FK attoid list
@@ -53,7 +52,7 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_constraint)
         , target_node_(target_node)
         , output_schema_(resource) {
-        // Single-column placeholder schema, built once (TASK C10). This
+        // Single-column placeholder schema, built once. This
         // operator stamps data on the target logical node rather than emitting
         // rows, so the chunk it produces is always an empty placeholder.
         output_schema_.emplace_back(types::logical_type::UINTEGER);
@@ -67,9 +66,7 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Empty single-column placeholder chunk — this operator's purpose is to
-        // stamp data on the target logical node, not to emit rows. Schema is
-        // cached on the operator (output_schema_), built once in the ctor.
+        // Empty placeholder chunk over the schema cached in the ctor.
         output_ = make_operator_data(resource_, output_schema_, 0);
         output_->chunks().front().set_cardinality(0);
 
@@ -235,8 +232,7 @@ namespace components::operators {
         if (!pending_fks.empty()) {
             // Batched child + parent pg_attribute reads, one key per FK in FK order. The two
             // batches are mutually independent (disjoint key columns / disjoint fk fields), so
-            // issue both before awaiting either — same independence the prior per-FK code relied
-            // on, now amortised across the whole constraint set in two mailbox hops total.
+            // issue both before awaiting either: two mailbox hops for the whole constraint set.
             // child_results[k] / parent_results[k] correspond to pending_fks[k].
             std::pmr::vector<std::uint64_t> attr_c_keys(resource_);
             attr_c_keys.emplace_back(catalog::pg_attribute_col::attrelid);
@@ -260,24 +256,19 @@ namespace components::operators {
 
             auto child_results_r = co_await std::move(fut_attr_c);
             if (child_results_r.has_error()) {
-                // A failed pg_attribute (FK child) read is not a miss; reporting it as one builds
-                // constraint metadata from data that was never read.
                 set_error(child_results_r.error());
                 co_return;
             }
             auto& child_results = child_results_r.value();
             auto parent_results_r = co_await std::move(fut_attr_p);
             if (parent_results_r.has_error()) {
-                // A failed pg_attribute (FK parent) read is not a miss; reporting it as one builds
-                // constraint metadata from data that was never read.
                 set_error(parent_results_r.error());
                 co_return;
             }
             auto& parent_results = parent_results_r.value();
 
             // PASS 2: per-FK column-name resolution + (for referencing) the chained
-            // pg_class / pg_namespace reads. Identical extraction logic to the prior
-            // per-FK code, just driven off the batched results indexed by FK slot k.
+            // pg_class / pg_namespace reads, driven off the batched results indexed by FK slot k.
             for (std::size_t k = 0; k < pending_fks.size(); ++k) {
                 catalog::fk_info_t fk = std::move(pending_fks[k].fk);
                 const auto& child_attoids = pending_fks[k].child_attoids;
@@ -410,8 +401,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
                     auto cls_batches_r = co_await std::move(fut_cls);
                     if (cls_batches_r.has_error()) {
-                        // A failed pg_class read is not a miss; reporting it as one is how an
-                        // unreadable catalog became a wrong answer instead of an error.
                         set_error(cls_batches_r.error());
                         co_return;
                     }
@@ -434,8 +423,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
                         auto ns_batches_r = co_await std::move(fut_ns);
                         if (ns_batches_r.has_error()) {
-                            // A failed pg_namespace read is not a miss; reporting it as one is how an
-                            // unreadable catalog became a wrong answer instead of an error.
                             set_error(ns_batches_r.error());
                             co_return;
                         }
@@ -472,8 +459,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
             auto attr_batches_r = co_await std::move(fut_attr_u);
             if (attr_batches_r.has_error()) {
-                // A failed pg_attribute read is not a miss; reporting it as one is how an
-                // unreadable catalog became a wrong answer instead of an error.
                 set_error(attr_batches_r.error());
                 co_return;
             }

@@ -29,13 +29,12 @@ using namespace components::types;
 // resolve_namespace / resolve_table directly — catalog_snapshot_t is gone.
 
 namespace {
-    // A run that dies before its destructor — a failing REQUIRE aborts, a crash, a kill, a timeout —
-    // leaves its disk directory behind. The fixture then boots the NEXT run's catalog from those
-    // files instead of creating a fresh one, so a later, unrelated run fails and looks like a
-    // regression. Clearing on the way IN as well as on the way OUT makes the fixture idempotent:
-    // what it does depends on the code under test, not on how the previous run happened to end.
-    // Runs in the member-initializer list so it happens BEFORE manager_disk_t is constructed over
-    // this path. test_wal_manager already does the same thing in its constructor body.
+    // A run that dies before its destructor — an aborting REQUIRE, a crash, a kill, a timeout —
+    // leaves its disk directory behind, and the fixture then boots the NEXT run's catalog from
+    // those files instead of creating a fresh one, so a later, unrelated run fails and looks like a
+    // regression. Clearing on the way IN as well as on the way OUT makes the fixture idempotent.
+    // Called from the member-initializer list so it happens BEFORE manager_disk_t is constructed
+    // over this path.
     const std::string& scrubbed(const std::string& path) {
         std::error_code ec;
         std::filesystem::remove_all(path, ec);

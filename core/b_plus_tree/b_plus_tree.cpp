@@ -804,9 +804,8 @@ namespace core::b_plus_tree {
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);
         if (file == nullptr) {
-            // open_file reports failure by returning nullptr; this was dereferenced unchecked, so an
-            // unwritable directory or an exhausted descriptor table crashed the process instead of
-            // failing the flush.
+            // open_file reports failure by returning nullptr, not by throwing: an unwritable
+            // directory or an exhausted descriptor table lands here.
             ok = false;
         } else {
             if (!file->write(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
@@ -837,8 +836,6 @@ namespace core::b_plus_tree {
         }
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
-        // The whole buffer is written to the metadata file, but only two counters and one id per
-        // leaf are filled in; the tail would otherwise be uninitialised heap on disk.
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         if (!file->read(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
@@ -850,8 +847,7 @@ namespace core::b_plus_tree {
         leaf_nodes_count_ = *(buffer + 1);
         if (leaf_nodes_count_ == 0) {
             // Nothing to rebuild. Falling through would allocate a zero-length node array and then
-            // read *nodes_layer out of it — the early return in flush() used to hide that by never
-            // writing a zero-leaf metadata file in the first place.
+            // read *nodes_layer out of it.
             root_ = nullptr;
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();

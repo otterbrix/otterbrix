@@ -34,9 +34,8 @@ namespace components::operators::alter_validators {
     // Async pg_attribute scan: visible column names for the relation, filtered by
     // attisdropped==false and the MVCC snapshot (added_at <= horizon AND
     // (dropped_at == 0 OR dropped_at > horizon)). Vector is allocated against
-    // `resource` and consumed by validate_column_not_duplicate. A scan-side failure
-    // is an error, never an empty list: empty means "this relation has no visible
-    // columns", which a caller is entitled to trust.
+    // `resource` and consumed by validate_column_not_duplicate. An empty list means
+    // the relation really has no visible columns, which a caller is entitled to trust.
     actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     visible_column_names(std::pmr::memory_resource* resource,
                          actor_zeta::address_t disk_address,

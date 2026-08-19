@@ -11,28 +11,21 @@
 #include <memory_resource>
 #include <vector>
 
-// CREATE TABLE never writes pg_attribute's two MVCC columns.
+// CREATE TABLE must write pg_attribute's two MVCC columns itself.
 //
 // pg_attribute has twelve columns; added_at_commit_id is 10 and dropped_at_commit_id is 11, both
 // declared NOT NULL and both used by the reader to decide whether a column is visible to a snapshot
 // (operator_resolve_table skips a row whose added_at is past the snapshot, or whose dropped_at is
-// non-zero and at or before it). build_create_table_writes fills columns 0 through 9 and stops.
+// non-zero and at or before it). build_create_table_writes used to fill columns 0 through 9 and stop:
+// the rows still read correctly, but only because vector_t memsets every buffer it allocates, so the
+// visibility of every column of every table rested on an initialisation that exists for unrelated
+// reasons, and narrowing that memset would have made columns silently vanish from a table.
 //
-// The rows still read correctly today, and only because vector_t memsets every buffer it allocates:
-// the zeros the reader sees are the memset's, not the writer's. So the visibility of every column of
-// every table anyone creates rests on an initialisation that exists for unrelated reasons — and any
-// work that removes or narrows that memset turns this into columns silently vanishing from a table.
-//
-// NOTE ON WHAT THIS TEST IS. It is NOT red before the fix, and it cannot be made red: the poison
-// resource below fills allocations with 0xA5, but vector_t's constructor memsets the buffer straight
-// afterwards, and the validity mask starts all-valid — so the unwritten cells read as non-NULL zeros
-// no matter what the allocator hands over. Making it red would require removing the very memset that
-// this defect blocks. That circularity is the point: fixing the writer is the PREREQUISITE that
-// makes narrowing the memset testable at all, and from that moment this test starts failing the
+// This is a characterisation test, not a reproducing one, and it cannot be made to fail against the
+// old writer: the poison resource below fills allocations with 0xA5, but vector_t's constructor
+// memsets the buffer straight afterwards and the validity mask starts all-valid, so unwritten cells
+// read as non-NULL zeros whatever the allocator hands over. What it does buy is that it fails the
 // instant anyone stops zeroing pg_attribute's buffer.
-//
-// So it is a characterisation test standing in for a red one, and it is labelled that way rather
-// than dressed up as proof.
 
 namespace {
     // Hands out memory that is deliberately NOT zero, so a cell nobody wrote cannot be mistaken for

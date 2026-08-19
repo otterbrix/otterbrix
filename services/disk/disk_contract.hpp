@@ -127,10 +127,10 @@ namespace services::disk {
                      std::pmr::vector<std::string> key_col_names,
                      components::vector::data_chunk_t keys);
 
-        // Columnar row-data scan for ONE key-tuple: returns the txn-visible rows where
-        // key_col_names[j] == keys.value(j, 0) as batched data_chunk_t (each chunk <=
-        // DEFAULT_VECTOR_CAPACITY rows). `keys` is a 1-row columnar carrier (column j ==
-        // key_col_names[j]), so no row-major logical_value_t crosses the boundary. Callers
+        // Columnar row-data scan for ONE key-tuple: returns the txn-visible rows whose column
+        // key_col_indices[j] equals keys.value(j, 0) as batched data_chunk_t (each chunk <=
+        // DEFAULT_VECTOR_CAPACITY rows). `keys` is a 1-row columnar carrier (column j carries
+        // key_col_indices[j]), so no row-major logical_value_t crosses the boundary. Callers
         // read cells via chunk.value(col_idx, row_idx).
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key(execution_context_t ctx,
@@ -141,7 +141,7 @@ namespace services::disk {
 
         // Batched multi-key columnar row-data scan for one table: result[i] = matched chunks
         // for key-tuple i (each chunk <= DEFAULT_VECTOR_CAPACITY rows). `keys` is an N-row
-        // columnar carrier (column j == key_col_names[j], row i == i-th key-tuple), so no
+        // columnar carrier (column j carries key_col_indices[j], row i == i-th key-tuple), so no
         // row-major logical_value_t crosses the boundary. All keys share `table_oid` (one owning
         // agent), so the per-key loop runs intra-agent via a single read_chunks_by_keys_inner
         // message. The outer vector always has one (possibly empty) entry per key in input

@@ -40,9 +40,8 @@ private:
     std::shared_ptr<spdlog::logger> logger_;
 };
 
-// Formatting is skipped when the level is disabled. This does NOT skip evaluation of the
-// arguments — they are evaluated at the call site — so it changes no observable behaviour;
-// an argument that is expensive to produce has to be guarded where it is written.
+// The guards below skip formatting only, so they change no observable behaviour; an expensive
+// argument must still be guarded at the call site.
 template<typename S, typename... Args>
 auto info(log_t& log, const S& format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::info)) {

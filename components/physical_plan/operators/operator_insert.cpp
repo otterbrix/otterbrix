@@ -199,8 +199,7 @@ namespace components::operators {
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
                         // The rows are in the table but not in the index. Reporting success here
-                        // would leave the two disagreeing with nobody the wiser, which is exactly
-                        // what this used to do.
+                        // would leave the two disagreeing with nobody the wiser.
                         co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
                     }
                 }

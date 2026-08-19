@@ -6,14 +6,11 @@
 
 // Work done ONLY to feed a log line must not happen when that line is not logged.
 //
-// The subtle part, and the reason this is a counter test and not a "wrap it in an if":
-// gating inside log.hpp would NOT have helped. A trace argument is evaluated at the CALL
-// SITE before the logging function is entered, so
-//
-//     trace(log_, "... {}", plan.sub_queries.back()->to_string());
-//
-// renders the whole logical-plan tree into a string on every single statement, at every log
-// level including off, and then throws it away. Only gating the call SITE avoids it.
+// A counter test rather than a "wrap it in an if" because gating inside log.hpp would NOT have
+// helped: a trace argument is evaluated at the CALL SITE before the logging function is entered,
+// so `trace(log_, "... {}", plan.sub_queries.back()->to_string())` rendered the whole logical-plan
+// tree into a string on every statement, at every log level including off, and threw it away.
+// Only gating the call SITE avoids it.
 //
 // The counter sits in node_t::to_string, so it also catches anyone else who starts rendering
 // plans on the hot path for a message nobody reads.

@@ -13,10 +13,9 @@ namespace components::table::storage {
         // Sub-blocks are carved out of what pin() can actually reach — block_size(), the
         // ALLOCATION minus the block header — not out of the allocation itself. Dividing
         // the allocation gave 262144/64 = 4096, so the 64 sub-blocks spanned 262144 bytes
-        // inside a 262136-byte region and sub-block 63 ended 8 bytes past the buffer.
-        // metadata_writer_t wrote those 8 bytes into the neighbouring pool allocation's
-        // free-list pointer, and the process then died inside an unrelated do_allocate —
-        // a non-deterministic SIGSEGV on any large checkpoint (~257 KB of metadata).
+        // inside a 262136-byte region and sub-block 63 ended 8 bytes past the buffer, on
+        // top of the neighbouring pool allocation's free-list pointer: a non-deterministic
+        // SIGSEGV inside an unrelated do_allocate on any large checkpoint.
         // The floor keeps every sub-block base 8-byte aligned for the uint64_t chain
         // header that metadata_writer_t / metadata_reader_t put at its start.
         , sub_block_size_((block_manager.block_size() / META_SUB_BLOCKS_PER_BLOCK) &

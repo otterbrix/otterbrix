@@ -143,14 +143,11 @@ namespace components::table {
         std::unordered_map<uint64_t, storage::buffer_handle_t> handles;
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
         // Set by a caller whose RESULT outlives this state. The handles above hold the pins that
-        // keep a fetched string's bytes alive, so when they are released with the state, a view
-        // borrowed from the block dangles — fetch_string_owned's comment spells out the mechanism.
-        // With this set the string leg copies into the result's own heap instead.
-        //
-        // The two shapes are genuinely different and this makes the difference explicit rather than
-        // accidental: row_group_t::evaluate_predicate consumes its chunk inside the call and keeps
-        // the state alive throughout, so it borrows; the late-materialisation gather returns the
-        // chunk to its caller, so it must own.
+        // keep a fetched string's bytes alive, so a view borrowed from the block dangles once they
+        // are released with the state; with this set the string leg copies into the result's own
+        // heap instead. row_group_t::evaluate_predicate consumes its chunk inside the call and
+        // keeps the state alive throughout, so it borrows; the late-materialisation gather returns
+        // the chunk to its caller, so it must own.
         bool result_outlives_pins{false};
 
         // OOM raised by the pin() inside get_or_insert_handle(); callers that route

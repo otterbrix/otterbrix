@@ -4,22 +4,18 @@
 #include <components/sql/transformer/utils.hpp>
 #include <string>
 
-// How does INSERT type widening actually scale?
-//
 // promote_column rebuilds a whole column, cell by cell through logical_value_t, every time a
-// later row widens that column's type. The plan called this "quadratic type promotion". That
-// claim was never measured: the profiling workload used one type per column, so this code path
-// never ran at all — a rejection by measurement that did not measure the thing.
+// later row widens that column's type — the shape usually called quadratic promotion. A workload
+// with one type per column never enters this path at all.
 //
-// This is a counter test, not a timing test, so it says what the growth IS rather than how long
-// it took on a busy machine. If the cost were quadratic in the row count, doubling the rows
-// would roughly quadruple the rewrites. If it is bounded by the type lattice (int -> bigint ->
-// double is only two steps), doubling the rows merely doubles them.
+// This is a counter test, not a timing test: it says what the growth IS rather than how long it
+// took on a busy machine. If the cost were quadratic in the row count, doubling the rows would
+// roughly quadruple the rewrites. If it is bounded by the type lattice (int -> bigint -> double
+// is only two steps), doubling the rows merely doubles them.
 namespace {
     // WORST CASE on purpose: the widening literal comes LAST, so every row already parsed has
     // to be rewritten. Putting it early (the obvious way to write this test) measures nothing —
-    // the column reaches its widest type on row 3 and never widens again, which is exactly the
-    // trap that let "quadratic promotion" stand unmeasured.
+    // the column reaches its widest type on row 3 and never widens again.
     std::string late_widening_values(int rows) {
         std::string sql = "INSERT INTO p.t (id, v) VALUES ";
         for (int i = 0; i < rows; ++i) {

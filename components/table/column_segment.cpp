@@ -262,9 +262,6 @@ namespace components::table {
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
             assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
-            // The pin comes from the fetch state's cache, not from a fresh pin per row. The state
-            // is hoisted by every caller that fetches more than one row, so a block is pinned once
-            // per segment instead of once per row — string_fetch_row has always done it this way.
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
                 return; // state.fetch_error already set by get_or_insert_handle
@@ -558,9 +555,6 @@ namespace components::table {
                                 column_fetch_state& state,
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
-            // The pin comes from the fetch state's cache, not from a fresh pin per row. The state
-            // is hoisted by every caller that fetches more than one row, so a block is pinned once
-            // per segment instead of once per row — string_fetch_row has always done it this way.
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
                 return; // state.fetch_error already set by get_or_insert_handle
@@ -672,9 +666,6 @@ namespace components::table {
                            int64_t row_id,
                            vector::vector_t& result,
                            uint64_t result_idx) {
-            // The pin comes from the fetch state's cache, not from a fresh pin per row. The state
-            // is hoisted by every caller that fetches more than one row, so a block is pinned once
-            // per segment instead of once per row — string_fetch_row has always done it this way.
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
                 return; // state.fetch_error already set by get_or_insert_handle
@@ -772,9 +763,6 @@ namespace components::table {
                             int64_t row_id,
                             vector::vector_t& result,
                             uint64_t result_idx) {
-            // The pin comes from the fetch state's cache, not from a fresh pin per row. The state
-            // is hoisted by every caller that fetches more than one row, so a block is pinned once
-            // per segment instead of once per row — string_fetch_row has always done it this way.
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
                 return; // state.fetch_error already set by get_or_insert_handle

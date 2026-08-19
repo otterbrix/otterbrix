@@ -199,15 +199,12 @@ TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed 
 // A validity mask must allocate ENTRIES, not rows
 // ===============================================
 //
-// The mask is a bitmap: one bit per row, packed into 64-bit entries, and
+// The mask is a bitmap: one bit per row packed into 64-bit entries, and
 // validity_data_t::entry_count() is the conversion. Three allocation sites passed the ROW count
-// straight through instead — validation.cpp's size constructor, the lazy allocation in set(), and
-// resize() (which computes entry_count for its loop bounds on the very next lines and then ignores
-// it for the allocation). Each therefore reserved and filled 64 times the memory it needed: 8 KiB
-// and 1024 stores for a 1024-row mask that fits in 128 bytes and 16 stores.
-//
-// Nothing was corrupted — over-allocation is safe — which is why it survived. It showed up as
-// memset being the largest frame of our own code in the SSB query profile.
+// straight through instead (validation.cpp's size constructor, the lazy allocation in set(), and
+// resize()), so each reserved and filled 64 times the memory it needed: 8 KiB and 1024 stores for
+// a 1024-row mask that fits in 128 bytes and 16 stores. Over-allocation corrupts nothing, which is
+// why it survived — it showed up only as memset dominating the SSB query profile.
 TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[validity-size]") {
     using namespace components::vector;
 
@@ -237,10 +234,10 @@ TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[
 // A vector that creates its own data must not build a validity mask first
 // =======================================================================
 //
-// vector_t's constructor builds validity_mask_t{resource, capacity} in its member-init list and
-// then, when create_data is set, calls validity_.reset() in the body — discarding the buffer it
-// just allocated and filled. Every vector on the query path takes that branch, so every one of them
-// paid an allocation and a full initialisation for nothing.
+// vector_t's constructor used to build validity_mask_t{resource, capacity} in its member-init list
+// and then, when create_data is set, call validity_.reset() in the body — discarding the buffer it
+// had just allocated and filled. Every vector on the query path takes that branch, so every one of
+// them paid an allocation and a full initialisation for nothing.
 TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size]") {
     using namespace components::vector;
 

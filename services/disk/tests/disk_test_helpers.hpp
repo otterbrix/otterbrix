@@ -22,9 +22,9 @@
 
 namespace disk_test_helpers {
 
-    // Unwrap a keyed catalog read in a test. These reads now carry a core::error_t for
-    // "the read could not be performed"; no test here expects that, and silently
-    // substituting an empty vector would turn a broken read into a passing "not found".
+    // Unwrap a keyed catalog read in a test. These reads carry a core::error_t for "the read
+    // could not be performed"; no test here expects that, and silently substituting an empty
+    // vector would turn a broken read into a passing "not found".
     template<typename T>
     T read_ok(core::result_wrapper_t<T> r) {
         assert(!r.has_error() && "disk_test_helpers::read_ok: keyed catalog read failed");

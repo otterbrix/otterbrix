@@ -13,12 +13,11 @@
 // append state is still pointing at. The stale buffer_handle_t is only replaced a few lines later by
 // initialize_append, and its destructor unpins through the freed pointer.
 //
-// transition_segment_to_disk is careful with its OWN pin and says so in a comment — "the pin is
-// released BEFORE the swap, otherwise the pin's raw pointer would dangle". It cannot be careful with
-// the caller's, and nothing else is.
+// transition_segment_to_disk releases its OWN pin before the swap for exactly this reason. It
+// cannot release the caller's, and nothing else does.
 //
-// It survives today only because the freed block_handle_t is not immediately reused. That is luck,
-// not a guarantee, and this session's spill work makes the pool reclaim memory more eagerly.
+// It survives today only because the freed block_handle_t is not immediately reused: luck, not a
+// guarantee, and the more eagerly the pool reclaims memory the less of that luck is left.
 //
 // The counter is checked instead of relying on a sanitizer: the DEV_MODE build is what CI runs, and
 // ASAN on macOS is blind inside the pmr pool anyway.

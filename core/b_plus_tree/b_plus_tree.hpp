@@ -196,11 +196,10 @@ namespace core::b_plus_tree {
         // unreliable for now, because physical_value does not own string buffer
         void list_indices(std::vector<index_t>& result);
 
-        // full flush and load for now
-        // TODO: flush and load only modified leaves
         // Persist every dirty leaf and the tree metadata. Returns false if any of it failed to
         // reach the disk; the failed leaves stay dirty for the next attempt.
         [[nodiscard]] bool flush();
+        // TODO: load only the leaves that are needed; this still rebuilds the whole tree.
         void load();
 
         bool contains_index(const index_t& index);

@@ -416,10 +416,9 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
             REQUIRE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)));
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_copy_sync");
-        // The failpoint aborts the split. It used to do so by throwing; this class now reports
-        // failure by value, like the rest of its API (put/erase/rehash return bool). The property
-        // under test is unchanged: the rehash does not complete, and the reopened table below is
-        // still consistent.
+        // The failpoint aborts the split; failure arrives by value, like the rest of this API
+        // (put/erase/rehash return bool). The property under test is unchanged: the rehash does
+        // not complete, and the reopened table below is still consistent.
         REQUIRE_FALSE(table.rehash(5));
     }
 
@@ -449,10 +448,6 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
             REQUIRE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(2000 + i)));
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
-        // The failpoint aborts the split. It used to do so by throwing; this class now reports
-        // failure by value, like the rest of its API (put/erase/rehash return bool). The property
-        // under test is unchanged: the rehash does not complete, and the reopened table below is
-        // still consistent.
         REQUIRE_FALSE(table.rehash(5));
     }
 
@@ -483,10 +478,6 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         }
 
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
-        // The failpoint aborts the split. It used to do so by throwing; this class now reports
-        // failure by value, like the rest of its API (put/erase/rehash return bool). The property
-        // under test is unchanged: the rehash does not complete, and the reopened table below is
-        // still consistent.
         REQUIRE_FALSE(table.rehash(5));
     }
 

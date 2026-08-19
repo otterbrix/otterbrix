@@ -19,9 +19,8 @@ namespace components::sql::transform {
 #ifdef DEV_MODE
     // Test-observable count of ROWS rewritten by promote_column while parsing an INSERT.
     // Widening a column's type rebuilds every row already filled in that chunk, cell by cell
-    // through logical_value_t. The plan called this quadratic; this counter is how that claim
-    // gets checked instead of assumed — the number of widenings per column is bounded by the
-    // type lattice, so the growth may well be linear with a constant factor.
+    // through logical_value_t. Widenings per column are bounded by the type lattice, so this
+    // measures whether the cost really is quadratic or linear with a large constant.
     void note_promoted_rows(uint64_t rows) noexcept;
     uint64_t insert_promote_rows() noexcept;
     void reset_insert_promote_rows() noexcept;

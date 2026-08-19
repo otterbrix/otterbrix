@@ -149,7 +149,7 @@ namespace components::table {
 
         std::pmr::memory_resource* resource_;
         std::vector<column_definition_t> column_definitions_;
-        // NO LOCK HERE, and that is a proven property rather than an oversight.
+        // NO LOCK HERE — deliberate, and provable:
         //
         // Every table is reachable from exactly ONE disk agent: manager_disk_t owns no storage
         // map, each oid routes to a single agent by pool_idx_for_oid, and the table lives in

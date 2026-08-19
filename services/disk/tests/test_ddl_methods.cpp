@@ -934,11 +934,9 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         key_cols.emplace_back(0);
         std::pmr::vector<logical_value_t> vals{&fx.resource};
         vals.emplace_back(&fx.resource, static_cast<std::int64_t>(i + 1));
-        // A dropped storage cannot be read at all, and that is now said out loud:
-        // the keyed read reports missing_table instead of an empty result. The
-        // "data is gone" guarantee this loop checks is unchanged — it is asserted
-        // by has_storage and storage_total_rows above, and now also by the fact
-        // that a read of the dropped oid cannot succeed.
+        // A dropped storage cannot be read at all: the keyed read reports missing_table
+        // instead of an empty result. The "data is gone" guarantee this loop checks is
+        // unchanged — has_storage and storage_total_rows above still assert it.
         auto dropped_read = fx.invoke(&manager_disk_t::read_chunks_by_key,
                                       fx.ctx(),
                                       targets[i],
@@ -952,7 +950,6 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     REQUIRE(fx.manager->has_storage(survivor));
     REQUIRE(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor) == 1);
     {
-        // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
         std::pmr::vector<logical_value_t> vals{&fx.resource};

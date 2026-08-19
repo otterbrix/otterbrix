@@ -75,10 +75,9 @@ namespace components::operators {
         auto id_index_result = co_await std::move(ixf);
 
         if (id_index_result.has_error()) {
-            // Report the reason the manager gave. It used to be flattened to
-            // "index already exists", which was right for one cause and wrong for
-            // every other one — including a disk index whose storage failed to
-            // open, which did not even reach here.
+            // Report the reason the manager gave: flattening every failure to
+            // "index already exists" is right for one cause and wrong for the rest,
+            // including a disk index whose storage failed to open.
             set_error(id_index_result.error());
             co_return;
         }

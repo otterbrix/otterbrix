@@ -80,10 +80,8 @@ namespace services::index {
                                          std::pmr::memory_resource* memory_resource)
         : disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}) {
         if (!open_error_.empty()) {
-            // Direct ctor aborts on an unusable file; only create() turns the same
-            // failure into a core::error_t. Same split as bitcask_index_disk_t,
-            // and the reason it exists: a half-open table must never be handed to
-            // a caller that believes it has durable storage.
+            // A half-open table must never be handed to a caller that believes it
+            // has durable storage; create() reports the same failure as a value.
             assert(false && "disk_hash_table: direct ctor could not open storage");
             std::abort();
         }
@@ -140,8 +138,7 @@ namespace services::index {
         page.resize(page_size);
         while (true) {
             // Bail on a failed read: this loop is `while (true)`, so ignoring the failure would
-            // spin on a stale page forever. That is exactly what happened when the throws were
-            // first turned into return values without touching the callers.
+            // spin on a stale page forever.
             if (!read_page(page_id, page)) {
                 return false;
             }
@@ -334,8 +331,7 @@ namespace services::index {
             if (!split_one_bucket_unlocked()) {
                 // Every false from a split means no split happened -- a bad state, a failed page
                 // write, or the failpoint. The loop condition only advances when a split
-                // succeeds, so continuing here spins forever; it used to be an exception that
-                // unwound straight out of this loop.
+                // succeeds, so continuing here spins forever.
                 sync_files();
                 return false;
             }
@@ -404,7 +400,6 @@ namespace services::index {
             // unreachable duplicates.
             sync_files();
             if (split_crash_failpoint("after_copy_sync")) {
-                // Failpoint: the simulated crash aborts the split by failing it.
                 return false;
             }
         }
@@ -424,7 +419,6 @@ namespace services::index {
             }
             sync_files();
             if (split_crash_failpoint("after_header_sync")) {
-                // Failpoint: see above.
                 return false;
             }
         }

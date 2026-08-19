@@ -71,11 +71,9 @@ namespace components::logical_plan {
     namespace {
         std::atomic<uint64_t> g_node_to_string_calls{0};
     } // namespace
-    // Test-observable counter of logical-plan stringifications. A plan tree is rendered by
-    // walking every node and concatenating, so this is never free — and it used to run on
-    // every statement even with logging off, because the trace ARGUMENT is evaluated at the
-    // call site regardless of the level. Tests reset it, run statements with the log off,
-    // and assert it stayed at zero.
+    // Test-observable counter of logical-plan stringifications. Rendering walks every node and
+    // concatenates, and a trace ARGUMENT is evaluated at the call site whatever the log level —
+    // so tests run statements with the log off and assert this stayed at zero.
     uint64_t node_to_string_calls() noexcept { return g_node_to_string_calls.load(std::memory_order_relaxed); }
     void reset_node_to_string_calls() noexcept { g_node_to_string_calls.store(0, std::memory_order_relaxed); }
 #endif

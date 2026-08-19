@@ -24,9 +24,9 @@ namespace components::table {
     //
     // This is a DIFFERENT walk from the one above and needs its own counter: the commit stamps
     // only the vectors the transaction touched, while the cleanup re-counts EVERY vector that
-    // still carries a committed tombstone. On a fresh table that is nearly nothing; the open
-    // question is a table whose tombstones have piled up (UPDATE is tombstone+append here), where
-    // the count would grow pass over pass and every later commit would pay for it.
+    // still carries a committed tombstone. Negligible on a fresh table, but tombstones pile up
+    // (UPDATE is tombstone+append here), so the count grows pass over pass and every later
+    // commit pays for it.
     uint64_t cleanup_slots_visited() noexcept;
     void reset_cleanup_slots_visited() noexcept;
 #endif

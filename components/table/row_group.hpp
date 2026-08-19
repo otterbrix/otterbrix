@@ -11,19 +11,12 @@ namespace components::vector {
 namespace components::table {
 
 #ifdef DEV_MODE
-    // Test-observable count of STRING columns filled by the late-materialisation gather.
-    //
-    // That gather calls fetch_row, whose string leg writes a view BORROWED from the pinned block,
-    // while its column_fetch_state — and therefore the pin — dies at the end of the gather block.
-    // The result chunk outlives both. fetch_string_owned's own comment states the hazard: the block
-    // may later be evicted and reloaded at a different address, and a borrowed view then dangles.
-    // Must stay at zero.
+    // Test-observable count of STRING cells the late-materialisation gather would leave BORROWED
+    // from a pin that dies with the gather while the result chunk outlives it (see the guard on
+    // result_outlives_pins in row_group.cpp). Must stay at zero.
     uint64_t gathered_borrowed_strings() noexcept;
-    // Per-row fetches issued by the in-memory predicate evaluation. Each one currently pins and
-    // unpins the segment's block, because the five fixed-width fetch functions ignore the handle
-    // cache that evaluate_predicate's hoisted column_fetch_state exists to provide.
+    // Per-row fetches issued by the in-memory predicate evaluation.
     uint64_t predicate_row_fetches() noexcept;
-    // Pins taken by the per-row fixed-size fetch, wherever it is called from.
     uint64_t string_materializations() noexcept;
     uint64_t gather_rows_fetched() noexcept;
     uint64_t escaping_borrowed_cells() noexcept;

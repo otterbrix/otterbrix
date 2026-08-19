@@ -7,20 +7,12 @@
 
 // One changed row must not rewrite the whole index.
 //
-// A disk B+tree index keeps one file per leaf. btree_index_disk_t::force_flush() — which every
-// INSERT/UPDATE/DELETE reaches through index_agent_disk_t::insert_many / remove_many — calls
-// btree_t::flush(), and that walks EVERY leaf calling segment_tree_t::flush() on each. Inside,
-// only the per-block writes are guarded by a `modified` flag: the header write, the truncate and
-// the fsync are unconditional. So a statement touching one row pays one fsync per leaf of the
-// entire index.
-//
-// This is what makes a one-row DELETE cost 1.6 s on a million-row indexed table while the same
-// DELETE on a 10k-row table costs 21 ms — a profile taken over a sustained delete loop put
-// essentially the whole index agent thread in remove_many -> force_flush -> btree_t::flush.
-// b_plus_tree.hpp:200 carries the author's own note: "TODO: flush and load only modified leaves".
-//
-// The counter reports both totals: how many leaves were flushed, and how many of those flushes
-// wrote no block at all. The second number is pure waste and is what the fix has to remove.
+// A disk B+tree index keeps one file per leaf, and btree_index_disk_t::force_flush() — which every
+// INSERT/UPDATE/DELETE reaches through index_agent_disk_t::insert_many / remove_many — walks the
+// tree from btree_t::flush(). When a leaf is flushed whether or not it changed, the header write,
+// the truncate and the fsync still run, so a statement touching one row pays one fsync per leaf of
+// the whole index: that is a one-row DELETE costing 1.6 s on a million-row indexed table against
+// 21 ms on a 10k-row one. This test pins the flush to the leaves that actually changed.
 //
 // Hidden by default ([.]) because it builds an index large enough to span many leaves.
 // Run it with [indexflush].
@@ -88,8 +80,8 @@ TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_ev
 
     // `wasted` is REPORTED, not asserted. A leaf can legitimately need a flush without any block
     // changing — removing the last item from a block rewrites the header, the metadata array and
-    // the file length while leaving no modified block behind. Turning "wrote no block" into a
-    // requirement would pressure the next reader into skipping those header-only flushes, which is
-    // precisely the silent-data-loss bug this change has to avoid.
+    // the file length while leaving no modified block behind. Making "wrote no block" a requirement
+    // would pressure the next reader into skipping those header-only flushes, i.e. straight into
+    // silent data loss.
     INFO("leaf flushes that wrote no block (reported, not a requirement): " << wasted);
 }

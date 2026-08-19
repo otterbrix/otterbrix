@@ -3,27 +3,22 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// UPDATE does not enforce CHECK constraints. This is the second half of C1, and it is a DEFECT:
-// the INSERT of the very same value is rejected, so the constraint is not simply "not implemented
-// for this statement" — it is enforced on one write path and silently skipped on the other.
+// UPDATE does not enforce CHECK constraints, and that is a DEFECT rather than "not implemented for
+// this statement": the INSERT of the very same value is rejected, while UPDATE SET age = -1 succeeds
+// and leaves the row sitting outside its CHECK.
 //
-// Measured, not read off the code: INSERT (2, -1) is rejected; UPDATE SET age = -1 succeeds and
-// leaves the row sitting outside its CHECK.
-//
-// WHY IT IS NOT FIXED HERE, and what was tried. node_update_t carries no check expressions at all
-// (set_check_exprs exists only on node_insert_t), and planner.cpp's rewrite_update builds
-// node_check_constraint_t with NOT NULL + unique groups only. Wiring CHECK through the same three
-// places the INSERT path uses — carrier on the node, enrich populating it, planner passing it — DOES
-// make this test green, and then breaks the UPDATE write path: the table ends up with THREE rows
-// (1,5) (7,5) (7,42) where it should hold one, i.e. new versions are appended and the old ones are
-// never tombstoned. Proven by A/B: with the check node attached the table has 3 rows, without it 1.
+// WHY IT IS NOT FIXED HERE. node_update_t carries no check expressions at all (set_check_exprs
+// exists only on node_insert_t), and planner.cpp's rewrite_update builds node_check_constraint_t
+// with NOT NULL + unique groups only. Wiring CHECK through the same three places the INSERT path
+// uses — carrier on the node, enrich populating it, planner passing it — does make this test green
+// and then breaks the UPDATE write path: the table ends up with THREE rows (1,5) (7,5) (7,42) where
+// it should hold one, i.e. new versions are appended and the old ones never tombstoned.
 //
 // The cause is structural, not a missing argument. operator_check_constraint_t is built for the
 // INSERT shape — it reads the source chunks and is documented as the plan ROOT ("check_constraint is
 // the plan ROOT, so output_ becomes the result cursor") — whereas an UPDATE write set is the
 // gathered storage row carrying the absolute row_ids the tombstone needs. Making CHECK work on
-// UPDATE means settling that contract, which is design work, not plumbing. The attempt was reverted
-// rather than left half-done.
+// UPDATE means settling that contract, which is design work, not plumbing.
 //
 // Hidden ([.]) because it fails. Run it with [checkupd].
 
@@ -45,8 +40,7 @@ TEST_CASE("integration::cpp::test_check_on_update::update_violating_a_check_is_r
     REQUIRE(exec("ALTER TABLE c.t ADD CONSTRAINT age_pos CHECK (age > 0);")->is_success());
     REQUIRE(exec("INSERT INTO c.t (id, age) VALUES (1, 5);")->is_success());
 
-    // Control: INSERT of the same offending value IS rejected, which is what makes an accepted
-    // UPDATE a defect rather than a decision about this constraint.
+    // Control: INSERT of the same offending value IS rejected.
     {
         auto cur = exec("INSERT INTO c.t (id, age) VALUES (2, -1);");
         INFO("INSERT violating the CHECK must fail");

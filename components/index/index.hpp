@@ -134,12 +134,11 @@ namespace components::index {
 
         // Pending entries for disk mirroring (must be read before commit clears them).
         //
-        // These RETURN the entries rather than taking a callback. The callback shape needed a
-        // concrete parameter type because the customization point below is virtual and a virtual
-        // method cannot be a template — which meant std::function, a forbidden type that also
-        // heap-allocates for a capturing lambda. Handing back the entries removes the callable
-        // from the interface entirely; the disk index materializes them anyway, since it stores
-        // keys encoded and has to decode them to produce a value_t.
+        // These RETURN the entries rather than taking a callback: the customization point below is
+        // virtual, so the callable cannot be a template parameter and would have to be
+        // std::function — a forbidden type that also heap-allocates for a capturing lambda. The
+        // disk index materializes the entries anyway, since it stores keys encoded and has to
+        // decode them to produce a value_t.
         pending_entries_t pending_inserts(uint64_t txn_id) const;
         pending_entries_t pending_deletes(uint64_t txn_id) const;
 

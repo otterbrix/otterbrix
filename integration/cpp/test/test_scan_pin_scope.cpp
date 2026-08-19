@@ -9,14 +9,12 @@
 // A scan pins its block once per segment, not once per row.
 //
 // Pinning is not free: it takes the block handle's mutex, does atomics, and on release may allocate
-// an eviction-queue node from the process-wide pool. Doing it per row turns a sequential read into
-// millions of lock round-trips — and the profile of the SSB queries showed exactly that shape, with
-// buffer_handle_t::~buffer_handle_t the largest frame of our own code.
+// an eviction-queue node from the process-wide pool. Per row that turns a sequential read into
+// millions of lock round-trips — in the SSB profile buffer_handle_t::~buffer_handle_t was the
+// largest frame of our own code.
 //
-// The cause is a loop in column_data_t::scan_vector that fetches every row individually and is then
-// immediately overwritten by the vectorised scan() over the same range. This test states the
-// invariant that loop violates: reading N rows must cost pins proportional to the number of
-// SEGMENTS touched, and a segment holds DEFAULT_VECTOR_CAPACITY rows.
+// The invariant: reading N rows costs pins proportional to the number of SEGMENTS touched, and a
+// segment holds DEFAULT_VECTOR_CAPACITY rows.
 //
 // Hidden by default ([.]) because it fills enough rows to span many segments. Run it with [scanpin].
 
@@ -80,16 +78,12 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_pe
     CHECK(pins <= bound);
 }
 
-// Predicate evaluation still fetches row by row, and each fetch pins the block.
+// Predicate evaluation fetches row by row, but must not PIN per row.
 //
-// row_group_t::evaluate_predicate hoists a column_fetch_state out of its loops precisely so the
-// pins can be reused, but the five fixed-width fetch functions in column_segment.cpp
-// (fixed_size_fetch_row, validity_fetch_row, constant_fetch_row, rle_fetch_row, dict_fetch_row)
-// ignore that cache and call buffer_manager.pin(segment.block) directly. Only string_fetch_row uses
-// get_or_insert_handle. So the hoisted state buys nothing for the types that dominate a filter.
-//
-// A pin is a lock on the block handle plus atomics, and on release it may allocate an
-// eviction-queue node from the shared pool — per row, per referenced column.
+// row_group_t::evaluate_predicate hoists a column_fetch_state out of its loops so the pin can be
+// reused across the rows of a segment; every fetch_row in column_segment.cpp has to go through that
+// cache (get_or_insert_handle) instead of pinning segment.block itself. Otherwise the pin cost
+// above is paid per row, per referenced column.
 //
 // Hidden ([.]). Run it with [predpin].
 TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_segment", "[.][predpin]") {
@@ -113,8 +107,8 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_
 
     components::table::storage::reset_buffer_pins();
     components::table::reset_gathered_borrowed_strings();
-    // Warm the caches first, then time the same shape: the measurement has to attribute the cost to
-    // the gather, not to whatever the first statement of a fresh engine pays for.
+    // Warm the caches first, then time the same shape: the first statement of a fresh engine pays
+    // start-up costs that have nothing to do with what is being measured.
     {
         auto cur = exec("SELECT SUM(b) FROM s.t WHERE a > 49500;");
         REQUIRE(cur->is_success());

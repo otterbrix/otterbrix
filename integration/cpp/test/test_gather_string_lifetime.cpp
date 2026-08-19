@@ -4,22 +4,20 @@
 #include <components/table/row_group.hpp>
 #include <string>
 
-// The late-materialisation gather leaves borrowed string views in a chunk that outlives their pin.
+// The late-materialisation gather must not leave borrowed string views in a chunk that outlives
+// their pin.
 //
 // When a filter is selective enough (fewer than a fifth of the rows survive), row_group_t stops
 // scanning whole vectors and gathers the surviving rows one at a time with fetch_row. That gather
 // declares its column_fetch_state INSIDE the branch, so every pin it took is released when the
 // branch ends — while the result chunk it just filled is returned to the caller.
 //
-// For a STRING column that is a use-after-free waiting to happen: fetch_row's string leg writes a
-// std::string_view BORROWED from the pinned block, whereas the bulk scan path deliberately copies
-// into the result's own heap. The comment on fetch_string_owned states the reason in as many words:
-// "that pin is released per streaming batch and the block may later be evicted + reloaded at a new
-// address. A borrowed view would then dangle (use-after-free)."
-//
-// It has been survivable because a block whose pin is gone mostly stayed where it was. This session
-// changed that: the buffer pool can now spill a transient block to disk and reload it at a different
-// address, which is exactly the scenario the comment describes.
+// For a STRING column that would be a use-after-free: fetch_row's string leg writes a
+// std::string_view BORROWED from the pinned block unless result_outlives_pins tells it to copy
+// into the result's own heap (fetch_string_owned documents why: an unpinned block may be evicted
+// and reloaded at a new address, leaving the borrowed view dangling). Borrowing used to be
+// survivable because a block whose pin is gone mostly stayed where it was; the buffer pool can now
+// spill a transient block to disk and reload it at a different address.
 //
 // The test counts rather than trying to catch the dangling read: a use-after-free reproduces only
 // when the pool happens to reclaim that block, so a behavioural test would be flaky in the direction

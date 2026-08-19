@@ -91,11 +91,10 @@ namespace components::table::storage {
     core::result_wrapper_t<std::shared_ptr<block_handle_t>>
     standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
         assert(size < block_size());
-        // Charge and record the ALLOCATION, not the requested size — the same as register_memory
-        // does for the managed path. A tiny buffer really occupies allocation_size(size) bytes, and
-        // recording the smaller number broke the invariant pin() asserts after a reload
-        // (memory_usage == buffer->allocation_size()). Nothing reloaded a tiny buffer before the
-        // spill path existed, which is why the mismatch had never surfaced.
+        // Charge and record the ALLOCATION, not the requested size, as register_memory does for
+        // the managed path: a tiny buffer really occupies allocation_size(size) bytes, and
+        // recording the smaller number breaks the invariant pin() asserts after a reload
+        // (memory_usage == buffer->allocation_size()).
         const auto alloc_size = allocation_size(size);
         auto reservation = evict_blocks_or_error(tag, alloc_size, nullptr);
         if (reservation.has_error()) {
@@ -337,22 +336,17 @@ namespace components::table::storage {
             if (!handle->get_buffer(lock)) {
                 return;
             }
-            // The reader count is ALWAYS released, whatever the buffer type. Bailing out early for
-            // TINY_BUFFER skipped the decrement as well as the queueing, so every pin of a small
-            // buffer added a reader that never came back — load() increments readers_ for every type
-            // (block_handle.cpp), so the count climbed monotonically. Harmless while such blocks are
-            // non-reloadable and therefore never eviction candidates; fatal the moment a block can be
-            // spilled and made reloadable, because a permanently non-zero readers_ would pin it in
-            // memory for good. What is type-specific is only what happens once the count reaches
-            // zero, which is decided below.
+            // The reader count is ALWAYS released, whatever the buffer type: load() increments
+            // readers_ for every type (block_handle.cpp). Bailing out early for TINY_BUFFER skipped
+            // the decrement, and a permanently non-zero readers_ pins a spillable block in memory
+            // for good. Only what happens once the count reaches zero is type-specific, below.
             assert(handle->readers() > 0);
             auto new_readers = handle->decrement_readers();
             if (new_readers == 0) {
                 if (!handle->is_reloadable()) {
                     // No disk copy — but that no longer means "keep it resident forever". The pool
                     // can write such a buffer to its scratch file and take the memory back, so it
-                    // belongs in the eviction queue like any other candidate. Leaving it out was
-                    // what left the queue empty exactly when a bulk load needed to make room.
+                    // belongs in the eviction queue like any other candidate.
                     auto sp = handle->shared_from_this();
                     purge = buffer_pool_.add_to_eviction_queue(sp);
                 } else if (handle->must_add_to_eviction_queue()) {

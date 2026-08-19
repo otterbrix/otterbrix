@@ -19,13 +19,13 @@ namespace components::catalog {
 
     // Column-index constants for system tables. Mirror the column order in
     // components/catalog/system_table_schemas.cpp (pg_*_columns() functions).
-    // Centralised here so FK / CHECK readers don't redefine them per file.
+    // Centralised so no reader redefines them per file.
     //
     // These are the identity of a system-table column: the keyed catalog reads take
     // them directly, so a name never crosses the mailbox. That is only safe because
-    // catalog::system_schemas::column_order_is_pinned asserts (position, name) for
-    // every table listed here — without that test, inserting a column in the middle
-    // of a schema would silently shift every constant below it.
+    // catalog::system_schemas::column_constants_match_the_schema asserts (position,
+    // name) for every constant below — without that test, inserting a column in the
+    // middle of a schema would silently shift every constant under it.
     namespace pg_constraint_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t conname = 1;

@@ -140,8 +140,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
                     auto type_batches_r = co_await std::move(tf);
                     if (type_batches_r.has_error()) {
-                        // A failed pg_type read is not a miss; treating it as one lets the
-                        // operation proceed on data that was never read.
                         set_error(type_batches_r.error());
                         co_return;
                     }

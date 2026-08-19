@@ -28,19 +28,11 @@ namespace {
     //
     // These loops run inside actor coroutines whose promise discards exceptions: its
     // unhandled_exception() is empty under NDEBUG (actor-zeta detail/future.hpp), so a throw from
-    // one row abandoned the rest of the batch while the caller still observed success. The index
-    // was left partially maintained, with no diagnostic anywhere — which is how a NULL key could
-    // silently drop every row after it from the index.
+    // one row would abandon the rest of the batch while the caller still observed success.
     //
-    // No guard, no catch: index maintenance no longer throws. The disk hash table reports
-    // failures by value and the key codec asserts on its own invariants while reporting corrupt
-    // payloads as NA, so there is nothing left to convert here.
-    //
-    // What used to live here was a try/catch that logged a throw and CONTINUED — which is how,
-    // in its own words, a NULL key could silently drop every row after it from the index. The
-    // error channel that replaced it (insert_rows/delete_rows/update_rows returning
-    // core::error_t, checked by four operators) stays: it is what makes a failure fail the
-    // statement instead of quietly leaving the table and its index disagreeing.
+    // Nothing throws here: the disk hash table reports failures by value and the key codec
+    // asserts on its own invariants while reporting corrupt payloads as NA. A failure travels
+    // the error channel instead — insert_rows/delete_rows/update_rows return core::error_t.
     template<typename Fn>
     [[nodiscard]] core::error_t guarded_index_row(log_t&,
                                                   const char*,
@@ -198,17 +190,15 @@ namespace services::index {
                 }
 
                 // Bounded-staleness idle wait: future completion only sets an
-                // atomic flag (no notify), so wake every 100µs to re-poll
+                // atomic flag (no notify), so the wait must time out to re-poll
                 // readiness; enqueue notifies pump_cv_ early.
                 std::unique_lock<std::mutex> lk(mutex_);
-                // A suspended coroutine's future is completed on ANOTHER thread and
-                // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
-                // readiness is discovered by this wait TIMING OUT. While work is in
-                // flight that expiry IS the per-hop latency, and a statement crosses
-                // ~20 hops. Idle is the opposite case: only a new message can arrive
-                // and that DOES notify, so the idle tick is left alone — shortening it
-                // burns CPU for nothing, lengthening it would expose the documented
-                // push-notify race to the first statement after a pause.
+                // Readiness is discovered by this wait TIMING OUT, so while work is in
+                // flight that expiry IS the per-hop latency and a statement crosses ~20
+                // hops. Idle is the opposite case: only a new message can arrive and that
+                // DOES notify, so the idle tick is left alone — shortening it burns CPU for
+                // nothing, lengthening it would expose the push-notify race to the first
+                // statement after a pause.
                 if (inbox_.empty()) {
                     pump_cv_.wait_for(lk,
                                       in_flight.empty() ? std::chrono::microseconds(100)
@@ -653,7 +643,7 @@ namespace services::index {
 
         if (engine->has_index(index_name)) {
             // index_create_fail, not already_exists: test_index pins this code for
-            // a duplicate CREATE INDEX, and its semantics are not mine to change.
+            // a duplicate CREATE INDEX.
             co_return core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"index already exists", resource_}};
         }
@@ -864,9 +854,8 @@ namespace services::index {
                     engine->insert_row(binding, chunk, i, row_id, /*txn_id=*/0, bootstrap_tz);
                 });
                 if (index_error.contains_error()) {
-                    // Replay and bootstrap have no statement to fail; the failure is already
-                    // reported at error level by the guard. Recorded here so the value is not
-                    // silently dropped.
+                    // Bootstrap has no statement to fail, so a bad row is recorded and the
+                    // rest of the batch continues.
                     trace(log_, "manager_index_t::bootstrap_repopulate: row {} left unindexed", row_id);
                 }
             }
@@ -896,13 +885,9 @@ namespace services::index {
         // start_row_id, stopping after `count` rows (the committed/appended total).
         uint64_t inserted = 0;
         for (const auto& chunk : data) {
-            // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-            // instead of walking the columns (and building a key string per comparison) per row.
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && inserted < count; i++) {
                 const auto row_id = static_cast<int64_t>(start_row_id + inserted);
-                // NB: `inserted` advances for every row, failure or not — the row-id is positional,
-                // so skipping the increment would silently re-point every later entry at the wrong row.
                 if (auto index_error = guarded_index_row(log_, "insert_rows", table_oid, row_id, resource_, [&] {
                     engine->insert_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
                     });
@@ -937,8 +922,6 @@ namespace services::index {
         // row-id of the k-th row across the concatenated chunks).
         size_t deleted = 0;
         for (const auto& chunk : data) {
-            // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-            // instead of walking the columns (and building a key string per comparison) per row.
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
                 const auto row_id = row_ids[deleted];
@@ -946,8 +929,6 @@ namespace services::index {
                     engine->mark_delete_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
                     });
                     index_error.contains_error()) {
-                    // The statement fails: an index entry that could not be written is not a
-                    // detail to log and move past — the index would disagree with the table.
                     co_return index_error;
                 }
                 ++deleted;
@@ -976,11 +957,8 @@ namespace services::index {
         auto& engine = it->second;
 
         // Mark old entries as deleted — walk the old chunks in lockstep with row_ids.
-        // A throw here used to skip the insert half entirely, leaving the new keys unindexed.
         size_t deleted = 0;
         for (const auto& chunk : old_data) {
-            // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-            // instead of walking the columns (and building a key string per comparison) per row.
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
                 const auto row_id = row_ids[deleted];
@@ -988,8 +966,6 @@ namespace services::index {
                     engine->mark_delete_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
                     });
                     index_error.contains_error()) {
-                    // The statement fails: an index entry that could not be written is not a
-                    // detail to log and move past — the index would disagree with the table.
                     co_return index_error;
                 }
                 ++deleted;
@@ -1000,8 +976,6 @@ namespace services::index {
         // new_start_row_id (aligned positionally to the deleted old rows).
         size_t inserted = 0;
         for (const auto& chunk : new_data) {
-            // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-            // instead of walking the columns (and building a key string per comparison) per row.
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && inserted < row_ids.size(); i++) {
                 const auto row_id = new_start_row_id + static_cast<int64_t>(inserted);
@@ -1009,8 +983,6 @@ namespace services::index {
                     engine->insert_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
                     });
                     index_error.contains_error()) {
-                    // The statement fails: an index entry that could not be written is not a
-                    // detail to log and move past — the index would disagree with the table.
                     co_return index_error;
                 }
                 ++inserted;
@@ -1338,8 +1310,6 @@ namespace services::index {
         if (row_count != 0) {
             uint64_t global = 0;
             for (const auto& chunk : chunks) {
-                // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-                // instead of walking the columns (and building a key string per comparison) per row.
                 const auto binding = engine_after->bind_chunk(chunk);
                 for (uint64_t i = 0; i < chunk.size() && global < row_count; ++i) {
                     const auto row_id = static_cast<int64_t>(global);
@@ -1347,9 +1317,6 @@ namespace services::index {
                         engine_after->insert_row(binding, chunk, i, row_id, /*txn_id=*/0, session_tz);
                     });
                     if (index_error.contains_error()) {
-                        // Replay and bootstrap have no statement to fail; the failure is already
-                        // reported at error level by the guard. Recorded here so the value is not
-                        // silently dropped.
                         trace(log_, "manager_index_t::repopulate_table: row {} left unindexed", row_id);
                     }
                     ++global;
@@ -1626,8 +1593,6 @@ namespace services::index {
             }
             uint64_t global = 0;
             for (const auto& chunk : physical_data) {
-                // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-                // instead of walking the columns (and building a key string per comparison) per row.
                 const auto binding = engine->bind_chunk(chunk);
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     const auto row_id = static_cast<int64_t>(physical_row_start + global);
@@ -1635,9 +1600,6 @@ namespace services::index {
                         engine->insert_row(binding, chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
                     });
                     if (index_error.contains_error()) {
-                        // Replay and bootstrap have no statement to fail; the failure is already
-                        // reported at error level by the guard. Recorded here so the value is not
-                        // silently dropped.
                         trace(log_, "manager_index_t::wal_replay(insert): row {} left unindexed", row_id);
                     }
                     ++global;
@@ -1666,8 +1628,6 @@ namespace services::index {
             } else {
                 size_t global = 0;
                 for (const auto& chunk : physical_data) {
-                    // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-                    // instead of walking the columns (and building a key string per comparison) per row.
                     const auto binding = engine->bind_chunk(chunk);
                     for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i) {
                         const auto row_id = row_ids[global];
@@ -1675,9 +1635,6 @@ namespace services::index {
                             engine->mark_delete_row(binding, chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
                         });
                         if (index_error.contains_error()) {
-                            // Replay and bootstrap have no statement to fail; the failure is already
-                            // reported at error level by the guard. Recorded here so the value is not
-                            // silently dropped.
                             trace(log_, "manager_index_t::wal_replay(delete): row {} left unindexed", row_id);
                         }
                         ++global;
@@ -1704,8 +1661,6 @@ namespace services::index {
                 // vector order maps to physical_row_start + g (the engine's contract).
                 uint64_t global = 0;
                 for (const auto& chunk : physical_data) {
-                    // Key->column resolution is a property of the CHUNK, not of the row: bind once here
-                    // instead of walking the columns (and building a key string per comparison) per row.
                     const auto binding = engine->bind_chunk(chunk);
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         const auto row_id = static_cast<int64_t>(physical_row_start + global);
@@ -1713,9 +1668,6 @@ namespace services::index {
                             engine->insert_row(binding, chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
                         });
                         if (index_error.contains_error()) {
-                            // Replay and bootstrap have no statement to fail; the failure is already
-                            // reported at error level by the guard. Recorded here so the value is not
-                            // silently dropped.
                             trace(log_, "manager_index_t::wal_replay(update-new): row {} left unindexed", row_id);
                         }
                         ++global;

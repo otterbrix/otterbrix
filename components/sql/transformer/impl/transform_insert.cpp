@@ -387,9 +387,9 @@ namespace components::sql::transform {
             }
 
             // Target column names, materialized ONCE per statement. key_t::as_string() builds a
-            // fresh std::string every call, and it used to be called two or three times per
-            // CELL — inside the column-matching predicate, so once per candidate column per
-            // cell. The names are fixed for the whole statement; only the values vary.
+            // fresh std::string every call, and the column-matching predicate below runs it per
+            // candidate column per CELL. The names are fixed for the whole statement; only the
+            // values vary.
             std::pmr::vector<std::string> field_names(resource_);
             field_names.reserve(key_translation.size());
             for (const auto& field : key_translation) {

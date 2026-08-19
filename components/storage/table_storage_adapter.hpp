@@ -208,9 +208,9 @@ namespace components::storage {
             // The chunk we fill is returned to the caller and then moved across a mailbox; the pins
             // taken below die with `state` when this function returns. Without this flag the string
             // leg writes views BORROWED from those blocks, and once the pin is gone the block can be
-            // evicted — or, since the pool learned to spill, written to the scratch file and reloaded
-            // at a different address — leaving the caller reading freed memory. row_group_t's gather
-            // sets the same flag for the same reason.
+            // evicted — or spilled to the scratch file and reloaded at a different address — leaving
+            // the caller reading freed memory. row_group_t's gather sets the same flag for the same
+            // reason.
             state.result_outlives_pins = true;
 #ifdef DEV_MODE
             // Guards the line above rather than the fetch itself: drop the flag and every string

@@ -109,18 +109,16 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
     // segment can hold only a handful of them, and a mix where occasional huge values force
     // overflow blocks.
     //
-    // The bounds are the MEASURED values with a little headroom, so this pins the layout rather than
-    // guessing at it. Measured with the segment sized to the row group (current), against the same
-    // load with the old whole-block sizing:
+    // The bounds are the measured values plus a little headroom, so this pins the layout rather than
+    // guessing at it — with the segment sized to the row group (current), and what the same load
+    // cost under the old whole-block sizing:
     //
     //   short 64 B      9.5x   (was 12.8x)
     //   inline 4090 B   1.85x  (was 2.29x)
     //   mixed           3.06x  (was 3.81x)
     //
-    // So sizing the segment to the row group improved text columns too — the worry that it would
-    // push more values into overflow blocks and cost more does not hold. What the numbers DO show is
-    // a pre-existing inefficiency that has nothing to do with that change: a short text value costs
-    // about nine times its own length on disk.
+    // So the smaller segment did not push values into overflow blocks and cost more. It does leave a
+    // pre-existing inefficiency visible: a short text value costs about nine times its own length.
     const case_t cases[] = {
         {"short values (64 B)", 40000, 64, 0, 0, 10.5},
         {"large inline values (4090 B)", 8000, 4090, 0, 0, 2.2},

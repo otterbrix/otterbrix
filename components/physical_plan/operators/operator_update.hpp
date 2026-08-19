@@ -43,25 +43,21 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-
         // Whether the target table has any index (stamped by enrich onto the plan node).
-
         // False skips the index mirror entirely. Defaults to true: an unstamped plan must
-
         // behave as before, because guessing "no index" leaves a stale index behind.
-
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
         // STREAMING DML (STEP 3b). Both UPDATE shapes are SINKs on the LEFT (target)
         // scan input:
         //   - SIMPLE predicate-scan UPDATE (no FROM): push() folds each scan batch
         //     via consume_batch_ — matching, applying the SET expressions into
-        //     out_chunks accumulated in output_, and staging
-        //     the matched OLD scan rows for the index mirror.
+        //     out_chunks accumulated in output_, and staging the matched OLD scan
+        //     rows for the index mirror.
         //   - UPDATE ... FROM (right_ = the materialized FROM scan): push() probes
         //     each LEFT batch against right_->output() via consume_join_batch_ —
-        //     same semi-join match, SET application, index-old
-        //     staging and lockstep FROM rows for joined RETURNING.
+        //     same semi-join match, SET application, index-old staging and lockstep
+        //     FROM rows for joined RETURNING.
         // The LEFT scan streams; the RIGHT (FROM) build side is fully materialized
         // before the first push (the executor materializes join build sides —
         // traverse_plan_ split / materialize_build_sides_). needs_async_finalize
@@ -93,8 +89,8 @@ namespace components::operators {
         // stages the SAME bounded state consume_batch_ does — the updated out_chunk
         // (matched columns, DICTIONARY row-id fallback, SET applied) appended to
         // output_, the matched OLD rows for the index mirror, and (for RETURNING)
-        // the matched FROM rows in lockstep. push()
-        // calls it per LEFT batch. await_async_and_resume drains it.
+        // the matched FROM rows in lockstep. push() calls it per LEFT batch.
+        // await_async_and_resume drains it.
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
                                           const chunks_vector_t& right_chunks);
@@ -102,8 +98,7 @@ namespace components::operators {
                                                    vector::data_chunk_t& out_chunk,
                                                    const vector::data_chunk_t* from_chunk,
                                                    uint64_t match_count);
-        // Lazily create the output_ accumulator + staging for
-        // the per-operator init.
+        // Lazily create the output_ accumulator on the first batch.
         void ensure_simple_init_();
 
         components::catalog::oid_t table_oid_;

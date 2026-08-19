@@ -15,22 +15,15 @@
 //    build_create_table_writes, so nothing is ever written to the catalog. The only consumers of
 //    constraints() in the whole tree are parser tests.
 //
-// The result is that the ordinary way of declaring a key — inline — produces a table with no key,
-// and the database accepts data it was told to reject. ALTER TABLE ADD CONSTRAINT works, so the
-// constraint machinery itself is fine; nothing connects it to CREATE TABLE.
-//
-// Each case below declares a constraint inline and then violates it. A passing case means the
+// Each case below declares a constraint inline and then violates it; a passing case means the
 // constraint was enforced. Seven of the eight fail today; only the ALTER TABLE control passes.
 //
-// HIDDEN ([.]) ON PURPOSE, and the reason matters. Fixing this would make writes SLOWER, not faster:
-// UNIQUE and PRIMARY KEY are enforced today by a full table pass per 1024-row batch, measured at
-// N^1.96 (bulk-loading 400k rows into a table with a primary key costs 5643 ms against 1761 ms
-// without). So the dropped constraints are currently MASKING that quadratic — a table declared with
-// an inline PRIMARY KEY loads fast precisely because it has no key. Turning enforcement on before
-// constraints are index-backed would hand users a quadratic bulk load.
-//
-// The correct order is therefore the reverse of the obvious one: index-backed constraint enforcement
-// first, then inline forms. This test is the ready-made red proof for that work.
+// HIDDEN ([.]) ON PURPOSE: fixing this would make writes SLOWER. UNIQUE and PRIMARY KEY are
+// enforced today by a full table pass per 1024-row batch, measured at N^1.96 (bulk-loading 400k
+// rows into a table with a primary key costs 5643 ms against 1761 ms without). The dropped
+// constraints are currently MASKING that quadratic — a table declared with an inline PRIMARY KEY
+// loads fast precisely because it has no key. So the order is the reverse of the obvious one:
+// index-backed constraint enforcement first, then inline forms.
 
 namespace {
     struct env_t {

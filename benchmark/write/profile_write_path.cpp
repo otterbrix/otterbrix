@@ -1,6 +1,6 @@
 // Write-path profiling driver: measures INSERT / UPDATE / DELETE throughput and
-// per-statement latency across the variable grid (interface, storage, wal, disk,
-// index, primary key, table width, log level).
+// per-statement latency across the variable grid (interface, index, primary key,
+// table width, catalog size, log level).
 //
 // Talks to the engine ONLY through base_otterbrix_t::dispatcher() — execute_sql for
 // the SQL path and execute_plan for the logical_plan path. All chunks and plans are
@@ -46,9 +46,8 @@ namespace {
         // grows with the number of catalog rows — this makes that growth measurable.
         std::uint64_t tables{1};
         // Milliseconds to sleep AFTER the seed load and BEFORE the measured statements,
-        // so a sampling profiler can be aimed at the measured window alone. Profiling
-        // the whole process mixes the seed INSERT into the DELETE/UPDATE profile and
-        // has already produced one useless profile.
+        // so a sampling profiler can be aimed at the measured window alone: profiling
+        // the whole process mixes the seed INSERT into the DELETE/UPDATE profile.
         std::uint64_t pause_before_dml_ms{0};
     };
 
@@ -192,8 +191,7 @@ namespace {
         if (o.index && !run_sql(dispatcher, "CREATE INDEX t_k_idx ON wp.t (k);", nullptr)) {
             return false;
         }
-        // Filler tables: they are never written to, they only enlarge pg_class and
-        // pg_attribute so the per-statement catalog scans have more rows to walk.
+        // Filler tables: never written to, they only enlarge the catalog (see options_t::tables).
         for (std::uint64_t t = 1; t < o.tables; ++t) {
             std::string filler = "CREATE TABLE wp.f" + std::to_string(t) + " (id bigint, k bigint";
             for (std::uint64_t c = 0; c < o.width; ++c) {
@@ -291,9 +289,8 @@ namespace {
         return total;
     }
 
-    // CPU consumed by the whole process so far. Wall time on this write path is
-    // dominated by waiting, so CPU is the only figure that shows the actual work —
-    // and the only one that reacts to things like catalog scan size.
+    // CPU consumed by the whole process so far. Wall time on this write path is dominated by
+    // waiting, so CPU is the only figure that reacts to the actual work.
     struct cpu_time_t {
         double user_ms{0.0};
         double sys_ms{0.0};

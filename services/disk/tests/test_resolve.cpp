@@ -276,7 +276,6 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 
     // --- parity: result[k] of the batched call == singular read_chunks_by_key(k) ---
     for (std::size_t i = 0; i < N; ++i) {
-        // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
         std::pmr::vector<std::uint64_t> single_key_cols{&fx.resource};
         single_key_cols.emplace_back(0);
         std::pmr::vector<logical_value_t> single_vals{&fx.resource};
@@ -321,18 +320,14 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 // The keyed catalog reads used to return a bare vector with no error slot, so every
 // failure — an unknown key column, a key-arity mismatch, and (the dangerous one) a
 // scan_local io_error/data_corruption from a failed block pin — collapsed into "one
-// empty entry per key". The callers cannot tell that apart from a legitimate miss, and
-// they do not try: operator_resolve_table turns an empty pg_namespace read into
-// "Database does not exist", and operator_resolve_constraint assigns the empty result
-// straight into fk.child_col_names, building FK metadata that is silently wrong.
-//
-// Test 7 above pins the other half of the pact: key 99, which genuinely matches nothing,
-// yields an EMPTY entry. So empty already means "not found" — which is exactly why an
-// unperformable read must mean something else.
+// empty entry per key", indistinguishable from a legitimate miss: operator_resolve_table
+// read that as "Database does not exist", operator_resolve_constraint built FK metadata
+// out of it. Test 7 above pins the other half: key 99, which genuinely matches nothing,
+// yields an EMPTY entry — empty already means "not found".
 //
 // The injected failure here is an unknown key column: resolve_key_col_indices cannot map
 // it, so no scan runs at all. No failpoint exists in this layer for forcing a real
-// io_error, and this branch reaches the same swallow.
+// io_error, and this branch reaches the same error path.
 TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -389,8 +384,6 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
 // ordinal-stable placeholders rather than being removed — that is what lets a consumer keep
 // addressing column 3 as column 3. The failure mode is therefore silent: project too narrowly
 // and the consumer reads an empty placeholder where a value used to be, with no error anywhere.
-// This pins the contract that makes narrowing safe: same rows, same ordinals, same values in
-// the projected columns.
 TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
     using components::types::complex_logical_type;
     using components::types::logical_type;

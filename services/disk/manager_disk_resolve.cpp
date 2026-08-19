@@ -11,9 +11,7 @@ namespace services::disk {
     // mailbox — not a borrowed storage_entry_sync pointer — serialises against
     // agent-0's compact path (checkpoint/vacuum/maybe_cleanup_inner) running on the
     // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
-    // = "see all committed". read_chunks_by_key is a thin router: the column
-    // NAME→index resolution and the eq-AND filtered scan both run intra-agent in
-    // read_chunks_by_key_inner.
+    // = "see all committed".
 
     // The three resolve_* readers below flow through this funnel; the C++-side row
     // filtering stays in each caller (it differs per table: equality on name,
@@ -173,12 +171,10 @@ namespace services::disk {
         // INVARIANT on SUCCESS: result.size() == keys.size() — one (possibly empty) row per
         // input key, in input order, so result[i] always maps to keys[i]. Consumers
         // (operator_fk_check / operator_fk_cascade) index result[i] positionally and treat an
-        // empty row as "no parent match", so a short outer vector would silently skip checks.
-        //
-        // The routing failures below used to emit keys.size() empty rows, which reads to those
-        // same consumers as "no parent matched any key" — a constraint check that passes because
-        // the check could not run. They are errors now. Zero keys is not a failure: an empty
-        // request has an empty answer, and keys.size() == 0 still satisfies the invariant.
+        // empty row as "no parent match", so a short outer vector would silently skip checks —
+        // and a routing failure reported as keys.size() empty rows is a constraint check that
+        // passes because the check could not run. Hence the errors below. Zero keys is not a
+        // failure: an empty request has an empty answer, and keys.size() == 0 keeps the invariant.
         if (keys.empty()) {
             co_return out;
         }
@@ -215,10 +211,9 @@ namespace services::disk {
                                        std::pmr::vector<std::uint64_t> key_col_indices,
                                        components::vector::data_chunk_t keys,
                                        std::pmr::vector<std::uint64_t> projected_cols) {
-        // Thin router: name→index resolution + the eq-AND filtered scan now run
-        // intra-agent in read_chunks_by_key_inner (no row-major flatten, no
-        // separate column-name resolution hop). Callers read cells via
-        // chunk.value(col, row).
+        // Thin router: the caller passes storage column ORDINALS and the eq-AND filtered
+        // scan runs intra-agent in read_chunks_by_key_inner (no row-major flatten, no
+        // column-name resolution hop at all). Callers read cells via chunk.value(col, row).
         // These used to return an empty vector, which the resolve operators read as
         // "no such row" — a misrouted or agent-less read then surfaced as "Database does
         // not exist". A read that never ran is an error.
@@ -256,14 +251,14 @@ namespace services::disk {
                                         std::pmr::vector<std::uint64_t> key_col_indices,
                                         components::vector::data_chunk_t keys,
                                         std::pmr::vector<std::uint64_t> projected_cols) {
-        // Thin router for the multi-key batch: name→index resolution + the per-key eq-AND
-        // filtered scans run intra-agent in read_chunks_by_keys_inner (one mailbox hop for the
-        // whole batch). INVARIANT: result.size() == keys.size() on EVERY path — one (possibly
-        // empty) entry per input key, in input order, so result[i] always maps to keys[i].
-        // Consumers index result[i] positionally, so on SUCCESS the invariant still holds. The
-        // routing failures below no longer masquerade as keys.size() empty entries — that shape
-        // is indistinguishable from "every key matched nothing", which is how a failed FK
-        // attribute read silently produced empty fk.child_col_names.
+        // Thin router for the multi-key batch: the caller passes storage column ORDINALS and the
+        // filtered scan runs intra-agent in read_chunks_by_keys_inner (one mailbox hop for the
+        // whole batch). INVARIANT on SUCCESS: result.size() == keys.size() — one (possibly
+        // empty) entry per input key, in input order, so result[i] always maps to keys[i], which
+        // is how consumers index it.
+        // Routing failures are NOT keys.size() empty entries — that shape is indistinguishable
+        // from "every key matched nothing", which is how a failed FK attribute read silently
+        // produced empty fk.child_col_names.
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> out(resource());
         if (keys.empty()) {
             co_return out;

@@ -28,9 +28,9 @@ namespace components::operators {
 
     namespace {
 
-    // Small projection helpers, spelled out next to the reads they justify. A projection that
-    // is too narrow does not fail — the column comes back as an ordinal-stable placeholder and
-    // the consumer silently reads nothing — so each of these names exactly one consumed column.
+    // Small projection helpers, one per read below. A projection that is too narrow does not
+    // fail — the column comes back as an ordinal-stable placeholder and the consumer silently
+    // reads nothing — so each of these names exactly the columns its read consumes.
     std::pmr::vector<std::uint64_t> pg_class_oid_only(std::pmr::memory_resource* resource) {
         std::pmr::vector<std::uint64_t> cols(resource);
         cols.emplace_back(components::catalog::pg_class_col::oid);
@@ -140,8 +140,9 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
                 auto ns_batches_r = co_await std::move(nsf);
                 if (ns_batches_r.has_error()) {
-                    // A pg_namespace read that failed is not "row not found": reporting it as a miss
-                    // is how an unreadable catalog surfaced as a missing database or table.
+                    // A catalog read that failed is not "row not found": reporting it as a miss is
+                    // how an unreadable catalog surfaced as a missing database or table. Every
+                    // catalog read in this operator propagates its error the same way.
                     set_error(ns_batches_r.error());
                     co_return;
                 }
@@ -186,8 +187,6 @@ namespace components::operators {
                                                         pg_class_oid_only(resource_));
             auto lookup_batches_r = co_await std::move(lookup_f);
             if (lookup_batches_r.has_error()) {
-                // A pg_class read that failed is not "row not found": reporting it as a miss
-                // is how an unreadable catalog surfaced as a missing database or table.
                 set_error(lookup_batches_r.error());
                 co_return;
             }
@@ -209,11 +208,9 @@ namespace components::operators {
         {
             std::pmr::vector<std::uint64_t> pc_keys(resource_);
             pc_keys.emplace_back(catalog::pg_class_col::oid);
-            // This read consumes exactly relnamespace and relkind (see the two get_value calls
-            // below); the key column is added by the agent. relname and relstoragemode are not
-            // read here, so they are not materialized. Non-projected columns stay ordinal-stable
-            // placeholders, which is why the reads below still address columns 2 and 3 — and why
-            // this projection is spelled out from the code rather than guessed.
+            // This read consumes exactly relnamespace and relkind (the two get_value calls below);
+            // the key column is added by the agent. Non-projected columns stay ordinal-stable
+            // placeholders, which is why the reads below still address columns 2 and 3.
             std::pmr::vector<std::uint64_t> pc_projection(resource_);
             pc_projection.emplace_back(catalog::pg_class_col::relnamespace);
             pc_projection.emplace_back(catalog::pg_class_col::relkind);
@@ -226,8 +223,6 @@ namespace components::operators {
                                                std::move(pc_projection));
             auto pc_batches_r = co_await std::move(pcf);
             if (pc_batches_r.has_error()) {
-                // A pg_class by oid read that failed is not "row not found": reporting it as a miss
-                // is how an unreadable catalog surfaced as a missing database or table.
                 set_error(pc_batches_r.error());
                 co_return;
             }
@@ -281,8 +276,6 @@ namespace components::operators {
                                                pg_rewrite_action_only(resource_));
             auto pr_batches_r = co_await std::move(prf);
             if (pr_batches_r.has_error()) {
-                // A pg_rewrite read that failed is not "row not found": reporting it as a miss
-                // is how an unreadable catalog surfaced as a missing database or table.
                 set_error(pr_batches_r.error());
                 co_return;
             }
@@ -333,8 +326,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
             auto cc_batches_r = co_await std::move(ccf);
             if (cc_batches_r.has_error()) {
-                // A pg_computed_column read that failed is not "row not found": reporting it as a miss
-                // is how an unreadable catalog surfaced as a missing database or table.
                 set_error(cc_batches_r.error());
                 co_return;
             }
@@ -458,8 +449,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
             auto pa_batches_r = co_await std::move(paf);
             if (pa_batches_r.has_error()) {
-                // A pg_attribute read that failed is not "row not found": reporting it as a miss
-                // is how an unreadable catalog surfaced as a missing database or table.
                 set_error(pa_batches_r.error());
                 co_return;
             }

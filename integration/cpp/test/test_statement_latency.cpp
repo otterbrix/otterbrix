@@ -12,10 +12,9 @@
 // resolving a future writes a flag and notifies nobody (pump_cv_ is notified from
 // enqueue_impl alone). Every hop therefore rounds up to the idle quantum.
 //
-// Established by experiment, not inference: shrinking the CLIENT poll quantum moved
-// p50 by 7% (3470 -> 3233 us), while shrinking the four manager pump quanta moved it
-// to 611 us at 5 us and 599 us at 1 us — a plateau, meaning everything above ~600 us
-// was pure quantization. Bulk load went 874 -> 307 ms on the same experiment.
+// Shrinking the four manager pump quanta moved p50 from 3470 us to 611 us at 5 us and
+// 599 us at 1 us — a plateau, so everything above ~600 us was pure quantization (the
+// CLIENT poll quantum accounts for only 7% of it).
 //
 // This test is a TIMING test on purpose. The defect is a duration, and the fix
 // changes a duration: wake-ups by timeout exist both before and after, they are just

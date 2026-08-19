@@ -14,13 +14,10 @@
 namespace core::b_plus_tree {
 
 #ifdef DEV_MODE
-    // Test-observable count of LEAF flushes. One segment_tree_t is one B+tree leaf and owns one
-    // file, and segment_tree_t::flush() unconditionally rewrites that file's header, truncates it
-    // and fsyncs it — only the per-block writes are guarded by `modified`. btree_t::flush() walks
-    // every leaf, so a single changed row currently fsyncs the whole index.
-    //
-    // `leaf_flushes_without_changes` counts the flushes that wrote no block at all: pure waste,
-    // and the number a fix has to drive to zero.
+    // Test-observable counts of LEAF flushes. One segment_tree_t is one B+tree leaf owning one
+    // file, and btree_t::flush() walks every leaf, so an unneeded leaf flush still costs a header
+    // write, a truncate and an fsync. `leaf_flushes_without_changes` narrows that to the flushes
+    // that wrote no block — a diagnostic, not a bound: a header-only rewrite can be legitimate.
     uint64_t leaf_flushes() noexcept;
     uint64_t leaf_flushes_without_changes() noexcept;
     void reset_leaf_flushes() noexcept;
@@ -345,13 +342,12 @@ namespace core::b_plus_tree {
     private:
         // Set whenever anything this leaf's FILE would have to reflect has changed: a block's
         // contents, the header (segment count / per-block metadata), the on-disk layout, or a
-        // write that has not been fsynced yet. flush() writes the file only when it is set and
-        // clears it afterwards, so a leaf nobody touched costs nothing instead of an fsync.
+        // write that has not been fsynced yet.
         //
-        // It is deliberately coarse — one bit per leaf, set from every mutation path rather than
-        // derived at flush time. Deriving it would have to re-read state the mutation already
-        // knows about, and a wrong derivation loses data silently at restart. mark_dirty_() is the
-        // single place that sets it so the paths are greppable.
+        // Deliberately coarse — one bit per leaf, set from every mutation path rather than derived
+        // at flush time. Deriving it would have to re-read state the mutation already knows about,
+        // and a wrong derivation loses data silently at restart. mark_dirty_() is the single place
+        // that sets it, so the paths stay greppable.
         void mark_dirty_() noexcept { dirty_.store(true, std::memory_order_release); }
 
         metadata_range find_range_(const index_t& index) const;
@@ -372,10 +368,9 @@ namespace core::b_plus_tree {
         // is being flushed. Clearing after the write would drop a mark_dirty_() raised during it and
         // lose that change forever; clearing first only ever costs one redundant flush.
         //
-        // In otterbrix the disk index is owned by a single actor (index_disk_ is a unique_ptr member
-        // of index_agent_disk_t, never handed out, and every mutation arrives through serialized
-        // mailbox handlers), so the race cannot happen there. core/b_plus_tree is a standalone
-        // library with its own locking and its own multithreaded test, and must not depend on that.
+        // In otterbrix the disk index is owned by a single actor, so that race cannot happen there —
+        // but core/b_plus_tree is a standalone library with its own locking and its own
+        // multithreaded test, and must not depend on it.
         std::atomic<bool> dirty_{true}; // a freshly built leaf has never been written
 
         std::pmr::memory_resource* resource_;

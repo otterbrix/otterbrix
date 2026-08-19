@@ -17,8 +17,7 @@
 //
 // The dangerous failure mode when fixing this is NOT a wrong table: it is a table that
 // stays correct while the INDEX diverges, because an index-key column got pruned and
-// the mirror deleted nothing. The second test here is the guard for exactly that, and
-// it deliberately reads back THROUGH an index scan rather than a table scan.
+// the mirror deleted nothing. The second test here is the guard for exactly that.
 
 namespace {
     std::string wide_table_ddl(const std::string& name, int payload_columns) {

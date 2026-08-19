@@ -3,19 +3,15 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// A foreign key is not checked on UPDATE.
+// A foreign key must be checked on UPDATE, not only on INSERT.
 //
-// enrich_logical_plan resolves each foreign key's child column NAMES into positions in the chunk,
-// and it does that only on the INSERT branch: the UPDATE branch hands the same foreign keys to the
-// node without resolving anything, so child_col_indices stays empty.
-//
-// operator_fk_check then computes `has_absent = indices.empty()` and skips every row it cannot
-// address — "nothing to look up in the parent, so the row qualifies for no scan key" — which leaves
-// qcount at zero, and a zero qualifying count is the operator's success path. The check runs, reads
-// nothing, and reports that everything is fine.
-//
-// So the most ordinary way a user breaks referential integrity — pointing an existing row at a
-// parent that does not exist — is accepted silently. INSERT of the same value is rejected.
+// enrich_logical_plan resolves each foreign key's child column NAMES into positions in the chunk.
+// It used to do that only on the INSERT branch, leaving child_col_indices empty on UPDATE — and
+// operator_fk_check computes `has_absent = indices.empty()` and skips every row it cannot address,
+// which leaves qcount at zero, and a zero qualifying count is the operator's success path. The check
+// ran, read nothing, and reported that everything was fine, so the most ordinary way a user breaks
+// referential integrity — pointing an existing row at a parent that does not exist — was accepted
+// silently while INSERT of the same value was rejected.
 
 namespace {
     void make_parent_and_child(otterbrix::wrapper_dispatcher_t* d) {
@@ -51,8 +47,8 @@ TEST_CASE("integration::cpp::test_fk_check_on_update::update_to_a_missing_parent
     };
     make_parent_and_child(d);
 
-    // Control: the same value through INSERT IS rejected, which is what makes the UPDATE result a
-    // defect rather than a design choice about this constraint.
+    // Control: the same value through INSERT must be rejected too — the two paths have to agree, or
+    // the UPDATE result below is a design choice about this constraint rather than a defect.
     {
         auto cur = exec("INSERT INTO fk.child (id, parent_id) VALUES (12, 999);");
         INFO("INSERT with a missing parent must fail");

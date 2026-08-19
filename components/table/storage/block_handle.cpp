@@ -175,18 +175,14 @@ namespace components::table::storage {
         if (has_temp_copy()) {
             // Spilled: rebuild a buffer of THIS handle's type (never a block_t — the destructor and
             // the eviction queues both key off buffer_type_) and read the scratch slot back into it.
-            // memory_usage_ is the size this handle was created with, which is what
-            // construct_manager_buffer derives its allocation from. Do NOT feed it the buffer's
-            // size() — resize() reports the size available AFTER alignment, so the derived
-            // allocation comes out larger than the original and the assert inside trips.
+            // temp_user_size_ is the buffer's own size() as recorded at spill time. Rebuilding from
+            // it reproduces the identical allocation: size() is (allocation - header), and the
+            // allocation is already sector-aligned, so aligning it up again is a no-op.
             //
             // reusable_buffer is deliberately not consumed here: pin() sizes it against
             // memory_usage_ (a user size) while construct_manager_buffer compares allocations, so
             // adopting it would compare two different units. Letting it go costs one allocation on
             // a path that has just done disk I/O.
-            // temp_user_size_ is the buffer's own size() as recorded at spill time. Rebuilding from
-            // it reproduces the identical allocation: size() is (allocation - header), and the
-            // allocation is already sector-aligned, so aligning it up again is a no-op.
             auto restored = block_manager.buffer_manager.construct_manager_buffer(temp_user_size_,
                                                                                   nullptr,
                                                                                   buffer_type_);

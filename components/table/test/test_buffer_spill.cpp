@@ -1,17 +1,14 @@
-// The buffer pool cannot free anything a bulk load allocates.
+// A bulk load must be bounded by the pool size, not by the amount of data.
 //
 // block_handle_t::can_unload() refuses any block without a disk copy, and every transient column
-// segment is exactly that: created through register_transient_memory with an id past MAXIMUM_BLOCK,
-// never enqueued by unpin(), and there is no path anywhere that writes such a buffer out. So when
-// the pool fills, eviction walks an empty queue and reports out_of_memory rather than making room.
+// segment is exactly that: created through register_transient_memory with an id past MAXIMUM_BLOCK.
+// Until such a buffer could be spilled to the scratch file, a full pool walked an EMPTY eviction
+// queue and reported out_of_memory rather than making room — with the WAL off, hence no checkpoints
+// and nothing reaching the .otbx, a load died at 24 263 880 rows while holding 9 MiB on disk, and no
+// amount of disk space helped.
 //
-// Measured consequence: with the WAL off — hence no checkpoints, hence nothing reaching the .otbx —
-// a load fails at 24 263 880 rows while holding 9 MiB on disk. The ceiling is the hardwired 4 GiB
-// pool limit, and no amount of disk space helps.
-//
-// This test asks for exactly that behaviour in miniature: a pool sized for a handful of buffers,
-// oversubscribed. It must be possible to allocate past the limit, and every earlier buffer must read
-// back byte-for-byte afterwards.
+// This test asks for the same behaviour in miniature: a pool sized for a handful of buffers,
+// oversubscribed.
 
 #include <catch2/catch_test_macros.hpp>
 

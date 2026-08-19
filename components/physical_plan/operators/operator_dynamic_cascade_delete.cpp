@@ -229,8 +229,6 @@ namespace components::operators {
                              std::pmr::vector<std::uint64_t>{resource_});
             auto pc_results_r = co_await std::move(pcf);
             if (pc_results_r.has_error()) {
-                // A failed pg_class read is not a miss; treating it as one lets the
-                // operation proceed on data that was never read.
                 set_error(pc_results_r.error());
                 co_return;
             }

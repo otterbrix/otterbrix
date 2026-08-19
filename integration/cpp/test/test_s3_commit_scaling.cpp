@@ -6,23 +6,20 @@
 #include <services/index/manager_index.hpp>
 #include <string>
 
-// Phase 2 start condition for S3 — and the measurement that REFUTED its premise.
+// A probe, not a regression test: how one-row DELETE latency scales with table size, and where
+// the difference actually comes from.
 //
-// S3 assumed that committing a delete walks every row group and all 1024 version slots of every
-// vector, so a one-row DELETE would cost more as the table grows. A one-row DELETE does cost 88x
-// more on a 1M-row table than on a 10k one, but NOT for that reason:
+// A one-row DELETE costs 88x more on a 1M-row table than on a 10k one, but NOT because the commit
+// walks every row group and all 1024 version slots of every vector, which was the obvious suspect:
 //
-//   * version_slots_visited() == 1024 — one vector. The slot walk is already O(affected vectors),
-//     so S3's own acceptance threshold ("<= 1024") passes on unmodified code.
+//   * version_slots_visited() == 1024 — one vector. The slot walk is already O(affected vectors).
 //   * index_repopulations() == 0 — the delete does not rebuild the index. This counter exists
 //     because a whole-process profile shows repopulate_table dominating, and that is the SHUTDOWN
 //     checkpoint, not the delete; only a counter can tell the two apart.
 //
 // A profile taken over a sustained delete loop put ~100% of the index agent's samples in
-// remove_many -> btree_index_disk_t::force_flush -> btree_t::flush, which fsyncs EVERY leaf of the
-// disk B+tree (segment_tree_t::flush writes the header, truncates and syncs unconditionally; the
-// `modified` flag guards only the block writes). One deleted row therefore fsyncs the whole index.
-// That is where the growth lives, and it is the index-maintenance task, not S3.
+// remove_many -> btree_index_disk_t::force_flush -> btree_t::flush, which fsynced EVERY leaf of
+// the disk B+tree: one deleted row fsynced the whole index. That is where the growth came from.
 //
 // Hidden by default ([.]): it fills a million rows, which no ordinary suite run should pay for.
 // Run it explicitly with the [s3probe] tag.
@@ -68,7 +65,7 @@ TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_
     fill(d, "big", 1000000);
     // WITHOUT an index, "WHERE id = X" scans the whole table, so a statement-level timing would
     // measure the SCAN and attribute it to the commit. Index both tables so the scan is O(1) and
-    // what is left to differ is the commit itself — which is what the S3 condition is about.
+    // what is left to differ is the commit itself.
     REQUIRE(exec("CREATE INDEX small_id ON s3.small (id);")->is_success());
     REQUIRE(exec("CREATE INDEX big_id ON s3.big (id);")->is_success());
 
@@ -91,8 +88,7 @@ TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_
     std::sort(small_us.begin(), small_us.end());
     std::sort(big_us.begin(), big_us.end());
 
-    // The acceptance measure, once the commit stops walking the whole table: committing the
-    // delete of ONE row must visit at most one vector's worth of version slots.
+    // Committing the delete of ONE row must visit at most one vector's worth of version slots.
     components::table::reset_version_slots_visited();
     services::index::reset_index_repopulations();
     const auto one_big_us = delete_one("big", 900);

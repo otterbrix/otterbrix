@@ -6,17 +6,16 @@
 
 // A CREATE INDEX that cannot bring up its on-disk storage must fail the statement.
 //
-// It used to succeed: manager_index_t caught the failure and silently built an
-// IN-MEMORY index in place of the disk one, reporting it at trace level only. The
-// caller was told the index exists, so the durability the user asked for was gone
-// with no way to notice short of reading the log — and every later restart brought
-// the index up empty while the table kept claiming to be indexed.
+// It used to succeed: manager_index_t caught the failure and silently built an IN-MEMORY
+// index in place of the disk one, reporting it at trace level only. The caller was told the
+// index exists, so the durability the user asked for was gone with no way to notice short of
+// reading the log, and every later restart brought the index up empty while the table kept
+// claiming to be indexed.
 //
 // The failure is injected by planting a DIRECTORY where the storage file belongs:
-// open(O_RDWR|O_CREAT) on a directory is EISDIR by POSIX, so open_file returns
-// nullptr on every platform this builds on. No permission games, no root-dependent
-// behaviour, and nothing that a rebuild or a different filesystem can quietly turn
-// green.
+// open(O_RDWR|O_CREAT) on a directory is EISDIR by POSIX, so open_file returns nullptr on
+// every platform this builds on — no permission games, no root-dependent behaviour, and
+// nothing a rebuild or a different filesystem can quietly turn green.
 TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is_an_error") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_create_failure/unopenable");
     test_clear_directory(config);

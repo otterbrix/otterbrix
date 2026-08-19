@@ -111,8 +111,7 @@ namespace services::index {
               session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
-            // M3.5: the only recoverable-failure branch — propagate the bitcask
-            // txn-log IO error straight back to commit_inserts.
+            // Propagate the bitcask txn-log IO error straight back to commit_inserts.
             co_return bitcask->apply_txn_inserts(txn_id, values);
         }
         // Bulk fast path via the index_disk_t interface: insert_bulk_unchecked skips the
@@ -120,8 +119,8 @@ namespace services::index {
         // force_flush() persists once. bitcask additionally gets its pre-existing
         // rehash-suppression window (a bitcask-only optimization; btree needs none).
         // bulk_guard_t closes that window on scope exit so a mid-loop bail-out is clean.
-        // btree / txn_id==0 direct path stays assert+abort terminal: there is no
-        // recoverable failure to surface, so a clean run returns no_error().
+        // btree / txn_id==0 direct path stays assert+abort terminal: an insert itself has no
+        // recoverable failure to surface.
         struct bulk_guard_t {
             bitcask_index_disk_t* ptr{nullptr};
             ~bulk_guard_t() {
@@ -152,7 +151,7 @@ namespace services::index {
               session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
-            // M3.5: propagate the bitcask txn-log IO error to commit_deletes.
+            // Propagate the bitcask txn-log IO error to commit_deletes.
             co_return bitcask->apply_txn_deletes(txn_id, values);
         }
         // Bulk fast path: remove_bulk_unchecked skips btree's per-remove find() guard and

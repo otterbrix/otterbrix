@@ -7,15 +7,9 @@
 // How much does one statement pay to resolve its catalog?
 //
 // Every statement is wrapped in resolve nodes (namespace, table, constraints) and each
-// resolve issues keyed reads against pg_*. The keyed read builds ONE filter per key
-// tuple and scans the whole table for it, so a batch of N keys costs N full passes over
-// that catalog table — and all of them serialize on disk agent 0, which owns every oid
-// below FIRST_USER_OID.
-//
-// This is a characterization test, not a threshold: it records what the current design
-// costs so a change to the keyed read can be judged against a number instead of an
-// intuition. The bound is deliberately loose — it fails only if the cost grows by an
-// order of magnitude, which would mean a resolve started scanning per row.
+// resolve issues keyed reads against pg_*. A keyed read that builds ONE filter per key
+// tuple used to cost N full passes over the catalog table for N keys — and all of them
+// serialize on disk agent 0, which owns every oid below FIRST_USER_OID.
 TEST_CASE("integration::cpp::test_catalog_scan_cost::scans_per_statement") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_catalog_scan_cost/basic");
     test_clear_directory(config);

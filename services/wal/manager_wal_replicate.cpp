@@ -164,8 +164,6 @@ namespace services::wal {
                 // idling. Cheap no-op when no checkpoint is in flight.
                 poll_auto_checkpoint_();
 
-                // Idle: wait for an enqueue notify, or a bounded staleness window
-                // to re-check the inbox / behaviors that became ready off-thread.
                 std::unique_lock<std::mutex> lock(mutex_);
                 // A suspended coroutine's future is completed on ANOTHER thread and
                 // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
@@ -401,9 +399,8 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Track WAL bytes for auto-checkpoint threshold — the bytes written SINCE the last
-        // checkpoint, which is what the threshold is defined against. Storing the total directory
-        // size here instead meant the threshold stayed tripped forever once crossed.
+        // Storing the total WAL directory size here instead of the growth since the last
+        // checkpoint left the threshold tripped forever once crossed.
         {
             const auto total = total_wal_bytes();
             auto base = wal_bytes_at_last_checkpoint_.load(std::memory_order_relaxed);
@@ -411,9 +408,9 @@ namespace services::wal {
                 // The directory shrank behind us — something truncated the WAL without going through
                 // the checkpoint that owns this window. Re-baseline instead of measuring against a
                 // size that no longer exists, which would under-report growth until the WAL climbed
-                // back past it. No live path does this today (see
-                // test_ssb_load_scaling::explicit_checkpoint_does_not_suppress_the_automatic_one),
-                // but the subtraction has to be defined for an input that can occur.
+                // back past it. No live path does this today (test_ssb_load_scaling covers the
+                // explicit-checkpoint case), but the subtraction has to be defined for an input
+                // that can occur.
                 wal_bytes_at_last_checkpoint_.store(total, std::memory_order_relaxed);
                 base = total;
             }
@@ -424,7 +421,7 @@ namespace services::wal {
         // written SINCE the last checkpoint (not total WAL size) against the
         // configured auto_checkpoint_threshold_bytes. auto_checkpoint_in_flight_
         // dedups: a burst of threshold-tripping commits must not stack concurrent
-        // checkpoints. We reset the byte counter HERE (not in the handler) so any
+        // checkpoints. We reset the byte counter HERE, at trigger time, so any
         // commits racing in behind this one accumulate against a fresh window
         // toward the NEXT checkpoint instead of re-tripping the same one.
         //

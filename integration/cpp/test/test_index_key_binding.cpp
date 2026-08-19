@@ -6,15 +6,12 @@
 
 // Matching an index key to its column is a property of the CHUNK, not of the row.
 //
-// It used to be done per row, twice: once to check the key column is present and once to read
-// the value — and each check walked the chunk's columns comparing a column alias against a
-// freshly constructed std::string built from the key. Inserting N rows into a table with one
-// index therefore inspected columns O(N) times and allocated a string for every comparison,
-// to answer a question whose answer is identical for every row of the chunk.
+// Done per row it happens twice per row — once to check the key column is present, once to read
+// the value — and each check walks the chunk's columns comparing a column alias against a freshly
+// constructed std::string, to answer a question with the same answer for every row of the chunk.
 //
-// This is a counter test rather than a timing one: the defect is a growth rate, and the fix
-// changes the growth rate. The bound is expressed against the ROW COUNT, so it fails if the
-// work is per-row and passes only if it is per-chunk.
+// A counter test rather than a timing one: the defect is a growth rate. The bound is expressed
+// against the ROW COUNT, so it fails if the work is per-row and passes only if it is per-chunk.
 TEST_CASE("integration::cpp::test_index_key_binding::key_lookup_is_per_chunk_not_per_row") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_key_binding/per_chunk");
     test_clear_directory(config);

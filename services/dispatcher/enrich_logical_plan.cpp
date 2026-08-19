@@ -264,13 +264,6 @@ namespace services::catalog_resolve {
         return out;
     }
 
-    // Propagate OIDs from sibling catalog_resolve_* nodes onto their
-    // consumer nodes (drop/create/DML/alter) inside each sequence_t.
-    // After the resolve operators stamp OIDs on resolve_* nodes via
-    // back-pointer, this walker copies them onto the consumers whose name
-    // fields are gone. Idempotent — INVALID_OID guards make repeat calls
-    // no-ops. Called by the dispatcher (after resolve, before validate) and
-    // again defensively by enrich_plan (second call is no-op).
     // Mark every node whose target table is `table_oid` with whether that table has any index.
     // Walks the whole tree by oid rather than trusting position: a statement can carry several
     // tables, and the DML target is not necessarily the last one resolved.
@@ -297,6 +290,13 @@ namespace services::catalog_resolve {
         }
     }
 
+    // Propagate OIDs from sibling catalog_resolve_* nodes onto their
+    // consumer nodes (drop/create/DML/alter) inside each sequence_t.
+    // After the resolve operators stamp OIDs on resolve_* nodes via
+    // back-pointer, this walker copies them onto the consumers whose name
+    // fields are gone. Idempotent — INVALID_OID guards make repeat calls
+    // no-ops. Called by the dispatcher (after resolve, before validate) and
+    // again defensively by enrich_plan (second call is no-op).
     void stamp_oids_from_resolves(components::logical_plan::node_t* root) {
         using namespace components::logical_plan;
         if (!root)
@@ -827,8 +827,7 @@ namespace services::dispatcher { namespace {
                         // branch does through key_translation(). Handing the node unresolved foreign
                         // keys left child_col_indices empty, and operator_fk_check reads that as "no
                         // key column to address" and skips the row — so every row was skipped, the
-                        // qualifying count stayed zero, and zero is its success path. The check ran
-                        // and validated nothing.
+                        // qualifying count stayed zero, and zero is its success path.
                         //
                         // An UPDATE is fed the scanned base row, so a child column is at its storage
                         // chunk_position rather than at a position in an INSERT tuple.
@@ -1088,8 +1087,7 @@ namespace services::dispatcher {
             // Stamp "does this table have an index" onto every node targeting that table, by
             // OID — not from collections_ctx->indexed_keys, which is overwritten per table
             // (last table wins). A multi-table statement would otherwise judge its DML target
-            // by another table's index set, and guessing "no index" leaves the table correct
-            // while its index silently goes stale.
+            // by another table's index set.
             std::size_t oid_pos = 0;
             for (auto& ikf : keys_futures) {
                 auto keys = co_await std::move(ikf);

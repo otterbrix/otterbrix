@@ -7,17 +7,16 @@
 
 // Two defects on one site: the gather-by-row-id path behind storage_fetch.
 //
-// table_storage_adapter_t::fetch builds its column list as 0..column_count-1 — every column of the
-// table, whatever the statement actually names — and storage_fetch carries no projection at all,
-// unlike its sibling storage_fetch_next_batch, which takes projected_cols. An index scan therefore
-// materializes every text column of every row it matched, then throws the strings away.
+// table_storage_adapter_t::fetch built its column list as 0..column_count-1 — every column of the
+// table, whatever the statement actually names — and storage_fetch carried no projection at all,
+// unlike its sibling storage_fetch_next_batch. An index scan therefore materialized every text
+// column of every row it matched, then threw the strings away.
 //
-// The second defect is what made the first one dangerous. The chunk this call fills is returned to
+// The second defect is what made the first one dangerous. The chunk that call fills is returned to
 // the caller and moved across a mailbox, while the pins taken to fill it die with the local
 // column_fetch_state when the call returns. Without result_outlives_pins the string leg writes views
 // BORROWED from those blocks, so the caller reads bytes the pool is free to evict — or, now that the
-// pool can spill, to write to the scratch file and reload at a different address. row_group_t's own
-// gather sets that flag and says why; this path never did.
+// pool can spill, to write to the scratch file and reload at a different address.
 //
 // Hidden ([.]). Run them with [strproj].
 

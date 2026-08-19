@@ -7,9 +7,8 @@
 
 // Does the per-commit cleanup cost grow as a table piles up tombstones?
 //
-// The S3 plan item assumed commit walks the whole table. Measured on a nearly clean table that is
-// false: committing a one-row DELETE visits 1024 version slots — one vector — whatever the table
-// size. But that measurement only covers the COMMIT walk.
+// The COMMIT walk itself does not: on a nearly clean table, committing a one-row DELETE visits
+// 1024 version slots — one vector — whatever the table size.
 //
 // The cleanup side is a different walk. agent_disk_t::maybe_cleanup_inner asks
 // collection_t::committed_row_count() on every commit to decide whether to compact, and that
@@ -17,11 +16,6 @@
 // still carrying a committed tombstone. On a fresh table there are almost none. UPDATE here is
 // tombstone+append, so a table under a long UPDATE workload accumulates them — and then every
 // later commit, however small, would pay for all of them.
-//
-// So this measures the one thing the earlier probe did not: reset the cleanup counter, run ONE
-// trivial committing statement, and read how many slots that commit had to walk — after 1 pass,
-// after 5, after 10. If the number climbs with the number of accumulated tombstones, S3 is alive
-// and this is its RED test. If it stays flat, S3 is dead and the plan can drop it.
 //
 // Hidden by default ([.]): it does repeated 200k-row update passes. Run it with [s3cleanup].
 
@@ -64,10 +58,10 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulate
     REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
     fill(d, "t", kRows);
 
-    // The probe statement must be a DELETE, not an INSERT. The cleanup fan-out is gated on the
-    // commit carrying base deletes (operator_commit_transaction.cpp: "an append-only commit ...
-    // produces ZERO dead rows ... the entire fan-out is provably a no-op worth skipping"), so an
-    // append-only probe measures nothing and reads zero for the wrong reason.
+    // The probe statement must be a DELETE, not an INSERT: the cleanup fan-out is gated on the
+    // commit carrying base deletes (operator_commit_transaction.cpp skips it for an append-only
+    // commit, which produces zero dead rows), so an append-only probe reads zero for the wrong
+    // reason.
     //
     // It deletes one row from the UNTOUCHED tail of the table, so the probe never overlaps the
     // rows the update passes tombstone — what it pays for is other statements' leftovers.
@@ -96,16 +90,13 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulate
     }
     INFO("pass 1 = " << series.front() << ", pass 10 = " << series.back());
 
-    // The acceptance claim S3 would need: a small commit must not pay for tombstones it did not
-    // create. Flat (or bounded) means S3 is dead; growth means S3 is alive and this is its RED
-    // test. The bound is stated against pass 1 so the test reports the SHAPE, not an absolute.
+    // The claim under test: a small commit must not pay for tombstones it did not create. The
+    // bound is stated against pass 1 so the test reports the SHAPE, not an absolute.
     CHECK(series.back() <= series.front() * 2);
 
     // Positive control. A counter that reads zero everywhere proves nothing about the code — it
-    // usually means the instrument is not wired to the path, which is exactly how the first
-    // version of this test failed (it probed with an INSERT, which the cleanup fan-out skips by
-    // design). Deleting a quarter of the table must make the cleanup walk SOMETHING; if this
-    // fails, every number above is meaningless and must not be reported.
+    // usually means the instrument is not wired to the path. Deleting a quarter of the table must
+    // make the cleanup walk SOMETHING; if this fails, every number above is meaningless.
     REQUIRE(exec("DELETE FROM tomb.t WHERE id >= 100000 AND id < 150000;")->is_success());
     components::table::reset_cleanup_slots_visited();
     REQUIRE(exec("DELETE FROM tomb.t WHERE id = 60000;")->is_success());
@@ -122,8 +113,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulate
 //
 // A SCATTERED update leaves every vector partially tombstoned, so every vector keeps a
 // chunk_vector_info with any_deleted set, and the cleanup re-walks all 1024 slots of each on every
-// later commit. That is the shape S3 actually describes, and it is what an OLTP workload updating
-// rows by primary key produces.
+// later commit — the shape an OLTP workload updating rows by primary key produces.
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_cost_per_commit",
           "[.][s3cleanup]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup_scattered");
@@ -169,12 +159,12 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_cost_
     // Same instrument discipline as above: a flat zero would mean the probe missed the path.
     REQUIRE(series.back() > 0);
 
-    // S3's claim, stated where it can actually be tested: one small commit must not pay for
+    // The claim, stated where it can actually be tested: one small commit must not pay for
     // tombstones other statements left behind.
     CHECK(series.back() <= 4 * components::vector::DEFAULT_VECTOR_CAPACITY);
 }
 
-// The last corner, and the one that matters most in practice: a table WITH an index.
+// The corner that matters most in practice: a table WITH an index.
 //
 // compact() shifts row positions and the index engines hold positional row refs, so
 // operator_commit_transaction filters the compact set through manager_index_t::tables_without_indexes

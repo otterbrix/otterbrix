@@ -120,12 +120,14 @@ namespace components::planner {
                 }
             }
 
-            if (!upd->not_null_cols().empty() || !live_unique_groups.empty()) {
-                auto cc = boost::intrusive_ptr(
-                    new logical_plan::node_check_constraint_t(r,
-                                                              core::dbname_t{},
-                                                              core::relname_t{},
-                                                              std::vector<std::string>(upd->not_null_cols())));
+            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() ||
+                !upd->check_exprs().empty()) {
+                auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
+                    r,
+                    core::dbname_t{},
+                    core::relname_t{},
+                    std::vector<std::string>(upd->not_null_cols()),
+                    std::vector<std::pair<std::string, std::string>>(upd->check_exprs())));
                 // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
                 cc->set_unique_groups(std::move(live_unique_groups));
                 cc->set_table_oid(upd->table_oid());

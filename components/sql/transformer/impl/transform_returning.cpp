@@ -25,7 +25,11 @@ namespace components::sql::transform {
                             make_scalar_expression(resource_, scalar_type::star_expand, expressions::key_t{resource_}));
                         break;
                     }
-                    auto col = columnref_to_field(resource_, col_ref, names);
+                    auto col_res = columnref_to_field(resource_, col_ref, names);
+                    if (transform_failed(col_res)) {
+                        break;
+                    }
+                    auto col = std::move(col_res.value());
                     // RETURNING table.* — carry the table qualifier so the validator
                     // can expand it by result_alias.
                     if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
@@ -37,7 +41,6 @@ namespace components::sql::transform {
                                                              expressions::key_t{std::move(star_path)}));
                         break;
                     }
-                    col.deduce_side(names);
                     if (res->name) {
                         // Carry the deduced side onto the output-alias key so the
                         // validator resolves the column against the right schema.

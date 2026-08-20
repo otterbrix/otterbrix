@@ -61,6 +61,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_extension_source.cpp
         test_host_tables.cpp
         test_join_raw.cpp
+        test_name_resolution.cpp
         test_connections.cpp
         test_udfs.cpp
         test_register_cast.cpp

@@ -767,3 +767,117 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
         }
     }
 }
+
+// Issue #552 family: an aborted MVCC update (delete-stamp + append) followed by the
+// failed-statement revert (physical append revert + delete un-stamp) must restore the
+// original row intact, and a subsequent COMMITTED update of that row must yield exactly
+// the new version. The second phase also pins validity_mask_t::set_valid bit semantics:
+// the revert's BIT reset used to clobber a whole 64-bit entry per "bit", leaving the
+// failed append's NULL bit set — the re-appended row then read as NULL forever.
+TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
+    test_env env;
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("id", complex_logical_type(logical_type::BIGINT));
+    columns.emplace_back("val", complex_logical_type(logical_type::STRING_LITERAL));
+    auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
+
+    auto types = table->copy_types();
+    // Row 0: (1, 'p1'), committed immediately.
+    {
+        auto chunk = data_chunk_t(&env.resource, types, 1);
+        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(1)));
+        chunk.data[1].set_value(0, logical_value_t(&env.resource, std::string("p1")));
+        chunk.set_cardinality(1);
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table->append_lock(state).has_error());
+        REQUIRE_FALSE(table->initialize_append(state).has_error());
+        REQUIRE_FALSE(table->append(chunk, state).has_error());
+        table->finalize_append(state, transaction_data{0, 0});
+    }
+
+    // Failed-statement txn: stamp delete on row 0, append (77, NULL).
+    const uint64_t txn_id = TRANSACTION_ID_START + 5;
+    const transaction_data txn{txn_id, 100};
+    {
+        auto del_state = table->initialize_delete({});
+        auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
+        row_ids.set_value(0, logical_value_t(&env.resource, int64_t(0)));
+        REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn_id) == 1);
+    }
+    int64_t appended_start = 0;
+    {
+        auto chunk = data_chunk_t(&env.resource, types, 1);
+        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(77)));
+        chunk.data[1].set_null(0, true);
+        chunk.set_cardinality(1);
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table->append_lock(state).has_error());
+        REQUIRE_FALSE(table->initialize_append(state).has_error());
+        appended_start = state.current_row;
+        REQUIRE_FALSE(table->append(chunk, state).has_error());
+        table->finalize_append(state, txn);
+    }
+    REQUIRE(appended_start == 1);
+
+    // Failed-statement revert: physical append revert + delete un-stamp.
+    table->revert_append(appended_start, 1);
+    table->revert_all_deletes(txn_id);
+
+    // Reader: later txn.
+    auto scan_once = [&](uint64_t reader_txn, uint64_t reader_start) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        column_ids.emplace_back(1);
+        table_scan_state scan_state(&env.resource);
+        table->initialize_scan(scan_state, column_ids);
+        scan_state.table_state.txn = transaction_data{reader_txn, reader_start};
+        auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+        table->scan(result, scan_state);
+        return result;
+    };
+    {
+        auto result = scan_once(TRANSACTION_ID_START + 6, 101);
+        REQUIRE(result.size() == 1);
+        INFO("id=" << result.data[0].value(0).value<int64_t>());
+        REQUIRE(result.data[0].value(0).value<int64_t>() == 1);
+        REQUIRE(result.data[1].validity().row_is_valid(0));
+        REQUIRE_FALSE(result.data[1].value(0).is_null());
+    }
+
+    // Second, SUCCESSFUL update: (1, 'renamed') — delete-stamp row0 + append, then commit.
+    const uint64_t txn2 = TRANSACTION_ID_START + 7;
+    {
+        auto del_state = table->initialize_delete({});
+        auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
+        row_ids.set_value(0, logical_value_t(&env.resource, int64_t(0)));
+        REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn2) == 1);
+    }
+    int64_t start2 = 0;
+    {
+        auto chunk = data_chunk_t(&env.resource, types, 1);
+        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(1)));
+        chunk.data[1].set_value(0, logical_value_t(&env.resource, std::string("renamed")));
+        chunk.set_cardinality(1);
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table->append_lock(state).has_error());
+        REQUIRE_FALSE(table->initialize_append(state).has_error());
+        start2 = state.current_row;
+        REQUIRE_FALSE(table->append(chunk, state).has_error());
+        table->finalize_append(state, transaction_data{txn2, 102});
+    }
+    REQUIRE(start2 == 1);
+    table->commit_append(103, start2, 1);
+    table->commit_all_deletes(txn2, 103);
+
+    {
+        auto result = scan_once(TRANSACTION_ID_START + 8, 104);
+        REQUIRE(result.size() == 1);
+        INFO("id=" << result.data[0].value(0).value<int64_t>());
+        REQUIRE(result.data[0].value(0).value<int64_t>() == 1);
+        INFO("val validity=" << result.data[1].validity().row_is_valid(0));
+        REQUIRE(result.data[1].validity().row_is_valid(0));
+        auto v = result.data[1].value(0);
+        REQUIRE_FALSE(v.is_null());
+        REQUIRE(v.value<std::string_view>() == "renamed");
+    }
+}

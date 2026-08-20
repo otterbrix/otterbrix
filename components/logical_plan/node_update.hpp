@@ -35,6 +35,11 @@ namespace components::logical_plan {
         void set_outgoing_fks(std::vector<catalog::fk_info_t> v) { outgoing_fks_ = std::move(v); }
         const std::vector<catalog::fk_info_t>& outgoing_fks() const { return outgoing_fks_; }
 
+        // CHECK constraint (name, expression-text) pairs, enforced against the
+        // gathered post-update rows (see node_insert_t::check_exprs).
+        void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
+        const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
+
         // UNIQUE / PRIMARY KEY column groups (contype 'u'/'p'), one ordered
         // column-name list per constraint. Stamped by the dispatcher's enrich pass;
         // the planner forwards these onto the node_check_constraint_t wrapper so
@@ -62,6 +67,7 @@ namespace components::logical_plan {
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
+        std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
         std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
     };

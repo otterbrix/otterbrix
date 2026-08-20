@@ -273,11 +273,11 @@ TEST_CASE("components::sql::select_from_fields") {
                        R"_($aggregate: {$group: {number, name, count}, $select: {}})_",
                        vec());
 
-    TEST_SIMPLE_SELECT(R"_(SELECT struct_type.* FROM TestDatabase.TestCollection;)_",
+    TEST_SIMPLE_SELECT(R"_(SELECT (struct_type).* FROM TestDatabase.TestCollection;)_",
                        R"_($aggregate: {$group: {struct_type/*}, $select: {}})_",
                        vec());
 
-    TEST_SIMPLE_SELECT(R"_(SELECT struct_type.field_3 FROM TestDatabase.TestCollection;)_",
+    TEST_SIMPLE_SELECT(R"_(SELECT (struct_type).field_3 FROM TestDatabase.TestCollection;)_",
                        R"_($aggregate: {$group: {struct_type/field_3}, $select: {}})_",
                        vec());
 

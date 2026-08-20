@@ -3,26 +3,20 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// UPDATE does not enforce CHECK constraints, and that is a DEFECT rather than "not implemented for
-// this statement": the INSERT of the very same value is rejected, while UPDATE SET age = -1 succeeds
-// and leaves the row sitting outside its CHECK.
+// A CHECK constraint must hold on UPDATE, not only on INSERT.
 //
-// WHY IT IS NOT FIXED HERE. node_update_t carries no check expressions at all (set_check_exprs
-// exists only on node_insert_t), and planner.cpp's rewrite_update builds node_check_constraint_t
-// with NOT NULL + unique groups only. Wiring CHECK through the same three places the INSERT path
-// uses — carrier on the node, enrich populating it, planner passing it — does make this test green
-// and then breaks the UPDATE write path: the table ends up with THREE rows (1,5) (7,5) (7,42) where
-// it should hold one, i.e. new versions are appended and the old ones never tombstoned.
+// This test was written against a defect: an UPDATE could move a row outside its CHECK while the
+// same value was rejected on INSERT, so one constraint was enforced on one write path and silently
+// skipped on the other. The defect was fixed upstream (#618) while this branch was in flight and the
+// test went green unchanged — which is what makes it worth keeping rather than deleting: it was
+// written blind to that fix and still pins the behaviour.
 //
-// The cause is structural, not a missing argument. operator_check_constraint_t is built for the
-// INSERT shape — it reads the source chunks and is documented as the plan ROOT ("check_constraint is
-// the plan ROOT, so output_ becomes the result cursor") — whereas an UPDATE write set is the
-// gathered storage row carrying the absolute row_ids the tombstone needs. Making CHECK work on
-// UPDATE means settling that contract, which is design work, not plumbing.
-//
-// Hidden ([.]) because it fails. Run it with [checkupd].
+// The control INSERT matters as much as the UPDATE. Without it a green result could not tell
+// "the constraint is enforced" apart from "nothing is checked anywhere". The last two cases guard
+// the other direction: enforcing CHECK must not start rejecting valid updates, including one that
+// never touches the checked column.
 
-TEST_CASE("integration::cpp::test_check_on_update::update_violating_a_check_is_rejected", "[.][checkupd]") {
+TEST_CASE("integration::cpp::test_check_on_update::update_violating_a_check_is_rejected", "[checkupd]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_check_on_update/probe");
     test_clear_directory(config);
     config.disk.on = true;

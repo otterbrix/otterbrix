@@ -15533,11 +15533,11 @@ qualified_name:
 							$$->relname = strVal(lthird($2));
 							break;
 						default:
-							//ereport(ERROR, mdxn: ereport NameListToString
-							//		errcode(ERRCODE_SYNTAX_ERROR),
-							//		 errmsg("improper qualified name (too many dotted names): %s",
-							//				NameListToString(lcons(resource, makeString(resource, $1), $2))),
-							//		 parser_errposition(@1));
+							ereport(ERROR,
+									errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("improper qualified name (too many dotted names): %s",
+											NameListToString(lcons(resource, makeString(resource, $1), $2)).c_str()),
+									 parser_errposition(@1));
 							break;
 					}
 				}
@@ -17182,8 +17182,9 @@ makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List *names, int po
 			r->relname = strVal(linitial(names));
 			break;
 		case 2:
-			r->catalogname = NULL;
-			r->schemaname = strVal(linitial(names));
+			/* `db.name` convention, schema is empty */
+			r->catalogname = strVal(linitial(names));
+			r->schemaname = NULL;
 			r->relname = strVal(lsecond(names));
 			break;
 		case 3:
@@ -17192,11 +17193,11 @@ makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List *names, int po
 			r->relname = strVal(lthird(names));
 			break;
 		default:
-			//ereport(ERROR, mdxn: ereport NameListToString
-			//		errcode(ERRCODE_SYNTAX_ERROR),
-			//		 errmsg("improper qualified name (too many dotted names): %s",
-			//				NameListToString(names)),
-			//		 parser_errposition(position));
+			ereport(ERROR,
+					errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("improper qualified name (too many dotted names): %s",
+							NameListToString(names).c_str()),
+					 parser_errposition(position));
 			break;
 	}
 

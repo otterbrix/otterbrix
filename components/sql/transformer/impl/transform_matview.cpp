@@ -49,11 +49,7 @@ namespace components::sql::transform {
         // 2. Body plan — transform_select returns the consumer aggregate (NOT
         // wrapped with catalog_resolve_*). We hoist the source resolves below
         // so Pass 1 stamps source metadata visible to the planner.
-        auto body_res = transform_select(pg_cast<SelectStmt>(*cs.query), plan);
-        if (body_res.has_error()) {
-            return body_res.error();
-        }
-        auto body_aggregate = std::move(body_res.value());
+        VALUE_OR_RETURN(auto body_aggregate, transform_select(pg_cast<SelectStmt>(*cs.query), plan));
         if (!body_aggregate) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"materialized view body lowered to an empty plan", resource_});

@@ -133,7 +133,7 @@ namespace components::sql::transform {
                     break;
                 }
                 // Resolve the namespace name so a later patch can use the
-                // resolve result to detect duplicates through the pipeline.
+                // resolve node to detect duplicates through the pipeline.
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
                 log_node = std::move(created.value());
                 break;

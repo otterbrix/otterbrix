@@ -10,7 +10,6 @@
 #include <components/vector/vector_operations.hpp>
 #include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
-#include <tuple>
 #include <unordered_set>
 
 namespace services::disk {

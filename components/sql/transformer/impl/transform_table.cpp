@@ -24,24 +24,18 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
-        auto col_defs = get_column_definitions(resource_, *coldefs);
-        if (col_defs.has_error()) {
-            return col_defs.error();
-        }
+        VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
 
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
         logical_plan::node_ptr created;
-        if (col_defs.value().empty()) {
+        if (col_defs.empty()) {
             created =
                 logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
         }
 
-        auto constraints = extract_table_constraints(resource_, *coldefs);
-        if (constraints.has_error()) {
-            return constraints.error();
-        }
+        VALUE_OR_RETURN(auto constraints, extract_table_constraints(resource_, *coldefs));
 
         // Parse WITH (storage = 'disk') clause
         bool disk_storage = false;
@@ -62,8 +56,8 @@ namespace components::sql::transform {
 
         created = logical_plan::make_node_create_collection(resource_,
                                                             core::relname_t{qn.relname},
-                                                            std::move(col_defs.value()),
-                                                            std::move(constraints.value()),
+                                                            std::move(col_defs),
+                                                            std::move(constraints),
                                                             disk_storage,
                                                             node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs

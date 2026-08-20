@@ -25,11 +25,7 @@ namespace components::sql::transform {
                             make_scalar_expression(resource_, scalar_type::star_expand, expressions::key_t{resource_}));
                         break;
                     }
-                    auto col_res = columnref_to_field(resource_, col_ref, names);
-                    if (col_res.has_error()) {
-                        return col_res.error();
-                    }
-                    auto col = std::move(col_res.value());
+                    VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                     // RETURNING table.* — carry the table qualifier so the validator
                     // can expand it by result_alias.
                     if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
@@ -57,11 +53,7 @@ namespace components::sql::transform {
                     auto* a_expr = pg_ptr_cast<A_Expr>(res->val);
                     if (a_expr->kind == AEXPR_OP && a_expr->name && !a_expr->name->lst.empty() &&
                         is_arithmetic_operator(strVal(a_expr->name->lst.front().data))) {
-                        auto expr_res = transform_a_expr_arithmetic(a_expr, names, plan->parameters.get());
-                        if (expr_res.has_error()) {
-                            return expr_res.error();
-                        }
-                        auto expr = std::move(expr_res.value());
+                        VALUE_OR_RETURN(auto expr, transform_a_expr_arithmetic(a_expr, names, plan->parameters.get()));
                         if (res->name) {
                             static_cast<scalar_expression_t*>(expr.get())->key() =
                                 expressions::key_t{resource_, res->name};
@@ -79,11 +71,8 @@ namespace components::sql::transform {
                                                        scalar_type::constant,
                                                        res->name ? expressions::key_t{resource_, res->name}
                                                                  : expressions::key_t{resource_});
-                    auto param = add_param_value(res->val, plan->parameters.get());
-                    if (param.has_error()) {
-                        return param.error();
-                    }
-                    expr->append_param(param.value());
+                    VALUE_OR_RETURN(auto param, add_param_value(res->val, plan->parameters.get()));
+                    expr->append_param(param);
                     out.push_back(std::move(expr));
                     break;
                 }

@@ -1,13 +1,16 @@
 #pragma once
 
 #include <cassert>
+#include <concepts>
+#include <cstddef>
 #include <memory_resource>
 #include <optional>
 #include <source_location>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 namespace core {
-
     // TODO: define specific value for each error to make documentation easier
     // Fill free to add your error type to it
     // It is advised against using 'other_error'
@@ -234,7 +237,47 @@ namespace core {
 #endif
         error_t error_;
     };
-
     // TODO: assert for unchecked errors in the destructor of result_wrapper_t
 
+    namespace detail {
+        template<typename... Ts>
+        std::integral_constant<std::size_t, sizeof...(Ts)> arity(Ts&&...);
+
+        // Must sit after error_t: the global scope has a glibc `typedef int error_t`
+        template<typename T>
+        concept result_like = requires(T& t) {
+            { t.has_error() } -> std::same_as<bool>;
+            { t.error() } -> std::convertible_to<const core::error_t&>;
+            t.value();
+        };
+    } // namespace detail
 } // namespace core
+
+#define CORE_DETAIL_CONCAT_IMPL(x, y) x##y
+#define CORE_DETAIL_CONCAT(x, y) CORE_DETAIL_CONCAT_IMPL(x, y)
+
+#define CORE_DETAIL_VALUE_OR_RETURN(tmp, decl, ...)                                                                    \
+    static_assert(decltype(core::detail::arity(__VA_ARGS__))::value == 1,                                              \
+                  "VALUE_OR_RETURN takes a declaration and ONE expression");                                           \
+    auto tmp = (__VA_ARGS__);                                                                                          \
+    static_assert(core::detail::result_like<decltype(tmp)>,                                                            \
+                  "VALUE_OR_RETURN expects a core::result_wrapper_t; "                                                 \
+                  "for a plain core::error_t use RETURN_IF_ERROR");                                                    \
+    if (tmp.has_error()) {                                                                                             \
+        return tmp.error();                                                                                            \
+    }                                                                                                                  \
+    decl = std::move(tmp.value())
+
+#define CORE_DETAIL_RETURN_IF_ERROR(tmp, ...)                                                                          \
+    static_assert(decltype(core::detail::arity(__VA_ARGS__))::value == 1,                                              \
+                  "RETURN_IF_ERROR takes ONE expression");                                                             \
+    if (auto tmp = (__VA_ARGS__); tmp.contains_error()) {                                                              \
+        return tmp;                                                                                                    \
+    }
+
+// The first argument is a whole declaration, so auto&/explicit type/assignment all work
+#define VALUE_OR_RETURN(decl, ...)                                                                                     \
+    CORE_DETAIL_VALUE_OR_RETURN(CORE_DETAIL_CONCAT(value_or_return_, __COUNTER__), decl, __VA_ARGS__)
+
+// RETURN_IF_ERROR is the same for a plain error_t, which carries no value
+#define RETURN_IF_ERROR(...) CORE_DETAIL_RETURN_IF_ERROR(CORE_DETAIL_CONCAT(return_if_error_, __COUNTER__), __VA_ARGS__)

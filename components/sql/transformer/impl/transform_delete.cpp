@@ -10,21 +10,16 @@ namespace components::sql::transform {
                                                                                  logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the body so `DELETE ... WHERE id IN (SELECT ... FROM cte)`
         // resolves the CTE instead of falling through to a (wrong / nonexistent) base table.
-        if (auto err = register_with_ctes(node.withClause); err.contains_error()) {
-            return err;
-        }
+        RETURN_IF_ERROR(register_with_ctes(node.withClause));
         // Only the bare `DELETE FROM t` (no WHERE, no USING) short-circuits to a
         // delete-all. A USING clause with no WHERE is a cross-join filter (delete
         // every target row that joins a source row), so it must go through the join
         // path below — otherwise an empty source would wrongly delete all rows.
         if (!node.whereClause && (!node.usingClause || node.usingClause->lst.empty())) {
             auto qn = rangevar_to_qualified_name(node.relation);
-            auto del_limit_res =
-                build_dml_limit(node.limitCount, core::dbname_t{qn.dbname}, core::relname_t{qn.relname}, plan);
-            if (del_limit_res.has_error()) {
-                return del_limit_res.error();
-            }
-            auto del_limit = std::move(del_limit_res.value());
+            VALUE_OR_RETURN(
+                auto del_limit,
+                build_dml_limit(node.limitCount, core::dbname_t{qn.dbname}, core::relname_t{qn.relname}, plan));
             auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
@@ -40,11 +35,7 @@ namespace components::sql::transform {
                 name_collection_t rnames;
                 rnames.left_name = qn;
                 rnames.left_alias = construct_alias(node.relation->alias);
-                auto returning_res = transform_returning(node.returningList, rnames, plan);
-                if (returning_res.has_error()) {
-                    return returning_res.error();
-                }
-                del->returning() = std::move(returning_res.value());
+                VALUE_OR_RETURN(del->returning(), transform_returning(node.returningList, rnames, plan));
             }
             // Tag the target table for catalog resolution with the referencing
             // constraint gather, so enrich reads the descendant FKs.
@@ -66,11 +57,7 @@ namespace components::sql::transform {
         logical_plan::node_ptr source_child = nullptr;
         if (node.usingClause && !node.usingClause->lst.empty()) {
             name_collection_t source_names;
-            auto source_res = transform_from_source(node.usingClause, source_names, plan);
-            if (source_res.has_error()) {
-                return source_res.error();
-            }
-            source_child = std::move(source_res.value());
+            VALUE_OR_RETURN(source_child, transform_from_source(node.usingClause, source_names, plan));
             names.right_name = source_names.left_name;
             names.right_alias = source_names.left_alias;
         }
@@ -79,22 +66,15 @@ namespace components::sql::transform {
         // targets that join a source row. Mirrors transform_update's FROM path.
         expression_ptr where_expr;
         if (node.whereClause) {
-            auto where_res = transform_predicate(node.whereClause, names, plan);
-            if (where_res.has_error()) {
-                return where_res.error();
-            }
-            where_expr = std::move(where_res.value());
+            VALUE_OR_RETURN(where_expr, transform_predicate(node.whereClause, names, plan));
         } else {
             where_expr = make_compare_expression(resource_, compare_type::all_true);
         }
-        auto del_limit_res = build_dml_limit(node.limitCount,
-                                             core::dbname_t{names.left_name.dbname},
-                                             core::relname_t{names.left_name.relname},
-                                             plan);
-        if (del_limit_res.has_error()) {
-            return del_limit_res.error();
-        }
-        auto del_limit = std::move(del_limit_res.value());
+        VALUE_OR_RETURN(auto del_limit,
+                        build_dml_limit(node.limitCount,
+                                        core::dbname_t{names.left_name.dbname},
+                                        core::relname_t{names.left_name.relname},
+                                        plan));
         auto del =
             logical_plan::make_node_delete(resource_,
                                            logical_plan::make_node_match(resource_,
@@ -112,11 +92,7 @@ namespace components::sql::transform {
             del->append_child(source_child);
         }
         if (node.returningList) {
-            auto returning_res = transform_returning(node.returningList, names, plan);
-            if (returning_res.has_error()) {
-                return returning_res.error();
-            }
-            del->returning() = std::move(returning_res.value());
+            VALUE_OR_RETURN(del->returning(), transform_returning(node.returningList, names, plan));
         }
         // Resolve the primary (LEFT) table and gather its referencing
         // constraints for FK cascade enrich.

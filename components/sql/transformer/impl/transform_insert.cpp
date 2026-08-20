@@ -307,9 +307,7 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_insert(InsertStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the inner SELECT so INSERT ... SELECT ... FROM cte works.
-        if (auto err = register_with_ctes(node.withClause); err.contains_error()) {
-            return err;
-        }
+        RETURN_IF_ERROR(register_with_ctes(node.withClause));
         auto fields = pg_ptr_cast<List>(node.cols)->lst;
         std::pmr::vector<expressions::key_t> key_translation(resource_);
         for (const auto& field : fields) {
@@ -345,11 +343,7 @@ namespace components::sql::transform {
             name_collection_t rnames;
             rnames.left_name = rangevar_to_qualified_name(node.relation);
             rnames.left_alias = construct_alias(node.relation->alias);
-            auto returning_res = transform_returning(node.returningList, rnames, plan);
-            if (returning_res.has_error()) {
-                return returning_res.error();
-            }
-            returning = std::move(returning_res.value());
+            VALUE_OR_RETURN(returning, transform_returning(node.returningList, rnames, plan));
         }
 
         if (!node.selectStmt) {
@@ -419,22 +413,20 @@ namespace components::sql::transform {
                     } else if (nodeTag(it_value->data) == T_A_Expr) {
                         // Evaluate constant arithmetic at parse time
                         // TODO: move column matching to validation/optimizer phase for complex path resolution
-                        auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
-                        if (value.has_error()) {
-                            return value.error();
-                        }
+                        VALUE_OR_RETURN(auto value,
+                                        evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data)));
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == field_name;
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.value().set_alias(field_name);
-                            chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
-                            chunk.set_value(column_index, chunk_row, std::move(value.value()));
+                            value.set_alias(field_name);
+                            chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                            chunk.set_value(column_index, chunk_row, std::move(value));
                         } else {
                             auto col_type = it->type().type();
-                            auto val_type = value.value().type().type();
+                            auto val_type = value.type().type();
                             // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
                             // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
                             // An unpromotable mix takes the plain per-value store below.
@@ -447,28 +439,25 @@ namespace components::sql::transform {
                                 }
                                 chunk.set_value(column_index,
                                                 chunk_row,
-                                                numeric_widen(resource_, value.value(), promoted));
+                                                numeric_widen(resource_, value, promoted));
                             } else {
-                                chunk.set_value(column_index, chunk_row, std::move(value.value()));
+                                chunk.set_value(column_index, chunk_row, std::move(value));
                             }
                         }
                     } else {
-                        auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                        if (value.has_error()) {
-                            return value.error();
-                        }
+                        VALUE_OR_RETURN(auto value, get_value(resource_, pg_ptr_cast<Node>(it_value->data)));
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == field_name;
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.value().set_alias(field_name);
-                            chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
-                            chunk.set_value(column_index, chunk_row, std::move(value.value()));
+                            value.set_alias(field_name);
+                            chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                            chunk.set_value(column_index, chunk_row, std::move(value));
                         } else {
                             auto col_type = it->type().type();
-                            auto val_type = value.value().type().type();
+                            auto val_type = value.type().type();
                             // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
                             // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
                             // An unpromotable mix takes the plain per-value store below.
@@ -481,31 +470,31 @@ namespace components::sql::transform {
                                 }
                                 chunk.set_value(column_index,
                                                 chunk_row,
-                                                numeric_widen(resource_, value.value(), promoted));
-                            } else if (array_shapes_differ(it->type(), value.value().type())) {
+                                                numeric_widen(resource_, value, promoted));
+                            } else if (array_shapes_differ(it->type(), value.type())) {
                                 // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
                                 // then ARRAY[2,3]): a single fixed-ARRAY vector can't hold both, so
                                 // promote the column to a variable-length LIST and store every row as
                                 // a list. The target column's reconciliation handles LIST -> fixed
                                 // ARRAY later if needed.
-                                auto elem_type = value.value().type().child_type();
+                                auto elem_type = value.type().child_type();
                                 if (col_type == types::logical_type::ARRAY) {
                                     chunk.data[column_index] =
                                         promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
                                 }
                                 chunk.set_value(column_index,
                                                 chunk_row,
-                                                to_list_value(resource_, value.value(), elem_type));
-                            } else if (col_type == types::logical_type::NA && !value.value().is_null()) {
+                                                to_list_value(resource_, value, elem_type));
+                            } else if (col_type == types::logical_type::NA && !value.is_null()) {
                                 // The column was created from a LEADING NULL literal (typed NA);
                                 // a later row now carries a concrete type. Every prior row is NULL,
                                 // so promote the NA column to the concrete type (nulls preserved)
                                 // before storing — otherwise set_value asserts on the type mismatch.
                                 chunk.data[column_index] =
                                     promote_column(resource_, *it, chunk_row, val_type, chunk.capacity());
-                                chunk.set_value(column_index, chunk_row, std::move(value.value()));
+                                chunk.set_value(column_index, chunk_row, std::move(value));
                             } else {
-                                chunk.set_value(column_index, chunk_row, std::move(value.value()));
+                                chunk.set_value(column_index, chunk_row, std::move(value));
                             }
                         }
                     }
@@ -529,10 +518,7 @@ namespace components::sql::transform {
                     vector::data_chunk_t chunk(resource_, schema, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        if (auto err = fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data));
-                            err.contains_error()) {
-                            return err;
-                        }
+                        RETURN_IF_ERROR(fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
                     }
                     schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
                     parameter_insert_rows_.emplace_back(std::move(chunk));
@@ -553,10 +539,7 @@ namespace components::sql::transform {
                     vector::data_chunk_t chunk(resource_, {}, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        if (auto err = fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data));
-                            err.contains_error()) {
-                            return err;
-                        }
+                        RETURN_IF_ERROR(fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
                     }
                     chunks.emplace_back(std::move(chunk));
                 }
@@ -575,11 +558,8 @@ namespace components::sql::transform {
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
             auto res = logical_plan::make_node_insert(resource_);
-            auto source = transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan);
-            if (source.has_error()) {
-                return source.error();
-            }
-            res->append_child(std::move(source.value()));
+            VALUE_OR_RETURN(auto source, transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
+            res->append_child(std::move(source));
             res->key_translation() = key_translation;
             res->returning() = returning;
             res->set_dbname(qn.dbname);

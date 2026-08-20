@@ -224,7 +224,11 @@ namespace core {
         }
 
     private:
-        Store_T value_;
+        // Value-initialized because the error-carrying constructors below leave it alone: without
+        // this, copying or moving a wrapper that holds an error reads an indeterminate value, which
+        // gcc reports as -Wmaybe-uninitialized and which is undefined behaviour regardless.
+        // Store_T is either a trivially-copyable T or std::optional<T>, so {} is always valid here.
+        Store_T value_{};
 #if not defined(NDEBUG)
         mutable bool error_checked_{false};
 #endif

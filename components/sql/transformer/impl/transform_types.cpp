@@ -29,9 +29,9 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_type(CompositeTypeStmt& node) {
-        if (auto field_res = get_types(resource_, *node.coldeflist); transform_failed(field_res)) {
-            return nullptr;
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_type(CompositeTypeStmt& node) {
+        if (auto field_res = get_types(resource_, *node.coldeflist); field_res.has_error()) {
+            return field_res.error();
         } else {
             auto type = types::complex_logical_type::create_struct(construct(node.typevar->relname), field_res.value());
             auto type_copy = type;
@@ -42,12 +42,11 @@ namespace components::sql::transform {
         }
     }
 
-    logical_plan::node_ptr transformer::transform_create_enum_type(CreateEnumStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_enum_type(CreateEnumStmt& node) {
         std::vector<types::logical_value_t> values;
         if (!node.vals || node.vals->lst.empty()) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"Can not create enum without values", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"Can not create enum without values", resource_});
         }
         values.reserve(node.vals->lst.size());
         int counter = 0;

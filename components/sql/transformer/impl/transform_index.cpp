@@ -16,11 +16,10 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_index(IndexStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_index(IndexStmt& node) {
         if (!(node.relation && node.relation->relname && node.relation->catalogname && node.idxname)) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"incorrect create index arguments", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"incorrect create index arguments", resource_});
         }
 
         auto qn = rangevar_to_qualified_name(node.relation);
@@ -34,11 +33,10 @@ namespace components::sql::transform {
             // An expression element — CREATE INDEX ... ((expr)) — has no name
             // (elem->expr instead); only plain column elements are supported.
             if (elem->name == nullptr) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"expression indexes are not supported; "
-                                                        "CREATE INDEX accepts plain column names only",
-                                                        resource_});
-                return nullptr;
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"expression indexes are not supported; "
+                                                      "CREATE INDEX accepts plain column names only",
+                                                      resource_});
             }
             create_index->keys().emplace_back(resource_, elem->name);
         }

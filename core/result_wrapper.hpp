@@ -65,7 +65,7 @@ namespace core {
         write_conflict,  // MVCC write-write conflict
     };
 
-    struct error_t {
+    struct [[nodiscard]] error_t {
         error_code_t type;
         std::pmr::string what;
 #if not defined(NDEBUG)
@@ -136,7 +136,7 @@ namespace core {
 
     // has implicit constructors to simplify usage
     template<typename T>
-    requires(!std::is_same_v<std::decay<T>, error_t> && !std::is_same_v<T, void>) class result_wrapper_t {
+    requires(!std::is_same_v<std::decay<T>, error_t> && !std::is_same_v<T, void>) class [[nodiscard]] result_wrapper_t {
     private:
         static constexpr bool trivial_store = std::is_default_constructible_v<T>;
         using Store_T = std::conditional_t<trivial_store, T, std::optional<T>>;

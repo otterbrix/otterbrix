@@ -32,17 +32,15 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_matview(CreateTableAsStmt& cs,
-                                                                 logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::transform_create_matview(CreateTableAsStmt& cs, logical_plan::execution_plan_t* plan) {
         if (!cs.query || cs.query->type != T_SelectStmt) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
         }
         if (!cs.into || !cs.into->rel) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
         }
 
         // 1. Body SQL — for pg_rewrite.ev_action so REFRESH can re-parse later.
@@ -51,9 +49,14 @@ namespace components::sql::transform {
         // 2. Body plan — transform_select returns the consumer aggregate (NOT
         // wrapped with catalog_resolve_*). We hoist the source resolves below
         // so Pass 1 stamps source metadata visible to the planner.
-        auto body_aggregate = transform_select(pg_cast<SelectStmt>(*cs.query), plan);
-        if (!body_aggregate || has_error()) {
-            return nullptr;
+        auto body_res = transform_select(pg_cast<SelectStmt>(*cs.query), plan);
+        if (body_res.has_error()) {
+            return body_res.error();
+        }
+        auto body_aggregate = std::move(body_res.value());
+        if (!body_aggregate) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"materialized view body lowered to an empty plan", resource_});
         }
 
         // 3. Source identity from the body's aggregate (single-table FROM).
@@ -87,11 +90,10 @@ namespace components::sql::transform {
         return matview_node;
     }
 
-    logical_plan::node_ptr transformer::transform_refresh_matview(RefreshMatViewStmt& rs) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_refresh_matview(RefreshMatViewStmt& rs) {
         if (!rs.relation) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
         }
         auto qn = rangevar_to_qualified_name(rs.relation);
         auto node = logical_plan::make_node_refresh_matview(resource_,

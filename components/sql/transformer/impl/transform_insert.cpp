@@ -304,11 +304,11 @@ namespace components::sql::transform {
 #endif
 
 namespace components::sql::transform {
-    logical_plan::node_ptr transformer::transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_insert(InsertStmt& node,
+                                                                                 logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the inner SELECT so INSERT ... SELECT ... FROM cte works.
-        register_with_ctes(node.withClause);
-        if (has_error()) {
-            return nullptr;
+        if (auto err = register_with_ctes(node.withClause); err.contains_error()) {
+            return err;
         }
         auto fields = pg_ptr_cast<List>(node.cols)->lst;
         std::pmr::vector<expressions::key_t> key_translation(resource_);
@@ -345,29 +345,16 @@ namespace components::sql::transform {
             name_collection_t rnames;
             rnames.left_name = rangevar_to_qualified_name(node.relation);
             rnames.left_alias = construct_alias(node.relation->alias);
-            returning = transform_returning(node.returningList, rnames, plan);
-            if (error_.contains_error()) {
-                return nullptr;
+            auto returning_res = transform_returning(node.returningList, rnames, plan);
+            if (returning_res.has_error()) {
+                return returning_res.error();
             }
+            returning = std::move(returning_res.value());
         }
 
         if (!node.selectStmt) {
-            auto qn = rangevar_to_qualified_name(node.relation);
-            auto res = logical_plan::make_node_insert(resource_);
-            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
-            res->key_translation() = key_translation;
-            res->returning() = returning;
-            res->set_dbname(qn.dbname);
-            res->set_relname(qn.relname);
-            register_catalog_resolve_table(resource_,
-                                           &catalog_resolves_,
-                                           qn.dbname,
-                                           qn.relname,
-                                           constraint_resolve_kind::outgoing);
-            return res;
-            return logical_plan::make_node_insert(resource_,
-                                                  std::move(vector::data_chunk_t{resource_, {}, 0}),
-                                                  std::move(key_translation));
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"INSERT ... DEFAULT VALUES is not supported", resource_});
         }
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             auto vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
@@ -402,15 +389,16 @@ namespace components::sql::transform {
             // Fills one row of `chunk` at chunk-local index `chunk_row` from the value list
             // of global row `global_row`. Discovers/promotes columns in `chunk` as it goes
             // and records ParamRef slots (keyed by global row) in parameter_insert_map_.
-            // Returns false (and sets error_) on a malformed row.
-            auto fill_row =
-                [&](vector::data_chunk_t& chunk, size_t chunk_row, size_t global_row, List* values_list) -> bool {
+            // Answers with a refusal on a malformed row.
+            auto fill_row = [&](vector::data_chunk_t& chunk,
+                                size_t chunk_row,
+                                size_t global_row,
+                                List* values_list) -> core::error_t {
                 auto values = values_list->lst;
                 if (values.size() != fields.size()) {
-                    error_ =
-                        core::error_t(core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"INSERT has more expressions than target columns", resource_});
-                    return false;
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"INSERT has more expressions than target columns", resource_});
                 }
 
                 auto it_field = key_translation.begin();
@@ -432,8 +420,8 @@ namespace components::sql::transform {
                         // Evaluate constant arithmetic at parse time
                         // TODO: move column matching to validation/optimizer phase for complex path resolution
                         auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
-                        if (transform_failed(value)) {
-                            return false;
+                        if (value.has_error()) {
+                            return value.error();
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
@@ -466,8 +454,8 @@ namespace components::sql::transform {
                         }
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                        if (transform_failed(value)) {
-                            return false;
+                        if (value.has_error()) {
+                            return value.error();
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
@@ -522,7 +510,7 @@ namespace components::sql::transform {
                         }
                     }
                 }
-                return true;
+                return core::error_t::no_error();
             };
 
             auto qn = rangevar_to_qualified_name(node.relation);
@@ -541,8 +529,9 @@ namespace components::sql::transform {
                     vector::data_chunk_t chunk(resource_, schema, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        if (!fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data))) {
-                            return nullptr;
+                        if (auto err = fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data));
+                            err.contains_error()) {
+                            return err;
                         }
                     }
                     schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
@@ -564,8 +553,9 @@ namespace components::sql::transform {
                     vector::data_chunk_t chunk(resource_, {}, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        if (!fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data))) {
-                            return nullptr;
+                        if (auto err = fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data));
+                            err.contains_error()) {
+                            return err;
                         }
                     }
                     chunks.emplace_back(std::move(chunk));
@@ -585,7 +575,11 @@ namespace components::sql::transform {
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
             auto res = logical_plan::make_node_insert(resource_);
-            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
+            auto source = transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan);
+            if (source.has_error()) {
+                return source.error();
+            }
+            res->append_child(std::move(source.value()));
             res->key_translation() = key_translation;
             res->returning() = returning;
             res->set_dbname(qn.dbname);

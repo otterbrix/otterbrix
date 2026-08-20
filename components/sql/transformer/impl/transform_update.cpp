@@ -11,15 +11,22 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
 
-    expressions::expression_ptr transformer::transform_update_expr(Node* node,
-                                                                   const name_collection_t& names,
-                                                                   logical_plan::parameter_node_t* params) {
-        auto operand = transform_a_expr_operand(node, names, params);
-        if (has_error()) {
-            return nullptr;
+    core::result_wrapper_t<expressions::expression_ptr>
+    transformer::transform_update_expr(Node* node,
+                                       const name_collection_t& names,
+                                       logical_plan::parameter_node_t* params) {
+        auto operand_res = transform_a_expr_operand(node, names, params);
+        if (operand_res.has_error()) {
+            return operand_res.error();
         }
+        auto operand = std::move(operand_res.value());
         if (std::holds_alternative<expression_ptr>(operand)) {
-            return std::get<expression_ptr>(operand);
+            auto expr = std::get<expression_ptr>(operand);
+            if (!expr) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"unsupported expression in SET", resource_});
+            }
+            return expr;
         }
         auto value = make_scalar_expression(
             resource_,
@@ -28,11 +35,11 @@ namespace components::sql::transform {
         return value;
     }
 
-    logical_plan::node_ptr transformer::transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_update(UpdateStmt& node,
+                                                                                 logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the body so the WHERE / FROM can reference the CTE.
-        register_with_ctes(node.withClause);
-        if (has_error()) {
-            return nullptr;
+        if (auto err = register_with_ctes(node.withClause); err.contains_error()) {
+            return err;
         }
         logical_plan::node_match_ptr match;
         std::pmr::vector<expression_ptr> updates(resource_);
@@ -50,10 +57,11 @@ namespace components::sql::transform {
         logical_plan::node_ptr source_child = nullptr;
         if (node.fromClause && !node.fromClause->lst.empty()) {
             name_collection_t source_names;
-            source_child = transform_from_source(node.fromClause, source_names, plan);
-            if (has_error()) {
-                return nullptr;
+            auto source_res = transform_from_source(node.fromClause, source_names, plan);
+            if (source_res.has_error()) {
+                return source_res.error();
             }
+            source_child = std::move(source_res.value());
             names.right_name = source_names.left_name;
             names.right_alias = source_names.left_alias;
         }
@@ -66,10 +74,9 @@ namespace components::sql::transform {
                     // The write path nulls whole columns for a NULL literal but has
                     // no NA cast kernel for element writes — reject those here.
                     if (nodeTag(res->val) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
-                        error_ = core::error_t(
+                        return core::error_t(
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"setting a nested element to NULL is not supported", resource_});
-                        return nullptr;
                     }
                     std::pmr::vector<std::pmr::string> path{resource_};
                     path.emplace_back(std::pmr::string{res->name, resource_});
@@ -84,20 +91,21 @@ namespace components::sql::transform {
                     target_key = expressions::key_t{std::move(path), side_t::left};
                 }
                 auto value = transform_update_expr(res->val, names, plan->parameters.get());
-                if (has_error()) {
-                    return nullptr;
+                if (value.has_error()) {
+                    return value.error();
                 }
-                value->key() = std::move(target_key);
-                updates.emplace_back(std::move(value));
+                value.value()->key() = std::move(target_key);
+                updates.emplace_back(std::move(value.value()));
             }
         }
 
         // where
         if (node.whereClause) {
-            expressions::expression_ptr where_expr = transform_predicate(node.whereClause, names, plan);
-            if (has_error()) {
-                return nullptr;
+            auto where_res = transform_predicate(node.whereClause, names, plan);
+            if (where_res.has_error()) {
+                return where_res.error();
             }
+            expressions::expression_ptr where_expr = std::move(where_res.value());
             match = logical_plan::make_node_match(resource_,
                                                   core::dbname_t{names.left_name.dbname},
                                                   core::relname_t{names.left_name.relname},
@@ -109,13 +117,18 @@ namespace components::sql::transform {
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
-        auto upd_limit = build_dml_limit(node.limitCount,
-                                         core::dbname_t{names.left_name.dbname},
-                                         core::relname_t{names.left_name.relname},
-                                         plan);
-        if (has_error()) {
-            return nullptr;
+        // Identity travels via the catalog-resolve wrap; the update node itself
+        // carries only payload + table_oid() (stamped at enrich time from the
+        // sibling resolve_table for the target, and table_oid_from() for the
+        // UPDATE ... FROM source).
+        auto upd_limit_res = build_dml_limit(node.limitCount,
+                                             core::dbname_t{names.left_name.dbname},
+                                             core::relname_t{names.left_name.relname},
+                                             plan);
+        if (upd_limit_res.has_error()) {
+            return upd_limit_res.error();
         }
+        auto upd_limit = std::move(upd_limit_res.value());
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
         upd->set_dbname(names.left_name.dbname);
         upd->set_relname(names.left_name.relname);
@@ -126,10 +139,11 @@ namespace components::sql::transform {
             upd->append_child(source_child);
         }
         if (node.returningList) {
-            upd->returning() = transform_returning(node.returningList, names, plan);
-            if (error_.contains_error()) {
-                return nullptr;
+            auto returning_res = transform_returning(node.returningList, names, plan);
+            if (returning_res.has_error()) {
+                return returning_res.error();
             }
+            upd->returning() = std::move(returning_res.value());
         }
         // Catalog-resolve for the UPDATE target table, with the outgoing
         // constraint gather so enrich reads FKs stamped by

@@ -452,7 +452,7 @@ namespace components::sql::transform {
             case T_SubLink:
                 return "T_SubLink";
             default:
-                return "unknown";
+                return "NodeTag(" + std::to_string(static_cast<int>(type)) + ")";
         }
     }
 

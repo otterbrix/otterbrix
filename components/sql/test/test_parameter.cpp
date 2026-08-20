@@ -8,6 +8,7 @@
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/transformer.hpp>
+#include <tuple>
 
 using namespace components;
 using namespace components::sql;
@@ -337,7 +338,7 @@ TEST_CASE("components::sql::transform_result") {
                        .parameters;
         REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, "doc"));
 
-        binder.bind(1, v(&resource, 100l)).finalize();
+        std::ignore = binder.bind(1, v(&resource, 100l)).finalize();
         REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, 100l));
     }
 
@@ -356,7 +357,7 @@ TEST_CASE("components::sql::transform_result") {
         }
 
         const auto& keys = reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation();
-        binder.bind(1, v(&resource, true)).bind(2, v(&resource, std::string("doc 10"))).finalize();
+        std::ignore = binder.bind(1, v(&resource, true)).bind(2, v(&resource, std::string("doc 10"))).finalize();
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();

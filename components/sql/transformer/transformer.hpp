@@ -30,15 +30,13 @@ namespace components::sql::transform {
             , extensions_(extensions)
             , parameter_map_(resource_)
             , parameter_insert_map_(resource_)
-            , parameter_insert_rows_(resource_)
-            , error_(core::error_t::no_error()) {}
+            , parameter_insert_rows_(resource_) {}
 
         transform_result transform(Node& node);
         // Lower a single statement node to a plan node (the dispatch switch);
-        // transform() wraps the result with parameter bookkeeping. Sets the
-        // internal error and returns nullptr on failure. Subqueries are collected
-        // into plan->sub_queries; extension nodes route through plan->parameters.
-        logical_plan::node_ptr transform(Node& node, logical_plan::execution_plan_t* plan);
+        // transform() wraps the result with parameter bookkeeping. Subqueries are collected
+        // into plan->sub_queries extension nodes route through plan->parameters.
+        core::result_wrapper_t<logical_plan::node_ptr> transform(Node& node, logical_plan::execution_plan_t* plan);
 
         // Parse a bare SQL expression string (e.g. "age > 0") as if it were a WHERE clause.
         // Used to compile stored CHECK constraint expressions for runtime evaluation.
@@ -51,129 +49,119 @@ namespace components::sql::transform {
         check_expr_result parse_where_expr(const std::string& expr_text);
 
     private:
-        bool has_error() const noexcept;
-
-        template<class T>
-        bool transform_failed(const core::result_wrapper_t<T>& result) {
-            return transform_failed(result.error());
-        }
-
-        // For a check that answers with a refusal rather than a value.
-        bool transform_failed(const core::error_t& error) {
-            if (error.contains_error() && !has_error()) {
-                error_ = error;
-            }
-            return has_error();
-        }
-
-        logical_plan::node_ptr transform_create_database(CreatedbStmt& node);
-        logical_plan::node_ptr transform_drop_database(DropdbStmt& node);
-        logical_plan::node_ptr transform_checkpoint(CheckPointStmt& node);
-        logical_plan::node_ptr transform_vacuum(VacuumStmt& node);
-        logical_plan::node_ptr transform_create_table(CreateStmt& node);
-        logical_plan::node_ptr transform_drop(DropStmt& node);
-        logical_plan::node_ptr transform_select(SelectStmt& node, logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_database(CreatedbStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_checkpoint(CheckPointStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_vacuum(VacuumStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_table(CreateStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_drop(DropStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_select(SelectStmt& node,
+                                                                        logical_plan::execution_plan_t* plan);
         // Build a node_limit from a limitCount/limitOffset pair (nullptr when neither is present). A
         // ParamRef bound limit/offset is registered in deferred_limits_ (resolved later like the simple
         // SELECT path). Shared by the simple-select, the UNION tail-clause, the top-level VALUES, and
         // the DML (DELETE/UPDATE) LIMIT lowering — hence a raw (limitCount, limitOffset) pair rather
         // than a SelectStmt&.
-        logical_plan::node_ptr build_limit_node(Node* limit_count,
-                                                Node* limit_offset,
-                                                const core::dbname_t& db,
-                                                const core::relname_t& rel,
-                                                logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> build_limit_node(Node* limit_count,
+                                                                        Node* limit_offset,
+                                                                        const core::dbname_t& db,
+                                                                        const core::relname_t& rel,
+                                                                        logical_plan::execution_plan_t* plan);
         // Build the node_limit child for a DELETE/UPDATE ... [LIMIT n]. Returns an unlimited
         // limit node when limit_count is null; otherwise validates the count exactly like a
-        // SELECT limit (integer / bound parameter). DML has NO OFFSET (grammar-enforced). Sets
-        // error_ and returns nullptr on an invalid count expression.
-        logical_plan::node_limit_ptr build_dml_limit(Node* limit_count,
-                                                     const core::dbname_t& db,
-                                                     const core::relname_t& rel,
-                                                     logical_plan::execution_plan_t* plan);
+        // SELECT limit (integer / bound parameter). DML has NO OFFSET (grammar-enforced).
+        core::result_wrapper_t<logical_plan::node_limit_ptr> build_dml_limit(Node* limit_count,
+                                                                             const core::dbname_t& db,
+                                                                             const core::relname_t& rel,
+                                                                             logical_plan::execution_plan_t* plan);
         // Register a statement's WITH (CTE) definitions into cte_queries_ / recursive_cte_queries_ so the
         // body can reference them. Shared by SELECT (simple + UNION) and DML (DELETE/UPDATE/INSERT). A
         // data-modifying CTE (ctequery not a SELECT) is rejected cleanly (deferred). No-op on null.
-        void register_with_ctes(WithClause* with_clause);
-        logical_plan::node_ptr transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan);
-        logical_plan::node_ptr transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan);
-        logical_plan::node_ptr transform_delete(DeleteStmt& node, logical_plan::execution_plan_t* plan);
-        logical_plan::node_ptr transform_create_index(IndexStmt& node);
-        logical_plan::node_ptr transform_create_type(CompositeTypeStmt& node);
-        logical_plan::node_ptr transform_create_enum_type(CreateEnumStmt& node);
-        logical_plan::node_ptr transform_create_sequence(CreateSeqStmt& node);
-        logical_plan::node_ptr transform_create_view(ViewStmt& node);
+        core::error_t register_with_ctes(WithClause* with_clause);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_update(UpdateStmt& node,
+                                                                        logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_insert(InsertStmt& node,
+                                                                        logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_delete(DeleteStmt& node,
+                                                                        logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_index(IndexStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_type(CompositeTypeStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_enum_type(CreateEnumStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_sequence(CreateSeqStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node);
         // CREATE MATERIALIZED VIEW … AS SELECT … (PostgreSQL-canonical, relkind='m').
         // Body is transformed via transform_select; source's catalog_resolve_table
         // is hoisted to the outer sequence_t front so Pass 1 stamps source's
         // pg_attribute. The planner reads body_plan + stamped source metadata to
         // derive output schema before lowering to physical operators.
-        logical_plan::node_ptr transform_create_matview(CreateTableAsStmt& cs, logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_matview(CreateTableAsStmt& cs,
+                                                                                logical_plan::execution_plan_t* plan);
         // REFRESH MATERIALIZED VIEW [CONCURRENTLY] mv [WITH NO DATA].
         // Wrapped with catalog_resolve_table(mv) so Pass 1 stamps view_sql from
         // pg_rewrite.ev_action (already supported for relkind='m' by Phase A.A2).
-        logical_plan::node_ptr transform_refresh_matview(RefreshMatViewStmt& rs);
-        logical_plan::node_ptr transform_create_function(CreateFunctionStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_refresh_matview(RefreshMatViewStmt& rs);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_function(CreateFunctionStmt& node);
         // ALTER TABLE → node_alter_table_t. Multi-clause ALTER TABLE (multiple AT_AddColumn
         // etc) emits a sequence — currently only first command supported. RENAME TABLE not
         // here (T_RenameStmt routes separately).
-        logical_plan::node_ptr transform_alter_table(AlterTableStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_alter_table(AlterTableStmt& node);
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
-        logical_plan::node_ptr transform_rename(RenameStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node);
         // BEGIN / COMMIT / ROLLBACK; unsupported variants (SAVEPOINT / 2PC)
         // return nullptr (see impl).
-        logical_plan::node_ptr transform_transaction(TransactionStmt& node);
-        logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_set_timezone(VariableSetStmt& node);
         // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
         // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
         // stays the real query node. Output formatting is a host concern (the executor's renderer
         // registry, selected per-query by execution_plan_t::explain_render_id).
-        logical_plan::node_ptr transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_explain(ExplainStmt& node,
+                                                                         logical_plan::execution_plan_t* plan);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         transform_a_expr(A_Expr* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         transform_predicate(Node* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         transform_sublink_expr(SubLink* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         // Arithmetic expression: returns scalar_expression_t
-        expressions::expression_ptr transform_a_expr_arithmetic(A_Expr* node,
-                                                                const name_collection_t& names,
-                                                                logical_plan::parameter_node_t* params);
+        core::result_wrapper_t<expressions::expression_ptr>
+        transform_a_expr_arithmetic(A_Expr* node,
+                                    const name_collection_t& names,
+                                    logical_plan::parameter_node_t* params);
 
         // Resolve any node to param_storage for arithmetic operand
-        expressions::param_storage
+        core::result_wrapper_t<expressions::param_storage>
         transform_a_expr_operand(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
         // Handle T_A_Expr in SELECT target list (may contain aggregates)
-        void transform_select_a_expr(A_Expr* node,
-                                     const char* alias,
-                                     const name_collection_t& names,
-                                     logical_plan::execution_plan_t* plan,
-                                     logical_plan::node_ptr& group);
+        core::error_t transform_select_a_expr(A_Expr* node,
+                                              const char* alias,
+                                              const name_collection_t& names,
+                                              logical_plan::execution_plan_t* plan,
+                                              logical_plan::node_ptr& group);
 
         // Parse a RETURNING target list (List* of ResTarget) into scalar
         // projection expressions. Supports column references (including * and
         // table.*), constants/parameters, and arithmetic, each with an optional
-        // AS alias. On an unsupported construct sets error_ and returns the
-        // partial result — callers must check error_, not the return value.
-        std::pmr::vector<expressions::expression_ptr>
+        // AS alias.
+        core::result_wrapper_t<std::pmr::vector<expressions::expression_ptr>>
         transform_returning(List* returning_list, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         // Resolve SELECT operand — aggregates become separate group expressions
-        expressions::param_storage resolve_select_operand(Node* node,
-                                                          const name_collection_t& names,
-                                                          logical_plan::execution_plan_t* plan,
-                                                          logical_plan::node_ptr& group);
+        core::result_wrapper_t<expressions::param_storage> resolve_select_operand(Node* node,
+                                                                                  const name_collection_t& names,
+                                                                                  logical_plan::execution_plan_t* plan,
+                                                                                  logical_plan::node_ptr& group);
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         transform_a_expr_func(FuncCall* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
         // Lower an aggregate FILTER (WHERE p) clause by wrapping each aggregate argument in a CASE:
@@ -182,42 +170,43 @@ namespace components::sql::transform {
         // Every supported aggregate skips NULLs, so rows where p is not TRUE (the CASE yields NULL)
         // are excluded -- exactly FILTER semantics -- and the predicate reuses the three-valued
         // CASE-WHEN evaluator (UNKNOWN excludes the row). `agg_filter` is FuncCall.agg_filter; a null
-        // one returns `args` unchanged. On a parse error inside p, sets error_ and returns args as-is.
-        std::pmr::vector<expressions::param_storage>
+        // one returns `args` unchanged.
+        core::result_wrapper_t<std::pmr::vector<expressions::param_storage>>
         apply_aggregate_filter(Node* agg_filter,
                                std::pmr::vector<expressions::param_storage> args,
                                const name_collection_t& names,
                                logical_plan::execution_plan_t* plan);
 
         // HAVING clause: resolve aggregate references to aliases from group node
-        expressions::expression_ptr transform_having_expr(Node* node,
-                                                          const name_collection_t& names,
-                                                          logical_plan::execution_plan_t* plan,
-                                                          const logical_plan::node_ptr& group);
+        core::result_wrapper_t<expressions::expression_ptr> transform_having_expr(Node* node,
+                                                                                  const name_collection_t& names,
+                                                                                  logical_plan::execution_plan_t* plan,
+                                                                                  const logical_plan::node_ptr& group);
 
         // Handle T_CaseExpr in SELECT target list
-        void transform_select_case_expr(CaseExpr* node,
-                                        const char* alias,
-                                        const name_collection_t& names,
-                                        logical_plan::execution_plan_t* plan,
-                                        logical_plan::node_ptr& group);
+        core::error_t transform_select_case_expr(CaseExpr* node,
+                                                 const char* alias,
+                                                 const name_collection_t& names,
+                                                 logical_plan::execution_plan_t* plan,
+                                                 logical_plan::node_ptr& group);
 
         // Build a scalar_expression_ptr (type=case_expr) from a CaseExpr
-        expressions::expression_ptr case_expr_to_scalar(CaseExpr* node,
-                                                        const char* alias,
-                                                        const name_collection_t& names,
-                                                        logical_plan::execution_plan_t* plan,
-                                                        logical_plan::node_ptr group);
+        core::result_wrapper_t<expressions::expression_ptr> case_expr_to_scalar(CaseExpr* node,
+                                                                                const char* alias,
+                                                                                const name_collection_t& names,
+                                                                                logical_plan::execution_plan_t* plan,
+                                                                                logical_plan::node_ptr group);
 
         // Resolve a HAVING operand: FuncCall → aggregate alias key
-        expressions::param_storage resolve_having_operand(Node* node,
-                                                          const name_collection_t& names,
-                                                          logical_plan::execution_plan_t* plan,
-                                                          const logical_plan::node_ptr& group);
+        core::result_wrapper_t<expressions::param_storage> resolve_having_operand(Node* node,
+                                                                                  const name_collection_t& names,
+                                                                                  logical_plan::execution_plan_t* plan,
+                                                                                  const logical_plan::node_ptr& group);
 
-        expressions::expression_ptr transform_a_indirection(A_Indirection* node,
-                                                            const name_collection_t& names,
-                                                            logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<expressions::expression_ptr>
+        transform_a_indirection(A_Indirection* node,
+                                const name_collection_t& names,
+                                logical_plan::execution_plan_t* plan);
 
         // --- JSONB navigation (-> ->> #> #>>) ----------------------------
         // Resolve a scalar (text-returning, ->> / #>>) jsonb navigation chain
@@ -226,27 +215,29 @@ namespace components::sql::transform {
         // the base operand (a bare table name contributes nothing/root, a
         // column contributes its name) followed by every operator's key(s).
         // On a table-returning top operator (-> / #>) in this scalar position,
-        // or any malformed operand, sets error_ and returns false.
-        bool resolve_jsonb_scalar_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key);
+        // or any malformed operand, answers with a refusal.
+        core::result_wrapper_t<expressions::key_t> resolve_jsonb_scalar_key(A_Expr* node,
+                                                                            const name_collection_t& names);
         // Recursive worker: appends this chain's path segments (in order) and
         // sets `side` from the base operand. Accepts any nav operator.
-        bool collect_jsonb_path(A_Expr* node,
-                                const name_collection_t& names,
-                                std::pmr::vector<std::pmr::string>& segments,
-                                expressions::side_t& side);
+        core::error_t collect_jsonb_path(A_Expr* node,
+                                         const name_collection_t& names,
+                                         std::pmr::vector<std::pmr::string>& segments,
+                                         expressions::side_t& side);
         // Resolve the base (left-most) operand of a jsonb chain into its path
         // segments + side. A bare table name yields no segments (document root);
         // a column yields its name.
-        bool resolve_jsonb_base(Node* lexpr,
-                                const name_collection_t& names,
-                                std::pmr::vector<std::pmr::string>& segments,
-                                expressions::side_t& side);
+        core::error_t resolve_jsonb_base(Node* lexpr,
+                                         const name_collection_t& names,
+                                         std::pmr::vector<std::pmr::string>& segments,
+                                         expressions::side_t& side);
 
         // Table-valued jsonb operators ('->','#>' expand; '-','#-' delete).
         // Collapse the chain into a single slash-joined prefix key (e.g. 'a/b').
         // Used in the SELECT list; validate_logical_plan turns the resulting
         // jsonb_expand / jsonb_delete expression into get_field columns.
-        bool resolve_jsonb_prefix_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key);
+        core::result_wrapper_t<expressions::key_t> resolve_jsonb_prefix_key(A_Expr* node,
+                                                                            const name_collection_t& names);
         // True if `node` is a bare identifier naming the FROM table/alias — i.e.
         // the document root. Distinguishes 't - x' (jsonb delete) from arithmetic.
         bool jsonb_lhs_is_table(Node* node, const name_collection_t& names) const;
@@ -254,17 +245,18 @@ namespace components::sql::transform {
         // jsonb key existence: '?' (one key), '?|' (any of), '?&' (all of).
         // Desugars each key to an IS NOT NULL test on the flattened path, then
         // combines with OR ('?'/'?|') or AND ('?&').
-        expressions::expression_ptr transform_jsonb_exists(A_Expr* node,
-                                                           const name_collection_t& names,
-                                                           logical_plan::parameter_node_t* params,
-                                                           std::string_view op);
+        core::result_wrapper_t<expressions::expression_ptr>
+        transform_jsonb_exists(A_Expr* node,
+                               const name_collection_t& names,
+                               logical_plan::parameter_node_t* params,
+                               std::string_view op);
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
-        logical_plan::node_ptr
+        core::result_wrapper_t<logical_plan::node_ptr>
         transform_function(RangeFunction& node, const name_collection_t& names, logical_plan::parameter_node_t* params);
-        logical_plan::node_ptr
+        core::result_wrapper_t<logical_plan::node_ptr>
         transform_function(FuncCall& node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
         // Build the logical node for a FROM-clause table function that is the right
@@ -272,47 +264,48 @@ namespace components::sql::transform {
         // making the function implicitly LATERAL: each such argument is lowered to an
         // outer-bound parameter and recorded as a correlation on `node_join` (which is
         // marked lateral), so the lateral join operator rebinds it per outer row.
-        logical_plan::node_ptr transform_from_function(RangeFunction& node,
-                                                       const name_collection_t& names,
-                                                       logical_plan::node_join_ptr& node_join,
-                                                       logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_from_function(RangeFunction& node,
+                                                                               const name_collection_t& names,
+                                                                               logical_plan::node_join_ptr& node_join,
+                                                                               logical_plan::execution_plan_t* plan);
 
         // Build the logical node for a FROM-clause reference to a recursive CTE.
         // Returns an aggregate wrapping either a cte_scan (inside recursive member) or
         // a recursive_cte node (in the outer query). Returns nullptr on error.
-        logical_plan::node_aggregate_ptr build_recursive_cte_ref(const std::string& cte_name,
-                                                                 const std::string& effective_alias,
-                                                                 logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_aggregate_ptr>
+        build_recursive_cte_ref(const std::string& cte_name,
+                                const std::string& effective_alias,
+                                logical_plan::execution_plan_t* plan);
 
-        void join_dfs(std::pmr::memory_resource* resource,
-                      JoinExpr* join,
-                      logical_plan::node_join_ptr& node_join,
-                      name_collection_t& names,
-                      logical_plan::execution_plan_t* plan);
+        core::error_t join_dfs(std::pmr::memory_resource* resource,
+                               JoinExpr* join,
+                               logical_plan::node_join_ptr& node_join,
+                               name_collection_t& names,
+                               logical_plan::execution_plan_t* plan);
 
         // Build the source relation for a FROM/USING clause: a single table, a
         // (possibly LATERAL) join tree, a table function, or a derived table. A
         // comma-separated list is folded into a left-deep cross-join first. Returns
         // an aggregate wrapping the source, and populates `names` with the source's
         // left/right relations for predicate side-resolution. Shared by SELECT's
-        // FROM, UPDATE's FROM, and DELETE's USING. Returns nullptr on error (sets
-        // error_). `from_items` must be a non-empty List.
-        logical_plan::node_aggregate_ptr
+        // FROM, UPDATE's FROM, and DELETE's USING. `from_items` must be a non-empty List.
+        core::result_wrapper_t<logical_plan::node_aggregate_ptr>
         transform_from_source(List* from_items, name_collection_t& names, logical_plan::execution_plan_t* plan);
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         transform_update_expr(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
-        std::string get_str_value(Node* node);
+        core::result_wrapper_t<std::string> get_str_value(Node* node);
 
-        core::parameter_id_t add_param_value(Node* node, logical_plan::parameter_node_t* params);
+        core::result_wrapper_t<core::parameter_id_t> add_param_value(Node* node,
+                                                                     logical_plan::parameter_node_t* params);
 
-        logical_plan::node_ptr transform_from_element(Node* item,
-                                                      qualified_name& slot_name,
-                                                      std::string& slot_alias,
-                                                      name_collection_t& names,
-                                                      logical_plan::node_join_ptr& node_join,
-                                                      logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_from_element(Node* item,
+                                                                              qualified_name& slot_name,
+                                                                              std::string& slot_alias,
+                                                                              name_collection_t& names,
+                                                                              logical_plan::node_join_ptr& node_join,
+                                                                              logical_plan::execution_plan_t* plan);
 
         // While transforming the body of a LATERAL subquery, a column reference
         // qualified by an OUTER-scope relation (and not shadowed by an inner one) is
@@ -361,7 +354,5 @@ namespace components::sql::transform {
         logical_plan::node_join_t* lateral_join_{nullptr};
         logical_plan::execution_plan_t* lateral_plan_{nullptr};
         std::pmr::unordered_map<std::string, core::parameter_id_t> lateral_correlation_map_{resource_};
-
-        core::error_t error_;
     };
 } // namespace components::sql::transform

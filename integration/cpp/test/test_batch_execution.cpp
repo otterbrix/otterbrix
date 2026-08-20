@@ -5,6 +5,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
+#include <tuple>
 
 using namespace components;
 using namespace components::compute;
@@ -37,7 +38,7 @@ std::unique_ptr<row_function> make_double_val_func(std::pmr::memory_resource* re
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), double_val_exec};
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -56,7 +57,7 @@ std::unique_ptr<row_function> make_gt_threshold_func(std::pmr::memory_resource* 
         {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), gt_threshold_exec};
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -76,7 +77,7 @@ std::unique_ptr<vector_function> make_vec_negate_func(std::pmr::memory_resource*
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     vector_kernel k{std::move(sig), vec_negate_exec};
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -118,7 +119,7 @@ std::unique_ptr<aggregate_function> make_sum_squares_func(std::pmr::memory_resou
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), sum_squares_layout, sum_squares_update, sum_squares_finalize};
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -163,7 +164,7 @@ std::unique_ptr<aggregate_function> make_call_counter_func(std::pmr::memory_reso
                            {parameter_type::variable(0)},
                            {output_type::fixed(types::logical_type::BIGINT)});
     aggregate_kernel k{std::move(sig), call_counter_layout, call_counter_update, call_counter_finalize};
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 

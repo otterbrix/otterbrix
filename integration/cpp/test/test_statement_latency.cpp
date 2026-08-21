@@ -56,6 +56,7 @@ TEST_CASE("integration::cpp::test_statement_latency::single_statement_is_not_qua
         REQUIRE(exec("INSERT INTO lat.t (id, payload) VALUES (" + std::to_string(i) + ", 0);")->is_success());
     }
 
+    std::vector<double> single_samples;
     auto median_of = [&](int samples, int rows_per_stmt, int id_base) {
         std::vector<double> us;
         us.reserve(static_cast<size_t>(samples));
@@ -76,6 +77,9 @@ TEST_CASE("integration::cpp::test_statement_latency::single_statement_is_not_qua
             us.push_back(std::chrono::duration<double, std::micro>(finish - start).count());
         }
         std::sort(us.begin(), us.end());
+        if (rows_per_stmt == 1) {
+            single_samples = us;
+        }
         return us[us.size() / 2];
     };
 
@@ -83,6 +87,16 @@ TEST_CASE("integration::cpp::test_statement_latency::single_statement_is_not_qua
     const double single_us = median_of(kMeasured, 1, 100000);
     const double batch_us = median_of(15, kBatchRows, 500000);
     const double ratio = batch_us / single_us;
+    auto pct = [&](double q) {
+        const auto idx = static_cast<size_t>(q * static_cast<double>(single_samples.size() - 1));
+        return single_samples[idx];
+    };
+    // The whole distribution, not just the middle: a per-statement floor imposed by a watchdog poke
+    // shows up as a hard lower bound, which the minimum sees and the median does not.
+    WARN("PROBE single-row distribution us: min " << single_samples.front() << " p10 " << pct(0.10)
+                                                  << " p25 " << pct(0.25) << " median " << pct(0.50)
+                                                  << " p75 " << pct(0.75) << " p90 " << pct(0.90)
+                                                  << " max " << single_samples.back());
     INFO("single-row " << single_us << " us, " << kBatchRows << "-row " << batch_us
                        << " us, ratio " << ratio);
     CHECK(ratio > 6.0);

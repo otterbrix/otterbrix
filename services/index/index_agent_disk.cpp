@@ -111,8 +111,7 @@ namespace services::index {
               session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
-            // M3.5: the only recoverable-failure branch — propagate the bitcask
-            // txn-log IO error straight back to commit_inserts.
+            // Propagate the bitcask txn-log IO error straight back to commit_inserts.
             co_return bitcask->apply_txn_inserts(txn_id, values);
         }
         // Bulk fast path via the index_disk_t interface: insert_bulk_unchecked skips the
@@ -120,8 +119,8 @@ namespace services::index {
         // force_flush() persists once. bitcask additionally gets its pre-existing
         // rehash-suppression window (a bitcask-only optimization; btree needs none).
         // bulk_guard_t closes that window on scope exit so a mid-loop bail-out is clean.
-        // btree / txn_id==0 direct path stays assert+abort terminal: there is no
-        // recoverable failure to surface, so a clean run returns no_error().
+        // btree / txn_id==0 direct path stays assert+abort terminal: an insert itself has no
+        // recoverable failure to surface.
         struct bulk_guard_t {
             bitcask_index_disk_t* ptr{nullptr};
             ~bulk_guard_t() {
@@ -136,8 +135,9 @@ namespace services::index {
         for (const auto& [key, row_id] : values) {
             index_disk_->insert_bulk_unchecked(key, row_id);
         }
-        index_disk_->force_flush();
-        co_return core::error_t::no_error();
+        // The rows are only in the index once this succeeds. Reporting no_error on a failed flush
+        // would leave the statement believing the index matches the table when it does not.
+        co_return index_disk_->force_flush();
     }
 
     index_agent_disk_t::unique_future<core::error_t>
@@ -151,7 +151,7 @@ namespace services::index {
               session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
-            // M3.5: propagate the bitcask txn-log IO error to commit_deletes.
+            // Propagate the bitcask txn-log IO error to commit_deletes.
             co_return bitcask->apply_txn_deletes(txn_id, values);
         }
         // Bulk fast path: remove_bulk_unchecked skips btree's per-remove find() guard and
@@ -160,8 +160,7 @@ namespace services::index {
         for (const auto& [key, row_id] : values) {
             index_disk_->remove_bulk_unchecked(key, row_id);
         }
-        index_disk_->force_flush();
-        co_return core::error_t::no_error();
+        co_return index_disk_->force_flush();
     }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
@@ -170,7 +169,12 @@ namespace services::index {
         // in manager_index_t::flush_all_indexes before this became a mailbox op).
         trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
         if (index_disk_ && !is_dropped_) {
-            index_disk_->force_flush();
+            // Checkpoint path, not a statement: there is no cursor to fail here, so the result is
+            // recorded rather than propagated. The DML paths above DO propagate it.
+            auto flush_error = index_disk_->force_flush();
+            if (flush_error.type != core::error_code_t::none) {
+                error(log_, "index_agent_disk_t::force_flush: {}", flush_error.what);
+            }
         }
         co_return;
     }

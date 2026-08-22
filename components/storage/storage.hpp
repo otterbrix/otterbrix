@@ -121,7 +121,14 @@ namespace components::storage {
             return true;
         }
 
-        virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
+        // projected_cols holds storage chunk indices; EMPTY means every column, which is the same
+        // contract fetch_next_batch already uses. Columns outside the set keep their ordinal slot in
+        // the output chunk and are left as buffer-less stubs, so a consumer indexes the result the
+        // same way whether or not it asked for a projection.
+        virtual void fetch(vector::data_chunk_t& output,
+                           const vector::vector_t& row_ids,
+                           uint64_t count,
+                           const std::vector<size_t>& projected_cols) = 0;
 
         virtual void scan_segment(int64_t start,
                                   uint64_t count,

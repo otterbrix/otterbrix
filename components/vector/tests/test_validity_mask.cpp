@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/validation.hpp>
+#include <components/vector/vector.hpp>
+#include <core/resource_tracer.hpp>
+#include <memory_resource>
 
 // validity_mask_t over external buffers carries its resource
 // ==========================================================
@@ -191,4 +194,65 @@ TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed 
     }
     REQUIRE(ptr_mask.data() != buffer); // sliced into a private allocation
     REQUIRE(buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
+}
+
+// A validity mask must allocate ENTRIES, not rows
+// ===============================================
+//
+// The mask is a bitmap: one bit per row packed into 64-bit entries, and
+// validity_data_t::entry_count() is the conversion. Three allocation sites passed the ROW count
+// straight through instead (validation.cpp's size constructor, the lazy allocation in set(), and
+// resize()), so each reserved and filled 64 times the memory it needed: 8 KiB and 1024 stores for
+// a 1024-row mask that fits in 128 bytes and 16 stores. Over-allocation corrupts nothing, which is
+// why it survived — it showed up only as memset dominating the SSB query profile.
+TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[validity-size]") {
+    using namespace components::vector;
+
+    resource_tracer_t tracer(std::pmr::new_delete_resource());
+    constexpr uint64_t rows = 1024;
+    const uint64_t expected = validity_data_t::entry_count(rows) * sizeof(uint64_t);
+
+    {
+        validity_mask_t mask(&tracer, rows);
+        const auto allocated = tracer.total_allocated();
+        INFO("bytes allocated for a " << rows << "-row mask: " << allocated << ", one entry per row would be "
+                                      << rows * sizeof(uint64_t) << ", correct is " << expected);
+        // Positive control: a tracer reading zero would satisfy any upper bound.
+        REQUIRE(allocated > 0);
+        CHECK(allocated <= expected);
+
+        // And it must still behave as a mask over `rows` rows. Note all_valid() is defined as
+        // "no buffer at all" (validation.hpp:74), so a mask that OWNS a buffer is never all_valid
+        // even with every bit set — the bits are what this checks.
+        CHECK(mask.row_is_valid(rows - 1));
+        mask.set_invalid(rows - 1);
+        CHECK_FALSE(mask.row_is_valid(rows - 1));
+        CHECK(mask.row_is_valid(0));
+    }
+}
+
+// A vector that creates its own data must not build a validity mask first
+// =======================================================================
+//
+// vector_t's constructor used to build validity_mask_t{resource, capacity} in its member-init list
+// and then, when create_data is set, call validity_.reset() in the body — discarding the buffer it
+// had just allocated and filled. Every vector on the query path takes that branch, so every one of
+// them paid an allocation and a full initialisation for nothing.
+TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size]") {
+    using namespace components::vector;
+
+    resource_tracer_t tracer(std::pmr::new_delete_resource());
+    constexpr uint64_t capacity = 1024;
+
+    {
+        vector_t v(&tracer, components::types::logical_type::BIGINT, true, false, capacity);
+        const auto allocated = tracer.total_allocated();
+        const uint64_t data_bytes = capacity * sizeof(int64_t);
+        INFO("bytes allocated by a data-creating BIGINT vector: " << allocated << ", the data alone is "
+                                                                  << data_bytes);
+        REQUIRE(allocated > 0);
+        // The data buffer plus whatever bookkeeping the buffer carries — but no discarded mask,
+        // which would add entry_count(capacity) * 8 bytes on top.
+        CHECK(allocated < data_bytes + validity_data_t::entry_count(capacity) * sizeof(uint64_t));
+    }
 }

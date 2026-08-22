@@ -1,5 +1,7 @@
 #pragma once
 
+#include "temporary_spill_file.hpp"
+
 #include "block_handle.hpp"
 
 #include <array>
@@ -19,7 +21,8 @@ namespace components::table::storage {
         std::weak_ptr<block_handle_t> handle;
         uint64_t handle_sequence_number;
 
-        bool can_unload(block_handle_t& handle);
+        // Same staleness check as can_unload, but accepts a transient block the pool can spill.
+        bool can_evict(block_handle_t& handle);
         std::shared_ptr<block_handle_t> try_get_block_handle();
     };
 
@@ -98,6 +101,15 @@ namespace components::table::storage {
         // restored on the second-pass failure before returning the error.
         [[nodiscard]] core::result_wrapper_t<bool> set_limit(uint64_t limit);
 
+        // Scratch space for transient buffers pushed out of memory. A transient buffer has no block
+        // in the .otbx yet, so it cannot simply be dropped — spilling it here is what lets the pool
+        // make room instead of reporting out_of_memory.
+        [[nodiscard]] bool read_temporary(uint64_t slot, std::byte* data, uint64_t size) {
+            return spill_file_.read(slot, data, size);
+        }
+        void release_temporary(uint64_t slot, uint64_t size) { spill_file_.release(slot, size); }
+        uint64_t spilled_bytes() const noexcept { return spill_file_.bytes_in_use(); }
+
         void set_allocator_bulk_dealloc_flush_threashold(uint64_t threshold);
         uint64_t get_allocator_bulk_dealloc_flush_threashold();
 
@@ -124,8 +136,6 @@ namespace components::table::storage {
                                               uint64_t memory_limit,
                                               std::unique_ptr<file_buffer_t>* buffer = nullptr);
 
-        uint64_t purge_aged_blocks(uint32_t max_age_sec);
-        uint64_t purge_aged_blocks_internal(eviction_queue_t& queue, uint32_t max_age_sec, int64_t now, int64_t limit);
         void purge_queue(const block_handle_t& handle);
         bool add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle);
         eviction_queue_t& eviction_queue_for_handle(const block_handle_t& handle);
@@ -179,6 +189,7 @@ namespace components::table::storage {
         std::pmr::memory_resource* resource;
         std::mutex limit_lock;
         std::atomic<uint64_t> maximum_memory;
+        temporary_spill_file_t spill_file_;
         std::atomic<uint64_t> allocator_bulk_deallocation_flush_threshold;
         bool track_eviction_timestamps;
         std::vector<std::unique_ptr<eviction_queue_t>> queues;

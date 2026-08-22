@@ -156,28 +156,30 @@ namespace components::index {
 
     void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t) {}
 
-    void disk_hash_single_field_index_t::for_each_pending_insert_impl(
-        uint64_t txn_id,
-        const std::function<void(const value_t&, int64_t)>& fn) const {
+    index_t::pending_entries_t disk_hash_single_field_index_t::pending_inserts_impl(uint64_t txn_id) const {
+        pending_entries_t out{resource()};
         auto it = pending_inserts_.find(txn_id);
         if (it == pending_inserts_.end()) {
-            return;
+            return out;
         }
+        out.reserve(it->second.size());
         for (const auto& [encoded, row_id] : it->second) {
-            fn(decode_key(resource(), encoded), row_id);
+            out.push_back(pending_entry_t{decode_key(resource(), encoded), row_id});
         }
+        return out;
     }
 
-    void disk_hash_single_field_index_t::for_each_pending_delete_impl(
-        uint64_t txn_id,
-        const std::function<void(const value_t&, int64_t)>& fn) const {
+    index_t::pending_entries_t disk_hash_single_field_index_t::pending_deletes_impl(uint64_t txn_id) const {
+        pending_entries_t out{resource()};
         auto it = pending_deletes_.find(txn_id);
         if (it == pending_deletes_.end()) {
-            return;
+            return out;
         }
+        out.reserve(it->second.size());
         for (const auto& [encoded, row_id] : it->second) {
-            fn(decode_key(resource(), encoded), row_id);
+            out.push_back(pending_entry_t{decode_key(resource(), encoded), row_id});
         }
+        return out;
     }
 
     void disk_hash_single_field_index_t::clean_memory_to_new_elements_impl(std::size_t) {

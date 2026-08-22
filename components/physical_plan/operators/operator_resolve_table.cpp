@@ -3,6 +3,7 @@
 #include "catalog_write_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -26,6 +27,21 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
+
+    // Small projection helpers, one per read below. A projection that is too narrow does not
+    // fail — the column comes back as an ordinal-stable placeholder and the consumer silently
+    // reads nothing — so each of these names exactly the columns its read consumes.
+    std::pmr::vector<std::uint64_t> pg_class_oid_only(std::pmr::memory_resource* resource) {
+        std::pmr::vector<std::uint64_t> cols(resource);
+        cols.emplace_back(components::catalog::pg_class_col::oid);
+        return cols;
+    }
+
+    std::pmr::vector<std::uint64_t> pg_rewrite_action_only(std::pmr::memory_resource* resource) {
+        std::pmr::vector<std::uint64_t> cols(resource);
+        cols.emplace_back(components::catalog::pg_rewrite_col::ev_action);
+        return cols;
+    }
         // Output schema: (position int32, attoid uint32, attname string,
         // atttypid uint32, atttypspec string). Built once per operator into the
         // cached member (TASK C10) so even an empty result (table not found)
@@ -112,16 +128,25 @@ namespace components::operators {
                 }
             }
             if (input_namespace_oid_ == catalog::INVALID_OID && !dbname_.empty()) {
-                std::pmr::vector<std::string> ns_keys(resource_);
-                ns_keys.emplace_back("nspname");
+                std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
                 auto [_ns, nsf] =
                     actor_zeta::send(ctx->disk_address,
                                      &services::disk::manager_disk_t::read_chunks_by_key,
                                      exec_ctx,
                                      kPgNamespace,
                                      std::move(ns_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}));
-                auto ns_batches = co_await std::move(nsf);
+                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}),
+                             std::pmr::vector<std::uint64_t>{resource_});
+                auto ns_batches_r = co_await std::move(nsf);
+                if (ns_batches_r.has_error()) {
+                    // A catalog read that failed is not "row not found": reporting it as a miss is
+                    // how an unreadable catalog surfaced as a missing database or table. Every
+                    // catalog read in this operator propagates its error the same way.
+                    set_error(ns_batches_r.error());
+                    co_return;
+                }
+                auto& ns_batches = ns_batches_r.value();
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
                     !ns_batches[0].is_null(0, 0)) {
                     input_namespace_oid_ = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
@@ -139,11 +164,11 @@ namespace components::operators {
             // remains ONLY for unqualified names (dbname_ empty): no session
             // default-database substitution exists, so it is what makes
             // unqualified access work.
-            std::pmr::vector<std::string> key_cols(resource_);
-            key_cols.emplace_back("relname");
+            std::pmr::vector<std::uint64_t> key_cols(resource_);
+            key_cols.emplace_back(catalog::pg_class_col::relname);
             auto keys_chunk = [&] {
                 if (input_namespace_oid_ != catalog::INVALID_OID) {
-                    key_cols.emplace_back("relnamespace");
+                    key_cols.emplace_back(catalog::pg_class_col::relnamespace);
                     return components::operators::make_key_chunk(resource_,
                                                                  std::string_view{relname_},
                                                                  static_cast<std::uint32_t>(input_namespace_oid_));
@@ -155,8 +180,17 @@ namespace components::operators {
                                                         exec_ctx,
                                                         kPgClass,
                                                         std::move(key_cols),
-                                                        std::move(keys_chunk));
-            auto lookup_batches = co_await std::move(lookup_f);
+                                                        std::move(keys_chunk),
+                                                        // Only the oid is read from this lookup
+                                                        // (see the get_value below); the key
+                                                        // columns are added by the agent.
+                                                        pg_class_oid_only(resource_));
+            auto lookup_batches_r = co_await std::move(lookup_f);
+            if (lookup_batches_r.has_error()) {
+                set_error(lookup_batches_r.error());
+                co_return;
+            }
+            auto& lookup_batches = lookup_batches_r.value();
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {
                 // Not found — emit empty output, leave found_=false.
@@ -172,15 +206,27 @@ namespace components::operators {
         // pg_class layout: [0=oid, 1=relname, 2=relnamespace, 3=relkind,
         // 4=relstoragemode]. We key by "oid" so we get a single row at most.
         {
-            std::pmr::vector<std::string> pc_keys(resource_);
-            pc_keys.emplace_back("oid");
+            std::pmr::vector<std::uint64_t> pc_keys(resource_);
+            pc_keys.emplace_back(catalog::pg_class_col::oid);
+            // This read consumes exactly relnamespace and relkind (the two get_value calls below);
+            // the key column is added by the agent. Non-projected columns stay ordinal-stable
+            // placeholders, which is why the reads below still address columns 2 and 3.
+            std::pmr::vector<std::uint64_t> pc_projection(resource_);
+            pc_projection.emplace_back(catalog::pg_class_col::relnamespace);
+            pc_projection.emplace_back(catalog::pg_class_col::relkind);
             auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_));
-            auto pc_batches = co_await std::move(pcf);
+                                               components::operators::make_key_chunk(resource_, table_oid_),
+                                               std::move(pc_projection));
+            auto pc_batches_r = co_await std::move(pcf);
+            if (pc_batches_r.has_error()) {
+                set_error(pc_batches_r.error());
+                co_return;
+            }
+            auto& pc_batches = pc_batches_r.value();
             if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
                 found_ = true;
                 if (!pc_batches[0].is_null(2, 0)) {
@@ -218,15 +264,22 @@ namespace components::operators {
         // here for REFRESH MATERIALIZED VIEW.
         std::string view_sql;
         if (relkind_ == catalog::relkind::view || relkind_ == catalog::relkind::materialized_view) {
-            std::pmr::vector<std::string> pr_keys(resource_);
-            pr_keys.emplace_back("ev_class");
+            std::pmr::vector<std::uint64_t> pr_keys(resource_);
+            pr_keys.emplace_back(catalog::pg_rewrite_col::ev_class);
             auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgRewrite,
                                                std::move(pr_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_));
-            auto pr_batches = co_await std::move(prf);
+                                               components::operators::make_key_chunk(resource_, table_oid_),
+                                               // Only ev_action is read below.
+                                               pg_rewrite_action_only(resource_));
+            auto pr_batches_r = co_await std::move(prf);
+            if (pr_batches_r.has_error()) {
+                set_error(pr_batches_r.error());
+                co_return;
+            }
+            auto& pr_batches = pr_batches_r.value();
             if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5) {
                 if (!pr_batches[0].is_null(4, 0)) {
                     view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
@@ -262,15 +315,21 @@ namespace components::operators {
             //   - drop entries whose chosen max-version row is a tombstone
             //     (attrefcount <= 0),
             //   - sort by attoid (register-order in storage adopt_schema).
-            std::pmr::vector<std::string> cc_keys(resource_);
-            cc_keys.emplace_back("relid");
+            std::pmr::vector<std::uint64_t> cc_keys(resource_);
+            cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
             auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgComputedColumn,
                                                std::move(cc_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_));
-            auto cc_batches = co_await std::move(ccf);
+                                               components::operators::make_key_chunk(resource_, table_oid_),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto cc_batches_r = co_await std::move(ccf);
+            if (cc_batches_r.has_error()) {
+                set_error(cc_batches_r.error());
+                co_return;
+            }
+            auto& cc_batches = cc_batches_r.value();
 
             struct cc_candidate_t {
                 catalog::oid_t attoid;
@@ -379,15 +438,21 @@ namespace components::operators {
             // pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
             // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
             // 7=attisdropped, 8=atttypspec, 9=attdefspec].
-            std::pmr::vector<std::string> pa_keys(resource_);
-            pa_keys.emplace_back("attrelid");
+            std::pmr::vector<std::uint64_t> pa_keys(resource_);
+            pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
             auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgAttribute,
                                                std::move(pa_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_));
-            auto pa_batches = co_await std::move(paf);
+                                               components::operators::make_key_chunk(resource_, table_oid_),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto pa_batches_r = co_await std::move(paf);
+            if (pa_batches_r.has_error()) {
+                set_error(pa_batches_r.error());
+                co_return;
+            }
+            auto& pa_batches = pa_batches_r.value();
 
             // Column visible to this snapshot iff added_at_commit_id <= start_time
             // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > start_time).

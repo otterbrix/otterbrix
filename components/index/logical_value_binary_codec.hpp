@@ -4,6 +4,7 @@
 #include <components/types/physical_value.hpp>
 
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <memory_resource>
 #include <stdexcept>
@@ -22,10 +23,17 @@ namespace components::index::codec {
         out.append(reinterpret_cast<const char*>(bytes), sizeof(T));
     }
 
+    // `ok` reports a SHORT READ — a truncated or corrupt payload, which is data, not a bug.
+    // It used to throw, and this codec runs on every disk-index key: an exception here unwinds
+    // into an actor coroutine whose unhandled_exception() is empty, so a corrupt key became a
+    // hang instead of an error. Callers that pass no flag keep the old shape and get T{}.
     template<typename T>
-    inline T read_le(const std::pmr::string& in, size_t& pos) {
+    inline T read_le(const std::pmr::string& in, size_t& pos, bool* ok = nullptr) {
         if (pos + sizeof(T) > in.size()) {
-            throw std::runtime_error("logical value codec: short read");
+            if (ok != nullptr) {
+                *ok = false;
+            }
+            return T{};
         }
         T v{};
         std::memcpy(&v, in.data() + pos, sizeof(T));
@@ -65,7 +73,8 @@ namespace components::index::codec {
                 append(key.value<components::types::int128_t>());
                 break;
             default:
-                throw std::runtime_error("logical value codec: unsupported DECIMAL physical storage");
+                assert(false && "logical value codec: unsupported DECIMAL physical storage");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
         }
     }
 
@@ -86,7 +95,11 @@ namespace components::index::codec {
                                                        decimal_type,
                                                        read.template operator()<components::types::int128_t>());
             default:
-                throw std::runtime_error("logical value codec: unsupported DECIMAL physical storage during decode");
+                assert(false && "logical value codec: unsupported DECIMAL physical storage during decode");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
+                // NDEBUG compiles the assert out; without this the function falls off the end,
+                // which is undefined behaviour in exactly the build users ship.
+                std::abort();
         }
     }
 
@@ -141,7 +154,8 @@ namespace components::index::codec {
                 break;
             }
             default:
-                throw std::runtime_error("logical value codec: unsupported physical key type");
+                assert(false && "logical value codec: unsupported physical key type");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
         }
     }
 
@@ -158,27 +172,32 @@ namespace components::index::codec {
                 return logical_value_t(resource, components::types::complex_logical_type{logical_type_t::NA});
             case physical_type_t::BOOL:
                 if (logical != logical_type_t::BOOLEAN) {
-                    throw std::runtime_error("logical value codec: unsupported BOOL logical key type during decode");
+                    assert(false && "logical value codec: unsupported BOOL logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<uint8_t>(in, pos) != 0);
             case physical_type_t::INT8:
                 if (logical != logical_type_t::TINYINT) {
-                    throw std::runtime_error("logical value codec: unsupported INT8 logical key type during decode");
+                    assert(false && "logical value codec: unsupported INT8 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<int8_t>(in, pos));
             case physical_type_t::UINT8:
                 if (logical != logical_type_t::UTINYINT) {
-                    throw std::runtime_error("logical value codec: unsupported UINT8 logical key type during decode");
+                    assert(false && "logical value codec: unsupported UINT8 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<uint8_t>(in, pos));
             case physical_type_t::INT16:
                 if (logical != logical_type_t::SMALLINT) {
-                    throw std::runtime_error("logical value codec: unsupported INT16 logical key type during decode");
+                    assert(false && "logical value codec: unsupported INT16 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<int16_t>(in, pos));
             case physical_type_t::UINT16:
                 if (logical != logical_type_t::USMALLINT) {
-                    throw std::runtime_error("logical value codec: unsupported UINT16 logical key type during decode");
+                    assert(false && "logical value codec: unsupported UINT16 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<uint16_t>(in, pos));
             case physical_type_t::INT32: {
@@ -187,13 +206,15 @@ namespace components::index::codec {
                     return logical_value_t(resource, core::date::date_t{core::date::days{v}});
                 }
                 if (logical != logical_type_t::INTEGER) {
-                    throw std::runtime_error("logical value codec: unsupported INT32 logical key type during decode");
+                    assert(false && "logical value codec: unsupported INT32 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, v);
             }
             case physical_type_t::UINT32:
                 if (logical != logical_type_t::UINTEGER) {
-                    throw std::runtime_error("logical value codec: unsupported UINT32 logical key type during decode");
+                    assert(false && "logical value codec: unsupported UINT32 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<uint32_t>(in, pos));
             case physical_type_t::INT64: {
@@ -208,39 +229,51 @@ namespace components::index::codec {
                     case logical_type_t::TIMESTAMP_TZ:
                         return logical_value_t(resource, core::date::timestamptz_t{core::date::microseconds{v}});
                     default:
-                        throw std::runtime_error(
-                            "logical value codec: unsupported INT64 logical key type during decode");
+                        assert(false && "logical value codec: unsupported INT64 logical key type during decode");
+                        std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
             }
             case physical_type_t::UINT64:
                 if (logical != logical_type_t::UBIGINT) {
-                    throw std::runtime_error("logical value codec: unsupported UINT64 logical key type during decode");
+                    assert(false && "logical value codec: unsupported UINT64 logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<uint64_t>(in, pos));
             case physical_type_t::FLOAT:
                 if (logical != logical_type_t::FLOAT) {
-                    throw std::runtime_error("logical value codec: unsupported FLOAT logical key type during decode");
+                    assert(false && "logical value codec: unsupported FLOAT logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<float>(in, pos));
             case physical_type_t::DOUBLE:
                 if (logical != logical_type_t::DOUBLE) {
-                    throw std::runtime_error("logical value codec: unsupported DOUBLE logical key type during decode");
+                    assert(false && "logical value codec: unsupported DOUBLE logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 return logical_value_t(resource, read_le<double>(in, pos));
             case physical_type_t::STRING: {
                 if (logical != logical_type_t::STRING_LITERAL) {
-                    throw std::runtime_error("logical value codec: unsupported STRING logical key type during decode");
+                    assert(false && "logical value codec: unsupported STRING logical key type during decode");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 }
                 const auto n = read_le<uint32_t>(in, pos);
                 if (pos + n > in.size()) {
-                    throw std::runtime_error("logical value codec: string overrun");
+                    // Corrupt payload, same class as a short read: reported as an NA value
+                    // rather than thrown, because this runs inside an actor coroutine.
+                    assert(false && "logical value codec: string overrun");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
+                    return logical_value_t(resource, components::types::complex_logical_type{logical_type_t::NA});
                 }
                 std::pmr::string s(in.data() + pos, n, resource);
                 pos += n;
                 return logical_value_t(resource, std::move(s));
             }
             default:
-                throw std::runtime_error("logical value codec: unsupported physical key type during decode");
+                assert(false && "logical value codec: unsupported physical key type during decode");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
+                // NDEBUG compiles the assert out; without this the function falls off the end,
+                // which is undefined behaviour in exactly the build users ship.
+                std::abort();
         }
     }
 
@@ -308,7 +341,8 @@ namespace components::index::codec {
                 break;
             }
             default:
-                throw std::runtime_error("disk hash key codec: unsupported physical key type");
+                assert(false && "disk hash key codec: unsupported physical key type");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
         }
         return out;
     }
@@ -361,6 +395,7 @@ namespace components::index::codec {
             }
             default:
                 assert(false && "read_logical_value_as_view: unsupported physical type");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 return components::types::physical_value();
         }
     }
@@ -386,6 +421,7 @@ namespace components::index::codec {
                     break;
                 default:
                     assert(false && "skip_logical_value: unsupported DECIMAL storage");
+                    std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                     break;
             }
             return;
@@ -435,6 +471,7 @@ namespace components::index::codec {
             }
             default:
                 assert(false && "skip_logical_value: unsupported physical type");
+                std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 break;
         }
     }

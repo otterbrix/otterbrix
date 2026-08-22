@@ -38,8 +38,8 @@ private:
     void revert_insert_impl(uint64_t) override {}
     void revert_delete_impl(uint64_t) override {}
     void cleanup_versions_impl(uint64_t) override {}
-    void for_each_pending_insert_impl(uint64_t, const std::function<void(const value_t&, int64_t)>&) const override {}
-    void for_each_pending_delete_impl(uint64_t, const std::function<void(const value_t&, int64_t)>&) const override {}
+    pending_entries_t pending_inserts_impl(uint64_t) const override { return pending_entries_t{resource()}; }
+    pending_entries_t pending_deletes_impl(uint64_t) const override { return pending_entries_t{resource()}; }
     void clean_memory_to_new_elements_impl(size_t) override {}
 
     class impl_t final : public iterator::iterator_impl_t {

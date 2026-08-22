@@ -1,4 +1,6 @@
 #include "operator_delete.hpp"
+
+#include <atomic>
 #include "dml_util.hpp"
 #include "join_utils.hpp"
 #include <components/vector/vector_operations.hpp>
@@ -10,6 +12,13 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_delete_scanned_columns{0};
+    } // namespace
+    uint64_t delete_scanned_columns() noexcept { return g_delete_scanned_columns.load(std::memory_order_relaxed); }
+#endif
 
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
                                      log_t log,
@@ -109,9 +118,6 @@ namespace components::operators {
 
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
-        }
-        for (const auto& type : types) {
-            modified_->updated_types_map()[{std::pmr::string(type.alias(), resource_), type}] += index;
         }
 
         // Stage the matched OLD scan rows + their absolute ids for the index mirror
@@ -294,9 +300,6 @@ namespace components::operators {
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
-        for (const auto& type : types_left) {
-            modified_->updated_types_map()[{std::pmr::string(type.alias(), resource_), type}] += index;
-        }
 
         // Stage the matched OLD left rows + their absolute ids for the index mirror,
         // exactly as the simple (consume_batch_) path does — the merged staged chunk
@@ -346,6 +349,15 @@ namespace components::operators {
         // drains the staged state into the single WAL->storage->index commit.
         // USING-join shape: probe the LEFT batch against the materialized RIGHT
         // (USING) build chunk; otherwise the simple predicate-scan fold.
+#ifdef DEV_MODE
+        for (const auto& column : input.data) {
+            // A placeholder for an unprojected column carries no buffer at all; a real
+            // (even all-NULL) column does. Counting buffers counts what the scan read.
+            if (column.data() != nullptr || column.auxiliary() != nullptr) {
+                g_delete_scanned_columns.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+#endif
         if (right_ && right_->output()) {
             return consume_join_batch_(ctx, input, right_->output()->chunks());
         }
@@ -396,8 +408,11 @@ namespace components::operators {
         // OWN WAL (unlike INSERT, where the disk agent owns it) and appends
         // nothing, so the outcome carries no append range.
         if (modified_ && modified_->size() > 0) {
-            const bool mirror_index =
-                ctx->index_address != actor_zeta::address_t::empty_address() && !index_old_chunks_.empty();
+            // See operator_insert: "an index manager exists" holds for every table, so the real
+            // question is whether the TABLE has an index.
+            const bool mirror_index = table_has_indexes_ &&
+                                      ctx->index_address != actor_zeta::address_t::empty_address() &&
+                                      !index_old_chunks_.empty();
 
             auto op = [this, ctx, mirror_index](
                           std::pmr::memory_resource* res) -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
@@ -483,7 +498,12 @@ namespace components::operators {
                                                        table_oid_,
                                                        std::move(index_old_copy),
                                                        std::move(index_old_row_ids_));
-                    co_await std::move(ixf);
+                    auto index_error = co_await std::move(ixf);
+                    if (index_error.contains_error()) {
+                        // Rows removed from the table but still present in the index: the next
+                        // index scan would return them. Fail the statement instead.
+                        co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
+                    }
                 }
 
                 affected_rows_ += static_cast<uint64_t>(modified_size);

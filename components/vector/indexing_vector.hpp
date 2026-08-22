@@ -1,6 +1,10 @@
 #pragma once
 #include <memory>
+#include <memory_resource>
 #include <unordered_map>
+
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 
 #include <core/pmr.hpp>
 
@@ -9,20 +13,27 @@ namespace components::vector {
 
     constexpr size_t DEFAULT_VECTOR_CAPACITY = 1024;
 
-    struct indexing_data {
+    // Intrusively counted, not shared_ptr: the index array is copied by value all over the
+    // vector operations, so every copy used to touch a separate control block. std::shared_ptr
+    // is also on the project's forbidden list.
+    struct indexing_data : public boost::intrusive_ref_counter<indexing_data> {
         explicit indexing_data(std::pmr::memory_resource* resource, size_t count);
 
         std::unique_ptr<uint64_t[], core::pmr::array_deleter_t> data;
     };
 
-    using indexing_cache_t = std::unordered_map<uint64_t*, std::shared_ptr<vector_buffer_t>>;
+    // pmr container: it is built per merge/slice on the caller's resource rather than on the
+    // global one. The mapped type is still a shared_ptr — vector_buffer_t's ownership is a
+    // separate change, flagged by a TODO in vector_buffer.hpp.
+    using indexing_cache_t =
+        std::pmr::unordered_map<uint64_t*, std::shared_ptr<vector_buffer_t>>;
 
     class indexing_vector_t {
     public:
         explicit indexing_vector_t(std::pmr::memory_resource* resource, uint64_t* indexing = nullptr) noexcept;
         explicit indexing_vector_t(std::pmr::memory_resource* resource, uint64_t count);
         explicit indexing_vector_t(std::pmr::memory_resource* resource, uint64_t start, uint64_t count);
-        explicit indexing_vector_t(std::shared_ptr<indexing_data> data) noexcept;
+        explicit indexing_vector_t(boost::intrusive_ptr<indexing_data> data) noexcept;
 
         indexing_vector_t(const indexing_vector_t& other);
         indexing_vector_t& operator=(const indexing_vector_t& other);
@@ -37,7 +48,7 @@ namespace components::vector {
         uint64_t get_index(uint64_t index) const;
         uint64_t* data() noexcept;
         const uint64_t* data() const noexcept;
-        std::shared_ptr<indexing_data>
+        boost::intrusive_ptr<indexing_data>
         slice(std::pmr::memory_resource* resource, const indexing_vector_t& indexing, uint64_t count) const;
         uint64_t& operator[](uint64_t index) const;
         bool is_valid() const noexcept;
@@ -46,7 +57,7 @@ namespace components::vector {
 
     private:
         std::pmr::memory_resource* resource_;
-        std::shared_ptr<indexing_data> data_;
+        boost::intrusive_ptr<indexing_data> data_;
         uint64_t* indexing_{nullptr};
     };
 

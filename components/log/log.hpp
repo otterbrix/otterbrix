@@ -29,37 +29,64 @@ public:
 
     inline spdlog::logger* operator->() const noexcept { return logger_.get(); }
 
+    // True when a message at this level would actually be written. Call sites use it to skip
+    // building an argument that exists only for the log line: arguments are evaluated BEFORE
+    // the logging function is entered, so a guard inside those functions cannot save that work.
+    inline bool should_log(level l) const noexcept {
+        return logger_ != nullptr && logger_->should_log(static_cast<spdlog::level::level_enum>(l));
+    }
+
 private:
     std::shared_ptr<spdlog::logger> logger_;
 };
 
+// The guards below skip formatting only, so they change no observable behaviour; an expensive
+// argument must still be guarded at the call site.
 template<typename S, typename... Args>
 auto info(log_t& log, const S& format_str, Args&&... args) -> void {
+    if (!log.should_log(log_t::level::info)) {
+        return;
+    }
     log->info(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto debug(log_t& log, const S& format_str, Args&&... args) -> void {
+    if (!log.should_log(log_t::level::debug)) {
+        return;
+    }
     log->debug(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto warn(log_t& log, const S& format_str, Args&&... args) -> void {
+    if (!log.should_log(log_t::level::warn)) {
+        return;
+    }
     log->warn(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto error(log_t& log, const S& format_str, Args&&... args) -> void {
+    if (!log.should_log(log_t::level::err)) {
+        return;
+    }
     log->error(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto critical(log_t& log, const S& format_str, Args&&... args) -> void {
+    if (!log.should_log(log_t::level::critical)) {
+        return;
+    }
     log->critical(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto trace(log_t& log, const S& format_str, Args&&... args) -> void {
+    if (!log.should_log(log_t::level::trace)) {
+        return;
+    }
     log->trace(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 

@@ -72,10 +72,8 @@ namespace components::index {
         void revert_insert_impl(uint64_t txn_id) final;
         void revert_delete_impl(uint64_t txn_id) final;
         void cleanup_versions_impl(uint64_t lowest_active) final;
-        void for_each_pending_insert_impl(uint64_t txn_id,
-                                          const std::function<void(const value_t&, int64_t)>& fn) const final;
-        void for_each_pending_delete_impl(uint64_t txn_id,
-                                          const std::function<void(const value_t&, int64_t)>& fn) const final;
+        index_t::pending_entries_t pending_inserts_impl(uint64_t txn_id) const final;
+        index_t::pending_entries_t pending_deletes_impl(uint64_t txn_id) const final;
         void clean_memory_to_new_elements_impl(std::size_t count) final;
 
         disk_hash_storage_ptr disk_table_;

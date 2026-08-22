@@ -16,9 +16,13 @@ namespace components::operators {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_update_storage_update_sends{0};
+        std::atomic<uint64_t> g_update_gather_copy_calls{0};
     } // namespace
     uint64_t update_storage_update_sends() noexcept {
         return g_update_storage_update_sends.load(std::memory_order_relaxed);
+    }
+    uint64_t update_gather_copy_calls() noexcept {
+        return g_update_gather_copy_calls.load(std::memory_order_relaxed);
     }
 #endif
 
@@ -197,14 +201,10 @@ namespace components::operators {
         }
         auto& result = computed.value();
 
-        // Trailing column is is_modified. strict_equal is total, so it is never null.
-        const auto& flags = result.data.back();
-        for (uint64_t row = 0; row < match_count; row++) {
-            if (flags.get_value<bool>(row)) {
-                modified_->append(row);
-            }
-        }
-        // Read the flags before writing: the simple path's graph input IS out_chunk.
+        // The update graph still emits a trailing is_modified column; nothing consumes it.
+        // UPDATE's bounded-sink hook counts MATCHED rows (output_), which is the write-set
+        // actually staged for storage — operator_delete counts modified_ because that is
+        // where ITS write-set (matched row-ids) lives.
         for (size_t i = 0; i < updates_.size(); i++) {
             result.data[i].flatten(match_count);
             if (auto error = write_target(updates_[i]->key(), result.data[i], out_chunk, match_count);
@@ -219,7 +219,6 @@ namespace components::operators {
         if (simple_init_done_) {
             return;
         }
-        modified_ = operators::make_operator_write_data(resource_);
         // Accumulator for the NEW updated rows; consume_batch_ appends one out_chunk
         // per matched batch. await_async_and_resume iterates output_->chunks().
         output_ = operators::make_operator_data(resource_, chunks_vector_t{resource_});
@@ -263,6 +262,12 @@ namespace components::operators {
         const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
 
         data_chunk_t out_chunk(resource, types, chunk.size());
+        // Buffer the matched SOURCE row positions, then gather each column with ONE indexed
+        // copy once the match loop has settled the final row count. A cell-at-a-time copy goes
+        // through the 5-arg vector_ops::copy overload, which builds an indexing_vector_t sized
+        // to the row offset — a pmr allocation and an offset-long fill to move a single value.
+        // join_utils documents the same trap on the join side.
+        vector::indexing_vector_t matched_indexing(resource, chunk.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk.size(); ++i) {
             if (decisions != nullptr && (decisions->is_null(i) || !decisions->get_value<bool>(i))) {
@@ -274,10 +279,16 @@ namespace components::operators {
             } else {
                 out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
             }
-            for (size_t k = 0; k < chunk.column_count(); ++k) {
-                vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], i + 1, i, index);
-            }
+            matched_indexing.set_index(index, i);
             vector::validate_chunk_capacity(out_chunk, ++index);
+        }
+        if (index != 0) {
+            for (size_t k = 0; k < chunk.column_count(); ++k) {
+#ifdef DEV_MODE
+                g_update_gather_copy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+                vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], matched_indexing, index, 0, 0);
+            }
         }
         out_chunk.set_cardinality(index);
         if (index == 0) {
@@ -311,10 +322,10 @@ namespace components::operators {
         // (FROM) build chunks: a semi-join (a target row is updated once regardless
         // of how many FROM rows it matches). Per matched LEFT row it builds the
         // updated out_chunk (matched columns, SET applied), accumulates it into
-        // output_ + modified_, stages the matched OLD rows for the index
-        // mirror (aligned by row_id with the NEW rows), and — for RETURNING — keeps
-        // the matched FROM rows in lockstep so a joined RETURNING column reads them.
-        // push() calls it per LEFT batch. await_async_and_resume drains it all.
+        // output_, stages the matched OLD rows for the index mirror (aligned by
+        // row_id with the NEW rows), and — for RETURNING — keeps the matched FROM
+        // rows in lockstep so a joined RETURNING column reads them. push() calls it
+        // per LEFT batch. await_async_and_resume drains it all.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -358,6 +369,11 @@ namespace components::operators {
 
         data_chunk_t out_chunk(resource, types_left, chunk_left.size());
         data_chunk_t right_chunk(resource, types_right, chunk_left.size());
+        // LEFT-side gather buffer: every matched row comes from this one chunk_left, so the
+        // target columns are gathered with ONE indexed copy each after the loop (see
+        // consume_batch_). The RIGHT side cannot be collapsed the same way — matched FROM rows
+        // may come from DIFFERENT right chunks — so it stays cell-at-a-time here.
+        vector::indexing_vector_t left_indexing(resource, chunk_left.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); ++i) {
             // Matched-row bound (UPDATE ... FROM ... LIMIT n): stop once the running matched
@@ -397,10 +413,11 @@ namespace components::operators {
                     } else {
                         out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
                     }
-                    for (size_t k = 0; k < chunk_left.column_count(); ++k) {
-                        vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, index);
-                    }
+                    left_indexing.set_index(index, i);
                     for (size_t k = 0; k < chunk_right.column_count(); ++k) {
+#ifdef DEV_MODE
+                        g_update_gather_copy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
                         vector::vector_ops::copy(chunk_right.data[k], right_chunk.data[k], j + 1, j, index);
                     }
                     ++index;
@@ -415,6 +432,14 @@ namespace components::operators {
                 if (row_matched) {
                     break;
                 }
+            }
+        }
+        if (index != 0) {
+            for (size_t k = 0; k < chunk_left.column_count(); ++k) {
+#ifdef DEV_MODE
+                g_update_gather_copy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+                vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], left_indexing, index, 0, 0);
             }
         }
         // Count matched left rows at MATCH time so the bound survives mid-pump flushes.
@@ -447,10 +472,10 @@ namespace components::operators {
     core::error_t
     operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // STREAMING DML SINK: fold one scan batch into the updated-rows accumulator
-        // (output_), modified_, and the index-old staging. Emits
-        // nothing; await_async_and_resume drains the staged state into the single
-        // WAL->storage->index commit. FROM-join shape: probe the LEFT batch against
-        // the materialized RIGHT (FROM) build chunks; otherwise the simple fold.
+        // (output_) and the index-old staging. Emits nothing; await_async_and_resume
+        // drains the staged state into the single WAL->storage->index commit.
+        // FROM-join shape: probe the LEFT batch against the materialized RIGHT (FROM)
+        // build chunks; otherwise the simple fold.
         if (right_ && right_->output()) {
             return consume_join_batch_(ctx, input, right_->output()->chunks());
         }
@@ -477,7 +502,10 @@ namespace components::operators {
                                                      table_oid_};
             // See operator_insert comment on db_oid temporary hardcode.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address();
+            // See operator_insert: gate on the TABLE having an index, not on the index manager
+            // existing (which it always does).
+            const bool mirror_index =
+                table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
 
             // STREAMING invariant: consume_batch_/consume_join_batch_ stage exactly one
             // OLD-row chunk per accumulated updated chunk, so index_old_chunks_ is in
@@ -621,7 +649,12 @@ namespace components::operators {
                                                        std::move(idx_new),
                                                        std::move(idx_row_ids),
                                                        range_start);
-                    co_await std::move(ixf);
+                    auto index_error = co_await std::move(ixf);
+                    if (index_error.contains_error()) {
+                        // The index still points at the pre-update key. Fail rather than let the
+                        // table and the index disagree silently.
+                        co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
+                    }
                 }
 
                 // 5. Without RETURNING the affected count accumulates across flushes

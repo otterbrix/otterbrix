@@ -30,7 +30,6 @@ namespace components::table {
         }
         column_definitions_.emplace_back(new_column);
 
-        std::lock_guard parent_lock(parent.append_lock_);
 
         this->row_groups_ = parent.row_groups_->add_column(new_column);
 
@@ -40,7 +39,6 @@ namespace components::table {
     data_table_t::data_table_t(data_table_t& parent, uint64_t removed_column)
         : resource_(parent.resource_)
         , is_root_(true) {
-        std::lock_guard parent_lock(parent.append_lock_);
 
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
@@ -67,7 +65,6 @@ namespace components::table {
                                const std::vector<storage_index_t>&)
         : resource_(parent.resource_)
         , is_root_(true) {
-        std::lock_guard lock(append_lock_);
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
@@ -336,8 +333,9 @@ namespace components::table {
                              const std::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
-                             column_fetch_state& state) {
-        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state);
+                             column_fetch_state& state,
+                             const std::vector<size_t>& projected_cols) {
+        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
@@ -346,7 +344,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::append_lock(table_append_state& state) {
-        state.append_lock = std::unique_lock(append_lock_);
+        state.append_locked = true;
         // Concurrent DDL altered the table (no longer root). Report a write_conflict up to the
         // append boundary for a graceful txn abort, instead of aborting: under -fno-exceptions a
         // throw inside an actor-zeta coroutine is silently swallowed.
@@ -362,9 +360,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::initialize_append(table_append_state& state) {
-        assert(state.append_lock &&
+        assert(state.append_locked &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
-        if (!state.append_lock) {
+        if (!state.append_locked) {
             return core::error_t(
                 core::error_code_t::invalid_parameter,
                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));

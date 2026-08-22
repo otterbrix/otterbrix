@@ -361,7 +361,7 @@ TEST_CASE("components::table::data_table") {
                 rows.set_value(local, static_cast<int64_t>(base + local));
             }
             data_chunk_t result(&resource, data_table->copy_types(), count);
-            data_table->fetch(result, column_indices, rows, count, state);
+            data_table->fetch(result, column_indices, rows, count, state, std::vector<size_t>{});
             REQUIRE(result.size() == count);
             for (size_t local = 0; local < count; local++) {
                 check_cols(result, local, base + local, base_layout);

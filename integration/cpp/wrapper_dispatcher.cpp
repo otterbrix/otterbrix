@@ -223,10 +223,15 @@ namespace otterbrix {
 
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,
                                                  components::logical_plan::execution_plan_t plan) {
-        trace(log_,
-              "wrapper_dispatcher_t::send_plan session: {}, {} ",
-              session.data(),
-              plan.sub_queries.back()->to_string());
+        // Guarded at the CALL SITE, not inside trace(): the argument is evaluated before
+        // trace() is entered, so rendering the whole plan tree happened at every log level,
+        // including off, and was then discarded.
+        if (log_.should_log(log_t::level::trace)) {
+            trace(log_,
+                  "wrapper_dispatcher_t::send_plan session: {}, {} ",
+                  session.data(),
+                  plan.sub_queries.back()->to_string());
+        }
         assert(plan.parameters);
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),

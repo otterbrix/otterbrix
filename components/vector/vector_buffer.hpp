@@ -130,7 +130,7 @@ namespace components::vector {
     class dictionary_vector_buffer_t : public vector_buffer_t {
     public:
         explicit dictionary_vector_buffer_t(const indexing_vector_t& select);
-        explicit dictionary_vector_buffer_t(std::shared_ptr<indexing_data> data);
+        explicit dictionary_vector_buffer_t(boost::intrusive_ptr<indexing_data> data);
         explicit dictionary_vector_buffer_t(std::pmr::memory_resource* resource,
                                             uint64_t count = DEFAULT_VECTOR_CAPACITY);
 

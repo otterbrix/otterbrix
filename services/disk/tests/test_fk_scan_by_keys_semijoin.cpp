@@ -75,7 +75,9 @@ namespace {
         uint64_t total_rows() const override { return inner_.total_rows(); }
         uint64_t calculate_size() override { return inner_.calculate_size(); }
         void scan(data_chunk_t& o, const table_filter_t* f, int64_t l) override { inner_.scan(o, f, l); }
-        void fetch(data_chunk_t& o, const vector_t& ids, uint64_t c) override { inner_.fetch(o, ids, c); }
+        void fetch(data_chunk_t& o, const vector_t& ids, uint64_t c, const std::vector<size_t>& p) override {
+            inner_.fetch(o, ids, c, p);
+        }
         void scan_segment(int64_t s, uint64_t c, const std::function<void(data_chunk_t&)>& cb) override {
             inner_.scan_segment(s, c, cb);
         }
@@ -166,7 +168,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
     }
 
     auto kidx = key_indices(&resource, {0});
-    auto res = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    REQUIRE_FALSE(res_r.has_error());
+    auto& res = res_r.value();
 
     REQUIRE(res.size() == 4);
     CHECK(as_set(res[0]) == std::set<int64_t>{1, 4}); // id == 20 -> rows 1 and 4
@@ -211,7 +215,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
     keys.set_value(0, 1, logical_value_t{&resource, static_cast<int32_t>(40)});
 
     auto kidx = key_indices(&resource, {0});
-    auto res = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    REQUIRE_FALSE(res_r.has_error());
+    auto& res = res_r.value();
 
     REQUIRE(res.size() == 2);
     CHECK(as_set(res[0]) == std::set<int64_t>{1, 4}); // 20 (int32) matches 20 (int64)
@@ -251,7 +257,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
     keys.set_value(0, 1, logical_value_t{&resource, static_cast<int64_t>(30)});
 
     auto kidx = key_indices(&resource, {0});
-    auto res = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    REQUIRE_FALSE(res_r.has_error());
+    auto& res = res_r.value();
 
     REQUIRE(res.size() == 2);
     CHECK(res[0].empty());                         // NULL key -> no match
@@ -299,7 +307,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
     }
 
     auto kidx = key_indices(&resource, {0, 1});
-    auto res = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    REQUIRE_FALSE(res_r.has_error());
+    auto& res = res_r.value();
 
     REQUIRE(res.size() == 3);
     CHECK(as_set(res[0]) == std::set<int64_t>{1}); // (2,200) -> row 1

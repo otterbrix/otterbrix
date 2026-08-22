@@ -11,6 +11,7 @@ set(${PROJECT_NAME}_SOURCES
         test_oids.cpp
         test_system_schemas.cpp
         test_type_spec_roundtrip.cpp
+        test_pg_attribute_mvcc_columns.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -27,7 +27,7 @@ namespace services::disk {
             auto name_agent = "agent_disk_" + std::to_string(slot + 1);
             trace(log_, "manager_disk create_agent : {}", name_agent);
             const agent_role_t role = (slot == 0) ? agent_role_t::CATALOG : agent_role_t::USER_POOL;
-            auto agent = actor_zeta::spawn<agent_disk_t>(resource(), this, config_.path, log_, role, slot);
+            auto agent = actor_zeta::spawn<agent_disk_t>(resource(), config_.path, log_, role, slot);
             agents_.emplace_back(std::move(agent));
         }
     }

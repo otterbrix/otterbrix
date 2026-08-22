@@ -176,7 +176,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         for (int i = 2; i <= 100; i += 2) {
             index.remove(logical_value_t(&resource, int64_t(i)));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
@@ -207,7 +207,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
         for (int i = 1; i <= 2500; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -234,7 +234,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
@@ -273,7 +273,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
         }
 
         index.insert(logical_value_t(&resource, 30001l), 30001);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
@@ -310,7 +310,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
         }
 
         index.insert(logical_value_t(&resource, 60001l), 60001);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
@@ -339,7 +339,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
 
         index.insert(logical_value_t(&resource, 888l), 888);
         index.insert(logical_value_t(&resource, 889l), 889);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
@@ -388,7 +388,7 @@ TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
         index.remove(logical_value_t(&resource, 42l), 102); // transitions to tombstone
         REQUIRE(index.find(logical_value_t(&resource, 42l)).empty());
 
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -411,7 +411,7 @@ TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") 
         index.insert(logical_value_t(&resource, 10l), 7);
         index.insert(logical_value_t(&resource, 10l), 7); // duplicate must be ignored
         index.insert(logical_value_t(&resource, 10l), 8);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -459,7 +459,7 @@ TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreat
     {
         auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 99l), 999);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
         REQUIRE(std::filesystem::exists(path));
         REQUIRE(count_bitcask_data_files(path) == 1);
 
@@ -508,7 +508,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_qu
         index.insert(logical_value_t(&resource, std::string("alpha")), 1);
         index.insert(logical_value_t(&resource, std::string("beta")), 2);
         index.insert(logical_value_t(&resource, std::string("gamma")), 3);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -555,7 +555,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -568,7 +568,9 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
 
     {
         auto index = make_test_index(path, &resource);
-        index.force_flush(); // enqueue merge; publish should fail because target path is a directory
+        // The flush itself succeeds here; the failure this case is about happens later, in the
+        // background merge publish.
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -596,7 +598,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_
         auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 1l), 11);
         index.insert(logical_value_t(&resource, 2l), 22);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     const auto file_path = latest_bitcask_data_file(path);
@@ -627,7 +629,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
         index.insert(logical_value_t(&resource, 2l), 22);
         index.insert(logical_value_t(&resource, 100l), 100);
         index.insert(logical_value_t(&resource, 200l), 200);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     const auto file_path = latest_bitcask_data_file(path);
@@ -678,7 +680,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     std::vector<std::filesystem::path> segment_files;
@@ -749,7 +751,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_fi
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     const auto current_file = path / "CURRENT";
@@ -766,7 +768,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_fi
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).size() == 1);
         index.insert(logical_value_t(&resource, 9999l), 9999);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -788,7 +790,7 @@ TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists
         index.insert(logical_value_t(&resource, 77l), 1);
         index.remove(logical_value_t(&resource, 77l));
         index.insert(logical_value_t(&resource, 77l), 2);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -811,7 +813,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_pe
     {
         auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, key_with_null), 77);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -851,7 +853,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
 
     const std::string long_key(200, 'q');
     index.insert(logical_value_t(&resource, long_key), 4242);
-    index.force_flush();
+    REQUIRE(index.force_flush().type == core::error_code_t::none);
     loader_calls = 0;
 
     const auto rows = index.find(logical_value_t(&resource, long_key));
@@ -872,7 +874,7 @@ TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") 
     {
         auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, long_key), 12345);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {
@@ -972,7 +974,7 @@ TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     {
         auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 999l), max_row_id);
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     {

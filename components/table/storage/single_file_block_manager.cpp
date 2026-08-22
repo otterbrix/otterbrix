@@ -1,5 +1,7 @@
 #include "single_file_block_manager.hpp"
 
+#include <string>
+
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
@@ -24,6 +26,11 @@ namespace components::table::storage {
     single_file_block_manager_t::~single_file_block_manager_t() = default;
 
     uint64_t single_file_block_manager_t::block_location(uint64_t block_id) const {
+        // Only REAL block ids address this file. A transient/temporary id is >= MAXIMUM_BLOCK
+        // (1<<62), and the multiplication below then overflows and lands on a real block:
+        // (2^62 + N) * 2^18 mod 2^64 == N * 2^18. The checksum is recomputed on write, so the
+        // aliased block reads back as valid data and the corruption is silent. Refuse loudly.
+        assert(block_id < MAXIMUM_BLOCK && "block_location called with a non-file block id");
         return BLOCK_START + block_id * block_allocation_size();
     }
 
@@ -77,10 +84,18 @@ namespace components::table::storage {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"Failed to read main header", buffer_manager.resource()});
         }
-        if (!main_header.validate()) {
+        if (!main_header.magic_ok()) {
             return core::error_t(
                 core::error_code_t::data_corruption,
-                std::pmr::string{"Invalid database file: bad magic or version", buffer_manager.resource()});
+                std::pmr::string{"Invalid database file: bad magic", buffer_manager.resource()});
+        }
+        if (main_header.version != main_header_t::CURRENT_VERSION) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Unsupported database file version " +
+                                                      std::to_string(main_header.version) + ", this build writes " +
+                                                      std::to_string(main_header_t::CURRENT_VERSION) +
+                                                      " (metadata sub-block layout changed; the file must be recreated)",
+                                                  buffer_manager.resource()});
         }
 
         database_header_t header1, header2;
@@ -161,6 +176,9 @@ namespace components::table::storage {
     }
 
     void single_file_block_manager_t::mark_as_free(uint64_t block_id) {
+        // Same identity rule as block_location: a transient id here would put 2^62+N into the free
+        // list, and the next allocation would hand out an id that aliases a live block.
+        assert(block_id < MAXIMUM_BLOCK && "mark_as_free called with a non-file block id");
         std::lock_guard lock(allocation_lock_);
         used_blocks_.erase(block_id);
         modified_blocks_.erase(block_id);

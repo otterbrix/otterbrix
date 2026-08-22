@@ -10,6 +10,13 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    // Test-observable counter of the scan_by_keys sends the EXISTING-ROW layer
+    // issues. Each send is one FULL pass over the target table, so a statement that
+    // cannot change any unique key must leave this counter untouched.
+    uint64_t unique_constraint_scan_sends() noexcept;
+#endif
+
     // Enforces UNIQUE / PRIMARY KEY constraints on an INSERT or UPDATE chunk.
     //
     // One instance carries the column groups of every UNIQUE/PK constraint on the

@@ -3,6 +3,7 @@
 #include "alter_validators.hpp"
 
 #include <components/catalog/alter_column_validators.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -52,15 +53,23 @@ namespace components::operators {
             co_return;
         }
 
-        std::pmr::vector<std::string> pa_keys(resource_);
-        pa_keys.emplace_back("attoid");
+        std::pmr::vector<std::uint64_t> pa_keys(resource_);
+        pa_keys.emplace_back(catalog::pg_attribute_col::attoid);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, attoid_));
-        std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
+                                           components::operators::make_key_chunk(resource_, attoid_),
+                             std::pmr::vector<std::uint64_t>{resource_});
+        auto attr_batches_r = co_await std::move(paf);
+        if (attr_batches_r.has_error()) {
+            // A failed catalog read is not a miss; treating it as one lets the
+            // operation proceed on data that was never read (same below for pg_depend).
+            set_error(attr_batches_r.error());
+            co_return;
+        }
+        auto& attr_batches = attr_batches_r.value();
 
         catalog::oid_t attoid = catalog::INVALID_OID;
         std::int32_t attnum = 0;
@@ -99,17 +108,23 @@ namespace components::operators {
         }
 
         // read pg_depend for refclassid=pg_attribute, refobjid=attoid.
-        std::pmr::vector<std::string> pd_keys(resource_);
-        pd_keys.emplace_back("refclassid");
-        pd_keys.emplace_back("refobjid");
+        std::pmr::vector<std::uint64_t> pd_keys(resource_);
+        pd_keys.emplace_back(catalog::pg_depend_col::refclassid);
+        pd_keys.emplace_back(catalog::pg_depend_col::refobjid);
         auto [_pd, pdf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_chunks_by_key,
             exec_ctx,
             pg_dep_oid,
             std::move(pd_keys),
-            components::operators::make_key_chunk(resource_, catalog::well_known_oid::pg_attribute_table, attoid));
-        std::pmr::vector<components::vector::data_chunk_t> dep_batches = co_await std::move(pdf);
+            components::operators::make_key_chunk(resource_, catalog::well_known_oid::pg_attribute_table, attoid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+        auto dep_batches_r = co_await std::move(pdf);
+        if (dep_batches_r.has_error()) {
+            set_error(dep_batches_r.error());
+            co_return;
+        }
+        auto& dep_batches = dep_batches_r.value();
 
         std::size_t dep_row_count = 0;
         for (const auto& chunk : dep_batches) dep_row_count += chunk.size();

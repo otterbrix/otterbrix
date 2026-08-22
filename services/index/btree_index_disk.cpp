@@ -95,7 +95,10 @@ namespace services::index {
 
     void btree_index_disk_t::flush_if_needed() {
         if (should_flush()) {
-            force_flush();
+            auto flush_error = force_flush();
+            if (flush_error.type != core::error_code_t::none) {
+                return;
+            }
         }
     }
 
@@ -122,11 +125,17 @@ namespace services::index {
         mark_operation_dirty();
     }
 
-    void btree_index_disk_t::force_flush() {
+    core::error_t btree_index_disk_t::force_flush() {
         if (is_dirty() && db_) {
-            db_->flush();
+            if (!db_->flush()) {
+                // The tree keeps the failed leaves dirty, so a later flush can still succeed —
+                // but this attempt did not persist, and the caller must not be told otherwise.
+                return core::error_t{core::error_code_t::io_error,
+                                     std::pmr::string{"btree index flush failed to reach the disk", resource_}};
+            }
             reset_flush_state();
         }
+        return core::error_t::no_error();
     }
 
     void btree_index_disk_t::find(const value_t& value, result& res) const {

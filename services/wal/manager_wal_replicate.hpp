@@ -146,15 +146,21 @@ namespace services::wal {
         // Global WAL ID counter — shared across all per-database workers.
         wal::id_t next_wal_id();
 
-        // Returns true (and resets the flag) if WAL bytes since last checkpoint exceeded the
-        // configured threshold. The caller (dispatcher execute_ddl_inline) then triggers
-        // checkpoint_all on disk and calls reset_auto_checkpoint_bytes() after the checkpoint.
+        // True when the WAL bytes written since the last checkpoint exceed the configured
+        // threshold. Reads only: the commit path resets the counter when it fires the
+        // auto-checkpoint, and run_auto_checkpoint rebases the window once the checkpoint lands.
         bool needs_auto_checkpoint() const noexcept {
             return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
                    wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
                        config_.auto_checkpoint_threshold_bytes;
         }
         void reset_auto_checkpoint_bytes() noexcept { wal_bytes_since_checkpoint_.store(0, std::memory_order_relaxed); }
+        // Rebase the window on the CURRENT directory size. Called after a checkpoint has truncated
+        // the WAL, so the next window measures growth from what is actually on disk now.
+        void rebase_auto_checkpoint_window() noexcept {
+            wal_bytes_at_last_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
+            reset_auto_checkpoint_bytes();
+        }
 
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;
@@ -182,6 +188,13 @@ namespace services::wal {
         // Atomic — written from commit_txn coroutine, read by the dispatcher
         // thread via needs_auto_checkpoint(). Plain uintmax_t raced.
         std::atomic<std::uintmax_t> wal_bytes_since_checkpoint_{0};
+
+        // Size of the WAL directory as of the last completed checkpoint. The "since" counter above
+        // is the difference against this, which is what its name and the threshold contract say it
+        // is. That counter used to hold the TOTAL directory size instead: once the WAL had passed
+        // the threshold once, every later commit re-tripped it, and every trip copied each table's
+        // whole .otbx file — measured at one checkpoint per commit, 1009 of them for 10k rows.
+        std::atomic<std::uintmax_t> wal_bytes_at_last_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;
         actor_zeta::address_t manager_dispatcher_;

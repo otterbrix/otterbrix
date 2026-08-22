@@ -142,6 +142,14 @@ namespace components::table {
     struct column_fetch_state {
         std::unordered_map<uint64_t, storage::buffer_handle_t> handles;
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
+        // Set by a caller whose RESULT outlives this state. The handles above hold the pins that
+        // keep a fetched string's bytes alive, so a view borrowed from the block dangles once they
+        // are released with the state; with this set the string leg copies into the result's own
+        // heap instead. row_group_t::evaluate_predicate consumes its chunk inside the call and
+        // keeps the state alive throughout, so it borrows; the late-materialisation gather returns
+        // the chunk to its caller, so it must own.
+        bool result_outlives_pins{false};
+
         // OOM raised by the pin() inside get_or_insert_handle(); callers that route
         // through a column_scan_state copy it into scan_error.
         core::error_t fetch_error{core::error_t::no_error()};

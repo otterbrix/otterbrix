@@ -3,6 +3,7 @@
 #include "catalog_write_helpers.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/types/logical_value.hpp>
@@ -71,15 +72,22 @@ namespace components::operators {
         // pg_namespace schema: [oid (uint32), nspname (string)].
         // Filter on nspname == name_ via the generic read_chunks_by_key actor
         // message — pure storage primitive.
-        std::pmr::vector<std::string> ns_keys(resource_);
-        ns_keys.emplace_back("nspname");
+        std::pmr::vector<std::uint64_t> ns_keys(resource_);
+        ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
         auto [_ns, nsf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            kPgNamespace,
                                            std::move(ns_keys),
-                                           components::operators::make_key_chunk(resource_, std::string_view{name_}));
-        auto ns_batches = co_await std::move(nsf);
+                                           components::operators::make_key_chunk(resource_, std::string_view{name_}),
+                             std::pmr::vector<std::uint64_t>{resource_});
+        auto ns_batches_r = co_await std::move(nsf);
+        if (ns_batches_r.has_error()) {
+            // A failed pg_namespace read is not a miss; saying "not found" here hides it.
+            set_error(ns_batches_r.error());
+            co_return;
+        }
+        auto& ns_batches = ns_batches_r.value();
 
         bool resolved = false;
         if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {

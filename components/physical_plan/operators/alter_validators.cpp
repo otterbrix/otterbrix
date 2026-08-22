@@ -1,6 +1,7 @@
 #include "alter_validators.hpp"
 
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -12,7 +13,7 @@ namespace components::operators::alter_validators {
 
     namespace catalog = components::catalog;
 
-    actor_zeta::unique_future<std::pmr::vector<std::string>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     visible_column_names(std::pmr::memory_resource* resource,
                          actor_zeta::address_t disk_address,
                          components::execution_context_t exec_ctx,
@@ -20,16 +21,21 @@ namespace components::operators::alter_validators {
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
 
         // Key-scan pg_attribute on attrelid == table_oid.
-        std::pmr::vector<std::string> keys(resource);
-        keys.emplace_back("attrelid");
+        std::pmr::vector<std::uint64_t> keys(resource);
+        keys.emplace_back(catalog::pg_attribute_col::attrelid);
 
         auto [_h, fut] = actor_zeta::send(disk_address,
                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                           exec_ctx,
                                           pg_attr_oid,
                                           std::move(keys),
-                                          components::operators::make_key_chunk(resource, table_oid));
-        std::pmr::vector<components::vector::data_chunk_t> batches = co_await std::move(fut);
+                                          components::operators::make_key_chunk(resource, table_oid),
+                             std::pmr::vector<std::uint64_t>{resource});
+        auto batches_r = co_await std::move(fut);
+        if (batches_r.has_error()) {
+            co_return batches_r.error();
+        }
+        auto& batches = batches_r.value();
 
         // pg_attribute column layout (system_table_schemas.cpp::pg_attribute_columns):
         //   [0]=attoid, [1]=attrelid, [2]=attname, [3]=atttypid, [4]=attnum,
@@ -67,7 +73,7 @@ namespace components::operators::alter_validators {
         co_return out;
     }
 
-    actor_zeta::unique_future<std::pmr::vector<std::pair<int, catalog::oid_t>>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pair<int, catalog::oid_t>>>>
     scan_cascade_dependents(std::pmr::memory_resource* resource,
                             actor_zeta::address_t disk_address,
                             components::execution_context_t exec_ctx,
@@ -81,17 +87,22 @@ namespace components::operators::alter_validators {
         // TBD-impl: pg_depend has no refobjsubid (column-grain subobject id) yet,
         // so ref_objsubid is ignored and we return ALL dependents of refobj. This
         // is conservative: RESTRICT over-rejects, CASCADE over-drops.
-        std::pmr::vector<std::string> keys(resource);
-        keys.emplace_back("refclassid");
-        keys.emplace_back("refobjid");
+        std::pmr::vector<std::uint64_t> keys(resource);
+        keys.emplace_back(catalog::pg_depend_col::refclassid);
+        keys.emplace_back(catalog::pg_depend_col::refobjid);
 
         auto [_h, fut] = actor_zeta::send(disk_address,
                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                           exec_ctx,
                                           pg_dep_oid,
                                           std::move(keys),
-                                          components::operators::make_key_chunk(resource, ref_classid, ref_objid));
-        std::pmr::vector<components::vector::data_chunk_t> batches = co_await std::move(fut);
+                                          components::operators::make_key_chunk(resource, ref_classid, ref_objid),
+                             std::pmr::vector<std::uint64_t>{resource});
+        auto batches_r = co_await std::move(fut);
+        if (batches_r.has_error()) {
+            co_return batches_r.error();
+        }
+        auto& batches = batches_r.value();
 
         std::pmr::vector<std::pair<int, catalog::oid_t>> out(resource);
         for (auto& chunk : batches) {

@@ -234,7 +234,6 @@ namespace components::table {
     bool update_segment_t::has_updates() const { return root_.get() != nullptr; }
 
     bool update_segment_t::has_uncommitted_updates(uint64_t vector_index) {
-        auto read_lock = std::shared_lock(m_);
         auto entry = update_node(vector_index);
         if (!entry.is_set()) {
             return false;
@@ -248,12 +247,10 @@ namespace components::table {
     }
 
     bool update_segment_t::has_updates(uint64_t vector_index) {
-        auto read_lock = std::shared_lock(m_);
         return update_node(vector_index).is_set();
     }
 
     bool update_segment_t::has_updates(int64_t start_row_idx, int64_t end_row_idx) {
-        auto read_lock = std::shared_lock(m_);
         if (!root_) {
             return false;
         }
@@ -269,7 +266,6 @@ namespace components::table {
     }
 
     void update_segment_t::fetch_updates(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result) {
-        auto lock_handle = std::shared_lock(m_);
         auto node = update_node(vector_index);
         if (!node.is_set()) {
             return;
@@ -280,7 +276,6 @@ namespace components::table {
     }
 
     void update_segment_t::fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result) {
-        auto lock_handle = std::shared_lock(m_);
         auto node = update_node(vector_index);
         if (!node.is_set()) {
             return;
@@ -329,7 +324,6 @@ namespace components::table {
                                                           int64_t* ids,
                                                           uint64_t count,
                                                           vector::vector_t& base_data) {
-        auto write_lock = std::unique_lock(m_);
 
         update.flatten(count);
 
@@ -447,27 +441,6 @@ namespace components::table {
             }
         });
         return found;
-    }
-
-    void update_segment_t::cleanup_update_internal(update_info_t& info) {
-        assert(info.has_prev());
-        auto prev = info.prev;
-        {
-            auto pin = prev.pin();
-            auto& prev_info = pin.update_info();
-            prev_info.next = info.next;
-        }
-        if (info.has_next()) {
-            auto next = info.next;
-            auto next_pin = next.pin();
-            auto& next_info = next_pin.update_info();
-            next_info.prev = prev;
-        }
-    }
-
-    void update_segment_t::cleanup_update(update_info_t& info) {
-        auto lock_handle = std::unique_lock(m_);
-        cleanup_update_internal(info);
     }
 
     core::string_buffer_t& update_segment_t::heap() noexcept { return heap_; }

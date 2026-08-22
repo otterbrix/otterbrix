@@ -1,5 +1,7 @@
 #include "operator_insert.hpp"
 
+#include <atomic>
+
 #include "dml_util.hpp"
 
 #include <algorithm>
@@ -10,6 +12,18 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_insert_index_mirror_sends{0};
+    } // namespace
+    uint64_t insert_index_mirror_sends() noexcept {
+        return g_insert_index_mirror_sends.load(std::memory_order_relaxed);
+    }
+    void reset_insert_index_mirror_sends() noexcept {
+        g_insert_index_mirror_sends.store(0, std::memory_order_relaxed);
+    }
+#endif
 
     operator_insert::operator_insert(std::pmr::memory_resource* resource,
                                      log_t log,
@@ -110,7 +124,13 @@ namespace components::operators {
             co_return;
         }
 
-        const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address();
+        // "An index manager exists" is true for every table — register_collection creates an
+        // engine per table regardless of whether an index was ever declared — so that test
+        // alone made every INSERT copy its chunk a second time and ship it to a manager that
+        // then walked the rows against an empty index list. The real question is whether the
+        // TABLE has an index, which enrich stamps on the plan node.
+        const bool mirror_index =
+            table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
 
         // ONE flush of the currently-buffered slice. Wrapped in a NAMED coroutine
         // lambda so the DIVERGENT storage op (append + optional index mirror +
@@ -166,6 +186,9 @@ namespace components::operators {
                 // Mirror to index (txn-aware) — one batched send. Skipped when the
                 // append dropped every row (count==0, e.g. all duplicate _id).
                 if (mirror_index && count > 0) {
+#ifdef DEV_MODE
+                    g_insert_index_mirror_sends.fetch_add(1, std::memory_order_relaxed);
+#endif
                     auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                        &services::index::manager_index_t::insert_rows,
                                                        exec_ctx,
@@ -173,7 +196,12 @@ namespace components::operators {
                                                        std::move(idx_chunks),
                                                        start_row,
                                                        count);
-                    co_await std::move(ixf);
+                    auto index_error = co_await std::move(ixf);
+                    if (index_error.contains_error()) {
+                        // The rows are in the table but not in the index. Reporting success here
+                        // would leave the two disagreeing with nobody the wiser.
+                        co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
+                    }
                 }
 
                 if (returning_.empty()) {

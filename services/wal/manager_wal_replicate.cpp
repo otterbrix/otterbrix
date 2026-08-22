@@ -140,6 +140,9 @@ namespace services::wal {
                         }
                     }
                     if (cont) {
+                        #ifdef DEV_MODE
+                        services::dispatcher::note_pump_hop();
+                        #endif
                         cont.resume();
                         continue;
                     }
@@ -164,10 +167,18 @@ namespace services::wal {
                 // idling. Cheap no-op when no checkpoint is in flight.
                 poll_auto_checkpoint_();
 
-                // Idle: wait for an enqueue notify, or a bounded staleness window
-                // to re-check the inbox / behaviors that became ready off-thread.
                 std::unique_lock<std::mutex> lock(mutex_);
-                pump_cv_.wait_for(lock, std::chrono::microseconds(100));
+                // A suspended coroutine's future is completed on ANOTHER thread and
+                // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
+                // readiness is discovered by this wait TIMING OUT. While work is in
+                // flight that expiry IS the per-hop latency, and a statement crosses
+                // ~20 hops. Idle is the opposite case: only a new message can arrive
+                // and that DOES notify, so the idle tick is left alone — shortening it
+                // burns CPU for nothing, lengthening it would expose the documented
+                // push-notify race to the first statement after a pause.
+                pump_cv_.wait_for(lock,
+                                  in_flight.empty() ? std::chrono::microseconds(100)
+                                                    : std::chrono::microseconds(5));
             }
             // in_flight (and every message_ptr / behavior_t it owns) is destroyed
             // here, on the loop thread — never on a sender thread.
@@ -391,14 +402,29 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Track WAL bytes for auto-checkpoint threshold.
-        wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
+        // Storing the total WAL directory size here instead of the growth since the last
+        // checkpoint left the threshold tripped forever once crossed.
+        {
+            const auto total = total_wal_bytes();
+            auto base = wal_bytes_at_last_checkpoint_.load(std::memory_order_relaxed);
+            if (total < base) {
+                // The directory shrank behind us — something truncated the WAL without going through
+                // the checkpoint that owns this window. Re-baseline instead of measuring against a
+                // size that no longer exists, which would under-report growth until the WAL climbed
+                // back past it. No live path does this today (test_ssb_load_scaling covers the
+                // explicit-checkpoint case), but the subtraction has to be defined for an input
+                // that can occur.
+                wal_bytes_at_last_checkpoint_.store(total, std::memory_order_relaxed);
+                base = total;
+            }
+            wal_bytes_since_checkpoint_.store(total - base, std::memory_order_relaxed);
+        }
 
         // Auto-checkpoint trigger. needs_auto_checkpoint() compares WAL bytes
         // written SINCE the last checkpoint (not total WAL size) against the
         // configured auto_checkpoint_threshold_bytes. auto_checkpoint_in_flight_
         // dedups: a burst of threshold-tripping commits must not stack concurrent
-        // checkpoints. We reset the byte counter HERE (not in the handler) so any
+        // checkpoints. We reset the byte counter HERE, at trigger time, so any
         // commits racing in behind this one accumulate against a fresh window
         // toward the NEXT checkpoint instead of re-tripping the same one.
         //
@@ -522,6 +548,7 @@ namespace services::wal {
         //     no-disk test topology, NOT a fallback: without a disk checkpoint
         //     there is no safe truncation boundary, so we clear the guard and stop.
         if (manager_disk_ == actor_zeta::address_t::empty_address()) {
+            rebase_auto_checkpoint_window();
             auto_checkpoint_in_flight_ = false;
             co_return;
         }
@@ -561,7 +588,11 @@ namespace services::wal {
             co_await truncate_before(session, checkpoint_wal_id);
         }
 
-        // (e) Release the dedup guard.
+        // (e) Rebase the byte window on the post-truncate size and release the dedup guard. The
+        //     rebase must happen HERE rather than at trigger time: the truncate above is what
+        //     shrinks the directory, and a window based on the pre-truncate size would either
+        //     re-trip immediately or stay suppressed for a whole extra checkpoint's worth of WAL.
+        rebase_auto_checkpoint_window();
         auto_checkpoint_in_flight_ = false;
         co_return;
     }

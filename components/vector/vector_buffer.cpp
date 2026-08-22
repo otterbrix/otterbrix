@@ -43,7 +43,7 @@ namespace components::vector {
         : vector_buffer_t(select.resource(), vector_buffer_type::DICTIONARY)
         , indexing_vector_(select) {}
 
-    dictionary_vector_buffer_t::dictionary_vector_buffer_t(std::shared_ptr<indexing_data> data)
+    dictionary_vector_buffer_t::dictionary_vector_buffer_t(boost::intrusive_ptr<indexing_data> data)
         : vector_buffer_t(data->data.get_deleter().resource(), vector_buffer_type::DICTIONARY)
         , indexing_vector_(data) {}
 

@@ -1,4 +1,5 @@
 #include "row_version_manager.hpp"
+#include <atomic>
 
 #include <cassert>
 #include <cstdlib>
@@ -6,6 +7,17 @@
 #include "collection.hpp"
 
 namespace components::table {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_version_slots_visited{0};
+        std::atomic<uint64_t> g_cleanup_slots_visited{0};
+    } // namespace
+    uint64_t version_slots_visited() noexcept { return g_version_slots_visited.load(std::memory_order_relaxed); }
+    void reset_version_slots_visited() noexcept { g_version_slots_visited.store(0, std::memory_order_relaxed); }
+    uint64_t cleanup_slots_visited() noexcept { return g_cleanup_slots_visited.load(std::memory_order_relaxed); }
+    void reset_cleanup_slots_visited() noexcept { g_cleanup_slots_visited.store(0, std::memory_order_relaxed); }
+#endif
 
     // ProcArray canonical visibility filter:
     //   1. If id == this txn's own transaction_id → self-write, always visible.
@@ -199,6 +211,9 @@ namespace components::table {
         if (!any_deleted) {
             return;
         }
+#ifdef DEV_MODE
+        g_version_slots_visited.fetch_add(vector::DEFAULT_VECTOR_CAPACITY, std::memory_order_relaxed);
+#endif
         for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
             if (deleted[i] == txn_id) {
                 deleted[i] = commit_id;
@@ -214,6 +229,9 @@ namespace components::table {
         if (!any_deleted) {
             return;
         }
+#ifdef DEV_MODE
+        g_version_slots_visited.fetch_add(vector::DEFAULT_VECTOR_CAPACITY, std::memory_order_relaxed);
+#endif
         for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
             if (deleted[i] == txn_id) {
                 deleted[i] = NOT_DELETED_ID;
@@ -318,6 +336,9 @@ namespace components::table {
         if (!any_deleted) {
             return 0;
         }
+#ifdef DEV_MODE
+        g_cleanup_slots_visited.fetch_add(max_count, std::memory_order_relaxed);
+#endif
         uint64_t delete_count = 0;
         for (uint64_t i = 0; i < max_count; i++) {
             if (deleted[i] < TRANSACTION_ID_START) {
@@ -332,7 +353,6 @@ namespace components::table {
         , has_changes_(false) {}
 
     void row_version_manager_t::set_start(int64_t new_start) {
-        std::lock_guard l(version_lock_);
         this->start_ = new_start;
         int64_t current_start = start_;
         for (auto& info : vector_info_) {
@@ -344,7 +364,6 @@ namespace components::table {
     }
 
     uint64_t row_version_manager_t::committed_deleted_count(uint64_t count) {
-        std::lock_guard l(version_lock_);
         uint64_t deleted_count = 0;
         for (uint64_t r = 0, i = 0; r < count; r += vector::DEFAULT_VECTOR_CAPACITY, i++) {
             if (i >= vector_info_.size() || !vector_info_[i]) {
@@ -360,7 +379,6 @@ namespace components::table {
     }
 
     bool row_version_manager_t::has_version_above(uint64_t watermark, uint64_t count) {
-        std::lock_guard l(version_lock_);
         for (uint64_t r = 0, i = 0; r < count; r += vector::DEFAULT_VECTOR_CAPACITY, i++) {
             if (i >= vector_info_.size() || !vector_info_[i]) {
                 continue;
@@ -389,7 +407,6 @@ namespace components::table {
                                                     uint64_t vector_idx,
                                                     vector::indexing_vector_t& indexing_vector,
                                                     uint64_t max_count) {
-        std::lock_guard l(version_lock_);
         auto chunk_info = get_chunk_info(vector_idx);
         if (!chunk_info) {
             return max_count;
@@ -398,7 +415,6 @@ namespace components::table {
     }
 
     bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {
-        std::lock_guard lock(version_lock_);
         uint64_t vector_index = row / vector::DEFAULT_VECTOR_CAPACITY;
         auto info = get_chunk_info(vector_index);
         if (!info) {
@@ -421,7 +437,6 @@ namespace components::table {
                                                     uint64_t,
                                                     uint64_t row_group_start,
                                                     uint64_t row_group_end) {
-        std::lock_guard lock(version_lock_);
         has_changes_ = true;
         uint64_t start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
@@ -465,7 +480,6 @@ namespace components::table {
         }
         uint64_t row_group_end = row_group_start + count;
 
-        std::lock_guard lock(version_lock_);
         uint64_t start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
         for (uint64_t vector_idx = start_vector_idx; vector_idx <= end_vector_idx; vector_idx++) {
@@ -488,7 +502,6 @@ namespace components::table {
         }
         uint64_t row_group_end = row_group_start + count;
 
-        std::lock_guard lock(version_lock_);
         uint64_t start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
         for (uint64_t vector_idx = start_vector_idx; vector_idx <= end_vector_idx; vector_idx++) {
@@ -511,7 +524,6 @@ namespace components::table {
     }
 
     void row_version_manager_t::revert_append(uint64_t start_row) {
-        std::lock_guard lock(version_lock_);
         uint64_t start_vector_idx =
             (start_row + (vector::DEFAULT_VECTOR_CAPACITY - 1)) / vector::DEFAULT_VECTOR_CAPACITY;
         for (uint64_t vector_idx = start_vector_idx; vector_idx < vector_info_.size(); vector_idx++) {
@@ -541,19 +553,16 @@ namespace components::table {
 
     uint64_t
     row_version_manager_t::delete_rows(uint64_t vector_idx, uint64_t transaction_id, int64_t rows[], uint64_t count) {
-        std::lock_guard lock(version_lock_);
         has_changes_ = true;
         return vector_info(vector_idx).delete_rows(transaction_id, rows, count);
     }
 
     void row_version_manager_t::commit_delete(uint64_t vector_idx, uint64_t commit_id, const delete_info& info) {
-        std::lock_guard lock(version_lock_);
         has_changes_ = true;
         vector_info(vector_idx).commit_delete(commit_id, info);
     }
 
     void row_version_manager_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
-        std::lock_guard lock(version_lock_);
         for (auto& info : vector_info_) {
             if (info && info->type == chunk_info_type::VECTOR_INFO) {
                 info->cast<chunk_vector_info>().commit_all_deletes(txn_id, commit_id);
@@ -562,7 +571,6 @@ namespace components::table {
     }
 
     void row_version_manager_t::revert_all_deletes(uint64_t txn_id) {
-        std::lock_guard lock(version_lock_);
         for (auto& info : vector_info_) {
             if (info && info->type == chunk_info_type::VECTOR_INFO) {
                 info->cast<chunk_vector_info>().revert_all_deletes(txn_id);

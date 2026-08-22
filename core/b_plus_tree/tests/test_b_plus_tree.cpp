@@ -1263,11 +1263,30 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
         }
     };
 
+    // Counts bytes belonging to a RUN of the poison pattern, not single matches: a legitimate
+    // header byte can equal the pattern by coincidence (one did, on a CI runner), while
+    // uninitialised heap arrives as long stretches of it. Eight in a row is 2^-64 by chance.
     auto count_poison = [&](const path_t& file, size_t bytes) {
+        constexpr size_t kMinRun = 8;
         std::vector<uint8_t> raw(bytes, 0);
         auto handle = open_file(fs, file, file_flags::READ);
         handle->read(static_cast<void*>(raw.data()), bytes, 0);
-        return static_cast<size_t>(std::count(raw.begin(), raw.end(), kPoison));
+        size_t total = 0;
+        size_t run = 0;
+        for (uint8_t b : raw) {
+            if (b == kPoison) {
+                ++run;
+                continue;
+            }
+            if (run >= kMinRun) {
+                total += run;
+            }
+            run = 0;
+        }
+        if (run >= kMinRun) {
+            total += run;
+        }
+        return total;
     };
 
     auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {

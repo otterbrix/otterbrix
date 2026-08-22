@@ -140,6 +140,9 @@ namespace services::wal {
                         }
                     }
                     if (cont) {
+                        #ifdef DEV_MODE
+                        services::dispatcher::note_pump_hop();
+                        #endif
                         cont.resume();
                         continue;
                     }

@@ -25,13 +25,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_string_projection.cpp
         test_check_on_update.cpp
         test_index_bootstrap_failure.cpp
-        test_wait_granularity.cpp
+        test_pump_hops.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
         test_fk_check_on_update.cpp
         test_inline_constraints.cpp
         test_text_column_storage.cpp
-        test_statement_latency.cpp
         test_update.cpp
         test_wal_pool.cpp
         test_persistence.cpp

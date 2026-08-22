@@ -1,3 +1,4 @@
+#include <atomic>
 #include "dispatcher.hpp"
 
 #include <components/casts/default_casts.hpp>
@@ -28,6 +29,16 @@
 using namespace components::cursor;
 
 namespace services::dispatcher {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_pump_hops{0};
+    } // namespace
+    uint64_t pump_hops() noexcept { return g_pump_hops.load(std::memory_order_relaxed); }
+    void reset_pump_hops() noexcept { g_pump_hops.store(0, std::memory_order_relaxed); }
+    void note_pump_hop() noexcept { g_pump_hops.fetch_add(1, std::memory_order_relaxed); }
+#endif
+
 
     namespace {
         // subscriber-kind discriminator carried in the on_drop_resource_marked /
@@ -128,16 +139,9 @@ namespace services::dispatcher {
             // so the idle tick is left as it was: shortening it burns CPU for nothing,
             // lengthening it exposes the documented push-notify race to the first statement
             // after a pause.
-            constexpr auto in_flight_wait = std::chrono::microseconds(5);
-            constexpr auto idle_wait = std::chrono::microseconds(100);
-            // The poke threshold below is a DURATION, converted to ticks here. Both
-            // numbers are load-bearing and measured: poking a stalled executor after
-            // ~100us gives p50 615us per statement; leaving it at the old ~2ms gives
-            // 4310us — WORSE than the 3470us baseline, because the shorter tick alone
-            // does not revive an executor parked busy && ready. Change one of these
-            // without the other and the win silently disappears.
-            constexpr auto poke_after = std::chrono::microseconds(100);
-            constexpr uint32_t stale_tick_threshold = poke_after / in_flight_wait;
+            constexpr auto in_flight_wait = pump_tuning_t::in_flight_wait;
+            constexpr auto idle_wait = pump_tuning_t::idle_wait;
+            constexpr uint32_t stale_tick_threshold = pump_tuning_t::stale_tick_threshold;
 
             std::pmr::list<in_flight_entry_t> in_flight(resource());
             while (loop_running_.load(std::memory_order_acquire)) {
@@ -192,6 +196,12 @@ namespace services::dispatcher {
                         if (cont) {
                             ready_slot->stale_ticks = 0;
                             ready_slot->poke_rounds = 0;
+#ifdef DEV_MODE
+                            // One resumed continuation is one hop — the count the per-statement
+                            // floor multiplies by the tick. Independent of machine speed, unlike
+                            // the number of times the wait above spins.
+                            note_pump_hop();
+#endif
                             cont.resume();
                             poll_pending();
                             progress = true;

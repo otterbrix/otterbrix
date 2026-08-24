@@ -543,10 +543,10 @@ namespace otterbrix {
                 // meant to survive (unopenable file, unreadable or incompatible header), so it
                 // must not be used here: an index whose storage will not open costs a full scan,
                 // whereas aborting costs the whole engine its start.
-                auto storage = services::index::disk_hash_table_t::create(
-                    base / "hash_index.bin",
-                    services::index::disk_hash_table_t::default_bucket_count,
-                    &resource);
+                auto storage =
+                    services::index::disk_hash_table_t::create(base / "hash_index.bin",
+                                                               services::index::disk_hash_table_t::default_bucket_count,
+                                                               &resource);
                 if (storage.has_error()) {
                     error(log_,
                           "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",

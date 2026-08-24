@@ -934,8 +934,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
     REQUIRE(tree.flush());
     tree.clean_load();
 
-    auto other = tree.split(
-        open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    auto other = tree.split(open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
     REQUIRE(other != nullptr);
 
     const auto left_before = collect(tree);
@@ -1369,22 +1368,17 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
 
     // Phase 2: a FRESH leaf object over the existing file — the restart shape.
     {
-        segment_tree_t reopened(&resource,
-                                key_getter,
-                                open_file(fs, fname, file_flags::READ | file_flags::WRITE));
+        segment_tree_t reopened(&resource, key_getter, open_file(fs, fname, file_flags::READ | file_flags::WRITE));
         reopened.clean_load();
         core::b_plus_tree::reset_leaf_flushes();
         REQUIRE(reopened.flush());
         const auto after_clean_load = core::b_plus_tree::leaf_flushes();
-        INFO("leaf flushes caused by the first flush after clean_load() on a reopened leaf: "
-             << after_clean_load);
+        INFO("leaf flushes caused by the first flush after clean_load() on a reopened leaf: " << after_clean_load);
         CHECK(after_clean_load == 0);
     }
 
     {
-        segment_tree_t reopened(&resource,
-                                key_getter,
-                                open_file(fs, fname, file_flags::READ | file_flags::WRITE));
+        segment_tree_t reopened(&resource, key_getter, open_file(fs, fname, file_flags::READ | file_flags::WRITE));
         reopened.lazy_load();
         core::b_plus_tree::reset_leaf_flushes();
         REQUIRE(reopened.flush());

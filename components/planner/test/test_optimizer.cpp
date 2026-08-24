@@ -46,6 +46,18 @@ namespace {
         (void) loaded;
         return &registry;
     }
+
+    services::dispatcher::validation::validation_context_t
+    test_validation_context(std::pmr::memory_resource* resource) {
+        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
+        static const components::graph_execution_context execution_context{};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(functions);
+            return true;
+        }();
+        (void) loaded;
+        return {resource, nullptr, *test_cast_registry(), functions, execution_context};
+    }
 } // namespace
 
 using namespace components::logical_plan;
@@ -1069,7 +1081,7 @@ namespace {
 
     static bool run_and_get_pushdown(std::pmr::memory_resource* r, const node_ptr& plan, bool enable) {
         auto params = make_parameter_node(r);
-        auto root = components::planner::optimize(r, plan, params.get(), enable);
+        auto root = components::planner::optimize(r, plan, params.get(), nullptr, enable);
         // find the group child of the aggregate root to read its flag
         for (const auto& child : root->children()) {
             if (child && child->type() == node_type::group_t) {
@@ -1303,11 +1315,8 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
         make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
 
     // Drive the REAL validator: stamps key.side()/key.path() and output_types().
-    auto validated = services::dispatcher::validate_schema(&resource,
-                                                           nullptr,
-                                                           test_cast_registry(),
-                                                           outer.get(),
-                                                           params->parameters());
+    auto validated =
+        services::dispatcher::validate_schema(test_validation_context(&resource), outer.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // Precondition the promote rule relies on: the scans carry their columns in
     // output_types() (left_width == 2, right_width == 1).
@@ -1439,17 +1448,22 @@ namespace {
         return agg;
     }
 
-    // A catalog_resolve_table sibling advertising `ncols` columns for `oid`, so
+    // A resolved table entry advertising `ncols` columns for `oid`, so
     // column_pruning's collect_table_md learns the per-side column count for JOIN splits.
-    node_ptr resolve_table_with_cols(std::pmr::memory_resource* r, oid_t oid, size_t ncols) {
-        auto rt = make_node_catalog_resolve_table(r, pdb(), prel());
+    void add_resolved_table(std::pmr::memory_resource* r,
+                            components::logical_plan::catalog_resolves_t& resolves,
+                            oid_t oid,
+                            const std::string& relname,
+                            size_t ncols) {
+        components::logical_plan::resolve_entry_t entry;
+        entry.dbname = static_cast<const std::string&>(pdb());
+        entry.relname = relname;
         components::logical_plan::resolved_table_metadata_t md;
         md.table_oid = oid;
         md.relkind = 'r';
         md.columns.resize(ncols);
-        rt->set_resolved_metadata(std::move(md));
-        rt->set_table_oid(oid);
-        return rt;
+        entry.table_md = std::move(md);
+        resolves.ensure(r, components::logical_plan::resolve_kind::table).add(std::move(entry));
     }
 } // namespace
 
@@ -1593,14 +1607,14 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
     parent->append_child(join);
     parent->append_child(sel);
 
-    auto seq = boost::intrusive_ptr(new components::logical_plan::node_sequence_t(&resource));
-    seq->append_child(resolve_table_with_cols(&resource, oid1, 2));
-    seq->append_child(resolve_table_with_cols(&resource, oid2, 2));
-    seq->append_child(boost::static_pointer_cast<components::logical_plan::node_t>(parent));
+    components::logical_plan::catalog_resolves_t resolves;
+    add_resolved_table(&resource, resolves, oid1, "t1", 2);
+    add_resolved_table(&resource, resolves, oid2, "t2", 2);
 
     components::planner::optimize(&resource,
-                                  boost::static_pointer_cast<components::logical_plan::node_t>(seq),
-                                  params.get());
+                                  boost::static_pointer_cast<components::logical_plan::node_t>(parent),
+                                  params.get(),
+                                  &resolves);
 
     REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
     REQUIRE(agg_t2->projected_cols() == std::vector<size_t>{0});
@@ -1646,7 +1660,7 @@ namespace {
         outer->append_child(uni);
         outer->append_child(make_node_match(r, core::dbname_t{database_name}, core::relname_t{collection_name}, where));
         auto validated =
-            services::dispatcher::validate_schema(r, nullptr, test_cast_registry(), outer.get(), params->parameters());
+            services::dispatcher::validate_schema(test_validation_context(r), outer.get(), params->parameters());
         REQUIRE_FALSE(validated.has_error());
         return outer;
     }

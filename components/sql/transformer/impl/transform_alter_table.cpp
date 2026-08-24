@@ -17,16 +17,28 @@ namespace components::sql::transform {
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
         auto n = logical_plan::make_node_alter_table_rename_column(resource_, std::move(old_name), std::move(new_name));
-        return maybe_wrap_with_catalog_resolve_table(resource_, db_for_resolve, rel_for_resolve, std::move(n));
+        // The altered table's identity stays ON the node: enrich binds it to a
+        // resolved entry by name and stamps table_oid() + relkind from there.
+        n->set_dbname(db_for_resolve);
+        n->set_relname(rel_for_resolve);
+        register_catalog_resolve_table(resource_, &catalog_resolves_, db_for_resolve, rel_for_resolve);
+        return n;
     }
 
     logical_plan::node_ptr transformer::transform_alter_table(AlterTableStmt& node) {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string& db = qn.dbname;
         const std::string& rel = qn.relname;
-        // Helper: every return path below targets (db, rel) — wrap once.
+        // Helper: every return path below targets (db, rel) — name the node and
+        // register the lookup once.
         auto wrap_primary = [&](logical_plan::node_ptr n) {
-            return maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(n));
+            if (n && n->type() == logical_plan::node_type::alter_table_t) {
+                auto* alter = static_cast<logical_plan::node_alter_table_t*>(n.get());
+                alter->set_dbname(db);
+                alter->set_relname(rel);
+            }
+            register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
+            return n;
         };
         if (!node.cmds || node.cmds->lst.empty()) {
             return wrap_primary(logical_plan::make_node_alter_table_drop_column(resource_, std::string{}));
@@ -121,12 +133,15 @@ namespace components::sql::transform {
                             const std::string& effective_ref_db = fk_ref_db.empty() ? db : fk_ref_db;
                             targets.emplace_back(effective_ref_db, ref_rel);
                         }
-                        return maybe_wrap_with_catalog_resolve_tables(resource_,
-                                                                      std::move(targets),
-                                                                      logical_plan::node_ptr{std::move(fk_node)});
+                        // Both identities stay ON the node — enrich looks each up by
+                        // name, so neither depends on registration order.
+                        fk_node->set_ref_relname(ref_rel);
+                        register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
+                        return logical_plan::node_ptr{std::move(fk_node)};
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
-                        if (auto expr_text = deparse_check_expr(resource_, constr->raw_expr); transform_failed(expr_text)) {
+                        if (auto expr_text = deparse_check_expr(resource_, constr->raw_expr);
+                            transform_failed(expr_text)) {
                             return nullptr;
                         } else if (!expr_text.value().empty()) {
                             std::string con_name = constr->conname ? constr->conname : "";

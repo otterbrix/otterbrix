@@ -34,12 +34,8 @@ namespace {
     // asserts on its own invariants while reporting corrupt payloads as NA. A failure travels
     // the error channel instead — insert_rows/delete_rows/update_rows return core::error_t.
     template<typename Fn>
-    [[nodiscard]] core::error_t guarded_index_row(log_t&,
-                                                  const char*,
-                                                  components::catalog::oid_t,
-                                                  int64_t,
-                                                  std::pmr::memory_resource*,
-                                                  Fn&& fn) {
+    [[nodiscard]] core::error_t
+    guarded_index_row(log_t&, const char*, components::catalog::oid_t, int64_t, std::pmr::memory_resource*, Fn&& fn) {
         fn();
         return core::error_t::no_error();
     }
@@ -166,9 +162,9 @@ namespace services::index {
                         }
                     }
                     if (cont) {
-                        #ifdef DEV_MODE
+#ifdef DEV_MODE
                         services::dispatcher::note_pump_hop();
-                        #endif
+#endif
                         cont.resume();
                         poll_pending();
                         made_progress = true;
@@ -554,9 +550,9 @@ namespace services::index {
                         auto item =
                             core::b_plus_tree::btree_t::item_data{static_cast<core::b_plus_tree::data_ptr_t>(data),
                                                                   static_cast<uint32_t>(sz)};
-                        return {item_key_getter(item),
-                                static_cast<int64_t>(
-                                    id_getter(item).value<components::types::physical_type::UINT64>())};
+                        return {
+                            item_key_getter(item),
+                            static_cast<int64_t>(id_getter(item).value<components::types::physical_type::UINT64>())};
                     });
                     if (auto* idx = components::index::search_index(engine, keys); idx) {
                         // Bootstrap has no session — default-construct tz (UTC).
@@ -627,13 +623,13 @@ namespace services::index {
 
     // --- DDL: index management ---
 
-    manager_index_t::unique_future<core::result_wrapper_t<uint32_t>> manager_index_t::create_index(
-        session_id_t /*session*/,
-        components::catalog::oid_t table_oid,
-        index_name_t index_name,
-        components::index::keys_base_storage_t keys,
-        components::logical_plan::index_type type,
-        core::date::timezone_offset_t session_tz) {
+    manager_index_t::unique_future<core::result_wrapper_t<uint32_t>>
+    manager_index_t::create_index(session_id_t /*session*/,
+                                  components::catalog::oid_t table_oid,
+                                  index_name_t index_name,
+                                  components::index::keys_base_storage_t keys,
+                                  components::logical_plan::index_type type,
+                                  core::date::timezone_offset_t session_tz) {
         trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
@@ -705,8 +701,7 @@ namespace services::index {
                 auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                 if (std::filesystem::exists(btree_path / "metadata")) {
                     core::filesystem::local_file_system_t fs;
-                    auto db =
-                        std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
+                    auto db = std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
                     db->load();
 
                     if (db->size() > 0) {
@@ -716,9 +711,9 @@ namespace services::index {
                         };
                         std::pmr::vector<pv_entry> raw(resource_);
                         db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                            auto item = core::b_plus_tree::btree_t::item_data{
-                                static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                static_cast<uint32_t>(sz)};
+                            auto item =
+                                core::b_plus_tree::btree_t::item_data{static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                                                      static_cast<uint32_t>(sz)};
                             return {item_key_getter(item),
                                     static_cast<int64_t>(
                                         id_getter(item).value<components::types::physical_type::UINT64>())};
@@ -741,18 +736,17 @@ namespace services::index {
                 // gate, so the recover-gate set is EMPTY (correct value, not
                 // a fallback). Built on resource_ — the resource the agent
                 // and its bitcask store use.
-                auto agent =
-                    actor_zeta::spawn<index_agent_disk_t>(resource_,
-                                                          path_db_,
-                                                          table_oid,
-                                                          std::string(index_name),
-                                                          type,
-                                                          bitcask_index_disk_t::default_flush_threshold_,
-                                                          bitcask_index_disk_t::default_segment_record_limit_,
-                                                          btree_index_disk_t::default_flush_threshold_,
-                                                          log_,
-                                                          std::pmr::set<std::uint64_t>(resource_),
-                                                          shared_hash_storage);
+                auto agent = actor_zeta::spawn<index_agent_disk_t>(resource_,
+                                                                   path_db_,
+                                                                   table_oid,
+                                                                   std::string(index_name),
+                                                                   type,
+                                                                   bitcask_index_disk_t::default_flush_threshold_,
+                                                                   bitcask_index_disk_t::default_segment_record_limit_,
+                                                                   btree_index_disk_t::default_flush_threshold_,
+                                                                   log_,
+                                                                   std::pmr::set<std::uint64_t>(resource_),
+                                                                   shared_hash_storage);
 
                 // Link disk agent with in-memory index
                 auto* idx = components::index::search_index(engine, keys);
@@ -891,9 +885,13 @@ namespace services::index {
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && inserted < count; i++) {
                 const auto row_id = static_cast<int64_t>(start_row_id + inserted);
-                if (auto index_error = guarded_index_row(log_, "insert_rows", table_oid, row_id, resource_, [&] {
-                    engine->insert_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
-                    });
+                if (auto index_error = guarded_index_row(
+                        log_,
+                        "insert_rows",
+                        table_oid,
+                        row_id,
+                        resource_,
+                        [&] { engine->insert_row(binding, chunk, i, row_id, txn_id, ctx.session_tz); });
                     index_error.contains_error()) {
                     // The statement fails: an index entry that could not be written is not a
                     // detail to log and move past — the index would disagree with the table.
@@ -928,9 +926,13 @@ namespace services::index {
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
                 const auto row_id = row_ids[deleted];
-                if (auto index_error = guarded_index_row(log_, "delete_rows", table_oid, row_id, resource_, [&] {
-                    engine->mark_delete_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
-                    });
+                if (auto index_error = guarded_index_row(
+                        log_,
+                        "delete_rows",
+                        table_oid,
+                        row_id,
+                        resource_,
+                        [&] { engine->mark_delete_row(binding, chunk, i, row_id, txn_id, ctx.session_tz); });
                     index_error.contains_error()) {
                     co_return index_error;
                 }
@@ -965,9 +967,13 @@ namespace services::index {
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
                 const auto row_id = row_ids[deleted];
-                if (auto index_error = guarded_index_row(log_, "update_rows(old)", table_oid, row_id, resource_, [&] {
-                    engine->mark_delete_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
-                    });
+                if (auto index_error = guarded_index_row(
+                        log_,
+                        "update_rows(old)",
+                        table_oid,
+                        row_id,
+                        resource_,
+                        [&] { engine->mark_delete_row(binding, chunk, i, row_id, txn_id, ctx.session_tz); });
                     index_error.contains_error()) {
                     co_return index_error;
                 }
@@ -982,9 +988,13 @@ namespace services::index {
             const auto binding = engine->bind_chunk(chunk);
             for (uint64_t i = 0; i < chunk.size() && inserted < row_ids.size(); i++) {
                 const auto row_id = new_start_row_id + static_cast<int64_t>(inserted);
-                if (auto index_error = guarded_index_row(log_, "update_rows(new)", table_oid, row_id, resource_, [&] {
-                    engine->insert_row(binding, chunk, i, row_id, txn_id, ctx.session_tz);
-                    });
+                if (auto index_error = guarded_index_row(
+                        log_,
+                        "update_rows(new)",
+                        table_oid,
+                        row_id,
+                        resource_,
+                        [&] { engine->insert_row(binding, chunk, i, row_id, txn_id, ctx.session_tz); });
                     index_error.contains_error()) {
                     co_return index_error;
                 }
@@ -1634,9 +1644,15 @@ namespace services::index {
                     const auto binding = engine->bind_chunk(chunk);
                     for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i) {
                         const auto row_id = row_ids[global];
-                        auto index_error = guarded_index_row(log_, "wal_replay(delete)", table_oid, row_id, resource_, [&] {
-                            engine->mark_delete_row(binding, chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
-                        });
+                        auto index_error =
+                            guarded_index_row(log_, "wal_replay(delete)", table_oid, row_id, resource_, [&] {
+                                engine->mark_delete_row(binding,
+                                                        chunk,
+                                                        static_cast<size_t>(i),
+                                                        row_id,
+                                                        txn_id,
+                                                        session_tz);
+                            });
                         if (index_error.contains_error()) {
                             trace(log_, "manager_index_t::wal_replay(delete): row {} left unindexed", row_id);
                         }
@@ -1667,9 +1683,10 @@ namespace services::index {
                     const auto binding = engine->bind_chunk(chunk);
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         const auto row_id = static_cast<int64_t>(physical_row_start + global);
-                        auto index_error = guarded_index_row(log_, "wal_replay(update-new)", table_oid, row_id, resource_, [&] {
-                            engine->insert_row(binding, chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
-                        });
+                        auto index_error =
+                            guarded_index_row(log_, "wal_replay(update-new)", table_oid, row_id, resource_, [&] {
+                                engine->insert_row(binding, chunk, static_cast<size_t>(i), row_id, txn_id, session_tz);
+                            });
                         if (index_error.contains_error()) {
                             trace(log_, "manager_index_t::wal_replay(update-new): row {} left unindexed", row_id);
                         }

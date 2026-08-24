@@ -21,9 +21,7 @@ namespace components::operators {
     uint64_t update_storage_update_sends() noexcept {
         return g_update_storage_update_sends.load(std::memory_order_relaxed);
     }
-    uint64_t update_gather_copy_calls() noexcept {
-        return g_update_gather_copy_calls.load(std::memory_order_relaxed);
-    }
+    uint64_t update_gather_copy_calls() noexcept { return g_update_gather_copy_calls.load(std::memory_order_relaxed); }
 #endif
 
     operator_update::operator_update(std::pmr::memory_resource* resource,

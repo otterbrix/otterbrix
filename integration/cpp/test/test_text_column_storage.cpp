@@ -45,8 +45,8 @@ namespace {
         std::string error;
     };
 
-    measurement_t load_text_table(const std::filesystem::path& root, int rows, int value_length, int every_nth_big,
-                                  int big_length) {
+    measurement_t
+    load_text_table(const std::filesystem::path& root, int rows, int value_length, int every_nth_big, int big_length) {
         measurement_t out;
         auto config = test_create_config(root);
         test_clear_directory(config);

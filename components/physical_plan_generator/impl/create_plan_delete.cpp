@@ -1,16 +1,16 @@
 #include "create_plan_delete.hpp"
 
-#include <algorithm>
-#include <limits>
-#include <vector>
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
+#include <algorithm>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator_delete.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <limits>
+#include <vector>
 
 namespace services::planner::impl {
 
@@ -132,7 +132,7 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         std::move(returning)));
-        plan->set_table_has_indexes(node->table_has_indexes());
+            plan->set_table_has_indexes(node->table_has_indexes());
             plan->set_children(
                 create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning)));
 

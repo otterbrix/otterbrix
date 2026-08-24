@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/logical_plan/node.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 
 namespace components::planner::optimizer {
 
@@ -9,11 +10,11 @@ namespace components::planner::optimizer {
     // read from its source. Writes the result via node_aggregate_t::set_projected_cols.
     //
     // Must run AFTER validate_schema (paths must be resolved to column indices)
-    // and AFTER stamp_oids_from_resolves (so consumer nodes carry table_oid).
+    // and AFTER enrich (so consumer nodes carry table_oid).
     //
-    // Schema info is read from sibling node_catalog_resolve_t (resolve_kind::table)
-    // nodes inside each sequence_t — the optimizer is self-contained and needs no external
-    // catalog handle.
+    // Schema info comes from `resolves` — the plan's resolved table entries. Null
+    // when the plan depends on no tables, in which case no aggregate can be pruned
+    // against a known column count.
     //
     // Handles:
     //   * plain SELECT / SELECT ... WHERE — collects from group_t + match_t
@@ -25,6 +26,6 @@ namespace components::planner::optimizer {
     //   * wildcard (SELECT *) or unresolved path is seen
     //   * WHERE contains function expressions whose referenced columns cannot be
     //     statically enumerated
-    void prune_columns(const logical_plan::node_ptr& root);
+    void prune_columns(const logical_plan::node_ptr& root, const logical_plan::catalog_resolves_t* resolves);
 
 } // namespace components::planner::optimizer

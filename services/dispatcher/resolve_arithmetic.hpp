@@ -4,8 +4,6 @@
 #include <components/operators/resolve_operator.hpp>
 #include <components/types/types.hpp>
 
-#include <optional>
-
 namespace services::dispatcher {
 
     struct resolved_arithmetic_t {
@@ -16,15 +14,13 @@ namespace services::dispatcher {
         components::operators::resolved_operator_t op;
     };
 
-    [[nodiscard]] std::optional<resolved_arithmetic_t>
-    resolve_arithmetic(const components::casts::cast_registry_t& registry,
-                       components::operators::operator_code code,
-                       const components::types::complex_logical_type& lhs,
-                       const components::types::complex_logical_type& rhs);
+    [[nodiscard]] resolved_arithmetic_t resolve_arithmetic(const components::casts::cast_registry_t& registry,
+                                                           components::operators::operator_code code,
+                                                           const components::types::complex_logical_type& lhs,
+                                                           const components::types::complex_logical_type& rhs);
 
-    [[nodiscard]] std::optional<resolved_arithmetic_t>
-    resolve_arithmetic(const components::casts::cast_registry_t& registry,
-                       components::operators::operator_code code,
-                       const components::types::complex_logical_type& operand);
+    [[nodiscard]] resolved_arithmetic_t resolve_arithmetic(const components::casts::cast_registry_t& registry,
+                                                           components::operators::operator_code code,
+                                                           const components::types::complex_logical_type& operand);
 
 } // namespace services::dispatcher

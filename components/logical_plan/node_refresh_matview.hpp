@@ -25,11 +25,17 @@ namespace components::logical_plan {
         bool concurrent() const noexcept { return concurrent_; }
         bool with_data() const noexcept { return with_data_; }
 
+        // Namespace the matview lives in, as written. With matviewname() it is how
+        // enrich binds this node to its resolved table entry.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string matviewname_;
+        std::string dbname_;
         bool concurrent_{false};
         bool with_data_{true};
     };

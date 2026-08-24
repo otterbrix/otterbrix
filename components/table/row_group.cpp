@@ -31,27 +31,15 @@ namespace components::table {
     uint64_t gathered_borrowed_strings() noexcept {
         return g_gathered_borrowed_strings.load(std::memory_order_relaxed);
     }
-    uint64_t string_materializations() noexcept {
-        return g_string_materializations.load(std::memory_order_relaxed);
-    }
-    void note_string_materialization() noexcept {
-        g_string_materializations.fetch_add(1, std::memory_order_relaxed);
-    }
-    uint64_t gather_rows_fetched() noexcept {
-        return g_gather_rows_fetched.load(std::memory_order_relaxed);
-    }
-    void note_gather_row_fetched() noexcept {
-        g_gather_rows_fetched.fetch_add(1, std::memory_order_relaxed);
-    }
-    uint64_t escaping_borrowed_cells() noexcept {
-        return g_escaping_borrowed_cells.load(std::memory_order_relaxed);
-    }
+    uint64_t string_materializations() noexcept { return g_string_materializations.load(std::memory_order_relaxed); }
+    void note_string_materialization() noexcept { g_string_materializations.fetch_add(1, std::memory_order_relaxed); }
+    uint64_t gather_rows_fetched() noexcept { return g_gather_rows_fetched.load(std::memory_order_relaxed); }
+    void note_gather_row_fetched() noexcept { g_gather_rows_fetched.fetch_add(1, std::memory_order_relaxed); }
+    uint64_t escaping_borrowed_cells() noexcept { return g_escaping_borrowed_cells.load(std::memory_order_relaxed); }
     void note_escaping_borrowed_cells(uint64_t cells) noexcept {
         g_escaping_borrowed_cells.fetch_add(cells, std::memory_order_relaxed);
     }
-    uint64_t predicate_row_fetches() noexcept {
-        return g_predicate_row_fetches.load(std::memory_order_relaxed);
-    }
+    uint64_t predicate_row_fetches() noexcept { return g_predicate_row_fetches.load(std::memory_order_relaxed); }
     void reset_gathered_borrowed_strings() noexcept {
         g_gathered_borrowed_strings.store(0, std::memory_order_relaxed);
         g_predicate_row_fetches.store(0, std::memory_order_relaxed);
@@ -454,8 +442,7 @@ namespace components::table {
                                 // is ever dropped, every string cell this branch fills goes back to
                                 // being a view into a block whose pin dies with fetch_state.
                                 if (!fetch_state.result_outlives_pins &&
-                                    result.data[out_idx].type().to_physical_type() ==
-                                        types::physical_type::STRING) {
+                                    result.data[out_idx].type().to_physical_type() == types::physical_type::STRING) {
                                     g_gathered_borrowed_strings.fetch_add(approved_tuple_count,
                                                                           std::memory_order_relaxed);
                                 }

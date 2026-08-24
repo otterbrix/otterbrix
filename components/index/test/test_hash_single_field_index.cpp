@@ -186,9 +186,9 @@ TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
     std::vector<int64_t> pending_rows;
     for (const auto& pending_entry : index->pending_inserts(txn_insert)) {
         ([&](const components::types::logical_value_t& pending_key, int64_t row_id) {
-                                       REQUIRE(pending_key == key);
-                                       pending_rows.push_back(row_id);
-                                   })(pending_entry.key, pending_entry.row_index);
+            REQUIRE(pending_key == key);
+            pending_rows.push_back(row_id);
+        })(pending_entry.key, pending_entry.row_index);
     }
     REQUIRE(pending_rows.size() == 1);
     REQUIRE(pending_rows.front() == 700);
@@ -202,9 +202,9 @@ TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
     std::vector<int64_t> pending_delete_rows;
     for (const auto& pending_entry : index->pending_deletes(txn_delete)) {
         ([&](const components::types::logical_value_t& pending_key, int64_t row_id) {
-                                       REQUIRE(pending_key == key);
-                                       pending_delete_rows.push_back(row_id);
-                                   })(pending_entry.key, pending_entry.row_index);
+            REQUIRE(pending_key == key);
+            pending_delete_rows.push_back(row_id);
+        })(pending_entry.key, pending_entry.row_index);
     }
     REQUIRE(pending_delete_rows.size() == 1);
     REQUIRE(pending_delete_rows.front() == 700);
@@ -221,16 +221,16 @@ TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
     bool seen_after_commit_insert = false;
     for (const auto& pending_entry : index->pending_inserts(txn_insert)) {
         ([&](const components::types::logical_value_t&, int64_t) {
-        seen_after_commit_insert = true;
-    })(pending_entry.key, pending_entry.row_index);
+            seen_after_commit_insert = true;
+        })(pending_entry.key, pending_entry.row_index);
     }
     REQUIRE_FALSE(seen_after_commit_insert);
 
     bool seen_after_commit_delete = false;
     for (const auto& pending_entry : index->pending_deletes(txn_delete)) {
         ([&](const components::types::logical_value_t&, int64_t) {
-        seen_after_commit_delete = true;
-    })(pending_entry.key, pending_entry.row_index);
+            seen_after_commit_delete = true;
+        })(pending_entry.key, pending_entry.row_index);
     }
     REQUIRE_FALSE(seen_after_commit_delete);
 }
@@ -252,8 +252,8 @@ TEST_CASE("disk_single_field_index:revert_cleanup_and_clear_memory") {
     bool seen_after_revert = false;
     for (const auto& pending_entry : index->pending_inserts(txn_insert)) {
         ([&](const components::types::logical_value_t&, int64_t) {
-        seen_after_revert = true;
-    })(pending_entry.key, pending_entry.row_index);
+            seen_after_revert = true;
+        })(pending_entry.key, pending_entry.row_index);
     }
     REQUIRE_FALSE(seen_after_revert);
 
@@ -262,8 +262,8 @@ TEST_CASE("disk_single_field_index:revert_cleanup_and_clear_memory") {
     bool seen_after_clean_delete = false;
     for (const auto& pending_entry : index->pending_deletes(txn_delete)) {
         ([&](const components::types::logical_value_t&, int64_t) {
-        seen_after_clean_delete = true;
-    })(pending_entry.key, pending_entry.row_index);
+            seen_after_clean_delete = true;
+        })(pending_entry.key, pending_entry.row_index);
     }
     REQUIRE_FALSE(seen_after_clean_delete);
 }

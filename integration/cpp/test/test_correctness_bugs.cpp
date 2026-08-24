@@ -793,7 +793,8 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -820,7 +821,8 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO t.a (id, name) VALUES (-1, 'REJECTED');")->is_error());
         }
         {
             auto session = otterbrix::session_id_t();

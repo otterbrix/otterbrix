@@ -1332,11 +1332,10 @@ namespace components::sql::transform {
                         const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());
                         const auto& rel = static_cast<const std::string&>(body_agg->relname());
                         if (!rel.empty()) {
-                            body = maybe_wrap_with_catalog_resolve_table(
-                                resource_,
-                                static_cast<const std::string&>(body_agg->dbname()),
-                                rel,
-                                std::move(body));
+                            register_catalog_resolve_table(resource_,
+                                                           &catalog_resolves_,
+                                                           static_cast<const std::string&>(body_agg->dbname()),
+                                                           rel);
                         }
                     }
                     plan->sub_queries.emplace_back(std::move(body));

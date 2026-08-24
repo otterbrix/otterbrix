@@ -28,6 +28,20 @@ namespace {
         (void) loaded;
         return &registry;
     }
+
+    // Validation reads its registries and execution context from the caller, so the test
+    // supplies its own rather than relying on a process-wide default.
+    services::dispatcher::validation::validation_context_t
+    test_validation_context(std::pmr::memory_resource* resource) {
+        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
+        static const components::graph_execution_context execution_context{};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(functions);
+            return true;
+        }();
+        (void) loaded;
+        return {resource, nullptr, *test_cast_registry(), functions, execution_context};
+    }
 } // namespace
 
 using namespace components;
@@ -118,7 +132,7 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     // Real validation: stamps side()/path() on the keys and output_types() on the
     // scans + both joins (left_width/right_width the promote rule classifies against).
     logical_plan::storage_parameters params{res};
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params);
+    auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), params);
     REQUIRE_FALSE(validated.has_error());
     REQUIRE(inner_cross->has_output_types());
     REQUIRE(inner_cross->output_types().size() == 4); // [a|b]

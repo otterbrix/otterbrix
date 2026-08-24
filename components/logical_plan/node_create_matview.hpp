@@ -13,9 +13,8 @@ namespace components::logical_plan {
 
     // CREATE MATERIALIZED VIEW mv AS SELECT ... (PostgreSQL-canonical, relkind='m').
     // The body plan is stored as child[0] so it is visible to tree walks
-    // (gather_plan_resolve_index, planner, physical_plan_gen). The body's
-    // source resolve nodes are hoisted to the wrapping sequence_t's front so
-    // Pass 1 stamps source metadata; the planner then reads
+    // (planner, physical_plan_gen). The node names its source table, so enrich
+    // binds and pastes the source metadata; the planner then reads
     // body_plan->aggregate.expressions + source's stamped resolved_metadata
     // to derive the output schema before lowering to:
     //   sequence_t(create_collection(relkind='m'),
@@ -30,6 +29,15 @@ namespace components::logical_plan {
         const std::string& matviewname() const noexcept { return matviewname_; }
         const std::string& body_sql() const noexcept { return body_sql_; }
 
+        // Names the matview is created in and reads from, as written. Kept on the
+        // node so enrich binds each to a resolved entry by name.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+        const std::string& source_dbname() const noexcept { return source_dbname_; }
+        void set_source_dbname(std::string dbname) { source_dbname_ = std::move(dbname); }
+        const std::string& source_relname() const noexcept { return source_relname_; }
+        void set_source_relname(std::string relname) { source_relname_ = std::move(relname); }
+
         // Body plan lives at child[0]. nullptr if not set yet.
         node_ptr body_plan() const noexcept { return children_.empty() ? nullptr : children_.front(); }
         void set_body_plan(node_ptr plan);
@@ -37,8 +45,8 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
-        // Source table oid (the body's FROM-clause table). Stamped by enrich
-        // from sibling catalog_resolve_table inside the wrapping sequence_t.
+        // Source table oid (the body's FROM-clause table). Stamped by enrich from
+        // the plan's resolved table entry for (source_dbname, source_relname).
         components::catalog::oid_t source_table_oid() const noexcept { return source_table_oid_; }
         void set_source_table_oid(components::catalog::oid_t oid) noexcept { source_table_oid_ = oid; }
 
@@ -69,6 +77,9 @@ namespace components::logical_plan {
 
         std::string matviewname_;
         std::string body_sql_;
+        std::string dbname_;
+        std::string source_dbname_;
+        std::string source_relname_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t source_table_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t matview_oid_{components::catalog::INVALID_OID};

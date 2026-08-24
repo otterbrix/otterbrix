@@ -1,8 +1,8 @@
 #include "operator_delete.hpp"
 
-#include <atomic>
 #include "dml_util.hpp"
 #include "join_utils.hpp"
+#include <atomic>
 #include <components/vector/vector_operations.hpp>
 
 #include <components/context/context.hpp>

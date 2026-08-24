@@ -197,8 +197,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     INFO("insert");
     {
         auto chunk = gen_data_chunk(N, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -323,8 +322,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     {
         for (int batch = 0; batch < 2; batch++) {
             auto chunk = gen_data_chunk(N, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -673,8 +671,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     INFO("single row");
     {
         auto chunk = gen_data_chunk(1, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));

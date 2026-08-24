@@ -156,9 +156,8 @@ namespace components::operators {
         // RESOLVE_CONSTRAINT — pipeline FK + CHECK constraint resolution.
         // Reads pg_constraint by (conrelid|confrelid) +
         // pg_attribute (column-name lookups) + pg_class + pg_namespace
-        // (descendant FK reference resolution). Stamps fks() / check_exprs()
-        // onto the back-pointed logical node so enrich reads them via the
-        // plan_resolve_index.
+        // (descendant FK reference resolution). Stamps fks / check_exprs into
+        // each entry of the constraint resolve node, where enrich reads them.
         resolve_constraint,
         // ALLOCATE_OIDS — sends one allocate-batch request to the disk actor's
         // oid_generator and stamps the resulting vector on the back-pointed node

@@ -128,7 +128,12 @@ namespace services::disk::test_probe {
         if (committed_scan) {
             ctx.txn = components::table::transaction_data{};
         }
-        auto r = fx.invoke(&manager_disk_t::read_chunks_by_key, ctx, table_oid, std::move(key_cols), std::move(keys), std::pmr::vector<std::uint64_t>{&fx.resource});
+        auto r = fx.invoke(&manager_disk_t::read_chunks_by_key,
+                           ctx,
+                           table_oid,
+                           std::move(key_cols),
+                           std::move(keys),
+                           std::pmr::vector<std::uint64_t>{&fx.resource});
         // A probe read that could not be performed is a broken probe, not "no rows":
         // returning an empty vector here would make every caller below silently assert
         // "not found". Assert loudly instead — no test in this suite expects a failure.

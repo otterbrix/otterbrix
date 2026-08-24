@@ -3,9 +3,9 @@
 #include <cassert>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_codes.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/oid_batch.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -30,7 +30,6 @@ namespace disk_test_helpers {
         assert(!r.has_error() && "disk_test_helpers::read_ok: keyed catalog read failed");
         return std::move(r.value());
     }
-
 
     using namespace services::disk;
     namespace catalog = components::catalog;
@@ -430,11 +429,13 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
         reg_vals.emplace_back(toid_lv);
         reg_vals.emplace_back(name_lv);
-        auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                 auto_ctx(),
-                                 pg_cc,
-                                 std::move(reg_keys),
-                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(reg_vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+        auto batches = disk_test_helpers::read_ok(
+            fx.invoke(&manager_disk_t::read_chunks_by_key,
+                      auto_ctx(),
+                      pg_cc,
+                      std::move(reg_keys),
+                      services::disk::test_probe::build_key_chunk(&fx.resource, std::move(reg_vals)),
+                      std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::int64_t max_version = -1;
         catalog::oid_t latest_atttypid = catalog::INVALID_OID;
@@ -499,11 +500,13 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> unreg_vals{&fx.resource};
         unreg_vals.emplace_back(toid_lv);
         unreg_vals.emplace_back(name_lv);
-        auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                 auto_ctx(),
-                                 pg_cc,
-                                 std::move(unreg_keys),
-                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(unreg_vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+        auto batches = disk_test_helpers::read_ok(
+            fx.invoke(&manager_disk_t::read_chunks_by_key,
+                      auto_ctx(),
+                      pg_cc,
+                      std::move(unreg_keys),
+                      services::disk::test_probe::build_key_chunk(&fx.resource, std::move(unreg_vals)),
+                      std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;

@@ -3,7 +3,7 @@
 
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/plan_root.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/extension.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -30,10 +30,9 @@ namespace components::sql::transform {
 
         // --- SORT ELIMINATION for a provably-unobservable sub-query ORDER BY ---------------
         //
-        // A flattened sub-query root is either the aggregate itself (no FROM identity) or a
-        // resolve-wrapping sequence_t (resolves at the front, the aggregate last). Unwrap to
-        // the aggregate via the shared logical_plan::effective_root_node; anything that does
-        // not unwrap to an aggregate has nothing to strip.
+        // A flattened sub-query root IS its consumer node (catalog lookups live on the
+        // execution_plan, never in the tree), so anything that is not an aggregate has
+        // nothing to strip.
 
         // Remove a bare ORDER BY (a childless sort_t marker in the aggregate's flat pipeline)
         // when NO limit_t child is present. A LIMIT/OFFSET child makes the sort a top-N: the
@@ -86,7 +85,7 @@ namespace components::sql::transform {
                 if (!order_insensitive_compaction(plan.sub_query_results[i])) {
                     continue;
                 }
-                auto* root = logical_plan::effective_root_node(plan.sub_queries[i].get());
+                auto* root = plan.sub_queries[i].get();
                 if (root && root->type() == logical_plan::node_type::aggregate_t) {
                     strip_bare_sort_child(root);
                 }
@@ -98,6 +97,7 @@ namespace components::sql::transform {
         logical_plan::execution_plan_t plan(resource_);
 
         plan.sub_queries.emplace_back(transform(node, &plan));
+        plan.catalog_resolves = std::move(catalog_resolves_);
 
         if (has_error()) {
             return {resource_, std::move(error_)};
@@ -122,15 +122,16 @@ namespace components::sql::transform {
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
                 log_node = transform_create_database(n);
                 // Resolve the namespace name so a later patch can use the
-                // resolve node to detect duplicates through the pipeline.
-                log_node = maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(log_node));
+                // resolve result to detect duplicates through the pipeline.
+                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
                 break;
             }
             case T_DropdbStmt: {
                 auto& n = pg_cast<DropdbStmt>(node);
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
                 log_node = transform_drop_database(n);
-                log_node = maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(log_node));
+                static_cast<logical_plan::node_drop_t*>(log_node.get())->set_dbname(dbname);
+                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
                 break;
             }
             case T_CreateStmt:
@@ -157,9 +158,9 @@ namespace components::sql::transform {
                 // additional resolves.
                 auto [db, rel] = select_primary_table_identity(log_node);
                 if (!rel.empty()) {
-                    log_node = maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(log_node));
+                    register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
                 }
-                log_node = wrap_with_catalog_resolve_types(resource_, cast_type_names_, std::move(log_node));
+                register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
                 break;
             }
             case T_UpdateStmt:

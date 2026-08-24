@@ -123,22 +123,22 @@ namespace {
         }
     }
 
-    void collect_catalog_targets(const logical_plan::node_ptr& node, std::vector<std::string>& out) {
-        if (!node) {
-            return;
-        }
-        if (node->type() == logical_plan::node_type::catalog_resolve_t) {
-            const auto* resolve = static_cast<const logical_plan::node_catalog_resolve_t*>(node.get());
-            const char* kind = resolve->kind() == logical_plan::resolve_kind::table        ? "table"
-                               : resolve->kind() == logical_plan::resolve_kind::namespace_ ? "namespace"
-                               : resolve->kind() == logical_plan::resolve_kind::database   ? "database"
-                               : resolve->kind() == logical_plan::resolve_kind::type       ? "type"
-                                                                                           : "constraint";
-            out.push_back(std::string{kind} + ":" + resolve->dbname() + "." + resolve->relname());
-        }
-        for (const auto& child : node->children()) {
-            collect_catalog_targets(child, out);
-        }
+    // Catalog lookups ride on the plan, one node per kind, each carrying every target of
+    // that kind. A type names itself in type_name; every other kind uses relname.
+    void collect_catalog_targets(const logical_plan::catalog_resolves_t& resolves, std::vector<std::string>& out) {
+        const auto add = [&out](const logical_plan::node_catalog_resolve_ptr& node, const char* kind) {
+            if (!node) {
+                return;
+            }
+            for (const auto& entry : node->entries()) {
+                const std::string& name = entry.relname.empty() ? entry.type_name : entry.relname;
+                out.push_back(std::string{kind} + ":" + entry.dbname + "." + name);
+            }
+        };
+        add(resolves.namespaces, "namespace");
+        add(resolves.tables, "table");
+        add(resolves.types, "type");
+        add(resolves.constraints, "constraint");
     }
 
     void collect_join_arities(const logical_plan::node_ptr& node, std::vector<size_t>& out) {
@@ -228,7 +228,6 @@ namespace {
             return out;
         }
 
-        collect_catalog_targets(result.node_ptr(), out.catalog_targets);
         collect_join_arities(result.node_ptr(), out.join_arities);
         collect_joins(result.node_ptr(), out.joins);
         std::vector<found_key_t> keys;
@@ -239,6 +238,10 @@ namespace {
             if (column.empty() || last_segment(key.path) == column) {
                 out.matches.push_back(key);
             }
+        }
+        // Reads the plan, so it goes last: finalize() hands over what transform() built.
+        if (auto plan = result.finalize(); !plan.has_error()) {
+            collect_catalog_targets(plan.value().catalog_resolves, out.catalog_targets);
         }
         return out;
     }

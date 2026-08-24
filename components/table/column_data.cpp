@@ -102,9 +102,7 @@ namespace components::table {
         return type_;
     }
 
-    bool column_data_t::has_updates() const {
-        return updates_.get();
-    }
+    bool column_data_t::has_updates() const { return updates_.get(); }
 
     scan_vector_type
     column_data_t::get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {

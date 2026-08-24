@@ -31,6 +31,10 @@ namespace components::sql::transform {
                                               core::relname_t{qn.relname},
                                               make_compare_expression(resource_, compare_type::all_true)),
                 del_limit);
+            // The target identity stays ON the node: enrich binds it to a resolved
+            // entry by name and stamps table_oid() + table_metadata() from there.
+            del->set_dbname(qn.dbname);
+            del->set_relname(qn.relname);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
@@ -40,14 +44,14 @@ namespace components::sql::transform {
                     return nullptr;
                 }
             }
-            // Tag the target table for catalog resolution and emit
-            // resolve_constraint(referencing) so enrich reads descendant FKs
-            // are stamped on the plan tree by Pass 1.
-            return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                         qn.dbname,
-                                                         qn.relname,
-                                                         std::move(del),
-                                                         constraint_resolve_kind::referencing);
+            // Tag the target table for catalog resolution with the referencing
+            // constraint gather, so enrich reads the descendant FKs.
+            register_catalog_resolve_table(resource_,
+                                           &catalog_resolves_,
+                                           qn.dbname,
+                                           qn.relname,
+                                           constraint_resolve_kind::referencing);
+            return del;
         }
         name_collection_t names;
         names.left_name = rangevar_to_qualified_name(node.relation);
@@ -93,6 +97,10 @@ namespace components::sql::transform {
                                                                          core::relname_t{names.left_name.relname},
                                                                          where_expr),
                                            del_limit);
+        // The target identity stays ON the node: enrich binds it to a resolved
+        // entry by name and stamps table_oid() + table_metadata() from there.
+        del->set_dbname(names.left_name.dbname);
+        del->set_relname(names.left_name.relname);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {
@@ -104,12 +112,13 @@ namespace components::sql::transform {
                 return nullptr;
             }
         }
-        // Wrap with namespace + table resolve nodes for the primary (LEFT)
-        // table and emit resolve_constraint(referencing) for FK cascade enrich.
-        return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                     names.left_name.dbname,
-                                                     names.left_name.relname,
-                                                     std::move(del),
-                                                     constraint_resolve_kind::referencing);
+        // Resolve the primary (LEFT) table and gather its referencing
+        // constraints for FK cascade enrich.
+        register_catalog_resolve_table(resource_,
+                                       &catalog_resolves_,
+                                       names.left_name.dbname,
+                                       names.left_name.relname,
+                                       constraint_resolve_kind::referencing);
+        return del;
     }
 } // namespace components::sql::transform

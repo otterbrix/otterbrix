@@ -42,8 +42,7 @@ int main() {
     constexpr int kRows = 1000;
     {
         auto chunk = gen_data_chunk(kRows, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
+        auto ins = components::sql::transform::name_catalog_target(
             database_name,
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));

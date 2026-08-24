@@ -80,8 +80,8 @@ namespace components::vector {
     const uint64_t* indexing_vector_t::data() const noexcept { return indexing_; }
 
     boost::intrusive_ptr<indexing_data> indexing_vector_t::slice(std::pmr::memory_resource* resource,
-                                                            const indexing_vector_t& indexing,
-                                                            uint64_t count) const {
+                                                                 const indexing_vector_t& indexing,
+                                                                 uint64_t count) const {
         auto data = core::make_intrusive_ptr<indexing_data>(resource, count);
         auto result_ptr = data->data.get();
         for (uint64_t i = 0; i < count; i++) {

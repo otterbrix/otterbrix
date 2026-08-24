@@ -60,7 +60,7 @@ namespace {
                                                                                 lifecycle_columns(resource),
                                                                                 {});
             components::logical_plan::node_ptr node =
-                components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource, database, create);
+                components::sql::transform::name_catalog_target(database, {}, create);
             auto cursor = engine_->dispatcher()->execute_plan(
                 otterbrix::session_id_t(),
                 components::logical_plan::execution_plan_t{resource,
@@ -121,9 +121,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
                                                                             lifecycle_columns(resource),
                                                                             {});
         components::logical_plan::node_ptr node =
-            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource,
-                                                                                  lifecycle_database_name,
-                                                                                  create);
+            components::sql::transform::name_catalog_target(lifecycle_database_name, {}, create);
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(
             session,
@@ -214,9 +212,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
                                                                       lifecycle_columns(resource),
                                                                       {});
             components::logical_plan::node_ptr node =
-                components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource,
-                                                                                      lifecycle_database_name,
-                                                                                      create);
+                components::sql::transform::name_catalog_target(lifecycle_database_name, {}, create);
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(
                 session,

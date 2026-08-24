@@ -38,14 +38,14 @@ namespace {
     };
 } // namespace
 
-#define MAKE_ENV(dirname)                                                                                    \
-    env_t env(dirname);                                                                                      \
-    test_spaces space(env.config);                                                                            \
-    auto* d = space.dispatcher();                                                                             \
-    auto exec = [&](const std::string& sql) {                                                                 \
-        auto session = otterbrix::session_id_t();                                                             \
-        return d->execute_sql(session, sql);                                                                  \
-    };                                                                                                        \
+#define MAKE_ENV(dirname)                                                                                              \
+    env_t env(dirname);                                                                                                \
+    test_spaces space(env.config);                                                                                     \
+    auto* d = space.dispatcher();                                                                                      \
+    auto exec = [&](const std::string& sql) {                                                                          \
+        auto session = otterbrix::session_id_t();                                                                      \
+        return d->execute_sql(session, sql);                                                                           \
+    };                                                                                                                 \
     REQUIRE(exec("CREATE DATABASE i;")->is_success())
 
 TEST_CASE("integration::cpp::test_inline_constraints::column_primary_key", "[.][inlinecons]") {

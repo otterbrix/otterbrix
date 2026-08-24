@@ -5,6 +5,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
+#include <services/dispatcher/validation/resolve_expression.hpp>
 
 using namespace services::dispatcher;
 using components::expressions::make_scalar_expression;
@@ -66,10 +67,31 @@ namespace {
         return static_cast<const components::expressions::cast_expression_t*>(nested.get());
     }
 
+    const components::compute::function_registry_t& functions() {
+        static components::compute::function_registry_t registry{std::pmr::new_delete_resource()};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(registry);
+            return true;
+        }();
+        (void) loaded;
+        return registry;
+    }
+
     core::error_t resolve(components::expressions::scalar_expression_t* expr,
                           const named_schema& schema,
                           const components::logical_plan::storage_parameters& parameters) {
-        return impl::resolve_scalar_output_type(resource(), &casts(), expr, schema, parameters);
+        static const components::graph_execution_context execution_context{};
+        const validation::expression_context_t context{
+            resource(),
+            schema,
+            parameters,
+            casts(),
+            functions(),
+            execution_context,
+            components::compute::create_mask(components::compute::function_type_t::row,
+                                             components::compute::function_type_t::vector)};
+        components::expressions::expression_ptr expression{expr};
+        return validation::resolve_expression(expression, context);
     }
 
 } // namespace

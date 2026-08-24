@@ -302,11 +302,9 @@ namespace components::table {
                 // The caller keeps this chunk after our pins are gone, so the bytes have to be the
                 // result's own. Same mechanism the bulk scan path uses.
                 auto& aux = static_cast<vector::string_vector_buffer_t&>(*result.auxiliary());
-                result_data[result_idx] =
-                    fetch_string_owned(segment, dict, baseptr, dict_offset, string_length, aux);
+                result_data[result_idx] = fetch_string_owned(segment, dict, baseptr, dict_offset, string_length, aux);
             } else {
-                result_data[result_idx] =
-                    fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+                result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
             }
         }
 

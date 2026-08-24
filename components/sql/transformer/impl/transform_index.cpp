@@ -42,12 +42,12 @@ namespace components::sql::transform {
             }
             create_index->keys().emplace_back(resource_, elem->name);
         }
-        // Wrap with catalog_resolve so Pass 1 stamps ns_oid + table_oid +
-        // columns; enrich_logical_plan reads from the plan-tree idx.
-        return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                     dbname_for_resolve,
-                                                     relname_for_resolve,
-                                                     std::move(create_index));
+        // The indexed table's identity stays ON the node: enrich binds it to a
+        // resolved entry by name and stamps ns_oid + table_oid + columns from there.
+        create_index->set_dbname(dbname_for_resolve);
+        create_index->set_relname(relname_for_resolve);
+        register_catalog_resolve_table(resource_, &catalog_resolves_, dbname_for_resolve, relname_for_resolve);
+        return create_index;
     }
 
 } // namespace components::sql::transform

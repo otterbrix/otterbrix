@@ -7,6 +7,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -342,6 +343,10 @@ namespace components::sql::transform {
         std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
         std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
         bool transforming_recursive_member_{false};
+
+        // Every catalog lookup the statement depends on, accumulated across all
+        // sub-queries and moved onto the execution_plan_t at the end of transform()
+        logical_plan::catalog_resolves_t catalog_resolves_;
 
         // TODO: wrapp expressions in resolve node, and it won't be needed
         std::vector<std::string> cast_type_names_;

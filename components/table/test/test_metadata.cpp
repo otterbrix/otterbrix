@@ -254,7 +254,7 @@ TEST_CASE("metadata: a file from an older format version is refused") {
     {
         std::FILE* f = std::fopen(test_db_path().c_str(), "r+b");
         REQUIRE(f != nullptr);
-        const uint32_t legacy_version = 1; // what pre-reset builds wrote
+        const uint32_t legacy_version = 1;                       // what pre-reset builds wrote
         REQUIRE(std::fseek(f, sizeof(uint32_t), SEEK_SET) == 0); // past the magic
         REQUIRE(std::fwrite(&legacy_version, sizeof(legacy_version), 1, f) == 1);
         std::fclose(f);

@@ -96,12 +96,13 @@ namespace components::compute::detail {
                 return st;
             }
 
-            if (auto st = execute_batch(inputs); st.contains_error()) {
-                return st;
+            auto produced = execute_batch(inputs);
+            if (produced.has_error()) {
+                return produced.error();
             }
 
             data_chunk_t out(kernel_ctx().exec_context().resource(), {});
-            out.data.emplace_back(std::move(results_.front()));
+            out.data.emplace_back(std::move(produced.value()));
             out.set_cardinality(inputs.size());
             if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
                 return st;
@@ -120,14 +121,11 @@ namespace components::compute::detail {
             }
 
             for (const auto& in : inputs) {
-                if (auto st = execute_batch(in); st.contains_error()) {
-                    return st;
+                auto produced = execute_batch(in);
+                if (produced.has_error()) {
+                    return produced.error();
                 }
-            }
-
-            // fuse all vectors into one
-            for (auto&& res : results_) {
-                merged.data.emplace_back(std::move(res));
+                merged.data.emplace_back(std::move(produced.value()));
             }
 
             if (auto st = kernel().finalize(kernel_ctx(), merged); st.contains_error()) {
@@ -137,51 +135,14 @@ namespace components::compute::detail {
             return merged;
         }
 
-        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-
-            std::pmr::vector<complex_logical_type> types(exec_ctx().resource());
-            types.reserve(inputs.size());
-            for (const auto& v : inputs) {
-                types.emplace_back(v.type());
-            }
-
-            data_chunk_t single_row(exec_ctx().resource(), types, static_cast<uint64_t>(1));
-            for (size_t i = 0; i < inputs.size(); ++i) {
-                single_row.set_value(static_cast<uint64_t>(i), 0, inputs[i]);
-            }
-            single_row.set_cardinality(1);
-
-            if (auto st = execute_batch(single_row); st.contains_error()) {
-                return st;
-            }
-
-            data_chunk_t out(exec_ctx().resource(), {});
-            out.data.emplace_back(std::move(results_.front()));
-            out.set_cardinality(1);
-            if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
-                return st;
-            }
-
-            std::pmr::vector<logical_value_t> result(exec_ctx().resource());
-            result.push_back(out.data.front().value(0));
-            return result;
-        }
-
     private:
-        core::error_t execute_batch(const data_chunk_t& inputs) {
+        core::result_wrapper_t<vector_t> execute_batch(const data_chunk_t& inputs) {
             auto output = prepare_vector_output(inputs.size());
             if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
                 return st;
             }
-
-            results_.emplace_back(std::move(output));
-            return core::error_t::no_error();
+            return output;
         }
-
-        std::vector<vector_t> results_;
     };
 
     class aggregate_executor final : public kernel_executor_impl<aggregate_kernel> {
@@ -227,10 +188,6 @@ namespace components::compute::detail {
             return not_directly_executable();
         }
 
-        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
-            return not_directly_executable();
-        }
-
     private:
         // An aggregate reduces many rows into per-group accumulators, so it is driven by
         // update()/finalize() and never produces a value straight out of one call.
@@ -244,84 +201,9 @@ namespace components::compute::detail {
         const std::pmr::vector<types::complex_logical_type>* input_types_ = nullptr;
     };
 
-    class row_executor final : public kernel_executor_impl<row_kernel> {
-    public:
-        core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-
-            std::pmr::vector<logical_value_t> results(exec_ctx().resource());
-            results.reserve(inputs.size());
-
-            if (auto st = execute_chunk(inputs, results); st.contains_error()) {
-                return st;
-            }
-            return results;
-        }
-
-        core::result_wrapper_t<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-
-            std::pmr::vector<logical_value_t> results(exec_ctx().resource());
-            size_t total = 0;
-            for (const auto& chunk : inputs) {
-                total += chunk.size();
-            }
-            results.reserve(total);
-
-            for (const auto& chunk : inputs) {
-                if (auto st = execute_chunk(chunk, results); st.contains_error()) {
-                    return st;
-                }
-            }
-            return results;
-        }
-
-        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
-            if (auto st = check_kernel(); st.contains_error()) {
-                return st;
-            }
-
-            std::pmr::vector<logical_value_t> output(inputs.get_allocator().resource());
-            if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
-                return st;
-            }
-
-            return output;
-        }
-
-    private:
-        core::error_t execute_chunk(const data_chunk_t& chunk, std::pmr::vector<logical_value_t>& results) {
-            for (size_t i = 0; i < chunk.size(); ++i) {
-                std::pmr::vector<logical_value_t> row_in(exec_ctx().resource());
-                row_in.reserve(chunk.column_count());
-
-                for (size_t j = 0; j < chunk.column_count(); ++j) {
-                    row_in.emplace_back(chunk.value(j, i));
-                }
-
-                std::pmr::vector<logical_value_t> row_out(exec_ctx().resource());
-                if (auto st = kernel().execute(kernel_ctx(), row_in, row_out); st.contains_error()) {
-                    return st;
-                }
-
-                // row_kernel contract: one scalar output per call
-                if (!row_out.empty()) {
-                    results.emplace_back(std::move(row_out.front()));
-                }
-            }
-            return core::error_t::no_error();
-        }
-    };
-
     std::unique_ptr<kernel_executor_t> kernel_executor_t::make_vector() { return std::make_unique<vector_executor>(); }
 
     std::unique_ptr<kernel_executor_t> kernel_executor_t::make_aggregate() {
         return std::make_unique<aggregate_executor>();
     }
-
-    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_row() { return std::make_unique<row_executor>(); }
 } // namespace components::compute::detail

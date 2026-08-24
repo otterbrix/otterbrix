@@ -278,8 +278,7 @@ namespace services::dispatcher {
                 context.cast_registry,
                 context.function_registry,
                 context.execution_context,
-                components::compute::create_mask(components::compute::function_type_t::row,
-                                                 components::compute::function_type_t::vector),
+                components::compute::create_mask(components::compute::function_type_t::vector),
                 schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -331,8 +330,7 @@ namespace services::dispatcher {
                 } else if (node->expressions()[0]->group() == expression_group::function) {
                     auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
                     auto allowed_function_types =
-                        components::compute::create_mask(components::compute::function_type_t::row,
-                                                         components::compute::function_type_t::vector);
+                        components::compute::create_mask(components::compute::function_type_t::vector);
                     auto expr_res =
                         validate_schema(context, expr, parameters, schema_left, schema_right, allowed_function_types);
                     if (expr_res.has_error()) {
@@ -376,8 +374,7 @@ namespace services::dispatcher {
                         scalar_expr,
                         schema,
                         parameters,
-                        components::compute::create_mask(components::compute::function_type_t::row,
-                                                         components::compute::function_type_t::vector));
+                        components::compute::create_mask(components::compute::function_type_t::vector));
                     if (resolve_error.contains_error()) {
                         return resolve_error;
                     }
@@ -470,8 +467,7 @@ namespace services::dispatcher {
                             scalar_expr,
                             *schema_left,
                             parameters,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector),
+                            components::compute::create_mask(components::compute::function_type_t::vector),
                             schema_right,
                             nullptr);
                         if (resolve_error.contains_error()) {
@@ -1008,8 +1004,7 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector,
+                            components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate)};
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::aggregate) {
@@ -1422,8 +1417,7 @@ namespace services::dispatcher {
                                     scalar_expr,
                                     incoming_schema,
                                     parameters,
-                                    components::compute::create_mask(components::compute::function_type_t::row,
-                                                                     components::compute::function_type_t::vector,
+                                    components::compute::create_mask(components::compute::function_type_t::vector,
                                                                      components::compute::function_type_t::aggregate));
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
@@ -1554,8 +1548,7 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector),
+                            components::compute::create_mask(components::compute::function_type_t::vector),
                             nullptr,
                             group_keys};
                         expression_ptr expression{scalar_expr};
@@ -1581,8 +1574,7 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector,
+                            components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate,
                                                              components::compute::function_type_t::expand),
                             nullptr,
@@ -1790,8 +1782,7 @@ namespace services::dispatcher {
                                     scalar_expr,
                                     result,
                                     parameters,
-                                    components::compute::create_mask(components::compute::function_type_t::row,
-                                                                     components::compute::function_type_t::vector));
+                                    components::compute::create_mask(components::compute::function_type_t::vector));
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
                                 }
@@ -1907,8 +1898,7 @@ namespace services::dispatcher {
                                      context.function_registry,
                                      function_node->name(),
                                      function_input,
-                                     components::compute::create_mask(components::compute::function_type_t::row,
-                                                                      components::compute::function_type_t::vector,
+                                     components::compute::create_mask(components::compute::function_type_t::vector,
                                                                       components::compute::function_type_t::expand));
                 if (fn_resolved.has_error()) {
                     return fn_resolved.convert_error<named_schema>();
@@ -2314,8 +2304,7 @@ namespace services::dispatcher {
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
                     auto allowed_function_types =
-                        components::compute::create_mask(components::compute::function_type_t::row,
-                                                         components::compute::function_type_t::vector);
+                        components::compute::create_mask(components::compute::function_type_t::vector);
                     for (auto& expr : node_update->updates()) {
                         auto target_res = validation::find_types(resource, expr->key(), table_schema);
                         if (target_res.has_error()) {
@@ -2332,8 +2321,7 @@ namespace services::dispatcher {
                                 scalar,
                                 table_schema,
                                 parameters,
-                                components::compute::create_mask(components::compute::function_type_t::row,
-                                                                 components::compute::function_type_t::vector),
+                                components::compute::create_mask(components::compute::function_type_t::vector),
                                 source_schema);
                             if (resolve_error.contains_error()) {
                                 return resolve_error;

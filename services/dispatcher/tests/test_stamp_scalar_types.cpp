@@ -88,8 +88,7 @@ namespace {
             casts(),
             functions(),
             execution_context,
-            components::compute::create_mask(components::compute::function_type_t::row,
-                                             components::compute::function_type_t::vector)};
+            components::compute::create_mask(components::compute::function_type_t::vector)};
         components::expressions::expression_ptr expression{expr};
         return validation::resolve_expression(expression, context);
     }

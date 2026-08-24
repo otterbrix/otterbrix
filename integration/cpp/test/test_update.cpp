@@ -159,7 +159,7 @@ TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
     REQUIRE(exec("CREATE DATABASE g;")->is_success());
     REQUIRE(exec("CREATE TABLE g.t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, e BIGINT);")->is_success());
 
-    constexpr int kRows = 5000;   // > 4 scan batches of DEFAULT_VECTOR_CAPACITY (1024)
+    constexpr int kRows = 5000; // > 4 scan batches of DEFAULT_VECTOR_CAPACITY (1024)
     constexpr int kBatch = 1000;
     for (int base = 0; base < kRows; base += kBatch) {
         std::string sql = "INSERT INTO g.t (id, a, b, c, d, e) VALUES ";

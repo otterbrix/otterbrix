@@ -296,11 +296,13 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         rk.emplace_back(components::catalog::pg_computed_column_col::relid);
         std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
         rv.emplace_back(toid_lv);
-        auto batches = disk_test_helpers::read_ok(fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
-                                        fx_reopen.ctx(),
-                                        pg_cc,
-                                        std::move(rk),
-                                        test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)), std::pmr::vector<std::uint64_t>{&fx_reopen.resource}));
+        auto batches =
+            disk_test_helpers::read_ok(fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
+                                                        fx_reopen.ctx(),
+                                                        pg_cc,
+                                                        std::move(rk),
+                                                        test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)),
+                                                        std::pmr::vector<std::uint64_t>{&fx_reopen.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);

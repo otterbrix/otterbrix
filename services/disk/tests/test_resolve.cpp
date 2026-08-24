@@ -256,8 +256,12 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
-        auto res =
-            disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_keys, fx.ctx(), table_oid, std::move(key_cols), std::move(keys), std::pmr::vector<std::uint64_t>{&fx.resource}));
+        auto res = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_keys,
+                                                        fx.ctx(),
+                                                        table_oid,
+                                                        std::move(key_cols),
+                                                        std::move(keys),
+                                                        std::pmr::vector<std::uint64_t>{&fx.resource}));
         REQUIRE(res.size() == N);
         // Copy into a std::vector for re-use in the parity loop (chunk-by-chunk
         // size/value comparison below).
@@ -280,11 +284,13 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         single_key_cols.emplace_back(0);
         std::pmr::vector<logical_value_t> single_vals{&fx.resource};
         single_vals.emplace_back(&fx.resource, probe_keys[i]);
-        auto single = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                fx.ctx(),
-                                table_oid,
-                                std::move(single_key_cols),
-                                test_probe::build_key_chunk(&fx.resource, std::move(single_vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+        auto single =
+            disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
+                                                 fx.ctx(),
+                                                 table_oid,
+                                                 std::move(single_key_cols),
+                                                 test_probe::build_key_chunk(&fx.resource, std::move(single_vals)),
+                                                 std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         // Same total row count per key (the no-match key yields 0 on both paths).
         std::uint64_t single_total = total_rows(single);
@@ -360,7 +366,8 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
                          fx.ctx(),
                          table_oid,
                          std::move(bad_cols),
-                         test_probe::build_key_chunk(&fx.resource, std::move(vals)), std::pmr::vector<std::uint64_t>{&fx.resource});
+                         test_probe::build_key_chunk(&fx.resource, std::move(vals)),
+                         std::pmr::vector<std::uint64_t>{&fx.resource});
 
     INFO("an unperformable keyed read must carry an error, not an empty result");
     REQUIRE(res.has_error());
@@ -374,7 +381,8 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
                            fx.ctx(),
                            table_oid,
                            std::move(bad_cols_b),
-                           test_probe::build_key_chunk(&fx.resource, std::move(vals_b)), std::pmr::vector<std::uint64_t>{&fx.resource});
+                           test_probe::build_key_chunk(&fx.resource, std::move(vals_b)),
+                           std::pmr::vector<std::uint64_t>{&fx.resource});
     REQUIRE(res_b.has_error());
 }
 

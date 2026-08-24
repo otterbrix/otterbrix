@@ -1,10 +1,10 @@
 #include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/catalog/cascade_planner.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/dependency_walker.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -125,7 +125,7 @@ namespace components::operators {
                                                kPgDepend,
                                                std::move(rd_keys),
                                                components::operators::make_key_chunk(resource_, ref_cls, ref_oid),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                               std::pmr::vector<std::uint64_t>{resource_});
             auto dep_batches_r = co_await std::move(rdf);
             if (dep_batches_r.has_error()) {
                 // A failed pg_depend read is not a miss; treating it as one lets the
@@ -226,7 +226,7 @@ namespace components::operators {
                                                kPgClass,
                                                std::move(pc_keys),
                                                components::operators::make_keys_chunk(resource_, probe_oids),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                               std::pmr::vector<std::uint64_t>{resource_});
             auto pc_results_r = co_await std::move(pcf);
             if (pc_results_r.has_error()) {
                 set_error(pc_results_r.error());

@@ -50,8 +50,7 @@ TEST_CASE("integration::cpp::test_gather_string_lifetime::gather_leaves_no_borro
             if (i != 0) {
                 sql += ", ";
             }
-            sql += "(" + std::to_string(n) + ", 'tag_value_" + std::to_string(n) + "', " + std::to_string(n) +
-                   ")";
+            sql += "(" + std::to_string(n) + ", 'tag_value_" + std::to_string(n) + "', " + std::to_string(n) + ")";
         }
         sql += ";";
         auto session = otterbrix::session_id_t();

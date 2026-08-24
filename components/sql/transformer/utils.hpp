@@ -18,7 +18,6 @@
 namespace components::sql::transform {
     inline constexpr size_t MAX_COLUMN_REF_SEGMENTS = 5;
 
-
 #ifdef DEV_MODE
     // Test-observable count of ROWS rewritten by promote_column while parsing an INSERT.
     // Widening a column's type rebuilds every row already filled in that chunk, cell by cell

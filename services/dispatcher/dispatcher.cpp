@@ -1,5 +1,5 @@
-#include <atomic>
 #include "dispatcher.hpp"
+#include <atomic>
 
 #include <components/casts/default_casts.hpp>
 #include <components/context/context.hpp>
@@ -38,7 +38,6 @@ namespace services::dispatcher {
     void reset_pump_hops() noexcept { g_pump_hops.store(0, std::memory_order_relaxed); }
     void note_pump_hop() noexcept { g_pump_hops.fetch_add(1, std::memory_order_relaxed); }
 #endif
-
 
     namespace {
         // subscriber-kind discriminator carried in the on_drop_resource_marked /

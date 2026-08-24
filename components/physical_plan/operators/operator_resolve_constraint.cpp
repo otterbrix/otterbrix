@@ -249,14 +249,13 @@ namespace components::operators {
 
                 std::pmr::vector<std::uint64_t> attr_p_keys(resource_);
                 attr_p_keys.emplace_back(catalog::pg_attribute_col::attrelid);
-                auto [_b, fut_attr_p] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::read_chunks_by_keys,
-                                     exec_ctx,
-                                     kPgAttribute,
-                                     std::move(attr_p_keys),
-                                     components::operators::make_keys_chunk(resource_, parent_oids),
-                                     pg_attribute_fk_parent_cols(resource_));
+                auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::read_chunks_by_keys,
+                                                         exec_ctx,
+                                                         kPgAttribute,
+                                                         std::move(attr_p_keys),
+                                                         components::operators::make_keys_chunk(resource_, parent_oids),
+                                                         pg_attribute_fk_parent_cols(resource_));
 
                 auto child_results_r = co_await std::move(fut_attr_c);
                 if (child_results_r.has_error()) {
@@ -342,9 +341,9 @@ namespace components::operators {
                                         : attr_chunk.get_value<std::int32_t>(catalog::pg_attribute_col::attnum, ai);
                                 if (attr_chunk.column_count() > catalog::pg_attribute_col::attdefspec &&
                                     !attr_chunk.is_null(catalog::pg_attribute_col::attdefspec, ai)) {
-                                    row.attdefspec.assign(attr_chunk.get_value<std::string_view>(
-                                        catalog::pg_attribute_col::attdefspec,
-                                        ai));
+                                    row.attdefspec.assign(
+                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attdefspec,
+                                                                               ai));
                                 }
                                 ordered.push_back(std::move(row));
                             }

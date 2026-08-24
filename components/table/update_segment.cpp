@@ -246,9 +246,7 @@ namespace components::table {
         return false;
     }
 
-    bool update_segment_t::has_updates(uint64_t vector_index) {
-        return update_node(vector_index).is_set();
-    }
+    bool update_segment_t::has_updates(uint64_t vector_index) { return update_node(vector_index).is_set(); }
 
     bool update_segment_t::has_updates(int64_t start_row_idx, int64_t end_row_idx) {
         if (!root_) {
@@ -324,7 +322,6 @@ namespace components::table {
                                                           int64_t* ids,
                                                           uint64_t count,
                                                           vector::vector_t& base_data) {
-
         update.flatten(count);
 
         if (count == 0) {

@@ -245,7 +245,8 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
+    manager_disk_t::unique_future<
+        core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
     manager_disk_t::read_chunks_by_keys(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
                                         std::pmr::vector<std::uint64_t> key_col_indices,

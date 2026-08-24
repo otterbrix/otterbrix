@@ -153,20 +153,20 @@ namespace services::index {
 
         // DML: txn-aware bulk index operations.
         unique_future<core::error_t> insert_rows(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<components::vector::data_chunk_t> data,
-                                        uint64_t start_row_id,
-                                        uint64_t count);
+                                                 components::catalog::oid_t table_oid,
+                                                 std::pmr::vector<components::vector::data_chunk_t> data,
+                                                 uint64_t start_row_id,
+                                                 uint64_t count);
         unique_future<core::error_t> delete_rows(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<components::vector::data_chunk_t> data,
-                                        std::pmr::vector<int64_t> row_ids);
+                                                 components::catalog::oid_t table_oid,
+                                                 std::pmr::vector<components::vector::data_chunk_t> data,
+                                                 std::pmr::vector<int64_t> row_ids);
         unique_future<core::error_t> update_rows(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<components::vector::data_chunk_t> old_data,
-                                        std::pmr::vector<components::vector::data_chunk_t> new_data,
-                                        std::pmr::vector<int64_t> row_ids,
-                                        int64_t new_start_row_id);
+                                                 components::catalog::oid_t table_oid,
+                                                 std::pmr::vector<components::vector::data_chunk_t> old_data,
+                                                 std::pmr::vector<components::vector::data_chunk_t> new_data,
+                                                 std::pmr::vector<int64_t> row_ids,
+                                                 int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup. commit_* return core::error_t (no_error()
         // ↔ success) per the contract; the bitcask write path is assert+abort
@@ -206,11 +206,11 @@ namespace services::index {
         // on-disk storage failed to open). A disk index is never silently
         // downgraded to an in-memory one.
         unique_future<core::result_wrapper_t<uint32_t>> create_index(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             index_name_t index_name,
-                                             components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type,
-                                             core::date::timezone_offset_t session_tz);
+                                                                     components::catalog::oid_t table_oid,
+                                                                     index_name_t index_name,
+                                                                     components::index::keys_base_storage_t keys,
+                                                                     components::logical_plan::index_type type,
+                                                                     core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 

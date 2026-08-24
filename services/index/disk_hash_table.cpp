@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdlib>
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -91,8 +91,8 @@ namespace services::index {
     disk_hash_table_t::create(const std::filesystem::path& file_path,
                               uint32_t bucket_count,
                               std::pmr::memory_resource* memory_resource) {
-        auto instance = boost::intrusive_ptr(
-            new disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}));
+        auto instance =
+            boost::intrusive_ptr(new disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}));
         if (!instance->open_error_.empty()) {
             return core::error_t{core::error_code_t::index_create_fail,
                                  std::pmr::string{instance->open_error_, memory_resource}};

@@ -35,8 +35,7 @@ namespace components::table::storage {
         // Created on first use: a pool that never overflows never touches the filesystem.
         file_ = core::filesystem::open_file(fs_,
                                             path_,
-                                            core::filesystem::file_flags::READ |
-                                                core::filesystem::file_flags::WRITE |
+                                            core::filesystem::file_flags::READ | core::filesystem::file_flags::WRITE |
                                                 core::filesystem::file_flags::FILE_CREATE);
         return file_ != nullptr;
     }

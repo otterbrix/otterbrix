@@ -5,8 +5,8 @@
 #include "alter_validators.hpp"
 
 #include <components/catalog/alter_column_validators.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -66,7 +66,7 @@ namespace components::operators {
                                            pg_attr,
                                            std::move(pa_keys),
                                            components::operators::make_key_chunk(resource_, attoid_),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                           std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
             // A failed pg_attribute read is not a miss; treating it as one lets the

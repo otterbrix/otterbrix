@@ -27,8 +27,8 @@
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
 
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <algorithm>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <string_view>
 
 namespace components::planner {
@@ -111,8 +111,7 @@ namespace components::planner {
                     return std::any_of(upd->updates().begin(), upd->updates().end(), [&](const auto& update) {
                         const auto& target = update->key().storage();
                         return !target.empty() &&
-                               std::string_view{target.front().data(), target.front().size()} ==
-                                   std::string_view{col};
+                               std::string_view{target.front().data(), target.front().size()} == std::string_view{col};
                     });
                 });
                 if (touched) {
@@ -120,8 +119,7 @@ namespace components::planner {
                 }
             }
 
-            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() ||
-                !upd->check_exprs().empty()) {
+            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_exprs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},

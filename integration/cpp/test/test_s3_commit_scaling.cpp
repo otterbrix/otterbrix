@@ -94,8 +94,8 @@ TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_
     const auto one_big_us = delete_one("big", 900);
     const auto slots = components::table::version_slots_visited();
     const auto repops = services::index::index_repopulations();
-    INFO("ONE delete on the 1M table: " << one_big_us << " us, version slots " << slots
-                                        << ", index repopulations " << repops);
+    INFO("ONE delete on the 1M table: " << one_big_us << " us, version slots " << slots << ", index repopulations "
+                                        << repops);
     CHECK(repops == 0);
     INFO("version slots visited committing ONE deleted row in a 1M-row table: " << slots);
     CHECK(slots <= components::vector::DEFAULT_VECTOR_CAPACITY);
@@ -113,8 +113,7 @@ TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_
     select_one("big", 500);
     const auto sel_big = select_one("big", 501);
     const auto sel_small = select_one("small", 501);
-    INFO("SELECT by the same indexed predicate: 10k rows = " << sel_small << " us, 1M rows = " << sel_big
-                                                             << " us");
+    INFO("SELECT by the same indexed predicate: 10k rows = " << sel_small << " us, 1M rows = " << sel_big << " us");
 
     // CONTROL: the same DELETE on the same 1M-row table with the index DROPPED. If the scaling
     // comes from flushing the whole disk B+tree on every statement, removing the index removes
@@ -129,9 +128,8 @@ TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_
     }
     std::sort(small_noidx.begin(), small_noidx.end());
     std::sort(big_noidx.begin(), big_noidx.end());
-    INFO("CONTROL, index dropped — one-row DELETE: 10k rows = "
-         << small_noidx[1] << " us, 1M rows = " << big_noidx[1]
-         << " us, ratio = " << (big_noidx[1] / small_noidx[1]));
+    INFO("CONTROL, index dropped — one-row DELETE: 10k rows = " << small_noidx[1] << " us, 1M rows = " << big_noidx[1]
+                                                                << " us, ratio = " << (big_noidx[1] / small_noidx[1]));
     CHECK(big_noidx[1] > 0.0);
 
     INFO("S3 start condition — one-row DELETE: 10k rows = " << small_us[2] << " us, 1M rows = " << big_us[2]

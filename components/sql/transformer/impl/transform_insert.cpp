@@ -1,5 +1,5 @@
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>

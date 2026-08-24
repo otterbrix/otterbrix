@@ -61,14 +61,13 @@ TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_ev
     core::b_plus_tree::reset_leaf_flushes();
     const auto start = std::chrono::steady_clock::now();
     REQUIRE(exec("DELETE FROM f.t WHERE id = 20;")->is_success());
-    const auto elapsed_us =
-        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+    const auto elapsed_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
     const auto flushes = core::b_plus_tree::leaf_flushes();
     const auto wasted = core::b_plus_tree::leaf_flushes_without_changes();
     INFO("one-row DELETE took " << elapsed_us << " us");
 
-    INFO("ONE-row DELETE on a " << kRows << "-row indexed table: " << flushes << " leaf flushes, of which "
-                                << wasted << " wrote no block at all");
+    INFO("ONE-row DELETE on a " << kRows << "-row indexed table: " << flushes << " leaf flushes, of which " << wasted
+                                << " wrote no block at all");
 
     // Positive control first: a counter reading zero proves nothing about the code, it usually
     // proves the instrument is not wired to the path.

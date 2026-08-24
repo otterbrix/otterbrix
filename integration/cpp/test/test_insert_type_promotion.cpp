@@ -55,8 +55,8 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::growth_is_not_quadratic
     const auto small = rewrites_for(300);
     const auto large = rewrites_for(600);
 
-    INFO("rows rewritten by promote_column (widening literal last): 300 values -> "
-         << small << ", 600 values -> " << large);
+    INFO("rows rewritten by promote_column (widening literal last): 300 values -> " << small << ", 600 values -> "
+                                                                                    << large);
     // Doubling the rows must not more than triple the rewrites. Quadratic growth would be ~4x;
     // the bound leaves room for the lattice-climb constant without admitting N^2.
     CHECK(large <= small * 3 + 16);

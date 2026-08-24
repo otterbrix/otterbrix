@@ -1,8 +1,8 @@
 #include "operator_vacuum.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
 #include <components/table/column_state.hpp>
 #include <components/types/logical_value.hpp>
@@ -222,7 +222,7 @@ namespace components::operators {
                                                    kPgComputedColumn,
                                                    std::move(cc_keys),
                                                    components::operators::make_key_chunk(resource_, table_oid),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                                   std::pmr::vector<std::uint64_t>{resource_});
                 auto cc_batches_r = co_await std::move(ccf);
                 if (cc_batches_r.has_error()) {
                     // A failed pg_computed_column read is not a miss; treating it as one lets the
@@ -325,7 +325,7 @@ namespace components::operators {
                                                          kPgComputedColumn,
                                                          std::move(cc2_keys),
                                                          components::operators::make_key_chunk(resource_, table_oid),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                                         std::pmr::vector<std::uint64_t>{resource_});
                     auto live_cc_r = co_await std::move(ccf2);
                     if (live_cc_r.has_error()) {
                         // This list drives which physical columns survive compaction. A failed

@@ -1669,7 +1669,8 @@ namespace services::disk {
         co_return r.value().empty() ? std::move(empty) : std::move(r.value()[0]);
     }
 
-    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
+    agent_disk_t::unique_future<
+        core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
     agent_disk_t::read_chunks_by_keys_inner(components::catalog::oid_t table_oid,
                                             std::pmr::vector<std::uint64_t> key_col_indices,
                                             components::vector::data_chunk_t keys,
@@ -1695,9 +1696,9 @@ namespace services::disk {
         // logical_value_t, so this is the irreducible floor — no row-major keys cross the mailbox.
         const std::uint64_t nkeys = keys.size();
         if (keys.column_count() != key_col_indices.size()) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
-                                    std::pmr::string{"keyed read: key chunk arity does not match key columns",
-                                                     resource()}};
+            co_return core::error_t{
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"keyed read: key chunk arity does not match key columns", resource()}};
         }
         // ONE pass for the whole batch. The key tuple becomes the same thing a pushed WHERE is —
         // `col == k0 AND col == k1 ...` as a graph with the key cells bound as parameters — and the
@@ -1721,8 +1722,8 @@ namespace services::disk {
 
         auto make_eq_child = [&](std::size_t col, std::uint16_t param_id) {
             expr::key_t column{resource()};
-            column.set_path(std::pmr::vector<size_t>{{key_col_indices[col]},
-                                                     std::pmr::polymorphic_allocator<size_t>{resource()}});
+            column.set_path(
+                std::pmr::vector<size_t>{{key_col_indices[col]}, std::pmr::polymorphic_allocator<size_t>{resource()}});
             return expr::make_compare_expression(resource(),
                                                  expr::compare_type::eq,
                                                  column,
@@ -1734,16 +1735,15 @@ namespace services::disk {
         std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
         key_filters.reserve(nkeys);
         components::types::parameter_map_t all_parameters{resource()};
-        auto all_predicate = expr::make_compare_union_expression(
-            resource(),
-            nkeys == 1 ? expr::compare_type::union_and : expr::compare_type::union_or);
+        auto all_predicate = expr::make_compare_union_expression(resource(),
+                                                                 nkeys == 1 ? expr::compare_type::union_and
+                                                                            : expr::compare_type::union_or);
 
         for (std::uint64_t i = 0; i < nkeys; ++i) {
             components::types::parameter_map_t key_parameters{resource()};
             auto key_predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
-            auto tuple_predicate = nkeys == 1
-                                       ? nullptr
-                                       : expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
+            auto tuple_predicate =
+                nkeys == 1 ? nullptr : expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
             for (std::size_t ki = 0; ki < narity; ++ki) {
                 const auto cell = keys.value(ki, i);
                 key_parameters.emplace(core::parameter_id_t{static_cast<std::uint16_t>(ki)}, cell);

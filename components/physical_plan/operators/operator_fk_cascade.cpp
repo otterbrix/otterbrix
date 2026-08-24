@@ -92,7 +92,14 @@ namespace components::operators {
                                                fk_.child_table_oid,
                                                std::move(col_names),
                                                std::move(keys));
-            auto chunk_child_ids = co_await std::move(sfut);
+            auto chunk_child_ids_r = co_await std::move(sfut);
+            if (chunk_child_ids_r.has_error()) {
+                // A failed child-key read is not a miss; treating it as one lets the
+                // operation proceed on data that was never read.
+                set_error(chunk_child_ids_r.error());
+                co_return;
+            }
+            auto& chunk_child_ids = chunk_child_ids_r.value();
             for (auto& ids : chunk_child_ids) {
                 per_row_child_ids.push_back(std::move(ids));
             }
@@ -180,7 +187,10 @@ namespace components::operators {
                                                    ctx->session,
                                                    fk_.child_table_oid,
                                                    std::move(fetch_ids),
-                                                   static_cast<uint64_t>(all_child_ids.size()));
+                                                   static_cast<uint64_t>(all_child_ids.size()),
+                                                   // No projection: which columns the cascade's consumers read is not
+                                                   // proven here, and an unproven narrowing reads back stubs silently.
+                                                   std::vector<size_t>{});
                 auto fetched = co_await std::move(ffut); // vector of ≤CAP chunks
                 if (fetched.empty())
                     break;

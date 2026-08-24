@@ -1,3 +1,4 @@
+#include <atomic>
 #include <algorithm>
 
 #include <components/expressions/aggregate_expression.hpp>
@@ -250,6 +251,9 @@ namespace {
             resource,
             components::types::complex_logical_type{promoted, std::string(col.type().alias())},
             capacity);
+#ifdef DEV_MODE
+        components::sql::transform::note_promoted_rows(num_rows);
+#endif
         for (size_t row = 0; row < num_rows; ++row) {
             if (col.is_null(row)) {
                 new_col.set_null(row, true);
@@ -285,6 +289,19 @@ namespace {
     }
 
 } // anonymous namespace
+
+#ifdef DEV_MODE
+namespace components::sql::transform {
+    namespace {
+        std::atomic<uint64_t> g_insert_promote_rows{0};
+    } // namespace
+    void note_promoted_rows(uint64_t rows) noexcept {
+        g_insert_promote_rows.fetch_add(rows, std::memory_order_relaxed);
+    }
+    uint64_t insert_promote_rows() noexcept { return g_insert_promote_rows.load(std::memory_order_relaxed); }
+    void reset_insert_promote_rows() noexcept { g_insert_promote_rows.store(0, std::memory_order_relaxed); }
+} // namespace components::sql::transform
+#endif
 
 namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan) {
@@ -372,6 +389,16 @@ namespace components::sql::transform {
                 }
             }
 
+            // Target column names, materialized ONCE per statement. key_t::as_string() builds a
+            // fresh std::string every call, and the column-matching predicate below runs it per
+            // candidate column per CELL. The names are fixed for the whole statement; only the
+            // values vary.
+            std::pmr::vector<std::string> field_names(resource_);
+            field_names.reserve(key_translation.size());
+            for (const auto& field : key_translation) {
+                field_names.emplace_back(field.as_string());
+            }
+
             // Fills one row of `chunk` at chunk-local index `chunk_row` from the value list
             // of global row `global_row`. Discovers/promotes columns in `chunk` as it goes
             // and records ParamRef slots (keyed by global row) in parameter_insert_map_.
@@ -387,10 +414,12 @@ namespace components::sql::transform {
                 }
 
                 auto it_field = key_translation.begin();
-                for (auto it_value = values.begin(); it_value != values.end(); ++it_field, ++it_value) {
+                std::size_t field_pos = 0;
+                for (auto it_value = values.begin(); it_value != values.end(); ++it_field, ++it_value, ++field_pos) {
+                    const std::string& field_name = field_names[field_pos];
                     if (nodeTag(it_value->data) == T_ParamRef) {
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
-                        auto loc = std::make_pair(global_row, it_field->as_string());
+                        auto loc = std::make_pair(global_row, field_name);
 
                         if (auto it = parameter_insert_map_.find(ref->number); it != parameter_insert_map_.end()) {
                             it->second.emplace_back(std::move(loc));
@@ -408,11 +437,11 @@ namespace components::sql::transform {
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
-                                return column.type().alias() == it_field->as_string();
+                                return column.type().alias() == field_name;
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.value().set_alias(it_field->as_string());
+                            value.value().set_alias(field_name);
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                             chunk.set_value(column_index, chunk_row, std::move(value.value()));
                         } else {
@@ -442,11 +471,11 @@ namespace components::sql::transform {
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
-                                return column.type().alias() == it_field->as_string();
+                                return column.type().alias() == field_name;
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.value().set_alias(it_field->as_string());
+                            value.value().set_alias(field_name);
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                             chunk.set_value(column_index, chunk_row, std::move(value.value()));
                         } else {

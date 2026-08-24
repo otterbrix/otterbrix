@@ -91,9 +91,6 @@ namespace components::table {
                           const std::vector<size_t>* projected_cols,
                           std::pmr::vector<vector::data_chunk_t>& batches,
                           std::pmr::memory_resource* resource);
-        // DORMANT: dormant foundation for the future buffer-pool bounded scan, not yet wired pending
-        // the actor-zeta await-core fix (scan sources reverted to whole-scan buffering; only the
-        // dormant data_table_t::fetch_next_batch calls this). Kept, not deleted.
         // Single-batch iterator: fills ONE ≤DEFAULT_VECTOR_CAPACITY batch into `result` (one
         // scan_batched iteration), advancing the cursor. Returns true if a non-empty batch was
         // produced, false when the scan is drained (`result` left empty). Used by the fetch-next
@@ -101,7 +98,6 @@ namespace components::table {
         // materializing the whole table (unlike scan(), which drains everything into one chunk).
         bool next_batch(vector::data_chunk_t& result);
         bool scan_committed(vector::data_chunk_t& result, table_scan_type type);
-        bool scan_committed(vector::data_chunk_t& result, std::unique_lock<std::mutex>& l, table_scan_type type);
 
     private:
         table_scan_state& parent_;
@@ -114,7 +110,6 @@ namespace components::table {
 
         collection_scan_state table_state;
         collection_scan_state local_state;
-        bool force_fetch_row = false;
         const table_filter_t* filter = nullptr;
 
         void initialize(std::vector<storage_index_t> column_ids, const table_filter_t* table_filter_tree = nullptr);
@@ -130,8 +125,8 @@ namespace components::table {
         create_index_scan_state(std::pmr::memory_resource* resource)
             : table_scan_state(resource) {}
 
-        std::vector<std::unique_ptr<std::lock_guard<std::mutex>>> locks;
-        std::unique_lock<std::mutex> append_lock;
+        // Segment-tree lock, NOT one of the per-table locks removed with the single-owner
+        // proof: it belongs to row_group_segment_tree_t and is out of that scope.
         std::unique_lock<std::mutex> segment_lock;
     };
 
@@ -144,7 +139,11 @@ namespace components::table {
         ~table_append_state() = default;
 
         row_group_append_state append_state;
-        std::unique_lock<std::mutex> append_lock;
+        // Sequencing token, not a lock: data_table_t::append_lock() sets it and
+        // initialize_append refuses to run without it. It used to be a held mutex; the mutex
+        // is gone (a table is reachable from exactly one disk agent, see data_table.hpp), the
+        // ordering guarantee it also carried is not.
+        bool append_locked{false};
         int64_t row_start;
         int64_t current_row;
         uint64_t total_append_count;

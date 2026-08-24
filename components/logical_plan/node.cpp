@@ -1,6 +1,7 @@
 #include "node.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <boost/container_hash/hash.hpp>
 
 namespace components::logical_plan {
@@ -66,7 +67,23 @@ namespace components::logical_plan {
         return hash_;
     }
 
-    std::string node_t::to_string() const { return to_string_impl(); }
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_node_to_string_calls{0};
+    } // namespace
+    // Test-observable counter of logical-plan stringifications. Rendering walks every node and
+    // concatenates, and a trace ARGUMENT is evaluated at the call site whatever the log level —
+    // so tests run statements with the log off and assert this stayed at zero.
+    uint64_t node_to_string_calls() noexcept { return g_node_to_string_calls.load(std::memory_order_relaxed); }
+    void reset_node_to_string_calls() noexcept { g_node_to_string_calls.store(0, std::memory_order_relaxed); }
+#endif
+
+    std::string node_t::to_string() const {
+#ifdef DEV_MODE
+        g_node_to_string_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+        return to_string_impl();
+    }
 
     std::pmr::memory_resource* node_t::resource() const noexcept { return children_.get_allocator().resource(); }
 

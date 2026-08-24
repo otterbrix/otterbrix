@@ -66,7 +66,8 @@ namespace components::table {
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_identifiers,
                    uint64_t fetch_count,
-                   column_fetch_state& state);
+                   column_fetch_state& state,
+                   const std::vector<size_t>& projected_cols);
 
         // The append chain returns out_of_memory when a row group / column segment allocation
         // fails. initialize_append: true on success. append: on success the bool reports whether

@@ -1,6 +1,7 @@
 #include "operator_computed_field_unregister.hpp"
 
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -58,15 +59,22 @@ namespace components::operators {
         // and we need max(attversion).
         // pg_computed_column layout: 0=relid 1=attoid 2=attname
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
-        std::pmr::vector<std::string> r_keys(resource_);
-        r_keys.emplace_back("relid");
+        std::pmr::vector<std::uint64_t> r_keys(resource_);
+        r_keys.emplace_back(catalog::pg_computed_column_col::relid);
         auto [_r, rf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          pg_computed_column,
                                          std::move(r_keys),
-                                         components::operators::make_key_chunk(resource_, table_oid_));
-        auto batches = co_await std::move(rf);
+                                         components::operators::make_key_chunk(resource_, table_oid_),
+                             std::pmr::vector<std::uint64_t>{resource_});
+        auto batches_r = co_await std::move(rf);
+        if (batches_r.has_error()) {
+            // A failed pg_computed_column read is not a miss; saying "not found" here hides it.
+            set_error(batches_r.error());
+            co_return;
+        }
+        auto& batches = batches_r.value();
 
         // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
         std::int64_t max_version = -1;

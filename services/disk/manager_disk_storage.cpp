@@ -388,7 +388,8 @@ namespace services::disk {
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
-                                  uint64_t count) {
+                                  uint64_t count,
+                                  std::vector<size_t> projected_cols) {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -396,7 +397,8 @@ namespace services::disk {
                                                                   &agent_disk_t::storage_fetch_inner,
                                                                   table_oid,
                                                                   row_ids,
-                                                                  count);
+                                                                  count,
+                                                                  std::move(projected_cols));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

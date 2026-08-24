@@ -155,7 +155,8 @@ namespace services::planner::impl {
                                                                                               value,
                                                                                               ctype,
                                                                                               preferred_index_type,
-                                                                                              limit));
+                                                                                              limit,
+                                                                                              projected_cols));
                         }
                     }
 

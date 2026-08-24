@@ -33,7 +33,7 @@ namespace services::index {
 
         void drop() override;
         void clear() override;
-        void force_flush() override;
+        [[nodiscard]] core::error_t force_flush() override;
 
         // Bulk-load fast path (see index_disk_t): append/erase without the per-op
         // find() dedup, persisting once via force_flush(). Removes the O(rows^2) cost

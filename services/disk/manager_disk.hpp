@@ -461,7 +461,7 @@ namespace services::disk {
         // columnar — `keys` is a data_chunk (column j = key_col_names[j], row i = i-th
         // key-tuple). All keys share `table_oid` (one owning agent), so the per-key loop
         // runs intra-agent via a single scan_by_keys_inner message.
-        unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
         scan_by_keys(execution_context_t ctx,
                      components::catalog::oid_t table_oid,
                      std::pmr::vector<std::string> key_col_names,
@@ -472,11 +472,12 @@ namespace services::disk {
         // DEFAULT_VECTOR_CAPACITY rows). `keys` is a 1-row columnar carrier (column j ==
         // key_col_names[j]), so no row-major logical_value_t crosses the boundary. Thin
         // router: one read_chunks_by_key_inner message to the owning agent.
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key(execution_context_t ctx,
                            components::catalog::oid_t table_oid,
-                           std::pmr::vector<std::string> key_col_names,
-                           components::vector::data_chunk_t keys);
+                           std::pmr::vector<std::uint64_t> key_col_indices,
+                           components::vector::data_chunk_t keys,
+                           std::pmr::vector<std::uint64_t> projected_cols);
 
         // Batched multi-key columnar row-data scan: result[i] = matched chunks for key-tuple i
         // (each <= DEFAULT_VECTOR_CAPACITY rows). `keys` is an N-row columnar carrier (column j =
@@ -484,11 +485,12 @@ namespace services::disk {
         // boundary. All keys share `table_oid` (one owning agent), so the per-key loop runs
         // intra-agent via a single read_chunks_by_keys_inner message. result.size() ==
         // keys.size() (one possibly-empty entry per key, in input order). Thin router.
-        unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
-                            std::pmr::vector<std::string> key_col_names,
-                            components::vector::data_chunk_t keys);
+                            std::pmr::vector<std::uint64_t> key_col_indices,
+                            components::vector::data_chunk_t keys,
+                            std::pmr::vector<std::uint64_t> projected_cols);
 
         // Physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by
@@ -674,7 +676,8 @@ namespace services::disk {
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
-                      uint64_t count);
+                      uint64_t count,
+                      std::vector<size_t> projected_cols);
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
         // Appends every chunk in order. Appends within one txn are contiguous, so the

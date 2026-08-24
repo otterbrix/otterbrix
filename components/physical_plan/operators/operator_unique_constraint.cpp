@@ -1,5 +1,7 @@
 #include "operator_unique_constraint.hpp"
 
+#include <atomic>
+
 #include "constraint_util.hpp"
 
 #include <components/context/context.hpp>
@@ -20,6 +22,15 @@
 namespace components::operators {
 
     using constraint_detail::resolve_cursor_output;
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_unique_constraint_scan_sends{0};
+    } // namespace
+    uint64_t unique_constraint_scan_sends() noexcept {
+        return g_unique_constraint_scan_sends.load(std::memory_order_relaxed);
+    }
+#endif
 
     namespace {
 
@@ -298,13 +309,23 @@ namespace components::operators {
                 keys.set_cardinality(cur_n);
 
                 std::pmr::vector<std::string> names(col_names, resource_);
+#ifdef DEV_MODE
+                g_unique_constraint_scan_sends.fetch_add(1, std::memory_order_relaxed);
+#endif
                 auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::scan_by_keys,
                                                  exec_ctx,
                                                  table_oid_,
                                                  std::move(names),
                                                  std::move(keys));
-                auto matches = co_await std::move(fut);
+                auto matches_r = co_await std::move(fut);
+                if (matches_r.has_error()) {
+                    // A failed unique-key read is not a miss; treating it as one lets the
+                    // operation proceed on data that was never read.
+                    set_error(matches_r.error());
+                    co_return;
+                }
+                auto& matches = matches_r.value();
 
                 for (std::size_t i = 0; i < matches.size(); ++i) {
                     if (matches[i].size() > 1) {

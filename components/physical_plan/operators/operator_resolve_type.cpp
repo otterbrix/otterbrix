@@ -48,16 +48,23 @@ namespace components::operators {
             } else if (entry.dbname == "pg_catalog") {
                 namespace_oid = catalog::well_known_oid::pg_catalog_namespace;
             } else if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                std::pmr::vector<std::string> ns_keys(resource_);
-                ns_keys.emplace_back("nspname");
+                std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
                 auto [_n, nf] =
                     actor_zeta::send(ctx->disk_address,
                                      &services::disk::manager_disk_t::read_chunks_by_key,
                                      exec_ctx,
                                      kPgNamespace,
                                      std::move(ns_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}));
-                auto ns_batches = co_await std::move(nf);
+                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
+                                     std::pmr::vector<std::uint64_t>{resource_});
+                auto ns_batches_r = co_await std::move(nf);
+                if (ns_batches_r.has_error()) {
+                    // A failed pg_namespace read is not a miss; saying "not found" here hides it.
+                    set_error(ns_batches_r.error());
+                    co_return;
+                }
+                auto& ns_batches = ns_batches_r.value();
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
                     !ns_batches[0].is_null(0, 0)) {
                     namespace_oid = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
@@ -69,17 +76,23 @@ namespace components::operators {
 
             // pg_type columns, by the order system_table_schemas.cpp persists them:
             //   0 oid, 1 typname, 2 typnamespace, 3 typdefspec.
-            std::pmr::vector<std::string> typ_keys(resource_);
-            typ_keys.emplace_back("typname");
-            typ_keys.emplace_back("typnamespace");
+            std::pmr::vector<std::uint64_t> typ_keys(resource_);
+            typ_keys.emplace_back(catalog::pg_type_col::typname);
+            typ_keys.emplace_back(catalog::pg_type_col::typnamespace);
             auto [_t, tf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_chunks_by_key,
                 exec_ctx,
                 kPgType,
                 std::move(typ_keys),
-                components::operators::make_key_chunk(resource_, std::string_view{entry.type_name}, namespace_oid));
-            auto batches = co_await std::move(tf);
+                components::operators::make_key_chunk(resource_, std::string_view{entry.type_name}, namespace_oid),
+                std::pmr::vector<std::uint64_t>{resource_});
+            auto batches_r = co_await std::move(tf);
+            if (batches_r.has_error()) {
+                set_error(batches_r.error());
+                co_return;
+            }
+            auto& batches = batches_r.value();
 
             // A miss leaves the entry at INVALID_OID with no type_md — that is how
             // "type is not registered" is reported.

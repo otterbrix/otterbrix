@@ -121,35 +121,37 @@ namespace services::disk {
         // and whose row i is the i-th key-tuple, so no row-major logical_value_t crosses
         // the boundary. All keys share the same table_oid (and therefore the same owning
         // agent), so the per-key loop runs intra-agent via a single scan_by_keys_inner.
-        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
         scan_by_keys(execution_context_t ctx,
                      components::catalog::oid_t table_oid,
                      std::pmr::vector<std::string> key_col_names,
                      components::vector::data_chunk_t keys);
 
-        // Columnar row-data scan for ONE key-tuple: returns the txn-visible rows where
-        // key_col_names[j] == keys.value(j, 0) as batched data_chunk_t (each chunk <=
-        // DEFAULT_VECTOR_CAPACITY rows). `keys` is a 1-row columnar carrier (column j ==
-        // key_col_names[j]), so no row-major logical_value_t crosses the boundary. Callers
+        // Columnar row-data scan for ONE key-tuple: returns the txn-visible rows whose column
+        // key_col_indices[j] equals keys.value(j, 0) as batched data_chunk_t (each chunk <=
+        // DEFAULT_VECTOR_CAPACITY rows). `keys` is a 1-row columnar carrier (column j carries
+        // key_col_indices[j]), so no row-major logical_value_t crosses the boundary. Callers
         // read cells via chunk.value(col_idx, row_idx).
-        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key(execution_context_t ctx,
                            components::catalog::oid_t table_oid,
-                           std::pmr::vector<std::string> key_col_names,
-                           components::vector::data_chunk_t keys);
+                           std::pmr::vector<std::uint64_t> key_col_indices,
+                           components::vector::data_chunk_t keys,
+                           std::pmr::vector<std::uint64_t> projected_cols);
 
         // Batched multi-key columnar row-data scan for one table: result[i] = matched chunks
         // for key-tuple i (each chunk <= DEFAULT_VECTOR_CAPACITY rows). `keys` is an N-row
-        // columnar carrier (column j == key_col_names[j], row i == i-th key-tuple), so no
+        // columnar carrier (column j carries key_col_indices[j], row i == i-th key-tuple), so no
         // row-major logical_value_t crosses the boundary. All keys share `table_oid` (one owning
         // agent), so the per-key loop runs intra-agent via a single read_chunks_by_keys_inner
         // message. The outer vector always has one (possibly empty) entry per key in input
         // order, so result.size() == keys.size(). Callers read cells via chunk.value(col, row).
-        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
-                            std::pmr::vector<std::string> key_col_names,
-                            components::vector::data_chunk_t keys);
+                            std::pmr::vector<std::uint64_t> key_col_indices,
+                            components::vector::data_chunk_t keys,
+                            std::pmr::vector<std::uint64_t> projected_cols);
 
         // Aggregate-pushdown REDUCE — a DEDICATED protocol leg, not a scan mode:
         // the owning agent runs the whole GROUP BY over its slice (operator_group
@@ -227,10 +229,14 @@ namespace services::disk {
                                  components::table::transaction_data txn);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // projected_cols holds storage chunk indices; EMPTY means every column, matching
+        // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come
+        // back as buffer-less stubs, so the reply is indexed the same way either way.
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
-                      uint64_t count);
+                      uint64_t count,
+                      std::vector<size_t> projected_cols);
         actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 

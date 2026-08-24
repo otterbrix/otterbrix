@@ -7,6 +7,7 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
@@ -291,15 +292,15 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         // Direct read of pg_computed_column: relid=table_oid → 2 live rows.
         constexpr components::catalog::oid_t pg_cc = components::catalog::well_known_oid::pg_computed_column_table;
         components::types::logical_value_t toid_lv(&fx_reopen.resource, table_oid);
-        std::pmr::vector<std::string> rk{&fx_reopen.resource};
-        rk.emplace_back("relid");
+        std::pmr::vector<std::uint64_t> rk{&fx_reopen.resource};
+        rk.emplace_back(components::catalog::pg_computed_column_col::relid);
         std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
         rv.emplace_back(toid_lv);
-        auto batches = fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
+        auto batches = disk_test_helpers::read_ok(fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
                                         fx_reopen.ctx(),
                                         pg_cc,
                                         std::move(rk),
-                                        test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)));
+                                        test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)), std::pmr::vector<std::uint64_t>{&fx_reopen.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);

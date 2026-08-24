@@ -6,6 +6,7 @@
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -530,8 +531,8 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
                   std::move(appends_local));
 
         // (a) the row is actually present: read pg_index back by indexrelid (col 0).
-        std::pmr::vector<std::string> keys{&fx.resource};
-        keys.emplace_back("indexrelid");
+        std::pmr::vector<std::uint64_t> keys{&fx.resource};
+        keys.emplace_back(components::catalog::pg_index_col::indexrelid);
         std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
         vals.emplace_back(&fx.resource, idx_oid);
         auto batches =

@@ -31,6 +31,7 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     node->table_oid(),
                                                                                     std::move(returning)));
+        plan->set_table_has_indexes(node->table_has_indexes());
         // The validator resolved, per incoming column, the target it lands in and the cast
         // that stores it there. The append is name-based, so the operator renames the
         // streamed columns to their targets as it converts them.

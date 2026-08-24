@@ -20,7 +20,13 @@ namespace components::table::storage {
 
     struct main_header_t {
         static constexpr uint32_t MAGIC_NUMBER = 0x5842544F; // "OTBX" little-endian
-        static constexpr uint32_t CURRENT_VERSION = 1;
+        // Reset to 0 for pre-release: the on-disk format is not stable yet and the current
+        // layout already breaks it — metadata sub-blocks are carved from block_size() (the
+        // allocation minus the block header) rather than the allocation itself, so their stride
+        // is 4088, not 4096. The stride is NOT stored in the file (it is recomputed on open), so
+        // a file written by an earlier build has its metadata chain read at the wrong offsets.
+        // Such files are refused, not migrated.
+        static constexpr uint32_t CURRENT_VERSION = 0;
 
         uint32_t magic;
         uint32_t version;
@@ -34,7 +40,10 @@ namespace components::table::storage {
             flags = 0;
         }
 
-        bool validate() const { return magic == MAGIC_NUMBER && version <= CURRENT_VERSION; }
+        // EXACT match, not <=: the metadata layout is version-specific, so an older file is
+        // unreadable rather than degraded. There is no compatibility path by design.
+        bool validate() const { return magic == MAGIC_NUMBER && version == CURRENT_VERSION; }
+        bool magic_ok() const { return magic == MAGIC_NUMBER; }
     };
     static_assert(sizeof(main_header_t) == SECTOR_SIZE, "main_header_t must be SECTOR_SIZE");
 

@@ -416,7 +416,10 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
             REQUIRE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)));
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_copy_sync");
-        REQUIRE_THROWS(table.rehash(5));
+        // The failpoint aborts the split; failure arrives by value, like the rest of this API
+        // (put/erase/rehash return bool). The property under test is unchanged: the rehash does
+        // not complete, and the reopened table below is still consistent.
+        REQUIRE_FALSE(table.rehash(5));
     }
 
     {
@@ -445,7 +448,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
             REQUIRE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(2000 + i)));
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
-        REQUIRE_THROWS(table.rehash(5));
+        REQUIRE_FALSE(table.rehash(5));
     }
 
     {
@@ -475,7 +478,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         }
 
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
-        REQUIRE_THROWS(table.rehash(5));
+        REQUIRE_FALSE(table.rehash(5));
     }
 
     {
@@ -491,4 +494,38 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
     }
+}
+
+// create() is the production entry point: an unusable file must come back as a
+// value, not as an exception and not as a half-open table. The direct ctor keeps
+// aborting on the same input (same split as bitcask_index_disk_t), which is why
+// callers that can report a failure — manager_index_t — must use create().
+TEST_CASE("services::index::disk_hash_table::create_reports_unopenable_storage") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("create_unopenable.bin");
+    std::filesystem::remove_all(path);
+    // A directory where the file belongs: open(O_RDWR|O_CREAT) is EISDIR.
+    std::filesystem::create_directories(path);
+
+    auto result = disk_hash_table_t::create(path, disk_hash_table_t::default_bucket_count, &resource);
+    REQUIRE(result.has_error());
+    REQUIRE(result.error().type == core::error_code_t::index_create_fail);
+
+    std::filesystem::remove_all(path);
+}
+
+TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("create_usable.bin");
+    std::filesystem::remove_all(path);
+    std::filesystem::remove_all(std::filesystem::path(path).concat(".ovf"));
+
+    auto result = disk_hash_table_t::create(path, 8, &resource);
+    REQUIRE_FALSE(result.has_error());
+    auto table = result.value();
+    REQUIRE(table);
+    REQUIRE(table->put("k", 42, 0, 0));
+    auto found = table->get("k");
+    REQUIRE(found.has_value());
+    REQUIRE(found->value == 42);
 }

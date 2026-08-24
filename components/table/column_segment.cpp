@@ -1,5 +1,7 @@
 #include "column_segment.hpp"
 
+#include "row_group.hpp"
+
 #include <cstring>
 
 #include "column_state.hpp"
@@ -142,6 +144,9 @@ namespace components::table {
                                             int32_t dict_offset,
                                             uint32_t string_length,
                                             vector::string_vector_buffer_t& aux) {
+#ifdef DEV_MODE
+            components::table::note_string_materialization();
+#endif
             auto block_size = segment.block_manager().block_size();
             assert(dict_offset <= static_cast<int32_t>(block_size));
             string_location_t location = fetch_string_location(dict, base_ptr, dict_offset, block_size);
@@ -237,13 +242,14 @@ namespace components::table {
                                   int64_t row_id,
                                   vector::vector_t& result,
                                   uint64_t result_idx) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                state.fetch_error = pinned.error();
-                return;
+            // The pin comes from the fetch state's cache, not from a fresh pin per row. The state
+            // is hoisted by every caller that fetches more than one row, so a block is pinned once
+            // per segment instead of once per row — string_fetch_row has always done it this way.
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return; // state.fetch_error already set by get_or_insert_handle
             }
-            auto& handle = pinned.value();
+            auto& handle = *handle_ptr;
 
             auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
 
@@ -256,15 +262,14 @@ namespace components::table {
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
             assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                state.fetch_error = pinned.error();
-                return;
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return; // state.fetch_error already set by get_or_insert_handle
             }
-            auto& handle = pinned.value();
+            auto& handle = *handle_ptr;
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
+            vector::validity_mask_t mask(segment.block->block_manager.buffer_manager.resource(),
+                                         reinterpret_cast<uint64_t*>(dataptr));
             auto& result_mask = result.validity();
             if (!mask.row_is_valid(static_cast<uint64_t>(row_id))) {
                 result_mask.set_invalid(result_idx);
@@ -293,7 +298,16 @@ namespace components::table {
             } else {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
             }
-            result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+            if (state.result_outlives_pins) {
+                // The caller keeps this chunk after our pins are gone, so the bytes have to be the
+                // result's own. Same mechanism the bulk scan path uses.
+                auto& aux = static_cast<vector::string_vector_buffer_t&>(*result.auxiliary());
+                result_data[result_idx] =
+                    fetch_string_owned(segment, dict, baseptr, dict_offset, string_length, aux);
+            } else {
+                result_data[result_idx] =
+                    fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+            }
         }
 
         struct standard_fixed_size_t {
@@ -316,6 +330,12 @@ namespace components::table {
                             tdata[target_idx] = T(0);
                         }
                     }
+                } else if (uvf.referenced_indexing == nullptr || !uvf.referenced_indexing->is_set()) {
+                    // FLAT vector, no nulls, identity indexing: get_index(i) == i, so source and
+                    // target runs are both contiguous and the whole append is one memcpy instead
+                    // of `count` individually indexed assignments. T is a fixed-size arithmetic
+                    // type on this path, so a byte copy is exactly the element copy above.
+                    std::memcpy(tdata + target_offset, sdata + offset, static_cast<std::size_t>(count) * sizeof(T));
                 } else {
                     for (uint64_t i = 0; i < count; i++) {
                         auto source_idx = uvf.referenced_indexing->get_index(offset + i);
@@ -535,13 +555,11 @@ namespace components::table {
                                 column_fetch_state& state,
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                state.fetch_error = pinned.error();
-                return;
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return; // state.fetch_error already set by get_or_insert_handle
             }
-            auto& handle = pinned.value();
+            auto& handle = *handle_ptr;
             auto* src = handle.ptr() + segment.block_offset();
             auto ts = segment.type_size;
             std::memcpy(result.data() + result_idx * ts, src, ts);
@@ -648,13 +666,11 @@ namespace components::table {
                            int64_t row_id,
                            vector::vector_t& result,
                            uint64_t result_idx) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                state.fetch_error = pinned.error();
-                return;
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return; // state.fetch_error already set by get_or_insert_handle
             }
-            auto& handle = pinned.value();
+            auto& handle = *handle_ptr;
             auto* base = handle.ptr() + segment.block_offset();
             auto ts = segment.type_size;
 
@@ -747,13 +763,11 @@ namespace components::table {
                             int64_t row_id,
                             vector::vector_t& result,
                             uint64_t result_idx) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
-            if (pinned.has_error()) {
-                state.fetch_error = pinned.error();
-                return;
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return; // state.fetch_error already set by get_or_insert_handle
             }
-            auto& handle = pinned.value();
+            auto& handle = *handle_ptr;
             auto* base = handle.ptr() + segment.block_offset();
             auto ts = segment.type_size;
 

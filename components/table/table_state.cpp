@@ -150,27 +150,6 @@ namespace components::table {
         return false;
     }
 
-    bool collection_scan_state::scan_committed(vector::data_chunk_t& result,
-                                               std::unique_lock<std::mutex>& l,
-                                               table_scan_type type) {
-        while (row_group) {
-            row_group->scan_committed(*this, result, type);
-            if (has_error()) {
-                row_group = nullptr;
-                return false;
-            }
-            if (result.size() > 0) {
-                return true;
-            } else {
-                row_group = row_groups->next_segment(l, row_group);
-                if (row_group) {
-                    row_group->initialize_scan(*this);
-                }
-            }
-        }
-        return false;
-    }
-
     table_scan_state::table_scan_state(std::pmr::memory_resource* resource)
         : table_state(resource, *this)
         , local_state(resource, *this) {}

@@ -39,6 +39,30 @@ namespace services::disk {
 
 namespace services::dispatcher {
 
+    // While work is in flight a future completed on another thread notifies nobody, so readiness is
+    // discovered by the wait TIMING OUT: that timeout is the per-hop latency, and a statement crosses
+    // ~20 hops. The floor is therefore hops * in_flight_wait. The two waits are only correct
+    // together — a shorter tick alone does not revive an executor parked busy && ready.
+#ifdef DEV_MODE
+    // Hops a statement makes: one timed-out in-flight wait per hop. Machine-independent, unlike the
+    // latency it multiplies out to.
+    uint64_t pump_hops() noexcept;
+    void reset_pump_hops() noexcept;
+    void note_pump_hop() noexcept;
+#endif
+
+    struct pump_tuning_t final {
+        static constexpr auto in_flight_wait = std::chrono::microseconds(5);
+        static constexpr auto idle_wait = std::chrono::microseconds(100);
+        static constexpr auto poke_after = std::chrono::microseconds(100);
+        static constexpr uint32_t stale_tick_threshold = poke_after / in_flight_wait;
+    };
+
+    static_assert(pump_tuning_t::stale_tick_threshold == pump_tuning_t::poke_after / pump_tuning_t::in_flight_wait,
+                  "the poke threshold must stay DERIVED from the two waits, not written out as a number");
+    static_assert(pump_tuning_t::in_flight_wait < pump_tuning_t::idle_wait,
+                  "the in-flight tick is the per-hop latency and must be shorter than the idle tick");
+
     // Thin router + txn-state mailbox service + executor-pool admin.
     //
     // Per-query work (optimize, resolve, validate, enrich, planner rewrites,

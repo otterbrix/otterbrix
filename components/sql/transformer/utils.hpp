@@ -18,6 +18,16 @@
 namespace components::sql::transform {
     inline constexpr size_t MAX_COLUMN_REF_SEGMENTS = 5;
 
+
+#ifdef DEV_MODE
+    // Test-observable count of ROWS rewritten by promote_column while parsing an INSERT.
+    // Widening a column's type rebuilds every row already filled in that chunk, cell by cell
+    // through logical_value_t. Widenings per column are bounded by the type lattice, so this
+    // measures whether the cost really is quadratic or linear with a large constant.
+    void note_promoted_rows(uint64_t rows) noexcept;
+    uint64_t insert_promote_rows() noexcept;
+    void reset_insert_promote_rows() noexcept;
+#endif
     template<class T>
     static T& pg_cast(Node& node) {
         return reinterpret_cast<T&>(node);

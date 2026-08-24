@@ -8,6 +8,14 @@
 
 namespace components::table::storage {
 
+#ifdef DEV_MODE
+    // Test-observable count of buffer pins. A pin is a lock on the block handle plus atomics, and on
+    // release it may allocate an eviction-queue node from the shared pool — so it belongs once per
+    // SEGMENT scanned, never once per row.
+    uint64_t buffer_pins() noexcept;
+    void reset_buffer_pins() noexcept;
+#endif
+
     class block_manager_t;
     struct eviction_queue_t;
 

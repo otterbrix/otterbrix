@@ -3,6 +3,7 @@
 #include "catalog_write_helpers.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/types/logical_value.hpp>
@@ -39,16 +40,23 @@ namespace components::operators {
 
             for (auto& entry : node_->entries()) {
                 // Look up pg_database by datname.
-                std::pmr::vector<std::string> db_keys(resource_);
-                db_keys.emplace_back("datname");
+                std::pmr::vector<std::uint64_t> db_keys(resource_);
+                db_keys.emplace_back(catalog::pg_database_col::datname);
                 auto [_db, dbf] =
                     actor_zeta::send(ctx->disk_address,
                                      &services::disk::manager_disk_t::read_chunks_by_key,
                                      exec_ctx,
                                      kPgDatabase,
                                      std::move(db_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}));
-                auto db_batches = co_await std::move(dbf);
+                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
+                                     std::pmr::vector<std::uint64_t>{resource_});
+                auto db_batches_r = co_await std::move(dbf);
+                if (db_batches_r.has_error()) {
+                    // A failed pg_database read is not a miss; saying "not found" here hides it.
+                    set_error(db_batches_r.error());
+                    co_return;
+                }
+                auto& db_batches = db_batches_r.value();
 
                 // A miss leaves the entry at INVALID_OID — that is how "database
                 // does not exist" is reported.

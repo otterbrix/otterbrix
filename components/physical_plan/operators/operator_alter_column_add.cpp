@@ -5,6 +5,7 @@
 #include "alter_validators.hpp"
 
 #include <components/catalog/alter_column_validators.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -29,7 +30,14 @@ namespace components::operators {
         // Pre-execute validation: any failure co_returns an error cursor BEFORE
         // the first catalog mutation below, so a rejected ALTER leaves no trace.
         auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
-        auto visible_column_names = co_await std::move(vc_fut);
+        auto visible_column_names_r = co_await std::move(vc_fut);
+        if (visible_column_names_r.has_error()) {
+            // The duplicate-column check below cannot run on a read that failed;
+            // passing an empty list would silently approve the ALTER.
+            set_error(visible_column_names_r.error());
+            co_return;
+        }
+        auto& visible_column_names = visible_column_names_r.value();
         auto ec_dup =
             components::catalog::alter_column_validators::validate_column_not_duplicate(resource_,
                                                                                         visible_column_names,
@@ -58,15 +66,23 @@ namespace components::operators {
 
         // scan pg_attribute for max(attnum) for this table.
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
-        std::pmr::vector<std::string> pa_keys(resource_);
-        pa_keys.emplace_back("attrelid");
+        std::pmr::vector<std::uint64_t> pa_keys(resource_);
+        pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, table_oid_));
-        std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
+                                           components::operators::make_key_chunk(resource_, table_oid_),
+                             std::pmr::vector<std::uint64_t>{resource_});
+        auto attr_batches_r = co_await std::move(paf);
+        if (attr_batches_r.has_error()) {
+            // A failed pg_attribute read is not a miss; treating it as one lets the
+            // operation proceed on data that was never read.
+            set_error(attr_batches_r.error());
+            co_return;
+        }
+        auto& attr_batches = attr_batches_r.value();
         std::int32_t next_attnum = 1;
         for (auto& chunk : attr_batches) {
             if (chunk.column_count() < 5)

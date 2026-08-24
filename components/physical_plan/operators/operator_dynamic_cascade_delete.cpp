@@ -1,6 +1,7 @@
 #include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/catalog/cascade_planner.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/dependency_walker.hpp>
@@ -115,16 +116,24 @@ namespace components::operators {
             const auto ref_cls = static_cast<catalog::oid_t>(k >> 32);
             const auto ref_oid = static_cast<catalog::oid_t>(k & 0xFFFFFFFFu);
 
-            std::pmr::vector<std::string> rd_keys(resource_);
-            rd_keys.emplace_back("refclassid");
-            rd_keys.emplace_back("refobjid");
+            std::pmr::vector<std::uint64_t> rd_keys(resource_);
+            rd_keys.emplace_back(catalog::pg_depend_col::refclassid);
+            rd_keys.emplace_back(catalog::pg_depend_col::refobjid);
             auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgDepend,
                                                std::move(rd_keys),
-                                               components::operators::make_key_chunk(resource_, ref_cls, ref_oid));
-            auto dep_batches = co_await std::move(rdf);
+                                               components::operators::make_key_chunk(resource_, ref_cls, ref_oid),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto dep_batches_r = co_await std::move(rdf);
+            if (dep_batches_r.has_error()) {
+                // A failed pg_depend read is not a miss; treating it as one lets the
+                // operation proceed on data that was never read.
+                set_error(dep_batches_r.error());
+                co_return;
+            }
+            auto& dep_batches = dep_batches_r.value();
 
             std::pmr::vector<catalog::dependency_t> deps(resource_);
             for (auto& chunk : dep_batches) {
@@ -209,15 +218,21 @@ namespace components::operators {
             // Read pg_class rows for these oids to inspect relkind: (oid, relname, relnamespace,
             // relkind, ...). Storage routing is by table_oid only — relname/nspname are no longer
             // needed. result[i] = matched chunks for probe_oids[i], in input order.
-            std::pmr::vector<std::string> pc_keys(resource_);
-            pc_keys.emplace_back("oid");
+            std::pmr::vector<std::uint64_t> pc_keys(resource_);
+            pc_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_keys,
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
-                                               components::operators::make_keys_chunk(resource_, probe_oids));
-            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> pc_results = co_await std::move(pcf);
+                                               components::operators::make_keys_chunk(resource_, probe_oids),
+                             std::pmr::vector<std::uint64_t>{resource_});
+            auto pc_results_r = co_await std::move(pcf);
+            if (pc_results_r.has_error()) {
+                set_error(pc_results_r.error());
+                co_return;
+            }
+            auto& pc_results = pc_results_r.value();
 
             for (std::size_t k = 0; k < probe_oids.size() && k < pc_results.size(); ++k) {
                 const auto& pc_batches = pc_results[k];

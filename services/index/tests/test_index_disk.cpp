@@ -205,7 +205,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     // Reopen from same path, verify data persisted.
@@ -243,7 +243,7 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
         for (int i = 2; i <= 100; i += 2) {
             index.remove(logical_value_t(&resource, int64_t(i)));
         }
-        index.force_flush();
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
     // Reopen, verify odd values present, even absent.

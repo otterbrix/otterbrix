@@ -3,6 +3,7 @@
 #include <components/index/disk_hash_storage.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
@@ -29,6 +30,16 @@ namespace services::index {
         using value_ref_t = components::index::disk_hash_storage_t::value_ref_t;
         using full_key_loader_t = components::index::disk_hash_storage_t::full_key_loader_t;
         using byte_buffer_t = std::pmr::vector<uint8_t>;
+
+        // Factory returning the instance, or a core::error_t when the on-disk
+        // storage cannot be brought up (file/overflow-file open failure, an
+        // unreadable or incompatible header). Production code MUST use this: the
+        // direct ctor below aborts on the same failures, mirroring
+        // bitcask_index_disk_t::create vs its direct ctor.
+        [[nodiscard]] static core::result_wrapper_t<boost::intrusive_ptr<disk_hash_table_t>>
+        create(const std::filesystem::path& file_path,
+               uint32_t bucket_count,
+               std::pmr::memory_resource* memory_resource);
 
         explicit disk_hash_table_t(const std::filesystem::path& file_path,
                                    uint32_t bucket_count = default_bucket_count,
@@ -61,6 +72,12 @@ namespace services::index {
         };
 
         struct decoded_entry_t {
+            // False when the slot could not be decoded (a corrupt page): the caller skips the
+            // entry instead of receiving a throw. This class reports failure by value — its
+            // public API already does (put/erase/rehash return bool, get returns optional), and
+            // an exception here would unwind through an actor coroutine whose
+            // unhandled_exception() is empty, turning a bad page into a hang.
+            bool valid{false};
             uint16_t stored_key_len{0};
             uint32_t full_key_len{0};
             uint8_t entry_flags{0};
@@ -86,6 +103,15 @@ namespace services::index {
             uint32_t hash_seed_value{0};
         };
 
+        // Tag ctor used by create(): runs the same open path but records the
+        // failure in open_error_ instead of aborting, so the factory can hand it
+        // back as a core::error_t.
+        struct defer_abort_tag {};
+        disk_hash_table_t(const std::filesystem::path& file_path,
+                          uint32_t bucket_count,
+                          std::pmr::memory_resource* memory_resource,
+                          defer_abort_tag);
+
         void open_or_create();
         void initialize_new_file();
         void load_existing_file();
@@ -99,8 +125,8 @@ namespace services::index {
 
         uint32_t hash_key(std::string_view key) const;
 
-        void read_page(uint64_t page_id, byte_buffer_t& page) const;
-        void write_page(uint64_t page_id, const byte_buffer_t& page);
+        [[nodiscard]] bool read_page(uint64_t page_id, byte_buffer_t& page) const;
+        [[nodiscard]] bool write_page(uint64_t page_id, const byte_buffer_t& page);
         void init_empty_page(byte_buffer_t& page) const;
 
         uint16_t page_count(const byte_buffer_t& page) const;
@@ -140,7 +166,7 @@ namespace services::index {
         byte_buffer_t
         make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const;
         uint64_t allocate_overflow_page();
-        void persist_header();
+        [[nodiscard]] bool persist_header();
 
         std::filesystem::path file_path_;
         full_key_loader_t key_loader_;
@@ -155,6 +181,9 @@ namespace services::index {
         double max_load_factor_{0.75};
         std::atomic<bool> suppress_auto_rehash_{false};
         std::pmr::memory_resource* memory_resource_{nullptr};
+        // Empty while the storage opened cleanly; otherwise the reason, checked by
+        // create() and by the direct ctor (which aborts on it).
+        std::string open_error_;
     };
 
     using disk_hash_table_ptr = boost::intrusive_ptr<disk_hash_table_t>;

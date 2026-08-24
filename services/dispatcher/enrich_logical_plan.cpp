@@ -379,6 +379,32 @@ namespace services::catalog_resolve {
         return out;
     }
 
+    // Mark every node whose target table is `table_oid` with whether that table has any index.
+    // Walks the whole tree by oid rather than trusting position: a statement can carry several
+    // tables, and the DML target is not necessarily the last one resolved.
+    void stamp_table_has_indexes(components::logical_plan::node_t* root,
+                                 components::catalog::oid_t table_oid,
+                                 bool has_indexes) {
+        using namespace components::logical_plan;
+        if (root == nullptr || table_oid == components::catalog::INVALID_OID) {
+            return;
+        }
+        std::queue<node_t*> q;
+        q.push(root);
+        while (!q.empty()) {
+            auto* n = q.front();
+            q.pop();
+            if (n->table_oid() == table_oid) {
+                n->set_table_has_indexes(has_indexes);
+            }
+            for (const auto& child : n->children()) {
+                if (child) {
+                    q.push(child.get());
+                }
+            }
+        }
+    }
+
     // Copy resolved catalog data onto the consumer nodes that asked for it.
     void bind_catalog_data(components::logical_plan::node_t* root, const catalog_resolves_t& resolves) {
         using namespace components::logical_plan;
@@ -844,7 +870,31 @@ namespace services::dispatcher { namespace {
                 const auto* constraints =
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
-                    node->set_outgoing_fks(constraints->fks);
+                    auto fks = constraints->fks;
+                    // Resolve the child column NAMES to their positions, the same way the INSERT
+                    // branch does through key_translation(). Handing the node unresolved foreign
+                    // keys left child_col_indices empty, and operator_fk_check reads that as "no
+                    // key column to address" and skips the row — so every row was skipped, the
+                    // qualifying count stayed zero, and zero is its success path.
+                    //
+                    // An UPDATE is fed the scanned base row, so a child column is at its storage
+                    // chunk_position rather than at a position in an INSERT tuple.
+                    if (md) {
+                        for (auto& fk : fks) {
+                            fk.child_col_indices.clear();
+                            for (const auto& col_name : fk.child_col_names) {
+                                std::size_t pos = std::numeric_limits<std::size_t>::max();
+                                for (const auto& col : md->columns) {
+                                    if (col.attname == col_name && col.chunk_position >= 0) {
+                                        pos = static_cast<std::size_t>(col.chunk_position);
+                                        break;
+                                    }
+                                }
+                                fk.child_col_indices.push_back(pos);
+                            }
+                        }
+                    }
+                    node->set_outgoing_fks(std::move(fks));
                     node->set_check_exprs(constraints->check_exprs);
                     node->set_unique_groups(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
@@ -1043,10 +1093,12 @@ namespace services::dispatcher {
                 keys_futures(resource);
             std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
                 desc_futures(resource);
+            std::pmr::vector<components::catalog::oid_t> queried_oids(resource);
             for (auto tbl_oid : root->table_oid_dependencies()) {
                 if (tbl_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
+                queried_oids.push_back(tbl_oid);
                 auto [_ik, ikf] =
                     actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
                 keys_futures.push_back(std::move(ikf));
@@ -1056,8 +1108,19 @@ namespace services::dispatcher {
                                                    tbl_oid);
                 desc_futures.push_back(std::move(idf));
             }
+            // Stamp "does this table have an index" onto every node targeting that table, by
+            // OID — not from collections_ctx->indexed_keys, which is overwritten per table
+            // (last table wins). A multi-table statement would otherwise judge its DML target
+            // by another table's index set.
+            std::size_t oid_pos = 0;
             for (auto& ikf : keys_futures) {
-                collections_ctx->indexed_keys = co_await std::move(ikf);
+                auto keys = co_await std::move(ikf);
+                const bool has_indexes = !keys.empty();
+                if (oid_pos < queried_oids.size()) {
+                    catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[oid_pos], has_indexes);
+                }
+                ++oid_pos;
+                collections_ctx->indexed_keys = std::move(keys);
             }
             for (auto& idf : desc_futures) {
                 collections_ctx->indexed_descriptions = co_await std::move(idf);

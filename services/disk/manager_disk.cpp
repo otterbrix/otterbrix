@@ -318,6 +318,9 @@ namespace services::disk {
                             }
                         }
                         if (cont) {
+                            #ifdef DEV_MODE
+                            services::dispatcher::note_pump_hop();
+                            #endif
                             cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
                             progress = true;
                             continue;
@@ -334,10 +337,17 @@ namespace services::disk {
                     }
                 }
                 std::unique_lock<std::mutex> lk(mutex_);
+                // A suspended coroutine's future is completed on ANOTHER thread and notifies
+                // nobody — pump_cv_ is signalled from enqueue_impl alone — so readiness is
+                // discovered by this wait TIMING OUT: while work is in flight that expiry IS the
+                // per-hop latency, and a statement crosses ~20 hops. Idle keeps the long tick:
+                // there only a new message can arrive, and that does notify.
                 if (inbox_.empty())
-                    pump_cv_.wait_for(lk, std::chrono::microseconds(100));
+                    pump_cv_.wait_for(lk,
+                                      in_flight.empty() ? std::chrono::microseconds(100)
+                                                        : std::chrono::microseconds(5));
                 // lock-free inbox trade: a push+notify may slip between empty() and
-                // wait_for — bounded by the 100µs timeout (staleness, not loss).
+                // wait_for — bounded by the wait timeout (staleness, not loss).
             }
             // in_flight destructs on the loop thread — safe, no other thread ever
             // touches the in-flight state.

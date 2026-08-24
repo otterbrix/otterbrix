@@ -124,7 +124,8 @@ namespace components::table {
                              const std::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
-                             column_fetch_state& state) {
+                             column_fetch_state& state,
+                             const std::vector<size_t>& projected_cols) {
         auto row_ids = row_identifiers.data<int64_t>();
         uint64_t count = 0;
         for (uint64_t i = 0; i < fetch_count; i++) {
@@ -138,7 +139,10 @@ namespace components::table {
                 }
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
             }
-            row_group->fetch_row(state, column_ids, row_id, result, count);
+#ifdef DEV_MODE
+            note_gather_row_fetched();
+#endif
+            row_group->fetch_row(state, column_ids, row_id, result, count, projected_cols);
             count++;
         }
         result.set_cardinality(count);

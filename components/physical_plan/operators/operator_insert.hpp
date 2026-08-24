@@ -7,6 +7,14 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    // Test-observable count of index-mirror sends an INSERT issues. Every send carries a DEEP
+    // COPY of the inserted chunk across a mailbox, and the index manager then walks the rows.
+    // On a table with NO indexes all of that produces nothing, so this must read zero there.
+    uint64_t insert_index_mirror_sends() noexcept;
+    void reset_insert_index_mirror_sends() noexcept;
+#endif
+
     class operator_insert final : public read_write_operator_t {
     public:
         // `returning` holds the RETURNING projection columns (empty when the
@@ -28,6 +36,11 @@ namespace components::operators {
         void set_column_bindings(logical_plan::insert_column_bindings_t bindings) {
             column_bindings_ = std::move(bindings);
         }
+
+        // Whether the target table has any index (stamped by enrich onto the plan node).
+        // False skips the index mirror entirely. Defaults to true so an unstamped plan
+        // behaves exactly as before.
+        void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
         // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds
         // each input batch into a bounded accumulator and emits nothing; the executor
@@ -64,6 +77,7 @@ namespace components::operators {
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
+        bool table_has_indexes_{true};
     };
 
 } // namespace components::operators

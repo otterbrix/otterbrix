@@ -12,14 +12,16 @@ namespace components::operators {
                            const types::logical_value_t& value,
                            expressions::compare_type compare_type,
                            components::logical_plan::index_type preferred_index_type,
-                           logical_plan::limit_t limit)
+                           logical_plan::limit_t limit,
+                           std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , table_oid_(table_oid)
         , key_(key)
         , value_(value)
         , compare_type_(compare_type)
         , preferred_index_type_(preferred_index_type)
-        , limit_(limit) {}
+        , limit_(limit)
+        , projected_cols_(std::move(projected_cols)) {}
 
     // --- Windowing core -------------------------------------------------------------------------
     // Run the ONE-SHOT index search and compute the read-cap window [pos_=0, end_) over the matched
@@ -89,7 +91,8 @@ namespace components::operators {
                                          ctx->session,
                                          table_oid_,
                                          std::move(row_ids),
-                                         count);
+                                         count,
+                                         projected_cols_);
         co_return co_await std::move(ff);
     }
 

@@ -269,14 +269,12 @@ namespace components::index {
 
     void index_t::cleanup_versions(uint64_t lowest_active) { cleanup_versions_impl(lowest_active); }
 
-    void index_t::for_each_pending_insert(uint64_t txn_id,
-                                          const std::function<void(const value_t&, int64_t)>& fn) const {
-        for_each_pending_insert_impl(txn_id, fn);
+    index_t::pending_entries_t index_t::pending_inserts(uint64_t txn_id) const {
+        return pending_inserts_impl(txn_id);
     }
 
-    void index_t::for_each_pending_delete(uint64_t txn_id,
-                                          const std::function<void(const value_t&, int64_t)>& fn) const {
-        for_each_pending_delete_impl(txn_id, fn);
+    index_t::pending_entries_t index_t::pending_deletes(uint64_t txn_id) const {
+        return pending_deletes_impl(txn_id);
     }
 
     void index_t::clean_memory_to_new_elements(std::size_t count) noexcept { clean_memory_to_new_elements_impl(count); }

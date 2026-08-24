@@ -24,7 +24,10 @@ namespace components::vector {
 
     validity_mask_t::validity_mask_t(std::pmr::memory_resource* resource, uint64_t size)
         : resource_(resource)
-        , validity_data_(std::make_shared<validity_data_t>(resource, size))
+        // `size` counts ROWS; validity_data_t counts 64-bit ENTRIES — the buffer stays sized to
+        // entry_count(count_) words. Passing rows through reserved 64x the memory needed: 8 KiB
+        // for a 1024-row mask that fits in 128 bytes.
+        , validity_data_(std::make_shared<validity_data_t>(resource, validity_data_t::entry_count(size)))
         , validity_mask_(validity_data_->data())
         , count_(size) {}
 
@@ -168,7 +171,7 @@ namespace components::vector {
         } else {
             if (!validity_mask_) {
                 assert(row_index <= count_);
-                validity_data_ = std::make_unique<validity_data_t>(resource(), count_);
+                validity_data_ = std::make_unique<validity_data_t>(resource(), validity_data_t::entry_count(count_));
                 validity_mask_ = validity_data_->data();
             }
             uint64_t entry_idx, idx_in_entry;
@@ -309,7 +312,7 @@ namespace components::vector {
         count_ = new_size;
         auto new_size_count = validity_data_t::entry_count(new_size);
         auto old_size_count = validity_data_t::entry_count(old_size);
-        auto new_validity_data = std::make_unique<validity_data_t>(resource, new_size);
+        auto new_validity_data = std::make_unique<validity_data_t>(resource, new_size_count);
         auto new_owned_data = new_validity_data->data();
         if (validity_mask_) {
             for (uint64_t entry_idx = 0; entry_idx < old_size_count; entry_idx++) {

@@ -72,11 +72,13 @@ namespace components::operators {
                                            keys_,
                                            index_type_,
                                            ctx->execution_context.timezone_offset);
-        const auto id_index = co_await std::move(ixf);
+        auto id_index_result = co_await std::move(ixf);
 
-        if (id_index == components::index::INDEX_ID_UNDEFINED) {
-            set_error(core::error_t{core::error_code_t::index_create_fail,
-                                    std::pmr::string{"index already exists", resource_}});
+        if (id_index_result.has_error()) {
+            // Report the reason the manager gave: flattening every failure to
+            // "index already exists" is right for one cause and wrong for the rest,
+            // including a disk index whose storage failed to open.
+            set_error(id_index_result.error());
             co_return;
         }
 
@@ -184,7 +186,13 @@ namespace components::operators {
                                          std::move(idx_chunks),
                                          static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
                                          run_len);
-                    co_await std::move(irf);
+                    auto index_error = co_await std::move(irf);
+                    if (index_error.contains_error()) {
+                        // A backfill run that did not reach the index leaves the new index
+                        // incomplete; the CREATE INDEX must fail rather than publish it.
+                        set_error(std::move(index_error));
+                        co_return;
+                    }
                     run_start += run_len;
                 }
                 backfilled_count += sz;
@@ -312,7 +320,10 @@ namespace components::operators {
                                                      ctx->session,
                                                      rec.table_oid,
                                                      std::move(fetch_ids),
-                                                     static_cast<uint64_t>(rec.physical_row_ids.size()));
+                                                     static_cast<uint64_t>(rec.physical_row_ids.size()),
+                                                     // No projection: the backfill hands whole rows
+                                                     // to the index engine's chunk binding.
+                                                     std::vector<size_t>{});
                     fetch_futures.push_back(std::move(ff));
                     fetch_slots.push_back(r);
                 }

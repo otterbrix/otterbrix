@@ -10,9 +10,10 @@
 //
 // These helpers are NOT actors: they are coroutine functions invoked from an
 // operator's await_async_and_resume, piggy-backing on its async frame and
-// talking to manager_disk_t only via actor_zeta::send. read_rows_by_key has no
-// error channel yet, so a scan-side failure degrades to an empty result and the
-// downstream pure validator reports the appropriate code.
+// talking to manager_disk_t only via actor_zeta::send. A scan-side failure is
+// returned as a core::error_t: it used to degrade to an empty result, which the
+// pure validators read as "no visible columns" and "no dependents" — so a failed
+// read let a duplicate column through and made a RESTRICT check pass vacuously.
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -33,10 +34,9 @@ namespace components::operators::alter_validators {
     // Async pg_attribute scan: visible column names for the relation, filtered by
     // attisdropped==false and the MVCC snapshot (added_at <= horizon AND
     // (dropped_at == 0 OR dropped_at > horizon)). Vector is allocated against
-    // `resource` and consumed by validate_column_not_duplicate. A scan-side
-    // failure returns empty — callers MUST treat empty as "no known visible
-    // columns" (worst case: a duplicate slips through to a later consistency error).
-    actor_zeta::unique_future<std::pmr::vector<std::string>>
+    // `resource` and consumed by validate_column_not_duplicate. An empty list means
+    // the relation really has no visible columns, which a caller is entitled to trust.
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     visible_column_names(std::pmr::memory_resource* resource,
                          actor_zeta::address_t disk_address,
                          components::execution_context_t exec_ctx,
@@ -48,7 +48,7 @@ namespace components::operators::alter_validators {
     // the cascade loop for CASCADE.
     // TBD-impl: pg_depend has no refobjsubid yet, so this returns ALL dependents
     // of the refobj (table); callers must refine once the column-grain id lands.
-    actor_zeta::unique_future<std::pmr::vector<std::pair<int, components::catalog::oid_t>>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pair<int, components::catalog::oid_t>>>>
     scan_cascade_dependents(std::pmr::memory_resource* resource,
                             actor_zeta::address_t disk_address,
                             components::execution_context_t exec_ctx,

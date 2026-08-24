@@ -398,7 +398,9 @@ namespace components::vector {
 
     void data_chunk_t::slice(const indexing_vector_t& indexing_vector, uint64_t count) {
         count_ = count;
-        indexing_cache_t merge_cache;
+        // Explicit resource: a default-constructed pmr container would allocate on the process
+        // default resource, which this project forbids.
+        indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < column_count(); c++) {
             data[c].slice(indexing_vector, count, merge_cache);
         }
@@ -410,7 +412,7 @@ namespace components::vector {
                              uint64_t col_offset) {
         assert(other.column_count() <= col_offset + column_count());
         count_ = count;
-        indexing_cache_t merge_cache;
+        indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < other.column_count(); c++) {
             if (other.data[c].get_vector_type() == vector_type::DICTIONARY) {
                 // already a dictionary! merge the dictionaries

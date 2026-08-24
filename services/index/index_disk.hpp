@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <components/types/logical_value.hpp>
 
 #include <cstddef>
@@ -36,7 +38,10 @@ namespace services::index {
         // files/directory survive (re-initialized empty), the instance stays
         // usable. Used by the runtime repopulate path.
         virtual void clear() = 0;
-        virtual void force_flush() = 0;
+        // Returns io_error when the data did not reach the disk. The caller must fail the
+        // statement: a discarded failure here means the table and its index disagree, and nothing
+        // downstream would ever notice.
+        [[nodiscard]] virtual core::error_t force_flush() = 0;
 
         // Bulk-load fast path. insert_bulk_unchecked / remove_bulk_unchecked skip the
         // per-operation dedup find() and the per-operation flush; force_flush() persists

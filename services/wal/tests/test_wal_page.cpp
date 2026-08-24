@@ -16,6 +16,11 @@ namespace {
 
         explicit tmp_dir_t(const std::string& name)
             : path(std::filesystem::temp_directory_path() / name) {
+            // Clear on the way IN as well as on the way out. A run that dies before the destructor —
+            // a failing REQUIRE aborts, a crash, a kill — leaves this directory behind, and the next
+            // run would then start on top of the dead run's files instead of an empty directory.
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
             std::filesystem::create_directories(path);
         }
 

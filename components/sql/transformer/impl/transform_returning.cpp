@@ -6,7 +6,7 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
 
-    std::pmr::vector<expressions::expression_ptr>
+    core::result_wrapper_t<std::pmr::vector<expressions::expression_ptr>>
     transformer::transform_returning(List* returning_list,
                                      const name_collection_t& names,
                                      logical_plan::execution_plan_t* plan) {
@@ -25,11 +25,7 @@ namespace components::sql::transform {
                             make_scalar_expression(resource_, scalar_type::star_expand, expressions::key_t{resource_}));
                         break;
                     }
-                    auto col_res = columnref_to_field(resource_, col_ref, names);
-                    if (transform_failed(col_res)) {
-                        break;
-                    }
-                    auto col = std::move(col_res.value());
+                    VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                     // RETURNING table.* — carry the table qualifier so the validator
                     // can expand it by result_alias.
                     if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
@@ -57,10 +53,7 @@ namespace components::sql::transform {
                     auto* a_expr = pg_ptr_cast<A_Expr>(res->val);
                     if (a_expr->kind == AEXPR_OP && a_expr->name && !a_expr->name->lst.empty() &&
                         is_arithmetic_operator(strVal(a_expr->name->lst.front().data))) {
-                        auto expr = transform_a_expr_arithmetic(a_expr, names, plan->parameters.get());
-                        if (error_.contains_error()) {
-                            return out;
-                        }
+                        VALUE_OR_RETURN(auto expr, transform_a_expr_arithmetic(a_expr, names, plan->parameters.get()));
                         if (res->name) {
                             static_cast<scalar_expression_t*>(expr.get())->key() =
                                 expressions::key_t{resource_, res->name};
@@ -68,9 +61,8 @@ namespace components::sql::transform {
                         out.push_back(std::move(expr));
                         break;
                     }
-                    error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                           std::pmr::string{"unsupported expression in RETURNING clause", resource_});
-                    return out;
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"unsupported expression in RETURNING clause", resource_});
                 }
                 case T_A_Const:
                 case T_TypeCast:
@@ -79,14 +71,14 @@ namespace components::sql::transform {
                                                        scalar_type::constant,
                                                        res->name ? expressions::key_t{resource_, res->name}
                                                                  : expressions::key_t{resource_});
-                    expr->append_param(add_param_value(res->val, plan->parameters.get()));
+                    VALUE_OR_RETURN(auto param, add_param_value(res->val, plan->parameters.get()));
+                    expr->append_param(param);
                     out.push_back(std::move(expr));
                     break;
                 }
                 default:
-                    error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                           std::pmr::string{"unsupported expression in RETURNING clause", resource_});
-                    return out;
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"unsupported expression in RETURNING clause", resource_});
             }
         }
         return out;

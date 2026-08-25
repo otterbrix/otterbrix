@@ -197,8 +197,7 @@ namespace components::compute {
                 return state.error();
             }
 
-            executor_->init(kernel_ctx_.value(), {kernel_, in_types_, options});
-            return core::error_t::no_error();
+            return executor_->init(kernel_ctx_.value(), {kernel_, in_types_, options});
         }
 
         std::pmr::vector<complex_logical_type> in_types_;

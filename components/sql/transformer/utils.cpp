@@ -309,11 +309,8 @@ namespace components::sql::transform {
             return out;
         }
         out.field.set_qualifier(out.table);
-        auto side = names.resolve(resource, out);
-        if (side.has_error()) {
-            return side.error();
-        }
-        out.field.set_side(side.value());
+        VALUE_OR_RETURN(auto side, names.resolve(resource, out));
+        out.field.set_side(side);
         return out;
     }
 
@@ -322,17 +319,9 @@ namespace components::sql::transform {
                                                               const name_collection_t& names) {
         column_ref_t ref(resource);
         if (nodeTag(indirection->arg) == T_ColumnRef) {
-            auto base = columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names);
-            if (base.has_error()) {
-                return base.error();
-            }
-            ref = std::move(base.value());
+            VALUE_OR_RETURN(ref, columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names));
         } else if (nodeTag(indirection->arg) == T_A_Indirection) {
-            auto base = indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names);
-            if (base.has_error()) {
-                return base.error();
-            }
-            ref = std::move(base.value());
+            VALUE_OR_RETURN(ref, indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names));
         } else {
             return core::error_t{core::error_code_t::sql_parse_error,
                                  std::pmr::string{"field selection is supported only on a column reference", resource}};
@@ -452,7 +441,7 @@ namespace components::sql::transform {
             case T_SubLink:
                 return "T_SubLink";
             default:
-                return "unknown";
+                return "NodeTag(" + std::to_string(static_cast<int>(type)) + ")";
         }
     }
 

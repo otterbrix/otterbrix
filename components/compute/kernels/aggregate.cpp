@@ -1,25 +1,27 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
 
+#include <cassert>
 #include <string_view>
+#include <tuple>
 
 using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
 
 namespace {
+    void register_kernel(std::pmr::memory_resource* resource, auto& fn, auto kernel) {
+        auto added = fn->add_kernel(resource, std::move(kernel));
+        assert(!added.contains_error() && "aggregate kernel must fit the declared slots and arity");
+        std::ignore = added;
+    }
+
     template<typename T>
-    concept addable = requires(T& a, const T& b) {
-        a += b;
-    };
+    concept addable = requires(T& a, const T& b) { a += b; };
     template<typename T>
-    concept comparable = requires(const T& a, const T& b) {
-        a < b;
-    };
+    concept comparable = requires(const T& a, const T& b) { a < b; };
     template<typename T>
-    concept dividable = requires(const T& a, const T& b) {
-        a / b;
-    };
+    concept dividable = requires(const T& a, const T& b) { a / b; };
 
     // An aggregate accumulates into one state per group, addressed by group id
 
@@ -40,8 +42,9 @@ namespace {
     };
 
     template<template<typename> class op_t, typename fallback_t, typename... args_t>
-    auto arithmetic_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
-        -> decltype(fallback()) {
+    auto arithmetic_dispatch(const complex_logical_type& type,
+                             fallback_t fallback,
+                             args_t&&... args) -> decltype(fallback()) {
         switch (type.type()) {
             case logical_type::TINYINT:
                 return op_t<int8_t>{}(std::forward<args_t>(args)...);
@@ -86,8 +89,8 @@ namespace {
     }
 
     template<template<typename> class op_t, typename fallback_t, typename... args_t>
-    auto ordered_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
-        -> decltype(fallback()) {
+    auto
+    ordered_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args) -> decltype(fallback()) {
         switch (type.to_physical_type()) {
             case physical_type::BOOL:
             case physical_type::INT8:
@@ -483,7 +486,7 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), sum_layout, sum_update, sum_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        register_kernel(resource, fn, std::move(k));
         return fn;
     }
 
@@ -502,7 +505,7 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_max_layout, min_update, min_max_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        register_kernel(resource, fn, std::move(k));
         return fn;
     }
 
@@ -521,7 +524,7 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_max_layout, max_update, min_max_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        register_kernel(resource, fn, std::move(k));
         return fn;
     }
 
@@ -542,12 +545,12 @@ namespace {
                                {parameter_type::variable(0)},
                                {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_layout, count_update, count_finalize};
-        fn->add_kernel(resource, std::move(k));
+        register_kernel(resource, fn, std::move(k));
 
         // COUNT(*) — zero-argument kernel
         kernel_signature_t sig_star(function_type_t::aggregate, {}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k_star{std::move(sig_star), count_layout, count_star_update, count_finalize};
-        fn->add_kernel(resource, std::move(k_star));
+        register_kernel(resource, fn, std::move(k_star));
 
         return fn;
     }
@@ -567,14 +570,12 @@ namespace {
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), avg_layout, avg_update, avg_finalize};
 
-        fn->add_kernel(resource, std::move(k));
+        register_kernel(resource, fn, std::move(k));
         return fn;
     }
-
 } // namespace
 
 namespace components::compute {
-
     // WARNING: array size, names order and uid has to be the same as in DEFAULT_FUNCTIONS
     void register_default_functions(function_registry_t& r) {
         (void) r.add_function(make_sum_func(r.resource(),
@@ -599,5 +600,4 @@ namespace components::compute {
         register_expand_functions(r);
         register_math_functions(r);
     }
-
 } // namespace components::compute

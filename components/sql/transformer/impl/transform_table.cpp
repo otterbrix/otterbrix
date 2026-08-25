@@ -21,27 +21,21 @@ namespace components::sql::transform {
         uuid_database_schema_table = 4
     };
 
-    logical_plan::node_ptr transformer::transform_create_table(CreateStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
-        auto col_defs = get_column_definitions(resource_, *coldefs);
-        if (transform_failed(col_defs)) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
 
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
         logical_plan::node_ptr created;
-        if (col_defs.value().empty()) {
+        if (col_defs.empty()) {
             created =
                 logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
         }
 
-        auto constraints = extract_table_constraints(resource_, *coldefs);
-        if (transform_failed(constraints)) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(auto constraints, extract_table_constraints(resource_, *coldefs));
 
         // Parse WITH (storage = 'disk') clause
         bool disk_storage = false;
@@ -62,8 +56,8 @@ namespace components::sql::transform {
 
         created = logical_plan::make_node_create_collection(resource_,
                                                             core::relname_t{qn.relname},
-                                                            std::move(col_defs.value()),
-                                                            std::move(constraints.value()),
+                                                            std::move(col_defs),
+                                                            std::move(constraints),
                                                             disk_storage,
                                                             node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs
@@ -92,7 +86,7 @@ namespace components::sql::transform {
         return created;
     }
 
-    logical_plan::node_ptr transformer::transform_drop(DropStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
         auto wrap_one = [&](const std::string& db, const std::string& rel, logical_plan::node_ptr n) {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             drop->set_dbname(db);
@@ -138,17 +132,15 @@ namespace components::sql::transform {
                         return wrap_one(database, collection, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_INDEX: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"incorrect drop: arguments size", resource_});
-                    return nullptr;
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
                 // DROP INDEX names two pg_class rows — the parent table and the index itself
                 auto wrap_index = [&](const std::string& db,
@@ -198,17 +190,15 @@ namespace components::sql::transform {
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_TYPE: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"incorrect drop: arguments size", resource_});
-                    return nullptr;
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
                 std::string type_name = strVal(drop_name.back().data);
                 auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::type);
@@ -237,9 +227,8 @@ namespace components::sql::transform {
                         return wrap_one(database, seq_name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_VIEW: {
@@ -258,9 +247,8 @@ namespace components::sql::transform {
                         return wrap_one(database, view_name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_FUNCTION: {
@@ -279,15 +267,13 @@ namespace components::sql::transform {
                         return wrap_one(database, macro_name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             default:
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"Unsupported removeType", resource_});
-                return nullptr;
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"Unsupported removeType", resource_});
         }
     }
 

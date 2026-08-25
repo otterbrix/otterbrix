@@ -4,7 +4,7 @@
 
 namespace components::sql::transform {
 
-    logical_plan::node_ptr transformer::transform_create_sequence(CreateSeqStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_sequence(CreateSeqStmt& node) {
         auto qn = rangevar_to_qualified_name(node.sequence);
         const std::string db_for_resolve = qn.dbname;
 

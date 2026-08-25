@@ -4,7 +4,7 @@
 
 namespace components::sql::transform {
 
-    logical_plan::node_ptr transformer::transform_create_function(CreateFunctionStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_function(CreateFunctionStmt& node) {
         // Extract function name from qualified name list
         qualified_name qn;
         if (node.funcname) {

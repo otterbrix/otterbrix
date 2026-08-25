@@ -198,4 +198,37 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
                            "TEST_DATABASE.TEST_COLLECTION);",
                            R"_(Unknown node type in ORDER BY: T_SubLink)_");
+
+    TEST_TRANSFORMER_ERROR("SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
+    TEST_TRANSFORMER_ERROR("RELEASE SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
+    TEST_TRANSFORMER_ERROR("ROLLBACK TO SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
+    TEST_TRANSFORMER_OK("BEGIN;");
+    TEST_TRANSFORMER_OK("COMMIT;");
+    TEST_TRANSFORMER_OK("ROLLBACK;");
+
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t DEFAULT VALUES;", R"_(INSERT ... DEFAULT VALUES is not supported)_");
+
+    SECTION("unsupported statements name their tag") {
+        for (const char* q : {"TRUNCATE d.t;", "GRANT SELECT ON d.t TO alice;", "COPY d.t FROM '/tmp/x';"}) {
+            auto stmt = linitial(raw_parser(&arena_resource, q));
+            auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
+            const std::string what{result.get_error().what.c_str()};
+            INFO(q << " -> " << what);
+            REQUIRE(what.find("Unsupported node type: ") == 0);
+            REQUIRE(what.find("unknown") == std::string::npos);
+        }
+    }
+
+    TEST_TRANSFORMER_ERROR("CREATE TYPE ty AS (a VARCHAR(10));", R"_(string length modifier is not supported)_");
+    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD COLUMN c VARCHAR(10);",
+                           R"_(string length modifier is not supported)_");
+    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (lower(a) = 'x');",
+                           R"_(CHECK constraint contains unsupported expression type T_FuncCall; allowed: column )_"
+                           R"_(references, constants, comparison/arithmetic operators, AND/OR/NOT, IS NULL/IS NOT NULL)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE ((5 + 1) -> 'a') ? 'b';",
+                           R"_(unsupported left operand in jsonb operator chain)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
+                           R"_(unsupported base operand for jsonb operator)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';",
+                           R"_(unsupported base operand for jsonb operator)_");
 }

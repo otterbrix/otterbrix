@@ -1582,3 +1582,33 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") 
     CHECK(cur->value(1, 0).value<int64_t>() == 300);
     CHECK(cur->value(1, 1).value<int64_t>() == 300);
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::cross_signed_128bit_comparison") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/cross_signed_128");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.small (v UHUGEINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.large (v UHUGEINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.small (v) VALUES (5);")->is_success());
+    // parsed values are signed by default
+    // 2^127: one past hugeint::max() should be processed as uhugeint without an error
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.large (v) VALUES (170141183460469231731687303715884105728);")
+                ->is_success());
+
+    // A literal is signed, so this compares uhugeint against hugeint. The two meet at the signed type
+    auto matched = test_helpers::exec(dispatcher, "SELECT v FROM db.small WHERE v = 5;");
+    REQUIRE(matched->is_success());
+    CHECK(matched->size() == 1);
+    auto missed = test_helpers::exec(dispatcher, "SELECT v FROM db.small WHERE v = 4;");
+    REQUIRE(missed->is_success());
+    CHECK(missed->size() == 0);
+
+    // implicitly cast to hugeint, but fails, because it is out of range
+    // casting to double will eliminate that problem, but with that comparisons will be non-strict
+    // so we pick integer type over floating point
+    auto refused =
+        test_helpers::exec(dispatcher, "SELECT v FROM db.large WHERE v = 170141183460469231731687303715884105727;");
+    CHECK(refused->is_error());
+}

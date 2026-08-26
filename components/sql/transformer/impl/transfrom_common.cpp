@@ -3,6 +3,7 @@
 #include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
+#include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
@@ -909,9 +910,17 @@ namespace components::sql::transform {
                                                          resource_});
                             }
                         }
+                        case T_CaseExpr: {
+                            VALUE_OR_RETURN(auto expr,
+                                            case_expr_to_scalar(pg_ptr_cast<CaseExpr>(node), nullptr, names, plan, {}));
+                            return param_storage{std::move(expr)};
+                        }
                         default:
-                            return core::error_t(core::error_code_t::sql_parse_error,
-                                                 std::pmr::string{"Unsupported expression", resource_});
+                            // Anything this arm does not spell out is an ordinary operand, and the
+                            // operand lowering is shared. What an operand may be is one question,
+                            // asked in one place; whether the result makes sense here is a
+                            // different one, and validation answers it.
+                            return transform_a_expr_operand(node, names, plan->parameters.get());
                     }
                 };
 
@@ -1815,6 +1824,58 @@ namespace components::sql::transform {
         // A computed argument — `(expr) IS NULL`
         VALUE_OR_RETURN(auto operand, transform_a_expr_operand(pg_ptr_cast<Node>(node->arg), names, params));
         return make_compare_expression(resource_, cmp, operand, param_id);
+    }
+
+    core::result_wrapper_t<transformer::check_expr_result>
+    transformer::parse_where_expr(const std::string& expr_text, logical_plan::parameter_node_ptr params) {
+        if (expr_text.empty()) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CHECK constraint carries no expression", resource_});
+        }
+
+        // SELECT wrapper, to reuse regular parsing mechanism
+        const std::string statement = "SELECT 1 WHERE " + expr_text + ";";
+        std::pmr::monotonic_buffer_resource arena(resource_);
+        Node* predicate = nullptr;
+        try {
+            auto* parsed = raw_parser(&arena, statement.c_str());
+            if (!parsed) {
+                return core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
+            }
+            auto* cell = linitial(parsed);
+            if (!cell) {
+                return core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
+            }
+            auto& parsed_node = pg_cell_to_node_cast(cell);
+            if (nodeTag(&parsed_node) != T_SelectStmt) {
+                return core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
+            }
+            predicate = pg_ptr_cast<SelectStmt>(&parsed_node)->whereClause;
+        } catch (const std::exception& ex) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text + " (" + ex.what() + ")",
+                                 resource_});
+        }
+        if (!predicate) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
+        }
+
+        // A CHECK names the columns of the one table it is attached to, so its references are
+        // unqualified and no table is needed to tell two sides apart.
+        const name_collection_t names;
+        check_expr_result out{nullptr, params ? params : logical_plan::make_parameter_node(resource_)};
+        logical_plan::execution_plan_t plan{resource_, nullptr, out.params};
+        VALUE_OR_RETURN(out.expr, transform_predicate(predicate, names, &plan));
+        return out;
     }
 
 } // namespace components::sql::transform

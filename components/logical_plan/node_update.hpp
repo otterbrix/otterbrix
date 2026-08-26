@@ -7,6 +7,7 @@
 #include <components/catalog/fk_info.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/key.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <utility>
@@ -47,6 +48,24 @@ namespace components::logical_plan {
         void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
 
+        // The CHECK predicates of the target table, parsed from the SQL the catalog stores. The
+        // text is the record
+        void set_check_predicates(std::vector<std::pair<std::string, expressions::expression_ptr>> v) {
+            check_predicates_ = std::move(v);
+        }
+        const std::vector<std::pair<std::string, expressions::expression_ptr>>& check_predicates() const {
+            return check_predicates_;
+        }
+        std::vector<std::pair<std::string, expressions::expression_ptr>>& check_predicates() {
+            return check_predicates_;
+        }
+
+        void set_check_params(parameter_node_ptr v) { check_params_ = std::move(v); }
+        const parameter_node_ptr& check_params() const { return check_params_; }
+
+        void set_array_size_reqs(std::vector<std::pair<std::string, uint64_t>> v) { array_size_reqs_ = std::move(v); }
+        const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
+
         // UNIQUE / PRIMARY KEY column groups (contype 'u'/'p'), one ordered
         // column-name list per constraint. Stamped by the dispatcher's enrich pass;
         // the planner forwards these onto the node_check_constraint_t wrapper so
@@ -76,7 +95,10 @@ namespace components::logical_plan {
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
+        std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
+        std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
+        parameter_node_ptr check_params_;
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
     };

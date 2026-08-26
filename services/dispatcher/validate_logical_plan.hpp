@@ -74,6 +74,13 @@ namespace services::dispatcher {
                                                         const components::graph_execution_context& execution_context,
                                                         std::vector<components::table::column_definition_t>& columns);
 
+    // Resolve every CHECK predicate the plan's DML nodes carry, against the table each one guards.
+    // Called after enrich_plan, which is what parses the predicates out of the catalog.
+    [[nodiscard]] core::error_t
+    resolve_constraint_predicates(const validation::validation_context_t& context,
+                                  components::logical_plan::node_t* root,
+                                  const components::logical_plan::storage_parameters& parameters);
+
     // `cte_schemas` carries recursive-CTE anchor schemas between the recursive_cte_t and
     // cte_scan_t arms; callers pass nullptr and the map is owned internally.
     [[nodiscard]] core::result_wrapper_t<named_schema>

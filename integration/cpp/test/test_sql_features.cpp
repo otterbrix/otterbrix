@@ -2495,9 +2495,9 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
 }
 
 TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") {
-    // Verifies that CHECK constraints with unsupported expression node types
-    // (T_FuncCall) are rejected at creation time with a clear error, not silently stored
-    // as empty conexpr and bypassed on INSERT.
+    // Verifies that a CHECK which does not hold up as an expression is rejected at creation time
+    // with a clear error, rather than stored and then bypassed on every INSERT. A predicate that
+    // names a column the table does not have is the plainest case: nothing can ever evaluate it.
     auto config = test_create_config("/tmp/test_sql_features/check_constraint_invalid_expr");
     test_clear_directory(config);
     config.disk.on = true;
@@ -2518,14 +2518,35 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") 
         }
     }
 
-    INFO("CHECK with function call is rejected at constraint creation");
+    INFO("a CHECK that cannot be resolved is rejected at constraint creation");
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session,
-                                        "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_func CHECK (abs(x) > 0);");
+            auto cur = dispatcher->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_missing CHECK (nosuch > 0);");
             REQUIRE(cur->is_error());
+        }
+        {
+            // A call to a function the registry does not have is refused for the same reason.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_nofn CHECK (nosuchfn(x) > 0);");
+            REQUIRE(cur->is_error());
+        }
+        {
+            // A call the registry DOES have is a perfectly good CHECK, and is enforced.
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(session, "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_func CHECK (abs(x) > 2);")
+                    ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x) VALUES (9, 1);")->is_error());
         }
     }
 

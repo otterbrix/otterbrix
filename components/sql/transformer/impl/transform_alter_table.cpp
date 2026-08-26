@@ -25,7 +25,8 @@ namespace components::sql::transform {
         return n;
     }
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_alter_table(AlterTableStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::transform_alter_table(AlterTableStmt& node, logical_plan::execution_plan_t* plan) {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string& db = qn.dbname;
         const std::string& rel = qn.relname;
@@ -137,24 +138,35 @@ namespace components::sql::transform {
                         return logical_plan::node_ptr{std::move(fk_node)};
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
-                        VALUE_OR_RETURN(auto expr_text, deparse_check_expr(resource_, constr->raw_expr));
-                        if (!expr_text.empty()) {
-                            std::string con_name = constr->conname ? constr->conname : "";
-                            auto check_node =
-                                logical_plan::make_node_create_constraint(resource_,
-                                                                          db,
-                                                                          rel,
-                                                                          core::constraint_name_t{std::move(con_name)},
-                                                                          logical_plan::constraint_kind::check);
-                            check_node->set_check_expr(std::move(expr_text));
-                            return wrap_primary(logical_plan::node_ptr{std::move(check_node)});
+                        const name_collection_t names;
+                        const std::size_t sub_queries_before = plan->sub_queries.size();
+                        VALUE_OR_RETURN(auto expr, transform_predicate(constr->raw_expr, names, plan));
+                        // CHECK expr should not contain subqueries, and this is an easy way to enforce that
+                        if (plan->sub_queries.size() != sub_queries_before) {
+                            return core::error_t(
+                                core::error_code_t::invalid_constraint,
+                                std::pmr::string{"CHECK constraint contains a sub-query; a CHECK may only read "
+                                                 "the row it judges",
+                                                 resource_});
                         }
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"CHECK constraint expression contains unsupported constructs; "
-                                             "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
-                                             "column references, and constants",
-                                             resource_});
+                        VALUE_OR_RETURN(auto expr_text, slice_check_expression(resource_, raw_sql_, constr->location));
+                        if (expr_text.empty()) {
+                            return core::error_t(
+                                core::error_code_t::invalid_constraint,
+                                std::pmr::string{"CHECK constraint expression cannot be stored: it contains a "
+                                                 "construct that cannot be written back to SQL",
+                                                 resource_});
+                        }
+                        std::string con_name = constr->conname ? constr->conname : "";
+                        auto check_node =
+                            logical_plan::make_node_create_constraint(resource_,
+                                                                      db,
+                                                                      rel,
+                                                                      core::constraint_name_t{std::move(con_name)},
+                                                                      logical_plan::constraint_kind::check);
+                        check_node->set_check_expression(std::move(expr));
+                        check_node->set_check_expression_sql(std::move(expr_text));
+                        return wrap_primary(logical_plan::node_ptr{std::move(check_node)});
                     }
                     if (constr->contype == CONSTR_UNIQUE || constr->contype == CONSTR_PRIMARY) {
                         // UNIQUE / PRIMARY KEY. The enforced columns live in constr->keys

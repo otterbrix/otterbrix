@@ -22,14 +22,16 @@ using namespace components::sql;
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
+        transform::transformer local(&resource, QUERY);                                                                \
+        auto result = local.transform(transform::pg_cell_to_node_cast(select));                                        \
         REQUIRE(std::string_view{result.get_error().what} == RESULT);                                                  \
     }
 
 #define TEST_TRANSFORMER_OK(QUERY)                                                                                     \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
+        transform::transformer local(&resource, QUERY);                                                                \
+        auto result = local.transform(transform::pg_cell_to_node_cast(select));                                        \
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
 
@@ -220,15 +222,11 @@ TEST_CASE("components::sql::errors") {
     }
 
     TEST_TRANSFORMER_ERROR("CREATE TYPE ty AS (a VARCHAR(10));", R"_(string length modifier is not supported)_");
-    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD COLUMN c VARCHAR(10);",
-                           R"_(string length modifier is not supported)_");
-    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (lower(a) = 'x');",
-                           R"_(CHECK constraint contains unsupported expression type T_FuncCall; allowed: column )_"
-                           R"_(references, constants, comparison/arithmetic operators, AND/OR/NOT, IS NULL/IS NOT NULL)_");
+    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD COLUMN c VARCHAR(10);", R"_(string length modifier is not supported)_");
+    TEST_TRANSFORMER_OK("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (lower(a) = 'x');");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE ((5 + 1) -> 'a') ? 'b';",
                            R"_(unsupported left operand in jsonb operator chain)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
                            R"_(unsupported base operand for jsonb operator)_");
-    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';",
-                           R"_(unsupported base operand for jsonb operator)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
 }

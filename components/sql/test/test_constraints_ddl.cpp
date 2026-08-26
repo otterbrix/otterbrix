@@ -235,70 +235,48 @@ TEST_CASE("components::sql::view") {
 TEST_CASE("components::sql::check_constraint_whitelist") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
-    transform::transformer transformer(&resource);
 
-    // Table-level CHECK constraints go through extract_table_constraints → deparse_check_expr.
-    // Column-level CHECK (inside T_ColumnDef) is a separate path not handled yet.
-
-    SECTION("simple comparison is allowed") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > 0))"));
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.sub_queries.back());
+    // What the catalog stores for a table-level CHECK is the expression as written, taken out of
+    // the statement text — so each case has to transform its own statement, with that text.
+    auto stored_check = [&](const char* sql) -> core::result_wrapper_t<std::string> {
+        auto stmt = linitial(raw_parser(&arena_resource, sql));
+        transform::transformer local(&resource, sql);
+        auto transformed = local.transform(pg_cell_to_node_cast(stmt)).finalize();
+        if (transformed.has_error()) {
+            return transformed.error();
+        }
+        auto node = ddl_consumer(transformed.value().sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
-        REQUIRE(data->constraints().size() == 1);
-        REQUIRE(data->constraints()[0].check_expression == "x > 0");
+        if (data->constraints().size() != 1) {
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"expected exactly one constraint", &resource}};
+        }
+        return data->constraints()[0].check_expression;
+    };
+
+    auto stored = [&](const char* sql) {
+        auto result = stored_check(sql);
+        INFO(sql);
+        REQUIRE_FALSE(result.has_error());
+        return result.value();
+    };
+
+    // A CHECK admits what a row predicate admits, and the text kept is the text written.
+    SECTION("the expression is stored as written") {
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x > 0))") == "x > 0");
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x IS NOT NULL))") == "x IS NOT NULL");
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x > 0 AND x < 100))") == "x > 0 AND x < 100");
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(NOT (x > 0)))") == "NOT (x > 0)");
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(abs(x) > 0))") == "abs(x) > 0");
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x * -1 > 0))") == "x * -1 > 0");
     }
 
-    SECTION("IS NOT NULL is allowed") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x IS NOT NULL))"));
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
-        REQUIRE(data->constraints().size() == 1);
-        REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
-    }
-
-    SECTION("AND of comparisons is allowed") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > 0 AND x < 100))"));
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
-        REQUIRE(data->constraints().size() == 1);
-        REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
-    }
-
-    SECTION("NOT of a comparison is allowed") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(NOT (x > 0)))"));
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
-        REQUIRE(data->constraints().size() == 1);
-        REQUIRE(data->constraints()[0].check_expression == "NOT (x > 0)");
-    }
-
-    // Forbidden node kinds must throw parser_exception_t.
-    SECTION("function call in CHECK is rejected") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(abs(x) > 0))"));
-        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
-        REQUIRE(result.has_error());
-    }
-
-    SECTION("subquery in CHECK is rejected") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > (SELECT 1)))"));
-        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
-        REQUIRE(result.has_error());
+    // Without the statement text there is nothing to read the expression out of.
+    SECTION("a transformer with no statement text refuses") {
+        const char* sql = "CREATE TABLE t (x INTEGER, CHECK(x > 0))";
+        auto stmt = linitial(raw_parser(&arena_resource, sql));
+        transform::transformer local(&resource);
+        REQUIRE(local.transform(pg_cell_to_node_cast(stmt)).finalize().has_error());
     }
 }
 

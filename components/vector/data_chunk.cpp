@@ -143,6 +143,9 @@ namespace components::vector {
         }
         capacity_ = DEFAULT_VECTOR_CAPACITY;
         set_cardinality(0);
+        for (auto& column : data) {
+            column.reset_string_heap();
+        }
     }
 
     void data_chunk_t::drop_unprojected_placeholders() {

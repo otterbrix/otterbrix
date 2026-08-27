@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/types/types.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <memory_resource>
 #include <vector>
 
@@ -8,6 +9,9 @@ namespace components::compute {
     class compute_kernel;
     class function_registry_t;
     class function_options;
+
+    bool all_inputs_valid(const vector::data_chunk_t& inputs);
+    bool row_contains_null(const vector::data_chunk_t& inputs, uint64_t row);
 
     class exec_context_t {
     public:

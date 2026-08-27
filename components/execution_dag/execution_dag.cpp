@@ -500,34 +500,15 @@ namespace components::execution_dag {
         if (result.has_error()) {
             return result.error();
         }
-        auto& produced = result.value();
-        if (std::holds_alternative<vector::data_chunk_t>(produced)) {
-            auto& chunk = std::get<vector::data_chunk_t>(produced);
-            assert(chunk.size() == count);
-            if (chunk.column_count() != output_indices_.size()) {
-                return core::error_t(
-                    core::error_code_t::incorrect_function_return_type,
-                    std::pmr::string{"execution graph: function returned an unexpected column count", resource()});
-            }
-            for (size_t position = 0; position < output_indices_.size(); position++) {
-                output(position).reference(chunk.data[position]);
-            }
-            return core::error_t::no_error();
-        }
-
-        auto& values = std::get<std::pmr::vector<types::logical_value_t>>(produced);
-        assert(values.size() == count);
-        if (output_indices_.size() != 1) {
+        auto& chunk = result.value();
+        assert(chunk.size() == count);
+        if (chunk.column_count() != output_indices_.size()) {
             return core::error_t(
                 core::error_code_t::incorrect_function_return_type,
-                std::pmr::string{"execution graph: function returned one column but the node declares several",
-                                 resource()});
+                std::pmr::string{"execution graph: function returned an unexpected column count", resource()});
         }
-        for (uint64_t row = 0; row < values.size(); row++) {
-            output(0).set_null(row, values[row].is_null());
-            if (!values[row].is_null()) {
-                output(0).set_value(row, values[row]);
-            }
+        for (size_t position = 0; position < output_indices_.size(); position++) {
+            output(position).reference(chunk.data[position]);
         }
         return core::error_t::no_error();
     }
@@ -1062,6 +1043,11 @@ namespace components::execution_dag {
 
     core::error_t execution_dag_t::process_keys(const vector::data_chunk_t& input,
                                                 const graph_execution_context& context) {
+        // strings are allocated on extenal heaps (basically an arena)
+        // and that will allocate new memory for each batch if not reset
+        for (auto& slot : data_storage_) {
+            slot.reset_string_heap();
+        }
         if (auto error = bind_inputs(input); error.contains_error()) {
             return error;
         }

@@ -118,13 +118,6 @@ namespace components::compute {
             return executor_->execute(inputs);
         }
 
-        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
-            if (auto st = check_init(); st.contains_error()) {
-                return st;
-            }
-            return executor_->execute(inputs);
-        }
-
         aggregate_state_layout_t state_layout() const override { return executor_->state_layout(); }
 
         core::error_t
@@ -283,31 +276,6 @@ namespace components::compute {
         }
     }
 
-    core::result_wrapper_t<datum_t> function::execute(const std::pmr::vector<logical_value_t>& args,
-                                                      const function_options* options,
-                                                      exec_context_t& ctx) const {
-        std::pmr::vector<complex_logical_type> types(args.get_allocator().resource());
-        types.reserve(args.size());
-        for (const auto& arg : args) {
-            types.emplace_back(arg.type());
-        }
-
-        auto fn_exec = function_executor_impl_t::get_best_function_executor(ctx.resource(), types, *this);
-        if (fn_exec.has_error()) {
-            return fn_exec.convert_error<datum_t>();
-        }
-
-        if (auto st = fn_exec.value().check_args(ctx.resource(), types); st.contains_error()) {
-            return st;
-        }
-
-        if (auto st = fn_exec.value().init(options, ctx); st.contains_error()) {
-            return st;
-        } else {
-            return fn_exec.value().execute(args);
-        }
-    }
-
     const function_options* function::default_options() const { return default_options_; }
 
     vector_function::vector_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
@@ -335,19 +303,6 @@ namespace components::compute {
 
     std::unique_ptr<function> aggregate_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_, mergeable_);
-        for (const auto& kernel : kernels_) {
-            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
-        }
-        return result;
-    }
-
-    row_function::row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
-        : function_impl<row_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
-
-    void row_function::accept_visitor(function_visitor& visitor) const { visitor.visit(*this); }
-
-    std::unique_ptr<function> row_function::get_copy(std::pmr::memory_resource* resource) const {
-        auto result = std::make_unique<row_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
             [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
         }
@@ -481,8 +436,6 @@ namespace components::compute {
             result = &func.kernels()[nth_].get();
         }
 
-        void kernel_nth_visitor::visit(const row_function& func) { result = &func.kernels()[nth_].get(); }
-
         void kernel_nth_visitor::visit(const expand_function& func) { result = &func.kernels()[nth_].get(); }
 
         kernel_executor_visitor::kernel_executor_visitor()
@@ -495,8 +448,6 @@ namespace components::compute {
         void kernel_executor_visitor::visit(const compute::aggregate_function&) {
             result = detail::kernel_executor_t::make_aggregate();
         }
-
-        void kernel_executor_visitor::visit(const row_function&) { result = detail::kernel_executor_t::make_row(); }
 
         void kernel_executor_visitor::visit(const expand_function&) {}
 

@@ -146,6 +146,13 @@ namespace components::vector {
 
         void set_auxiliary(std::shared_ptr<vector_buffer_t> new_buffer) { auxiliary_ = std::move(new_buffer); }
 
+        // Release the strings this vector (and anything nested in it) has stored, so a vector
+        // that is refilled per chunk does not accumulate every string of the whole scan. Call it
+        // only when the previous contents are dead: any string_view still pointing into the
+        // arena dangles afterwards. A buffer shared with another vector — reference() hands out
+        // the same one — is left alone, because that vector's cells still read from it.
+        void reset_string_heap();
+
         void copy_buffer(vector_t& other) {
             buffer_ = other.buffer_;
             data_ = other.data_;

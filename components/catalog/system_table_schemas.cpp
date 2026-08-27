@@ -350,6 +350,10 @@ namespace components::catalog {
                 return "int8"; // pg: int8
             case LT::UBIGINT:
                 return "uint8";
+            case LT::HUGEINT:
+                return "int16"; // no PG equivalent
+            case LT::UHUGEINT:
+                return "uint16";
             case LT::FLOAT:
                 return "float4"; // pg: float4
             case LT::DOUBLE:
@@ -398,6 +402,10 @@ namespace components::catalog {
             return LT::BIGINT;
         if (n == "uint8")
             return LT::UBIGINT;
+        if (n == "int16")
+            return LT::HUGEINT;
+        if (n == "uint16")
+            return LT::UHUGEINT;
         if (n == "float4")
             return LT::FLOAT;
         if (n == "float8")
@@ -420,17 +428,7 @@ namespace components::catalog {
             return LT::BLOB;
         if (n == "uuid")
             return LT::UUID;
-        // Legacy aliases written by older builds (before PostgreSQL-style names)
-        if (n == "int16")
-            return LT::SMALLINT;
-        if (n == "int32")
-            return LT::INTEGER;
-        if (n == "int64")
-            return LT::BIGINT;
-        if (n == "float32")
-            return LT::FLOAT;
-        if (n == "float64")
-            return LT::DOUBLE;
+        // Canonical seed names and SQL aliases that are not PG spellings.
         if (n == "string")
             return LT::STRING_LITERAL;
         if (n == "blob")
@@ -643,9 +641,9 @@ namespace components::catalog {
 
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
-        // Only a type atttypid can carry on its own goes specless. Anything else — an
-        // unsigned integer, a BLOB, a UUID, a nested type — is written out below, or it
-        // would come back as neither an oid nor a spec.
+        // Only a type atttypid can carry on its own goes specless — every built-in scalar,
+        // signed and unsigned alike. Anything else — DECIMAL, ENUM, a nested type — is
+        // written out below, or it would come back as neither an oid nor a spec.
         if (builtin_type_to_oid(t.type()) != INVALID_OID) {
             return "";
         }
@@ -779,12 +777,24 @@ namespace components::catalog {
                 return LT::BOOLEAN;
             case ns::int8_type:
                 return LT::TINYINT;
+            case ns::uint8_type:
+                return LT::UTINYINT;
             case ns::int16_type:
                 return LT::SMALLINT;
+            case ns::uint16_type:
+                return LT::USMALLINT;
             case ns::int32_type:
                 return LT::INTEGER;
+            case ns::uint32_type:
+                return LT::UINTEGER;
             case ns::int64_type:
                 return LT::BIGINT;
+            case ns::uint64_type:
+                return LT::UBIGINT;
+            case ns::int128_type:
+                return LT::HUGEINT;
+            case ns::uint128_type:
+                return LT::UHUGEINT;
             case ns::float32_type:
                 return LT::FLOAT;
             case ns::float64_type:
@@ -820,12 +830,24 @@ namespace components::catalog {
                 return ns::boolean_type;
             case LT::TINYINT:
                 return ns::int8_type;
+            case LT::UTINYINT:
+                return ns::uint8_type;
             case LT::SMALLINT:
                 return ns::int16_type;
+            case LT::USMALLINT:
+                return ns::uint16_type;
             case LT::INTEGER:
                 return ns::int32_type;
+            case LT::UINTEGER:
+                return ns::uint32_type;
             case LT::BIGINT:
                 return ns::int64_type;
+            case LT::UBIGINT:
+                return ns::uint64_type;
+            case LT::HUGEINT:
+                return ns::int128_type;
+            case LT::UHUGEINT:
+                return ns::uint128_type;
             case LT::FLOAT:
                 return ns::float32_type;
             case LT::DOUBLE:

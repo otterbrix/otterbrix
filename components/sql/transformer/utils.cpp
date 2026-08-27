@@ -12,6 +12,8 @@
 #include <components/types/logical_value.hpp>
 #include <core/date/date_parse.hpp>
 
+#include <absl/strings/numbers.h>
+
 #include <atomic>
 #include <cstdlib>
 
@@ -118,6 +120,36 @@ namespace components::sql::transform {
                     break;
             }
             return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{message, resource}};
+        }
+
+        // float/double and int64/128 are stored as literals
+        core::result_wrapper_t<types::logical_value_t> numeric_token_value(std::pmr::memory_resource* resource,
+                                                                           const char* token) {
+            const std::string_view text{token};
+            if (text.find_first_of(".eE") == std::string_view::npos) {
+                int64_t as_bigint = 0;
+                if (absl::SimpleAtoi(text, &as_bigint)) {
+                    return types::logical_value_t(resource, as_bigint);
+                }
+                types::int128_t as_hugeint = 0;
+                if (absl::SimpleAtoi(text, &as_hugeint)) {
+                    return types::logical_value_t(resource, as_hugeint);
+                }
+                // Above the signed 128-bit range only an unsigned one is left; without it
+                // the top half of a uhugeint column could not be written at all.
+                types::uint128_t as_uhugeint = 0;
+                if (absl::SimpleAtoi(text, &as_uhugeint)) {
+                    return types::logical_value_t(resource, as_uhugeint);
+                }
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"integer literal out of range: " + std::string(text), resource});
+            }
+            double as_double = 0.0;
+            if (!string_to_double(token, text.size(), as_double)) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"invalid numeric literal: " + std::string(text), resource});
+            }
+            return types::logical_value_t(resource, as_double);
         }
     } // namespace
 
@@ -569,12 +601,9 @@ namespace components::sql::transform {
                     if (constant->val.type == T_Null) {
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
-                    // A numeric literal under a CAST: a T_Float keeps its payload in `str`
-                    // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long -> BIGINT).
-                    // Reading `ival` for a T_Float misreads it as a garbage BIGINT — e.g.
-                    // CAST(1000000.0 AS double) — failing every downstream type-matched comparison/join.
+                    // anything outside int32 range parses as T_Float and stored as lineral
                     if (constant->val.type == T_Float) {
-                        return types::logical_value_t(resource, floatVal(&constant->val));
+                        return numeric_token_value(resource, strVal(&constant->val));
                     }
                     return types::logical_value_t(resource, intVal(&constant->val));
                 }
@@ -642,8 +671,9 @@ namespace components::sql::transform {
                     }
                     case T_Integer:
                         return types::logical_value_t(resource, intVal(value));
+                    // anything outside int32 range parses as T_Float and stored as lineral
                     case T_Float:
-                        return types::logical_value_t(resource, floatVal(value));
+                        return numeric_token_value(resource, strVal(value));
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:

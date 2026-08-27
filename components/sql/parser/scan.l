@@ -1187,12 +1187,7 @@ process_integer_literal(std::pmr::memory_resource* resource, const char *token, 
 
 	errno = 0;
 	val = strtol(token, &endptr, 10);
-	if (*endptr != '\0' || errno == ERANGE
-#ifdef HAVE_LONG_INT_64
-		/* if long > 32 bits, check for overflow of int4 */
-		|| val != (long) ((int32_t) val)
-#endif
-		)
+	if (*endptr != '\0' || errno == ERANGE || val != (long) ((int32_t) val))
 	{
 		/* integer too large, treat it as a float */
 		lval->str = pstrdup(resource, token);

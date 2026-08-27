@@ -839,7 +839,11 @@ namespace services::dispatcher {
         if (!fanout_ok) {
             co_return false;
         }
-        cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
+        if (auto err = cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
+            err.contains_error()) {
+            error(log_, "register_cast: cast registry refused the entry: {}", err.what);
+            co_return false;
+        }
 
         // Step 3 — write the pg_cast row (catalog after registry).
         auto write_leaf = boost::intrusive_ptr(

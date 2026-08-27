@@ -210,7 +210,9 @@ namespace services::disk {
             }
             auto tz_name = read_setting_sync("TimeZone");
             if (!tz_name.empty()) {
-                stored_catalog_.set_timezone(resource(), tz_name);
+                if (auto err = stored_catalog_.set_timezone(resource(), tz_name); err.contains_error()) {
+                    warn(log_, "bootstrap: stored catalog refused timezone '{}': {}", tz_name, err.what);
+                }
             }
         }
 
@@ -705,11 +707,14 @@ namespace services::disk {
         // would seed the index with deleted rows whose column data is still present,
         // and index_scan + fetch + WHERE would then return them. scan_batched emits the
         // table as ≤DEFAULT_VECTOR_CAPACITY chunks, so no oversized chunk is built.
-        entry->storage->scan_batched(batches,
-                                     /*filter=*/nullptr,
-                                     /*limit=*/-1,
-                                     /*projected_cols=*/nullptr,
-                                     components::table::transaction_data{});
+        if (auto scanned = entry->storage->scan_batched(batches,
+                                                        /*filter=*/nullptr,
+                                                        /*limit=*/-1,
+                                                        /*projected_cols=*/nullptr,
+                                                        components::table::transaction_data{});
+            scanned.has_error()) {
+            batches.clear(); // empty index makes the planner fall back to a table scan to prevent row loss
+        }
         return batches;
     }
 

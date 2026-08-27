@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -882,7 +883,7 @@ TEST_CASE("name_resolution::validator::qualifier_inside_a_derived_join_still_sel
              "INSERT INTO vd.b (id, v) VALUES (1,100),(2,200);"});
 
     // `v` belongs to y, not x. Naming it through x has to be refused.
-    run_refused(db, "SELECT sub.v FROM (SELECT x.v FROM vd.a x JOIN vd.b y ON x.id = y.id) sub;");
+    std::ignore = run_refused(db, "SELECT sub.v FROM (SELECT x.v FROM vd.a x JOIN vd.b y ON x.id = y.id) sub;");
 }
 
 TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neighbour") {
@@ -894,7 +895,7 @@ TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neigh
              "INSERT INTO vd.b (id, bv) VALUES (1,100),(2,200);"});
 
     // `bv` belongs to b, not to the derived table s. Naming it through s must be refused.
-    run_refused(db, "SELECT s.bv FROM (SELECT x.id, x.av FROM vd.a x) s JOIN vd.b b ON s.id = b.id;");
+    std::ignore = run_refused(db, "SELECT s.bv FROM (SELECT x.id, x.av FROM vd.a x) s JOIN vd.b b ON s.id = b.id;");
 }
 
 TEST_CASE("name_resolution::validator::table_function_alias_names_the_relation") {
@@ -1001,7 +1002,7 @@ TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
     }
     {
         INFO("unquoted `Id` folds to `id`, which the table does not have");
-        run_refused(db, "SELECT Id FROM vd.q;");
+        std::ignore = run_refused(db, "SELECT Id FROM vd.q;");
     }
 }
 
@@ -1016,7 +1017,7 @@ TEST_CASE("name_resolution::quoted::unquoted_column_is_folded") {
     }
     {
         INFO("the quoted spelling is a different name, and the table has no such column");
-        run_refused(db, "SELECT \"Id\" FROM vd.u;");
+        std::ignore = run_refused(db, "SELECT \"Id\" FROM vd.u;");
     }
 }
 

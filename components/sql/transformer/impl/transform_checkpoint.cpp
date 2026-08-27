@@ -3,7 +3,7 @@
 
 namespace components::sql::transform {
 
-    logical_plan::node_ptr transformer::transform_checkpoint(CheckPointStmt& /*node*/) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_checkpoint(CheckPointStmt& /*node*/) {
         return logical_plan::make_node_checkpoint(resource_);
     }
 

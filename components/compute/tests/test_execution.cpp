@@ -175,6 +175,27 @@ TEST_CASE("components::compute::vector::batch") {
     REQUIRE(res.value().data[1].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
+TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_caller") {
+    core::pmr::otterbrix_resource resource;
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = std::make_unique<vector_function>("vec_bad_output", arity::unary(), function_doc_with_options(), 1);
+
+    kernel_signature_t sig(
+        function_type_t::vector,
+        {parameter_type::exact(logical_type::INTEGER)},
+        {output_type::computed(
+            [](std::pmr::memory_resource* r, const std::pmr::vector<fixed_t>&) -> core::result_wrapper_t<fixed_t> {
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"output type cannot be resolved", r});
+            })});
+    vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
+    REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
+
+    CHECK(fn->make_executor(&resource, {logical_type::INTEGER}, &opts).has_error());
+}
+
 static data_chunk_t two_ints(std::pmr::memory_resource* resource, int first, int second) {
     data_chunk_t chunk(resource, {logical_type::INTEGER}, 2);
     chunk.set_value(0, 0, first);

@@ -35,7 +35,7 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_view(ViewStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_view(ViewStmt& node) {
         auto qn = rangevar_to_qualified_name(node.view);
         const std::string db_for_resolve = qn.dbname;
 

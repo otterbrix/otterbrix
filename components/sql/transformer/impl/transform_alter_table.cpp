@@ -7,7 +7,7 @@
 
 namespace components::sql::transform {
 
-    logical_plan::node_ptr transformer::transform_rename(RenameStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node) {
         if (node.renameType != OBJECT_COLUMN) {
             return logical_plan::make_node_alter_table_drop_column(resource_, std::string{});
         }
@@ -25,7 +25,7 @@ namespace components::sql::transform {
         return n;
     }
 
-    logical_plan::node_ptr transformer::transform_alter_table(AlterTableStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_alter_table(AlterTableStmt& node) {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string& db = qn.dbname;
         const std::string& rel = qn.relname;
@@ -56,18 +56,15 @@ namespace components::sql::transform {
                     PGListCell cell;
                     cell.data = cmd->def;
                     tmp.lst.push_back(cell);
-                    if (auto cols_res = get_column_definitions(resource_, tmp); transform_failed(cols_res)) {
-                        return nullptr;
-                    } else {
-                        if (cols_res.value().empty()) {
-                            continue;
-                        }
-                        logical_plan::alter_table_subcommand_t sub;
-                        sub.kind = logical_plan::alter_table_kind::add_column;
-                        sub.column_name = cols_res.value().front().name();
-                        sub.column = std::move(cols_res.value().front());
-                        subs.push_back(std::move(sub));
+                    VALUE_OR_RETURN(auto cols, get_column_definitions(resource_, tmp));
+                    if (cols.empty()) {
+                        continue;
                     }
+                    logical_plan::alter_table_subcommand_t sub;
+                    sub.kind = logical_plan::alter_table_kind::add_column;
+                    sub.column_name = cols.front().name();
+                    sub.column = std::move(cols.front());
+                    subs.push_back(std::move(sub));
                     break;
                 }
                 case AT_DropColumn: {
@@ -140,10 +137,8 @@ namespace components::sql::transform {
                         return logical_plan::node_ptr{std::move(fk_node)};
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
-                        if (auto expr_text = deparse_check_expr(resource_, constr->raw_expr);
-                            transform_failed(expr_text)) {
-                            return nullptr;
-                        } else if (!expr_text.value().empty()) {
+                        VALUE_OR_RETURN(auto expr_text, deparse_check_expr(resource_, constr->raw_expr));
+                        if (!expr_text.empty()) {
                             std::string con_name = constr->conname ? constr->conname : "";
                             auto check_node =
                                 logical_plan::make_node_create_constraint(resource_,
@@ -151,16 +146,15 @@ namespace components::sql::transform {
                                                                           rel,
                                                                           core::constraint_name_t{std::move(con_name)},
                                                                           logical_plan::constraint_kind::check);
-                            check_node->set_check_expr(std::move(expr_text.value()));
+                            check_node->set_check_expr(std::move(expr_text));
                             return wrap_primary(logical_plan::node_ptr{std::move(check_node)});
                         }
-                        error_ = core::error_t(
+                        return core::error_t(
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"CHECK constraint expression contains unsupported constructs; "
                                              "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
                                              "column references, and constants",
                                              resource_});
-                        return nullptr;
                     }
                     if (constr->contype == CONSTR_UNIQUE || constr->contype == CONSTR_PRIMARY) {
                         // UNIQUE / PRIMARY KEY. The enforced columns live in constr->keys

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <tuple>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -620,7 +621,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
                                                    components::table::transaction_data{0, 0},
                                                    {},
                                                    table_oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        std::ignore =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
     }
 
     // Verify storage now has 3 columns (post-#96).
@@ -795,10 +797,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(1, 0, std::string_view("x"));
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append,
-                  append_ctx(table_oid),
-                  table_oid,
-                  to_batch(&fx.resource, std::move(chunk)));
+        std::ignore = fx.invoke(&manager_disk_t::storage_append,
+                                append_ctx(table_oid),
+                                table_oid,
+                                to_batch(&fx.resource, std::move(chunk)));
     }
 
     {
@@ -837,10 +839,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(2, 0, double{3.14});
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append,
-                  append_ctx(table_oid),
-                  table_oid,
-                  to_batch(&fx.resource, std::move(chunk)));
+        std::ignore = fx.invoke(&manager_disk_t::storage_append,
+                                append_ctx(table_oid),
+                                table_oid,
+                                to_batch(&fx.resource, std::move(chunk)));
     }
 
     {
@@ -905,7 +907,8 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_value(0, 0, kval);
         chunk->set_value(1, 0, std::int64_t{kval * 10});
         components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
+        std::ignore =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
     };
 
     // Create + populate the N targets and the survivor.

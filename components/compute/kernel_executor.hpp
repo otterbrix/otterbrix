@@ -11,7 +11,7 @@ namespace components::compute::detail {
     public:
         virtual ~kernel_executor_t() = default;
 
-        virtual core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) = 0;
+        [[nodiscard]] virtual core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) = 0;
 
         [[nodiscard]] virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& inputs) = 0;
         [[nodiscard]] virtual core::result_wrapper_t<datum_t>

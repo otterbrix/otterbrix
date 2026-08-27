@@ -17,13 +17,10 @@ namespace components::compute::detail {
             kernel_ = static_cast<const KernelType*>(&args.kernel);
 
             // TODO: support multiple output types
-            auto out =
-                kernel_->signature().output_types.front().resolve(kernel_ctx_->exec_context().resource(), args.inputs);
-            if (out.has_error()) {
-                return out.error();
-            }
-
-            output_type_ = out.value();
+            VALUE_OR_RETURN(
+                auto out,
+                kernel_->signature().output_types.front().resolve(kernel_ctx_->exec_context().resource(), args.inputs));
+            output_type_ = std::move(out);
             return core::error_t::no_error();
         }
 
@@ -96,13 +93,9 @@ namespace components::compute::detail {
                 return st;
             }
 
-            auto produced = execute_batch(inputs);
-            if (produced.has_error()) {
-                return produced.error();
-            }
-
+            VALUE_OR_RETURN(auto produced, execute_batch(inputs));
             data_chunk_t out(kernel_ctx().exec_context().resource(), {});
-            out.data.emplace_back(std::move(produced.value()));
+            out.data.emplace_back(std::move(produced));
             out.set_cardinality(inputs.size());
             if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
                 return st;
@@ -121,11 +114,8 @@ namespace components::compute::detail {
             }
 
             for (const auto& in : inputs) {
-                auto produced = execute_batch(in);
-                if (produced.has_error()) {
-                    return produced.error();
-                }
-                merged.data.emplace_back(std::move(produced.value()));
+                VALUE_OR_RETURN(auto produced, execute_batch(in));
+                merged.data.emplace_back(std::move(produced));
             }
 
             if (auto st = kernel().finalize(kernel_ctx(), merged); st.contains_error()) {

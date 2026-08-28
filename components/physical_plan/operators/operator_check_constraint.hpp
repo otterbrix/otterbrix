@@ -12,10 +12,13 @@
 
 namespace components::operators {
 
-    // Checks NOT NULL constraints and CHECK expressions over the incoming chunk.
-    // A CHECK is stored as SQL TEXT, so it is compiled once per execution — against the
-    // write-set's actual column layout, since that is what its column references resolve
-    // against — into an expression tree and then an execution graph.
+    // Checks NOT NULL constraints and CHECK predicates over the incoming chunk.
+    //
+    // A predicate arrives already resolved against the TABLE's columns, while the chunk it judges
+    // is the write-set, whose column order is the statement's. So each predicate is rebound to the
+    // chunk before its graph is built: a column the write-set carries becomes that chunk position,
+    // and a column it omits becomes the value the stored row will hold — the column's DEFAULT, or
+    // NULL when it has none, which leaves the comparison UNKNOWN and so permits the row.
     class operator_check_constraint_t final : public read_write_operator_t {
     public:
         // column_defaults: decoded DEFAULT values (name -> value) of the target
@@ -26,13 +29,15 @@ namespace components::operators {
         // aliases are the statement's column names (SQL INSERT with a column list;
         // every UPDATE). Positional / hand-built inserts alias arbitrarily, so
         // absent columns keep the legacy pass-through there.
-        operator_check_constraint_t(std::pmr::memory_resource* resource,
-                                    log_t log,
-                                    std::vector<std::string> not_null_columns,
-                                    std::vector<std::pair<std::string, std::string>> check_exprs = {},
-                                    std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {},
-                                    std::vector<std::pair<std::string, types::logical_value_t>> column_defaults = {},
-                                    bool write_set_named = false);
+        operator_check_constraint_t(
+            std::pmr::memory_resource* resource,
+            log_t log,
+            std::vector<std::string> not_null_columns,
+            std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates = {},
+            std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {},
+            std::vector<std::pair<std::string, types::logical_value_t>> column_defaults = {},
+            bool write_set_named = false,
+            types::parameter_map_t check_params = types::parameter_map_t{std::pmr::get_default_resource()});
 
         // STREAMING CONSTRAINT SINK. check_constraint is the PARENT of a DML sink in
         // the plan chain (check_constraint -> insert/update -> scan). Its validation
@@ -68,6 +73,13 @@ namespace components::operators {
             std::unique_ptr<execution_dag::execution_dag_t> graph;
         };
 
+        // Rebind `predicate` from table ordinals to the positions of `chunk`, substituting a
+        // constant for every column the write-set does not carry. Returns the rebound copy; the
+        // original is left alone, since it belongs to the plan and outlives this execution.
+        // TODO: constraint should recive already remapped expressions or properrly filled data_chunk_t
+        [[nodiscard]] expressions::expression_ptr bind_to_write_set_(const expressions::expression_ptr& predicate,
+                                                                     const vector::data_chunk_t& chunk);
+
         std::vector<std::string> not_null_columns_;
         // Decoded DEFAULTs (name -> value); consulted for columns absent from the
         // write-set by the NOT NULL loop and the compiled CHECK predicates.
@@ -76,9 +88,10 @@ namespace components::operators {
         // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
         // shorter than the size cannot be padded and is rejected with an error.
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
-        // (name, SQL text) as stored in pg_constraint.conexpr — compiled in validate_().
-        std::vector<std::pair<std::string, std::string>> check_exprs_;
-        // Literals the compiled CHECKs reference, bound as the parameters their graphs read.
+        // (name, predicate) — resolved by validation, so column references carry the table's
+        // ordinals and every cast and call is bound.
+        std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
+        // Constants the predicates reference, read by their graphs.
         types::parameter_map_t check_params_{resource_};
     };
 

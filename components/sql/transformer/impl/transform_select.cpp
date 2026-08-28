@@ -378,8 +378,7 @@ namespace components::sql::transform {
                                      std::pmr::string{"FROM element lowered to an empty plan", resource_});
             }
             if (element->type() == logical_plan::node_type::aggregate_t) {
-                agg = logical_plan::node_aggregate_ptr(
-                    static_cast<logical_plan::node_aggregate_t*>(element.get()));
+                agg = logical_plan::node_aggregate_ptr(static_cast<logical_plan::node_aggregate_t*>(element.get()));
             } else {
                 agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 agg->append_child(element);
@@ -1017,17 +1016,15 @@ namespace components::sql::transform {
                                                                    expressions::key_t{resource_, res->name},
                                                                    field_key));
                                     } else {
-                                        select_node->append_expression(make_scalar_expression(resource_,
-                                                                                              scalar_type::get_field,
-                                                                                              field_key));
+                                        select_node->append_expression(
+                                            make_scalar_expression(resource_, scalar_type::get_field, field_key));
                                     }
                                 } else {
                                     // Table-valued navigation (-> / #>): expand the subtree
                                     // under the prefix into its (rerooted) columns.
                                     VALUE_OR_RETURN(auto prefix_key, resolve_jsonb_prefix_key(a_expr, names));
-                                    select_node->append_expression(make_scalar_expression(resource_,
-                                                                                          scalar_type::jsonb_expand,
-                                                                                          prefix_key));
+                                    select_node->append_expression(
+                                        make_scalar_expression(resource_, scalar_type::jsonb_expand, prefix_key));
                                 }
                                 break;
                             }

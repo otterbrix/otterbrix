@@ -12,6 +12,8 @@
 #include <components/types/logical_value.hpp>
 #include <core/date/date_parse.hpp>
 
+#include <absl/strings/numbers.h>
+
 #include <atomic>
 #include <cstdlib>
 
@@ -118,6 +120,36 @@ namespace components::sql::transform {
                     break;
             }
             return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{message, resource}};
+        }
+
+        // float/double and int64/128 are stored as literals
+        core::result_wrapper_t<types::logical_value_t> numeric_token_value(std::pmr::memory_resource* resource,
+                                                                           const char* token) {
+            const std::string_view text{token};
+            if (text.find_first_of(".eE") == std::string_view::npos) {
+                int64_t as_bigint = 0;
+                if (absl::SimpleAtoi(text, &as_bigint)) {
+                    return types::logical_value_t(resource, as_bigint);
+                }
+                types::int128_t as_hugeint = 0;
+                if (absl::SimpleAtoi(text, &as_hugeint)) {
+                    return types::logical_value_t(resource, as_hugeint);
+                }
+                // Above the signed 128-bit range only an unsigned one is left; without it
+                // the top half of a uhugeint column could not be written at all.
+                types::uint128_t as_uhugeint = 0;
+                if (absl::SimpleAtoi(text, &as_uhugeint)) {
+                    return types::logical_value_t(resource, as_uhugeint);
+                }
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"integer literal out of range: " + std::string(text), resource});
+            }
+            double as_double = 0.0;
+            if (!string_to_double(token, text.size(), as_double)) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"invalid numeric literal: " + std::string(text), resource});
+            }
+            return types::logical_value_t(resource, as_double);
         }
     } // namespace
 
@@ -569,12 +601,9 @@ namespace components::sql::transform {
                     if (constant->val.type == T_Null) {
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
-                    // A numeric literal under a CAST: a T_Float keeps its payload in `str`
-                    // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long -> BIGINT).
-                    // Reading `ival` for a T_Float misreads it as a garbage BIGINT — e.g.
-                    // CAST(1000000.0 AS double) — failing every downstream type-matched comparison/join.
+                    // anything outside int32 range parses as T_Float and stored as lineral
                     if (constant->val.type == T_Float) {
-                        return types::logical_value_t(resource, floatVal(&constant->val));
+                        return numeric_token_value(resource, strVal(&constant->val));
                     }
                     return types::logical_value_t(resource, intVal(&constant->val));
                 }
@@ -642,8 +671,9 @@ namespace components::sql::transform {
                     }
                     case T_Integer:
                         return types::logical_value_t(resource, intVal(value));
+                    // anything outside int32 range parses as T_Float and stored as lineral
                     case T_Float:
-                        return types::logical_value_t(resource, floatVal(value));
+                        return numeric_token_value(resource, strVal(value));
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:
@@ -811,7 +841,7 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
-    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql) {
         std::vector<table::table_constraint_t> result;
         for (auto data : table_elts.lst) {
             if (nodeTag(data.data) != T_Constraint) {
@@ -876,7 +906,8 @@ namespace components::sql::transform {
                         tc.name = constraint->conname;
                     }
                     if (constraint->raw_expr) {
-                        if (auto expr_res = deparse_check_expr(resource, constraint->raw_expr); expr_res.has_error()) {
+                        if (auto expr_res = slice_check_expression(resource, raw_sql, constraint->location);
+                            expr_res.has_error()) {
                             return expr_res.convert_error<std::vector<table::table_constraint_t>>();
                         } else {
                             tc.check_expression = std::move(expr_res.value());
@@ -897,116 +928,145 @@ namespace components::sql::transform {
         return result;
     }
 
-    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node) {
-        if (!node) {
-            return "";
+    namespace {
+        // How far a lexical region starting at `text[at]` runs, or 0 when none starts there. A
+        // paren inside a string or a comment is not punctuation, so the scan below has to step
+        // over these whole rather than read them character by character.
+        std::size_t skip_region(std::string_view text, std::size_t at) {
+            const auto rest = text.size() - at;
+            // -- to end of line
+            if (rest >= 2 && text[at] == '-' && text[at + 1] == '-') {
+                const auto line_end = text.find('\n', at);
+                return (line_end == std::string_view::npos ? text.size() : line_end) - at;
+            }
+            // /* ... */, which nests
+            if (rest >= 2 && text[at] == '/' && text[at + 1] == '*') {
+                std::size_t cursor = at + 2;
+                int depth = 1;
+                while (cursor + 1 < text.size() && depth > 0) {
+                    if (text[cursor] == '/' && text[cursor + 1] == '*') {
+                        ++depth;
+                        cursor += 2;
+                    } else if (text[cursor] == '*' && text[cursor + 1] == '/') {
+                        --depth;
+                        cursor += 2;
+                    } else {
+                        ++cursor;
+                    }
+                }
+                return (depth == 0 ? cursor : text.size()) - at;
+            }
+            // $tag$ ... $tag$
+            if (text[at] == '$') {
+                const auto tag_end = text.find('$', at + 1);
+                if (tag_end != std::string_view::npos) {
+                    const auto tag = text.substr(at, tag_end - at + 1);
+                    const auto closing = text.find(tag, tag_end + 1);
+                    if (closing != std::string_view::npos) {
+                        return closing + tag.size() - at;
+                    }
+                }
+                return 0;
+            }
+            // '...' and "...", where the quote is doubled to escape itself, and E'...' where a
+            // backslash escapes the next character.
+            std::size_t start = at;
+            bool backslash_escapes = false;
+            if ((text[at] == 'E' || text[at] == 'e') && at + 1 < text.size() && text[at + 1] == '\'') {
+                backslash_escapes = true;
+                start = at + 1;
+            } else if (text[at] != '\'' && text[at] != '"') {
+                return 0;
+            }
+            const char quote = text[start];
+            std::size_t cursor = start + 1;
+            while (cursor < text.size()) {
+                if (backslash_escapes && text[cursor] == '\\' && cursor + 1 < text.size()) {
+                    cursor += 2;
+                    continue;
+                }
+                if (text[cursor] == quote) {
+                    if (cursor + 1 < text.size() && text[cursor + 1] == quote) {
+                        cursor += 2;
+                        continue;
+                    }
+                    return cursor + 1 - at;
+                }
+                ++cursor;
+            }
+            return text.size() - at;
         }
-        switch (nodeTag(node)) {
-            case T_ColumnRef: {
-                auto* cr = pg_ptr_cast<ColumnRef>(node);
-                if (!cr->fields || cr->fields->lst.empty()) {
-                    return "";
-                }
-                // Use only the last field (unqualified column name)
-                return std::string(strVal(cr->fields->lst.back().data));
+
+        std::string_view trim_view(std::string_view text) {
+            const auto first = text.find_first_not_of(" \t\r\n");
+            if (first == std::string_view::npos) {
+                return {};
             }
-            case T_A_Const: {
-                auto* ac = pg_ptr_cast<A_Const>(node);
-                switch (nodeTag(&ac->val)) {
-                    case T_Integer:
-                        return std::to_string(intVal(&ac->val));
-                    case T_Float:
-                        return std::string(strVal(&ac->val));
-                    case T_String:
-                        return "'" + std::string(strVal(&ac->val)) + "'";
-                    default:
-                        return "";
-                }
-            }
-            case T_A_Expr: {
-                auto* e = pg_ptr_cast<A_Expr>(node);
-                if (e->kind == AEXPR_OP && e->name && !e->name->lst.empty()) {
-                    std::string op = std::string(strVal(e->name->lst.front().data));
-                    auto left = deparse_check_expr(resource, e->lexpr);
-                    if (left.has_error() || left.value().empty()) {
-                        return left;
-                    }
-                    auto right = deparse_check_expr(resource, e->rexpr);
-                    if (right.has_error() || right.value().empty()) {
-                        return right;
-                    }
-                    return std::move(left.value()) + " " + op + " " + std::move(right.value());
-                }
-                if (e->kind == AEXPR_AND || e->kind == AEXPR_OR) {
-                    std::string sep = (e->kind == AEXPR_AND) ? " AND " : " OR ";
-                    auto left = deparse_check_expr(resource, e->lexpr);
-                    if (left.has_error() || left.value().empty()) {
-                        return left;
-                    }
-                    auto right = deparse_check_expr(resource, e->rexpr);
-                    if (right.has_error() || right.value().empty()) {
-                        return right;
-                    }
-                    return "(" + std::move(left.value()) + ")" + sep + "(" + std::move(right.value()) + ")";
-                }
-                if (e->kind == AEXPR_NOT) {
-                    // Unary NOT in A_Expr form: the operand is rexpr (lexpr is null). Emit the same
-                    // "NOT (...)" shape that the BoolExpr NOT branch produces so build_check_predicate
-                    // recognises it.
-                    auto inner = deparse_check_expr(resource, e->rexpr);
-                    if (inner.has_error() || inner.value().empty()) {
-                        return inner;
-                    }
-                    return "NOT (" + std::move(inner.value()) + ")";
-                }
-                return "";
-            }
-            case T_BoolExpr: {
-                auto* b = pg_ptr_cast<BoolExpr>(node);
-                if (!b->args || b->args->lst.empty()) {
-                    return "";
-                }
-                if (b->boolop == NOT_EXPR) {
-                    auto inner = deparse_check_expr(resource, pg_ptr_cast<Node>(b->args->lst.front().data));
-                    if (inner.has_error()) {
-                        return inner;
-                    }
-                    return inner.value().empty() ? "" : "NOT (" + std::move(inner.value()) + ")";
-                }
-                std::string sep = (b->boolop == AND_EXPR) ? " AND " : " OR ";
-                std::string result;
-                for (auto& cell : b->args->lst) {
-                    auto part = deparse_check_expr(resource, pg_ptr_cast<Node>(cell.data));
-                    if (part.has_error() || part.value().empty()) {
-                        return part;
-                    }
-                    // TODO?
-                    // result here is always empty?
-                    // and separator is not required?
-                    if (!result.empty()) {
-                        result += sep;
-                    }
-                    result += "(" + std::move(part.value()) + ")";
-                }
-                return result;
-            }
-            case T_NullTest: {
-                auto* nt = pg_ptr_cast<NullTest>(node);
-                auto arg = deparse_check_expr(resource, pg_ptr_cast<Node>(nt->arg));
-                if (arg.has_error() || arg.value().empty()) {
-                    return arg;
-                }
-                return std::move(arg.value()) + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
-            }
-            default:
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint contains unsupported expression type " +
-                                         node_tag_to_string(nodeTag(node)) +
-                                         "; allowed: column references, constants, comparison/arithmetic operators, "
-                                         "AND/OR/NOT, IS NULL/IS NOT NULL",
-                                     resource});
+            return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
         }
+    } // namespace
+
+    core::result_wrapper_t<std::string>
+    slice_check_expression(std::pmr::memory_resource* resource, const char* raw_sql, int check_location) {
+        if (!raw_sql) {
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"CHECK constraint cannot be stored: the statement text is not "
+                                                  "available to read the expression from",
+                                                  resource}};
+        }
+        const std::string_view sql{raw_sql};
+        if (check_location < 0 || static_cast<std::size_t>(check_location) >= sql.size()) {
+            return core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"CHECK constraint cannot be stored: its position in the statement is unknown",
+                                 resource}};
+        }
+
+        // From the CHECK keyword to the '(' that opens it; only whitespace or a comment may sit
+        // between the two.
+        std::size_t cursor = static_cast<std::size_t>(check_location);
+        while (cursor < sql.size() && sql[cursor] != '(') {
+            const auto region = skip_region(sql, cursor);
+            cursor += region > 0 ? region : 1;
+        }
+        if (cursor >= sql.size()) {
+            return core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"CHECK constraint cannot be stored: no '(' follows the CHECK keyword", resource}};
+        }
+
+        // The expression is everything up to the ')' that closes that '('.
+        const std::size_t begin = cursor + 1;
+        int depth = 1;
+        cursor = begin;
+        while (cursor < sql.size() && depth > 0) {
+            const auto region = skip_region(sql, cursor);
+            if (region > 0) {
+                cursor += region;
+                continue;
+            }
+            if (sql[cursor] == '(') {
+                ++depth;
+            } else if (sql[cursor] == ')') {
+                --depth;
+                if (depth == 0) {
+                    break;
+                }
+            }
+            ++cursor;
+        }
+        if (depth != 0) {
+            return core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"CHECK constraint cannot be stored: its parentheses are unbalanced", resource}};
+        }
+
+        const auto expression = trim_view(sql.substr(begin, cursor - begin));
+        if (expression.empty()) {
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"CHECK constraint carries no expression", resource}};
+        }
+        return std::string{expression};
     }
 
     logical_plan::node_ptr

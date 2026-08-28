@@ -23,12 +23,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_ssb_load_scaling.cpp
         test_scan_pin_scope.cpp
         test_string_projection.cpp
-        test_check_on_update.cpp
+        test_constraint_write_paths.cpp
+        test_check_constraint_ddl.cpp
         test_index_bootstrap_failure.cpp
         test_pump_hops.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
-        test_fk_check_on_update.cpp
         test_inline_constraints.cpp
         test_text_column_storage.cpp
         test_update.cpp

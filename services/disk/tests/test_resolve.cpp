@@ -151,10 +151,11 @@ TEST_CASE("services::disk::resolve::table_misses_in_wrong_namespace") {
     REQUIRE_FALSE(r.found);
 }
 
-// 5. resolve_type finds the bootstrap "int64" type in pg_catalog.
+// 5. resolve_type finds the bootstrap "int8" type in pg_catalog. Type names count bytes,
+// so the 8-byte integer is "int8" — int64_type is its OID constant, which counts bits.
 TEST_CASE("services::disk::resolve::type_finds_bootstrap") {
     fixture fx;
-    auto r = test_probe::probe_type(fx, fx.ctx(), well_known_oid::pg_catalog_namespace, std::string("int64"));
+    auto r = test_probe::probe_type(fx, fx.ctx(), well_known_oid::pg_catalog_namespace, std::string("int8"));
     REQUIRE(r.found);
     REQUIRE(r.oid == well_known_oid::int64_type);
 }

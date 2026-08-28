@@ -307,7 +307,15 @@ namespace components::sql::transform {
     // Deparse a CHECK constraint raw expression node back to SQL text.
     // Handles: column refs, integer/float/string constants, comparison operators,
     // AND/OR/NOT, IS NULL / IS NOT NULL. Returns "" for unsupported node types.
-    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
+    // The source text of a CHECK constraint's expression, sliced out of the statement it was
+    // written in. `check_location` is the Constraint node's own location — the CHECK keyword — and
+    // the expression is what sits between the '(' that follows it and the matching ')'.
+    //
+    // Taking the text the user wrote, rather than rebuilding it from the parse tree, is what makes
+    // the round trip exact: the stored bytes parse back to the same expression because they are the
+    // same bytes, and a construct the grammar learns later needs no work here.
+    core::result_wrapper_t<std::string>
+    slice_check_expression(std::pmr::memory_resource* resource, const char* raw_sql, int check_location);
 
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
@@ -323,7 +331,7 @@ namespace components::sql::transform {
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
-    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
 
     // Transformer catalog-resolve emission.
     //

@@ -70,6 +70,7 @@ target_link_libraries(
     otterbrix::logical_plan
 
     absl::int128
+    absl::strings
 )
 
 target_include_directories(

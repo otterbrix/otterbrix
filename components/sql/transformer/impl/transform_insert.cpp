@@ -437,9 +437,7 @@ namespace components::sql::transform {
                                     chunk.data[column_index] =
                                         promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
                                 }
-                                chunk.set_value(column_index,
-                                                chunk_row,
-                                                numeric_widen(resource_, value, promoted));
+                                chunk.set_value(column_index, chunk_row, numeric_widen(resource_, value, promoted));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             }
@@ -468,9 +466,7 @@ namespace components::sql::transform {
                                     chunk.data[column_index] =
                                         promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
                                 }
-                                chunk.set_value(column_index,
-                                                chunk_row,
-                                                numeric_widen(resource_, value, promoted));
+                                chunk.set_value(column_index, chunk_row, numeric_widen(resource_, value, promoted));
                             } else if (array_shapes_differ(it->type(), value.type())) {
                                 // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
                                 // then ARRAY[2,3]): a single fixed-ARRAY vector can't hold both, so
@@ -482,9 +478,7 @@ namespace components::sql::transform {
                                     chunk.data[column_index] =
                                         promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
                                 }
-                                chunk.set_value(column_index,
-                                                chunk_row,
-                                                to_list_value(resource_, value, elem_type));
+                                chunk.set_value(column_index, chunk_row, to_list_value(resource_, value, elem_type));
                             } else if (col_type == types::logical_type::NA && !value.is_null()) {
                                 // The column was created from a LEADING NULL literal (typed NA);
                                 // a later row now carries a concrete type. Every prior row is NULL,

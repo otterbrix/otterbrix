@@ -2,6 +2,8 @@
 
 #include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/expressions/expression.hpp>
+#include <components/logical_plan/param_storage.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/types/logical_value.hpp>
@@ -18,12 +20,19 @@ namespace components::logical_plan {
                                          core::dbname_t dbname,
                                          core::relname_t relname,
                                          std::vector<std::string> not_null_columns,
-                                         std::vector<std::pair<std::string, std::string>> check_exprs = {},
                                          std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});
 
         const std::vector<std::string>& not_null_columns() const { return not_null_columns_; }
-        const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
         const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
+
+        void set_check_predicates(std::vector<std::pair<std::string, expressions::expression_ptr>> v) {
+            check_predicates_ = std::move(v);
+        }
+        const std::vector<std::pair<std::string, expressions::expression_ptr>>& check_predicates() const {
+            return check_predicates_;
+        }
+        void set_check_params(parameter_node_ptr v) { check_params_ = std::move(v); }
+        const parameter_node_ptr& check_params() const { return check_params_; }
 
         // UNIQUE / PRIMARY KEY column groups on the same table (one ordered column
         // list per constraint), stamped by the enrich pass from the resolved
@@ -66,8 +75,9 @@ namespace components::logical_plan {
         std::string dbname_;
         std::string relname_;
         std::vector<std::string> not_null_columns_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
-        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
+        std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
+        parameter_node_ptr check_params_;
         std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
         bool write_set_named_{false}; // write-set aliases are statement column names

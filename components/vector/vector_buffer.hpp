@@ -115,6 +115,7 @@ namespace components::vector {
         void* insert(T&& str_like);
         void* empty_string(size_t size);
         void add_heap_reference(std::unique_ptr<vector_buffer_t> heap);
+        void reset();
 
     private:
         core::string_buffer_t string_buffer_;

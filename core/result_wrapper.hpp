@@ -246,8 +246,10 @@ namespace core {
         // Must sit after error_t: the global scope has a glibc `typedef int error_t`
         template<typename T>
         concept result_like = requires(T& t) {
-            { t.has_error() } -> std::same_as<bool>;
-            { t.error() } -> std::convertible_to<const core::error_t&>;
+            { t.has_error() }
+            ->std::same_as<bool>;
+            { t.error() }
+            ->std::convertible_to<const core::error_t&>;
             t.value();
         };
     } // namespace detail
@@ -269,8 +271,7 @@ namespace core {
     decl = std::move(tmp.value())
 
 #define CORE_DETAIL_RETURN_IF_ERROR(tmp, ...)                                                                          \
-    static_assert(decltype(core::detail::arity(__VA_ARGS__))::value == 1,                                              \
-                  "RETURN_IF_ERROR takes ONE expression");                                                             \
+    static_assert(decltype(core::detail::arity(__VA_ARGS__))::value == 1, "RETURN_IF_ERROR takes ONE expression");     \
     if (auto tmp = (__VA_ARGS__); tmp.contains_error()) {                                                              \
         return tmp;                                                                                                    \
     }

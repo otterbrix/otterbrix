@@ -58,14 +58,13 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty() || !ins->array_size_reqs().empty() ||
+            if (!ins->not_null_cols().empty() || !ins->check_predicates().empty() || !ins->array_size_reqs().empty() ||
                 !ins->unique_groups().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
                     core::relname_t{},
                     std::vector<std::string>(ins->not_null_cols()),
-                    std::vector<std::pair<std::string, std::string>>(ins->check_exprs()),
                     std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
                 // UNIQUE / PK groups: create_plan_check_constraint splices an
                 // operator_unique_constraint_t below the check sink. table_oid feeds
@@ -78,6 +77,8 @@ namespace components::planner {
                 // name is only meaningful when the INSERT carried an explicit column
                 // list (key_translation) — positional inserts may alias arbitrarily.
                 cc->set_column_defaults(ins->column_defaults());
+                cc->set_check_predicates(ins->check_predicates());
+                cc->set_check_params(ins->check_params());
                 cc->set_write_set_named(!ins->key_translation().empty());
                 cc->append_child(cur);
                 cur = cc;
@@ -119,17 +120,20 @@ namespace components::planner {
                 }
             }
 
-            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_exprs().empty()) {
+            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_predicates().empty() ||
+                !upd->array_size_reqs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
                     core::relname_t{},
                     std::vector<std::string>(upd->not_null_cols()),
-                    std::vector<std::pair<std::string, std::string>>(upd->check_exprs())));
+                    std::vector<std::pair<std::string, uint64_t>>(upd->array_size_reqs())));
                 // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
                 cc->set_unique_groups(std::move(live_unique_groups));
                 cc->set_table_oid(upd->table_oid());
                 cc->set_column_defaults(upd->column_defaults());
+                cc->set_check_predicates(upd->check_predicates());
+                cc->set_check_params(upd->check_params());
                 // An UPDATE write-set is the gathered storage row — always named.
                 cc->set_write_set_named(true);
                 cc->append_child(cur);
@@ -249,7 +253,7 @@ namespace components::planner {
                                                                   cstr->match_type(),
                                                                   cstr->del_action(),
                                                                   cstr->upd_action(),
-                                                                  std::string(cstr->check_expr()));
+                                                                  std::string(cstr->check_expression_sql()));
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {

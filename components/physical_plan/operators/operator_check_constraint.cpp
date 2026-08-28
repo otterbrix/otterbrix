@@ -2,6 +2,10 @@
 
 #include "constraint_util.hpp"
 #include <components/cursor/cursor.hpp>
+#include <components/expressions/cast_expression.hpp>
+#include <components/expressions/clone_expression.hpp>
+#include <components/expressions/function_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <array>
@@ -24,37 +28,6 @@ namespace components::operators {
             return std::nullopt;
         }
 
-        expressions::compare_expression_ptr constant_leaf(std::pmr::memory_resource* r, bool value) {
-            using CT = expressions::compare_type;
-            return expressions::make_compare_expression(r, value ? CT::all_true : CT::all_false);
-        }
-
-        expressions::param_storage column_operand(std::pmr::memory_resource* r, size_t ordinal) {
-            expressions::key_t key(r);
-            key.set_path(std::pmr::vector<size_t>{{ordinal}, r});
-            return expressions::param_storage{key};
-        }
-
-        expressions::param_storage constant_operand(const types::logical_value_t& value,
-                                                    const types::complex_logical_type& target,
-                                                    core::date::timezone_offset_t session_tz,
-                                                    types::parameter_map_t* params,
-                                                    uint64_t* next_id,
-                                                    bool* convertible) {
-            types::logical_value_t bound = value;
-            if (value.type() != target) {
-                auto converted = value.cast_as(target, session_tz);
-                if (converted.has_error()) {
-                    *convertible = false;
-                    return expressions::param_storage{core::parameter_id_t{0}};
-                }
-                bound = std::move(converted.value());
-            }
-            const core::parameter_id_t id{static_cast<uint16_t>((*next_id)++)};
-            params->insert_or_assign(id, bound);
-            return expressions::param_storage{id};
-        }
-
         // The decoded DEFAULT value for `col`, or nullptr when the column has none.
         const types::logical_value_t*
         find_default(const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
@@ -70,259 +43,25 @@ namespace components::operators {
             return nullptr;
         }
 
-        // Parse a literal constant string into a logical_value_t without a type hint.
-        types::logical_value_t parse_const(std::pmr::memory_resource* r, std::string_view s) {
-            if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'')
-                return types::logical_value_t(r, std::string(s.substr(1, s.size() - 2)));
-            if (s.find('.') != std::string_view::npos) {
-                double v{};
-                auto [ptr, ec] = fast_float::from_chars(s.data(), s.data() + s.size(), v);
-                if (ec == std::errc{})
-                    return types::logical_value_t(r, v);
-            }
-            bool neg = !s.empty() && s[0] == '-';
-            auto str = neg ? s.substr(1) : s;
-            uint64_t u{};
-            auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), u);
-            int64_t v{};
-            if (ec == std::errc{})
-                v = neg ? -static_cast<int64_t>(u) : static_cast<int64_t>(u);
-            return types::logical_value_t(r, v);
-        }
-
-        std::string_view trim(std::string_view s) {
-            while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
-            while (!s.empty() && s.back() == ' ') s.remove_suffix(1);
-            return s;
-        }
-
-        std::string_view strip_outer(std::string_view s) {
-            s = trim(s);
-            if (s.size() < 2 || s.front() != '(' || s.back() != ')')
-                return s;
-            int depth = 0;
-            for (size_t i = 0; i < s.size(); ++i) {
-                if (s[i] == '(')
-                    ++depth;
-                else if (s[i] == ')') {
-                    --depth;
-                    if (depth == 0 && i == s.size() - 1)
-                        return s.substr(1, s.size() - 2);
-                    if (depth == 0)
-                        return s;
-                }
-            }
-            return s;
-        }
-
-        struct check_build_context {
-            const std::vector<std::pair<std::string, types::logical_value_t>>* defaults;
-            bool strict_absent;
-            const vector::data_chunk_t* chunk;
-            core::date::timezone_offset_t session_tz;
-            types::parameter_map_t* params;
-            uint64_t next_id;
-        };
-
-        expressions::expression_ptr
-        build_check_expression(std::pmr::memory_resource* r, std::string_view expr, check_build_context& ctx);
-
-        expressions::expression_ptr
-        build_check_expression(std::pmr::memory_resource* r, std::string_view expr, check_build_context& ctx) {
-            using CT = expressions::compare_type;
-            expr = trim(expr);
-
-            if (expr.empty())
-                return constant_leaf(r, true);
-
-            // NOT (...)
-            if (expr.size() > 5 && expr.substr(0, 5) == "NOT (") {
-                auto combined = expressions::make_compare_union_expression(r, CT::union_not);
-                combined->append_child(build_check_expression(r, strip_outer(expr.substr(4)), ctx));
-                return combined;
-            }
-
-            // Paren-led: find matching ')' then check for AND/OR after.
-            if (expr.front() == '(') {
-                int depth = 0;
-                size_t close = std::string_view::npos;
-                for (size_t i = 0; i < expr.size(); ++i) {
-                    if (expr[i] == '(')
-                        ++depth;
-                    else if (expr[i] == ')') {
-                        --depth;
-                        if (depth == 0) {
-                            close = i;
-                            break;
-                        }
-                    }
-                }
-                if (close != std::string_view::npos) {
-                    std::string_view after = trim(expr.substr(close + 1));
-                    if (after.size() >= 4 && after.substr(0, 4) == "AND ") {
-                        auto combined = expressions::make_compare_union_expression(r, CT::union_and);
-                        combined->append_child(build_check_expression(r, expr.substr(1, close - 1), ctx));
-                        combined->append_child(build_check_expression(r, strip_outer(after.substr(4)), ctx));
-                        return combined;
-                    }
-                    if (after.size() >= 3 && after.substr(0, 3) == "OR ") {
-                        auto combined = expressions::make_compare_union_expression(r, CT::union_or);
-                        combined->append_child(build_check_expression(r, expr.substr(1, close - 1), ctx));
-                        combined->append_child(build_check_expression(r, strip_outer(after.substr(3)), ctx));
-                        return combined;
-                    }
-                    if (close == expr.size() - 1)
-                        return build_check_expression(r, expr.substr(1, close - 1), ctx);
-                }
-            }
-
-            // IS NOT NULL / IS NULL
-            constexpr std::string_view kIsNotNull = " IS NOT NULL";
-            constexpr std::string_view kIsNull = " IS NULL";
-            if (expr.size() > kIsNotNull.size() && expr.substr(expr.size() - kIsNotNull.size()) == kIsNotNull) {
-                auto col = std::string(trim(expr.substr(0, expr.size() - kIsNotNull.size())));
-                // A column absent from the INSERT write-set stores the table DEFAULT
-                // when one exists (filled agent-side at storage_append) — the STORED
-                // row is then non-NULL and IS NOT NULL must PASS. Absent with no
-                // (non-NULL) default really stores NULL, so it must FAIL — otherwise
-                // `INSERT (a) VALUES (..)` would silently bypass `CHECK (b IS NOT
-                // NULL)` for the omitted column b. Resolved once at compile time.
-                const auto* def = find_default(ctx.defaults, col);
-                const bool absent_is_valid = !ctx.strict_absent || (def != nullptr && !def->is_null());
-                auto ordinal = find_col_index(*ctx.chunk, col);
-                if (!ordinal.has_value()) {
-                    return constant_leaf(r, absent_is_valid);
-                }
-                // IS NOT NULL is not an operator of its own — it is a negated is_null, which is
-                // exactly how the graph builder wants to see it.
-                auto negated = expressions::make_compare_union_expression(r, CT::union_not);
-                negated->append_child(expressions::make_compare_expression(r,
-                                                                           CT::is_null,
-                                                                           column_operand(r, *ordinal),
-                                                                           expressions::param_storage{}));
-                return negated;
-            }
-            if (expr.size() > kIsNull.size() && expr.substr(expr.size() - kIsNull.size()) == kIsNull) {
-                auto col = std::string(trim(expr.substr(0, expr.size() - kIsNull.size())));
-                // Mirror of IS NOT NULL: an absent column stores its (non-NULL)
-                // DEFAULT when one exists, so IS NULL fails; with no default the
-                // stored value IS NULL.
-                const auto* def = find_default(ctx.defaults, col);
-                const bool absent_is_null = !ctx.strict_absent || def == nullptr || def->is_null();
-                auto ordinal = find_col_index(*ctx.chunk, col);
-                if (!ordinal.has_value()) {
-                    return constant_leaf(r, absent_is_null);
-                }
-                return expressions::make_compare_expression(r,
-                                                            CT::is_null,
-                                                            column_operand(r, *ordinal),
-                                                            expressions::param_storage{});
-            }
-
-            // Binary comparison: try operators longest-first to avoid ambiguous matches.
-            constexpr std::array<std::string_view, 6> kOps{">=", "<=", "<>", ">", "<", "="};
-            for (auto op : kOps) {
-                std::string needle;
-                needle.reserve(op.size() + 2);
-                needle += ' ';
-                needle += op;
-                needle += ' ';
-                auto pos = expr.find(needle);
-                if (pos == std::string_view::npos)
-                    continue;
-
-                auto lhs = trim(expr.substr(0, pos));
-                auto rhs = trim(expr.substr(pos + needle.size()));
-
-                auto is_const = [](std::string_view s) {
-                    return !s.empty() && (s.front() == '\'' || (s.front() >= '0' && s.front() <= '9') ||
-                                          s.front() == '-' || s.front() == '.');
-                };
-                bool col_is_rhs = is_const(lhs);
-
-                auto col_name = std::string(col_is_rhs ? rhs : lhs);
-                auto const_val = parse_const(r, col_is_rhs ? lhs : rhs);
-
-                auto apply = [&op](types::compare_t cmp) -> bool {
-                    using Cmp = types::compare_t;
-                    if (op == ">")
-                        return cmp == Cmp::more;
-                    if (op == "<")
-                        return cmp == Cmp::less;
-                    if (op == ">=")
-                        return cmp == Cmp::more || cmp == Cmp::equals;
-                    if (op == "<=")
-                        return cmp == Cmp::less || cmp == Cmp::equals;
-                    if (op == "=")
-                        return cmp == Cmp::equals;
-                    if (op == "<>")
-                        return cmp != Cmp::equals;
-                    return true;
-                };
-
-                auto ordinal = find_col_index(*ctx.chunk, col_name);
-                if (!ordinal.has_value()) {
-                    // Absent-column policy, resolved here: with a non-NULL DEFAULT the stored row
-                    // carries that value, so the comparison is decided against it once, for every
-                    // row; without one, keep the legacy pass (untyped/unknown shape).
-                    const auto* def = find_default(ctx.defaults, col_name);
-                    if (!ctx.strict_absent || def == nullptr || def->is_null()) {
-                        return constant_leaf(r, true);
-                    }
-                    return constant_leaf(r, apply(col_is_rhs ? const_val.compare(*def) : def->compare(const_val)));
-                }
-
-                const auto compare_type_of = [&op]() {
-                    if (op == ">")
-                        return CT::gt;
-                    if (op == "<")
-                        return CT::lt;
-                    if (op == ">=")
-                        return CT::gte;
-                    if (op == "<=")
-                        return CT::lte;
-                    if (op == "=")
-                        return CT::eq;
-                    return CT::ne;
-                };
-
-                bool convertible = true;
-                auto literal = constant_operand(const_val,
-                                                ctx.chunk->data[*ordinal].type(),
-                                                ctx.session_tz,
-                                                ctx.params,
-                                                &ctx.next_id,
-                                                &convertible);
-                if (!convertible) {
-                    // The literal does not fit the column's type, so the CHECK can say nothing
-                    // about the value — the same answer the unrecognised-expression case gives.
-                    return constant_leaf(r, true);
-                }
-                auto column = column_operand(r, *ordinal);
-                return col_is_rhs ? expressions::make_compare_expression(r, compare_type_of(), literal, column)
-                                  : expressions::make_compare_expression(r, compare_type_of(), column, literal);
-            }
-
-            // Unrecognised expression — pass.
-            return constant_leaf(r, true);
-        }
-
     } // anonymous namespace
 
     operator_check_constraint_t::operator_check_constraint_t(
         std::pmr::memory_resource* resource,
         log_t log,
         std::vector<std::string> not_null_columns,
-        std::vector<std::pair<std::string, std::string>> check_exprs,
+        std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates,
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
-        bool write_set_named)
+        bool write_set_named,
+        types::parameter_map_t check_params)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
         , not_null_columns_(std::move(not_null_columns))
         , column_defaults_(std::move(column_defaults))
         , write_set_named_(write_set_named)
         , array_size_reqs_(std::move(array_size_reqs))
-        , check_exprs_(std::move(check_exprs)) {}
+        , check_predicates_(std::move(check_predicates)) {
+        check_params_.insert(check_params.begin(), check_params.end());
+    }
 
     actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
         // SYNCHRONOUS validation routed through the async-finalize drive so it runs
@@ -334,6 +73,88 @@ namespace components::operators {
         }
         mark_executed();
         co_return;
+    }
+
+    expressions::expression_ptr
+    operator_check_constraint_t::bind_to_write_set_(const expressions::expression_ptr& predicate,
+                                                    const vector::data_chunk_t& chunk) {
+        auto bound = expressions::clone_expression(resource_, predicate);
+        if (!bound) {
+            return bound;
+        }
+        // A column reference is either a position in the write-set or a value the write-set never
+        // carried. Rewriting the second kind into a constant is what lets one predicate judge an
+        // INSERT that named only some columns and an UPDATE that carries them all.
+        const auto rebind = [&](expressions::param_storage& operand, auto&& recurse) -> void {
+            if (expressions::is_expr(operand)) {
+                auto& nested = expressions::as_expr(operand);
+                if (nested) {
+                    recurse(nested.get(), recurse);
+                }
+                return;
+            }
+            if (!expressions::is_key(operand)) {
+                return;
+            }
+            auto& key = expressions::as_key(operand);
+            if (key.is_null()) {
+                return;
+            }
+            const std::string name = key.as_string();
+            if (auto ordinal = find_col_index(chunk, name); ordinal.has_value()) {
+                key.set_path(std::pmr::vector<size_t>{{*ordinal}, resource_});
+                return;
+            }
+            // Absent from the write-set: the stored row will hold the column's DEFAULT, or NULL
+            // when it has none — and a NULL operand leaves the predicate UNKNOWN, which permits
+            // the row, exactly as SQL requires of a CHECK.
+            const auto* value = find_default(&column_defaults_, name);
+            // Above every id the predicates already use, so a substituted constant never shadows a
+            // literal the expression was parsed with.
+            uint16_t next = 0;
+            for (const auto& [bound, _] : check_params_) {
+                next = std::max<uint16_t>(next, static_cast<uint16_t>(bound.t) + 1);
+            }
+            const core::parameter_id_t id{next};
+            check_params_.insert_or_assign(
+                id,
+                value != nullptr ? *value : types::logical_value_t{resource_, types::logical_type::NA});
+            operand = expressions::param_storage{id};
+        };
+        const auto walk = [&](expressions::expression_i* node, auto&& self) -> void {
+            if (node == nullptr) {
+                return;
+            }
+            if (node->group() == expressions::expression_group::compare) {
+                auto* compare = static_cast<expressions::compare_expression_t*>(node);
+                if (compare->is_union()) {
+                    for (auto& child : compare->children()) {
+                        self(child.get(), self);
+                    }
+                } else {
+                    rebind(compare->left(), self);
+                    rebind(compare->right(), self);
+                }
+                return;
+            }
+            if (node->group() == expressions::expression_group::scalar) {
+                for (auto& param : static_cast<expressions::scalar_expression_t*>(node)->params()) {
+                    rebind(param, self);
+                }
+                return;
+            }
+            if (node->group() == expressions::expression_group::function) {
+                for (auto& param : static_cast<expressions::function_expression_t*>(node)->args()) {
+                    rebind(param, self);
+                }
+                return;
+            }
+            if (node->group() == expressions::expression_group::cast) {
+                rebind(static_cast<expressions::cast_expression_t*>(node)->child(), self);
+            }
+        };
+        walk(bound.get(), walk);
+        return bound;
     }
 
     void operator_check_constraint_t::validate_() {
@@ -364,22 +185,15 @@ namespace components::operators {
             }
         }
         const components::graph_execution_context graph_context{};
-        if (schema_chunk != nullptr && !check_exprs_.empty()) {
-            check_params_.clear();
-            check_build_context build_ctx{&column_defaults_,
-                                          write_set_named_,
-                                          schema_chunk,
-                                          graph_context.timezone_offset,
-                                          &check_params_,
-                                          0};
-            checks.reserve(check_exprs_.size());
-            for (const auto& entry : check_exprs_) {
+        if (schema_chunk != nullptr && !check_predicates_.empty()) {
+            checks.reserve(check_predicates_.size());
+            for (const auto& entry : check_predicates_) {
                 compiled_check_t compiled;
-                auto tree = build_check_expression(resource_, entry.second, build_ctx);
-                compiled.condition = expressions::classify_condition(tree);
+                auto bound = bind_to_write_set_(entry.second, *schema_chunk);
+                compiled.condition = expressions::classify_condition(bound);
                 if (compiled.condition == expressions::condition_kind::computed) {
                     auto types = schema_chunk->types();
-                    auto built = expressions::build_condition_graph(resource_, check_params_, tree.get(), types);
+                    auto built = expressions::build_condition_graph(resource_, check_params_, bound.get(), types);
                     if (built.has_error()) {
                         set_error(built.error());
                         return;
@@ -488,7 +302,7 @@ namespace components::operators {
                     if (!passed) {
                         set_error(core::error_t{
                             core::error_code_t::other_error,
-                            std::pmr::string{"CHECK constraint \"" + check_exprs_[index].first + "\" violated",
+                            std::pmr::string{"CHECK constraint \"" + check_predicates_[index].first + "\" violated",
                                              resource_}});
                         return;
                     }

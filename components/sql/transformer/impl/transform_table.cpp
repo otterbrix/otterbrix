@@ -35,7 +35,7 @@ namespace components::sql::transform {
                 logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
         }
 
-        VALUE_OR_RETURN(auto constraints, extract_table_constraints(resource_, *coldefs));
+        VALUE_OR_RETURN(auto constraints, extract_table_constraints(resource_, *coldefs, raw_sql_));
 
         // Parse WITH (storage = 'disk') clause
         bool disk_storage = false;

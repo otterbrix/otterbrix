@@ -40,13 +40,19 @@ namespace components::sql::transform {
 
         // Parse a bare SQL expression string (e.g. "age > 0") as if it were a WHERE clause.
         // Used to compile stored CHECK constraint expressions for runtime evaluation.
-        // Returns nullptr expr if unparseable. params holds constants referenced by parameter_id_t
-        // inside the expression — caller must keep it alive for the lifetime of the predicate.
+        // A CHECK is a predicate over one row, which is what a WHERE clause is, so it is parsed
+        // as one: whatever the engine admits in a WHERE it admits in a CHECK, and there is no
+        // second expression grammar to keep in step with the first.
+        // params holds constants referenced by parameter_id_t inside the expression — the caller
+        // must keep it alive for the lifetime of the predicate.
         struct check_expr_result {
             expressions::expression_ptr expr;
             logical_plan::parameter_node_ptr params;
         };
-        check_expr_result parse_where_expr(const std::string& expr_text);
+        // `params` lets several expressions share one parameter map, so the constants of every
+        // CHECK on a table are addressed by distinct ids. A null one is created here.
+        core::result_wrapper_t<check_expr_result> parse_where_expr(const std::string& expr_text,
+                                                                   logical_plan::parameter_node_ptr params = nullptr);
 
     private:
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_database(CreatedbStmt& node);
@@ -104,7 +110,8 @@ namespace components::sql::transform {
         // ALTER TABLE → node_alter_table_t. Multi-clause ALTER TABLE (multiple AT_AddColumn
         // etc) emits a sequence — currently only first command supported. RENAME TABLE not
         // here (T_RenameStmt routes separately).
-        core::result_wrapper_t<logical_plan::node_ptr> transform_alter_table(AlterTableStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_alter_table(AlterTableStmt& node,
+                                                                             logical_plan::execution_plan_t* plan);
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
         core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node);

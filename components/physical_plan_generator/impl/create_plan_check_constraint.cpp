@@ -7,6 +7,17 @@
 
 namespace services::planner::impl {
 
+    namespace {
+        // if there were no constants used than parameter_map_t was not created
+        components::types::parameter_map_t
+        enforce_param_map(const components::logical_plan::node_check_constraint_t* n) {
+            if (!n->check_params()) {
+                return components::types::parameter_map_t{n->resource()};
+            }
+            return n->check_params()->parameters().parameters;
+        }
+    } // namespace
+
     components::operators::operator_ptr
     create_plan_check_constraint(const context_storage_t& context,
                                  const components::compute::function_registry_t& function_registry,
@@ -16,10 +27,11 @@ namespace services::planner::impl {
         auto plan = boost::intrusive_ptr(new components::operators::operator_check_constraint_t(context.resource,
                                                                                                 context.log.clone(),
                                                                                                 n->not_null_columns(),
-                                                                                                n->check_exprs(),
+                                                                                                n->check_predicates(),
                                                                                                 n->array_size_reqs(),
                                                                                                 n->column_defaults(),
-                                                                                                n->write_set_named()));
+                                                                                                n->write_set_named(),
+                                                                                                enforce_param_map(n)));
         // Child sub-plan (the DML sink, possibly under an fk_check chain).
         components::operators::operator_ptr child;
         if (!node->children().empty()) {

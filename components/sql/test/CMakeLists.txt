@@ -15,6 +15,7 @@ set(${PROJECT_NAME}_SOURCES
         test_parameter.cpp
         test_checkpoint.cpp
         test_constraints_ddl.cpp
+        test_check_expression.cpp
         test_parser_extension.cpp
 )
 

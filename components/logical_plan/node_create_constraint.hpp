@@ -4,6 +4,7 @@
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/expressions/expression.hpp>
 
 #include <string>
 
@@ -48,8 +49,17 @@ namespace components::logical_plan {
         void set_del_action(char c) noexcept { del_action_ = c; }
         void set_upd_action(char c) noexcept { upd_action_ = c; }
 
-        const std::string& check_expr() const noexcept { return check_expr_; }
-        void set_check_expr(std::string expr) { check_expr_ = std::move(expr); }
+        // parsed to expression, so we can validate it
+        const expressions::expression_ptr& check_expression() const noexcept { return check_expression_; }
+        void set_check_expression(expressions::expression_ptr expr) { check_expression_ = std::move(expr); }
+
+        const std::string& check_expression_sql() const noexcept { return check_expression_sql_; }
+        void set_check_expression_sql(std::string sql) { check_expression_sql_ = std::move(sql); }
+
+        const std::vector<components::catalog::oid_t>& check_col_attoids() const noexcept { return check_col_attoids_; }
+        void set_check_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
+            check_col_attoids_ = std::move(v);
+        }
 
         components::catalog::oid_t ref_table_oid() const noexcept { return ref_table_oid_; }
         void set_ref_table_oid(components::catalog::oid_t oid) noexcept { ref_table_oid_ = oid; }
@@ -80,7 +90,9 @@ namespace components::logical_plan {
         char match_type_{'s'};
         char del_action_{'a'};
         char upd_action_{'a'};
-        std::string check_expr_;
+        expressions::expression_ptr check_expression_;
+        std::string check_expression_sql_;
+        std::vector<components::catalog::oid_t> check_col_attoids_;
         components::catalog::oid_t ref_table_oid_{components::catalog::INVALID_OID};
         std::vector<components::catalog::oid_t> fk_col_attoids_;
         std::vector<components::catalog::oid_t> ref_col_attoids_;

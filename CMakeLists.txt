@@ -63,7 +63,7 @@ set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENAB
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
 
-            #$<${USE_Werror}:-Werror>
+            $<${USE_Werror}:-Werror>
 
             -Wall
             -Wextra

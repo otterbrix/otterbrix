@@ -66,8 +66,7 @@ namespace services::dispatcher {
     using namespace validation;
 
     components::compute::function_types_mask check_expr_allowed_functions() {
-        return components::compute::create_mask(components::compute::function_type_t::row,
-                                                components::compute::function_type_t::vector);
+        return components::compute::create_mask(components::compute::function_type_t::vector);
     }
 
     // Bind a table's CHECK predicates to the schema of the rows they will judge: column references

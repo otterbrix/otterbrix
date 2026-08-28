@@ -17,11 +17,17 @@ namespace {
     }
 
     template<typename T>
-    concept addable = requires(T& a, const T& b) { a += b; };
+    concept addable = requires(T& a, const T& b) {
+        a += b;
+    };
     template<typename T>
-    concept comparable = requires(const T& a, const T& b) { a < b; };
+    concept comparable = requires(const T& a, const T& b) {
+        a < b;
+    };
     template<typename T>
-    concept dividable = requires(const T& a, const T& b) { a / b; };
+    concept dividable = requires(const T& a, const T& b) {
+        a / b;
+    };
 
     // An aggregate accumulates into one state per group, addressed by group id
 
@@ -42,9 +48,8 @@ namespace {
     };
 
     template<template<typename> class op_t, typename fallback_t, typename... args_t>
-    auto arithmetic_dispatch(const complex_logical_type& type,
-                             fallback_t fallback,
-                             args_t&&... args) -> decltype(fallback()) {
+    auto arithmetic_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
+        -> decltype(fallback()) {
         switch (type.type()) {
             case logical_type::TINYINT:
                 return op_t<int8_t>{}(std::forward<args_t>(args)...);
@@ -89,8 +94,8 @@ namespace {
     }
 
     template<template<typename> class op_t, typename fallback_t, typename... args_t>
-    auto
-    ordered_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args) -> decltype(fallback()) {
+    auto ordered_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
+        -> decltype(fallback()) {
         switch (type.to_physical_type()) {
             case physical_type::BOOL:
             case physical_type::INT8:

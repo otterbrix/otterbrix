@@ -28,6 +28,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_select.cpp
         operators/operator_limit.cpp
         operators/operator_sort.cpp
+        operators/join_utils.cpp
         operators/operator_join.cpp
         operators/operator_hash_join.cpp
         operators/operator_union.cpp

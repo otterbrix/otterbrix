@@ -747,8 +747,7 @@ namespace components::sql::transform {
                                 auto sub = pg_ptr_cast<A_Expr>(arg_value);
                                 if (sub->kind == AEXPR_OP &&
                                     is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                    VALUE_OR_RETURN(auto arith,
-                                                    transform_a_expr_arithmetic(sub, names, plan->parameters.get()));
+                                    VALUE_OR_RETURN(auto arith, transform_a_expr_arithmetic(sub, names, plan));
                                     args.emplace_back(std::move(arith));
                                 } else {
                                     VALUE_OR_RETURN(auto param, add_param_value(arg_value, plan->parameters.get()));
@@ -762,9 +761,7 @@ namespace components::sql::transform {
                                 args.emplace_back(std::move(key.field));
                             } else if (nodeTag(arg_value) == T_FuncCall) {
                                 VALUE_OR_RETURN(auto call,
-                                                transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value),
-                                                                      names,
-                                                                      plan->parameters.get()));
+                                                transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, plan));
                                 args.emplace_back(std::move(call));
                             } else if (nodeTag(arg_value) == T_CaseExpr) {
                                 // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
@@ -983,7 +980,7 @@ namespace components::sql::transform {
                                     make_scalar_expression(resource_, scalar_type::jsonb_delete, prefix_key));
                                 break;
                             }
-                            if (is_arithmetic_operator(op_str)) {
+                            if (is_arithmetic_operator(op_str) || !operator_function(op_str).name.empty()) {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
                                 RETURN_IF_ERROR(transform_select_a_expr(a_expr, res->name, names, plan, sel_node));

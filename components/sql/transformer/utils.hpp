@@ -269,21 +269,23 @@ namespace components::sql::transform {
         return expressions::scalar_type::invalid;
     }
 
-    // Prefix/postfix operators that are spelled as function calls internally:
-    //   ^ -> pow   |/ -> sqrt   ||/ -> cbrt   ! -> factorial   @ -> abs
-    inline std::string_view operator_function_name(std::string_view op) {
-        if (op == "^")
-            return "pow";
-        if (op == "|/")
-            return "sqrt";
-        if (op == "||/")
-            return "cbrt";
-        if (op == "!")
-            return "factorial";
-        if (op == "@")
-            return "abs";
-        return {};
-    }
+    enum class operator_fixity_t
+    {
+        infix,
+        prefix,
+        postfix
+    };
+
+    struct operator_function_t {
+        std::string_view name;
+        operator_fixity_t fixity;
+    };
+
+    // Operators that are spelled as function calls internally:
+    //   ^ -> pow   |/ -> sqrt   ||/ -> cbrt   @ -> abs
+    //   ! -> factorial (postfix)   !! -> factorial (prefix)
+
+    operator_function_t operator_function(std::string_view op);
 
     // --- JSONB operators -------------------------------------------------
     // Path-navigation jsonb operators. On a computing table (relkind='g')

@@ -388,6 +388,28 @@ namespace components::sql::transform {
 
     bool jsonb_op_takes_path(std::string_view op) { return op == "#>" || op == "#>>" || op == "#-"; }
 
+    operator_function_t operator_function(std::string_view op) {
+        if (op == "^") {
+            return {"pow", operator_fixity_t::infix};
+        }
+        if (op == "|/") {
+            return {"sqrt", operator_fixity_t::prefix};
+        }
+        if (op == "||/") {
+            return {"cbrt", operator_fixity_t::prefix};
+        }
+        if (op == "!") {
+            return {"factorial", operator_fixity_t::postfix};
+        }
+        if (op == "!!") {
+            return {"factorial", operator_fixity_t::prefix};
+        }
+        if (op == "@") {
+            return {"abs", operator_fixity_t::prefix};
+        }
+        return {};
+    }
+
     std::string node_tag_to_string(NodeTag type) {
         switch (type) {
             case T_A_Expr:

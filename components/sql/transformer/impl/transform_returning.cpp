@@ -53,7 +53,7 @@ namespace components::sql::transform {
                     auto* a_expr = pg_ptr_cast<A_Expr>(res->val);
                     if (a_expr->kind == AEXPR_OP && a_expr->name && !a_expr->name->lst.empty() &&
                         is_arithmetic_operator(strVal(a_expr->name->lst.front().data))) {
-                        VALUE_OR_RETURN(auto expr, transform_a_expr_arithmetic(a_expr, names, plan->parameters.get()));
+                        VALUE_OR_RETURN(auto expr, transform_a_expr_arithmetic(a_expr, names, plan));
                         if (res->name) {
                             static_cast<scalar_expression_t*>(expr.get())->key() =
                                 expressions::key_t{resource_, res->name};

@@ -262,7 +262,8 @@ components::logical_plan::node_group_ptr parse_group(std::pmr::memory_resource* 
 components::logical_plan::node_sort_ptr parse_sort(std::pmr::memory_resource* resource, const py::handle& condition) {
     std::vector<expression_ptr> expressions;
     for (const auto& it : condition) {
-        expressions.emplace_back(make_sort_expression(ex_key_t(resource, py::str(it).cast<std::string>()),
+        expressions.emplace_back(make_sort_expression(resource,
+                                                      ex_key_t(resource, py::str(it).cast<std::string>()),
                                                       sort_order(condition[it].cast<int>())));
     }
     return components::logical_plan::make_node_sort(resource, core::dbname_t{}, core::relname_t{}, expressions);

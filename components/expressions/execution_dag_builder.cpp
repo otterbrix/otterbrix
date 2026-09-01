@@ -25,9 +25,9 @@ namespace components::expressions {
 
             core::result_wrapper_t<slot_id_t> slot_of(const scalar_expression_t* expression);
             core::result_wrapper_t<slot_id_t> slot_of_expression(const expression_i* expression);
+            core::result_wrapper_t<slot_id_t> slot_of(const param_storage& param);
 
         private:
-            core::result_wrapper_t<slot_id_t> slot_of(const param_storage& param);
             core::result_wrapper_t<slot_id_t> column_slot(const key_t& key);
             core::result_wrapper_t<slot_id_t> operator_slot(const scalar_expression_t* expression);
             core::result_wrapper_t<slot_id_t> cast_slot(const cast_expression_t* expression);
@@ -618,6 +618,30 @@ namespace components::expressions {
         outputs.reserve(expressions.size());
         for (const auto* expression : expressions) {
             auto slot = build_expression(graph.get(), parameters, expression, input_types, right_offset);
+            if (slot.has_error()) {
+                return slot.error();
+            }
+            outputs.push_back(slot.value());
+        }
+        graph->set_output(outputs);
+        if (auto error = graph->prepare(); error.contains_error()) {
+            return error;
+        }
+        return graph;
+    }
+
+    core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
+    build_graph(std::pmr::memory_resource* resource,
+                const types::parameter_map_t& parameters,
+                core::span<const param_storage> values,
+                const std::pmr::vector<types::complex_logical_type>& input_types,
+                size_t right_offset) {
+        auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
+        builder_t builder(graph.get(), parameters, input_types, right_offset);
+        execution_dag::slot_list_t outputs(resource);
+        outputs.reserve(values.size());
+        for (const auto& value : values) {
+            auto slot = builder.slot_of(value);
             if (slot.has_error()) {
                 return slot.error();
             }

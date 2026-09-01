@@ -401,29 +401,26 @@ namespace services::dispatcher {
                 if (node->expressions()[0]->group() == expression_group::compare) {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
                     return validate_schema(context, expr, parameters, schema_left, schema_right);
-                } else if (node->expressions()[0]->group() == expression_group::function) {
-                    auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
-                    auto allowed_function_types =
-                        components::compute::create_mask(components::compute::function_type_t::vector);
-                    auto expr_res =
-                        validate_schema(context, expr, parameters, schema_left, schema_right, allowed_function_types);
-                    if (expr_res.has_error()) {
-                        return expr_res;
-                    }
-                    if (expr_res.value().size() == 1 && expr_res.value().front().type.type() == logical_type::BOOLEAN) {
-                        return expr_res;
-                    } else {
-                        return core::error_t(
-                            core::error_code_t::incorrect_function_return_type,
-                            std::pmr::string{"function: \'" + expr->name() +
-                                                 "(...)\' was found but can not be used in WHERE clause, "
-                                                 "because return type is not a boolean",
-                                             resource});
-                    }
                 } else {
-                    assert(false);
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"incorrect expr type in node_group", resource});
+                    validation::expression_context_t predicate_context{
+                        resource,
+                        *schema_left,
+                        parameters,
+                        context.cast_registry,
+                        context.function_registry,
+                        context.execution_context,
+                        components::compute::create_mask(components::compute::function_type_t::vector),
+                        schema_right};
+                    predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
+                    if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
+                        error.contains_error()) {
+                        return error;
+                    }
+                    named_schema predicate_schema{resource};
+                    predicate_schema.emplace_back(
+                        type_from_t{node->result_alias(),
+                                    components::types::complex_logical_type{logical_type::BOOLEAN}});
+                    return predicate_schema;
                 }
             }
         }
@@ -437,9 +434,25 @@ namespace services::dispatcher {
             for (auto& expr : node->expressions()) {
                 if (expr->group() == expression_group::sort) {
                     auto* sort_expr = static_cast<sort_expression_t*>(expr.get());
-                    auto res = find_types(resource, sort_expr->key(), schema);
-                    if (res.has_error()) {
-                        return res.convert_error<named_schema>();
+                    if (components::expressions::is_key(sort_expr->operand())) {
+                        auto res = find_types(resource, components::expressions::as_key(sort_expr->operand()), schema);
+                        if (res.has_error()) {
+                            return res.convert_error<named_schema>();
+                        }
+                        continue;
+                    }
+                    const validation::expression_context_t expression_context{
+                        resource,
+                        schema,
+                        parameters,
+                        context.cast_registry,
+                        context.function_registry,
+                        context.execution_context,
+                        components::compute::create_mask(components::compute::function_type_t::vector)};
+                    auto& operand = std::get<components::expressions::expression_ptr>(sort_expr->operand());
+                    if (auto error = validation::resolve_expression(operand, expression_context);
+                        error.contains_error()) {
+                        return error;
                     }
                 } else if (expr->group() == expression_group::scalar) {
                     auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
@@ -471,7 +484,24 @@ namespace services::dispatcher {
             auto* resource = context.resource;
             auto& exprs = *returning;
             for (size_t idx = 0; idx < exprs.size();) {
-                if (!exprs[idx] || exprs[idx]->group() != expression_group::scalar) {
+                if (!exprs[idx]) {
+                    idx++;
+                    continue;
+                }
+                if (exprs[idx]->group() != expression_group::scalar) {
+                    const validation::expression_context_t expression_context{
+                        resource,
+                        *schema_left,
+                        parameters,
+                        context.cast_registry,
+                        context.function_registry,
+                        context.execution_context,
+                        components::compute::create_mask(components::compute::function_type_t::vector),
+                        schema_right};
+                    if (auto error = validation::resolve_expression(exprs[idx], expression_context);
+                        error.contains_error()) {
+                        return error;
+                    }
                     idx++;
                     continue;
                 }
@@ -1879,13 +1909,15 @@ namespace services::dispatcher {
                     // Add hidden columns for sort keys not in the GROUP output
                     for (auto& sort_child : node_sort->expressions()) {
                         if (sort_child->group() != expression_group::sort) {
-                            // A computed (scalar) sort key has no column of its own — its key
-                            // carries the direction encoding, not a name. Its operands are
-                            // resolved against the GROUP output by validate_schema below.
                             continue;
                         }
                         auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
-                        auto& skey = sort_expr->key();
+                        if (!components::expressions::is_key(sort_expr->operand())) {
+                            // Ordering by a computed value promotes no column of its own; its
+                            // operands are resolved against the GROUP output by validate_schema.
+                            continue;
+                        }
+                        auto& skey = components::expressions::as_key(sort_expr->operand());
                         // Try resolving in the GROUP result schema first
                         auto field_in_result = validation::find_types(resource, skey, result);
                         if (!field_in_result.has_error() && !field_in_result.value().empty()) {
@@ -2377,8 +2409,6 @@ namespace services::dispatcher {
                 }
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
-                    auto allowed_function_types =
-                        components::compute::create_mask(components::compute::function_type_t::vector);
                     for (auto& expr : node_update->updates()) {
                         auto target_res = validation::find_types(resource, expr->key(), table_schema);
                         if (target_res.has_error()) {
@@ -2387,29 +2417,19 @@ namespace services::dispatcher {
                         expr->key().set_side(side_t::left);
                         expr->key().set_path(target_res.value().front().path);
 
-                        if (expr->group() == expression_group::scalar) {
-                            auto* scalar = static_cast<scalar_expression_t*>(expr.get());
-                            // An assigned value is computed per affected row.
-                            auto resolve_error = impl::resolve_scalar_output_type(
-                                context,
-                                scalar,
-                                table_schema,
-                                parameters,
-                                components::compute::create_mask(components::compute::function_type_t::vector),
-                                source_schema);
-                            if (resolve_error.contains_error()) {
-                                return resolve_error;
-                            }
-                        } else if (expr->group() == expression_group::function) {
-                            auto function_res = impl::validate_schema(context,
-                                                                      static_cast<function_expression_t*>(expr.get()),
-                                                                      parameters,
-                                                                      &table_schema,
-                                                                      source_schema,
-                                                                      allowed_function_types);
-                            if (function_res.has_error()) {
-                                return function_res;
-                            }
+                        // An assigned value is computed per affected row
+                        const validation::expression_context_t assignment_context{
+                            resource,
+                            table_schema,
+                            parameters,
+                            context.cast_registry,
+                            context.function_registry,
+                            context.execution_context,
+                            components::compute::create_mask(components::compute::function_type_t::vector),
+                            source_schema};
+                        if (auto error = validation::resolve_expression(expr, assignment_context);
+                            error.contains_error()) {
+                            return error;
                         }
 
                         // get type of where expression value will be placed
@@ -2530,13 +2550,15 @@ namespace services::dispatcher {
                     constraint_schema.emplace_back(type_from_t{constrained->name, column.type});
                 }
 
-                const validation::expression_context_t constraint_context{resource,
-                                                                          constraint_schema,
-                                                                          parameters,
-                                                                          context.cast_registry,
-                                                                          context.function_registry,
-                                                                          context.execution_context,
-                                                                          check_expr_allowed_functions()};
+                validation::expression_context_t constraint_context{resource,
+                                                                    constraint_schema,
+                                                                    parameters,
+                                                                    context.cast_registry,
+                                                                    context.function_registry,
+                                                                    context.execution_context,
+                                                                    check_expr_allowed_functions()};
+                // A CHECK is a condition, so it states the same requirement WHERE does.
+                constraint_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                 bool saw_reduction = false;
                 if (auto error = validation::resolve_expression(expression, constraint_context, &saw_reduction);
                     error.contains_error()) {
@@ -2550,14 +2572,6 @@ namespace services::dispatcher {
                         std::pmr::string{"CHECK constraint \"" + constraint_node->name() +
                                              "\" uses an aggregate; a CHECK is evaluated for one row at a time",
                                          resource});
-                }
-                const auto& result_type = expression->result_type();
-                if (result_type.type() != logical_type::BOOLEAN) {
-                    return core::error_t(core::error_code_t::invalid_constraint,
-                                         std::pmr::string{"CHECK constraint \"" + constraint_node->name() +
-                                                              "\" must be a condition, but it is of type " +
-                                                              describe_type(result_type),
-                                                          resource});
                 }
                 constraint_node->set_check_expression(std::move(expression));
                 return named_schema{resource};

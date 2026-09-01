@@ -25,7 +25,7 @@ namespace components::operators {
         operator_insert(std::pmr::memory_resource* resource,
                         log_t log,
                         catalog::oid_t table_oid,
-                        std::pmr::vector<select_column_t> returning);
+                        std::pmr::vector<projected_column_t> returning);
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -68,7 +68,7 @@ namespace components::operators {
 
     private:
         catalog::oid_t table_oid_;
-        std::pmr::vector<select_column_t> returning_;
+        std::pmr::vector<projected_column_t> returning_;
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // Cross-flush accumulators for the incremental drive. RETURNING rows are
         // projected into returning_accum_ as each slice is read back; when the

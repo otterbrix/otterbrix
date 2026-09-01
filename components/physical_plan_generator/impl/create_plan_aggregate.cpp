@@ -354,7 +354,7 @@ namespace services::planner::impl {
                             child,
                             static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
                     } else if (child->type() == node_type::select_t) {
-                        push_select_op = create_plan_select(context, child, params);
+                        push_select_op = create_plan_select(context, child);
                     }
                 }
                 if (push_sort_op) {
@@ -362,9 +362,6 @@ namespace services::planner::impl {
                     executor = std::move(push_sort_op);
                 }
                 if (push_select_op) {
-                    if (node->has_output_types()) {
-                        push_select_op->set_output_types(node->output_types());
-                    }
                     push_select_op->set_children(std::move(executor));
                     executor = std::move(push_select_op);
                 }
@@ -423,7 +420,7 @@ namespace services::planner::impl {
                         static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
                     break;
                 case node_type::select_t:
-                    select_op = create_plan_select(context, child, params);
+                    select_op = create_plan_select(context, child);
                     break;
                 case node_type::having_t:
                     // HAVING → dedicated operator_having filter, spliced ABOVE the group (below),
@@ -513,12 +510,6 @@ namespace services::planner::impl {
             executor = std::move(distinct_op);
         }
         if (select_op) {
-            // Forward the plan-resolved output types onto the projection columns so a
-            // CASE/COALESCE/deep-field column over zero rows stays correctly typed instead
-            // of being dropped as an untyped placeholder. Base virtual -> no downcast.
-            if (node->has_output_types()) {
-                select_op->set_output_types(node->output_types());
-            }
             select_op->set_children(std::move(executor));
             executor = std::move(select_op);
         }

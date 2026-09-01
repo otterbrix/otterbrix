@@ -289,8 +289,8 @@ namespace components::sql::transform {
                                logical_plan::parameter_node_t* params,
                                std::string_view op);
 
-        core::result_wrapper_t<expressions::expression_ptr>
-        transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<expressions::expression_ptr> transform_null_test(NullTest* node,
+                                                                                const expression_context_t& context);
 
         core::result_wrapper_t<logical_plan::node_ptr>
         transform_function(RangeFunction& node, const name_collection_t& names, logical_plan::parameter_node_t* params);

@@ -190,16 +190,15 @@ TEST_CASE("components::sql::errors") {
                            R"_(CASE operand must be a column reference)_");
 
     // ARRAY(SELECT ...) projected in the SELECT list is not supported yet (deferred, #559): a clear
-    // error, not a crash and not a misleading "unknown node type".
+    // error, not a crash and not a misleading "unknown node type". It is refused wherever nothing
+    // expects an array, so the message no longer names the SELECT list.
     TEST_TRANSFORMER_ERROR("SELECT ARRAY(SELECT count FROM TEST_DATABASE.TEST_COLLECTION) FROM "
                            "TEST_DATABASE.TEST_COLLECTION;",
-                           R"_(unsupported subquery in the SELECT list; only a scalar subquery is supported)_");
+                           R"_(ARRAY(SELECT ...) is supported only as a comparison operand)_");
 
-    // #563 finding 6b: node_tag_to_string must name the node tag ("T_SubLink"), not print "unknown".
-    // A SubLink in ORDER BY still reports through node_tag_to_string.
-    TEST_TRANSFORMER_ERROR("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
-                           "TEST_DATABASE.TEST_COLLECTION);",
-                           R"_(Unknown node type in ORDER BY: T_SubLink)_");
+    // A scalar sub-query is an ordinary value, so it sorts like one.
+    TEST_TRANSFORMER_OK("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
+                        "TEST_DATABASE.TEST_COLLECTION);");
 
     TEST_TRANSFORMER_ERROR("SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
     TEST_TRANSFORMER_ERROR("RELEASE SAVEPOINT sp1;", R"_(unsupported transaction statement)_");

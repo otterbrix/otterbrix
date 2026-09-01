@@ -303,8 +303,8 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     auto group = make_node_group(res, core::dbname_t{}, core::relname_t{}, group_exprs);
 
     std::vector<expression_ptr> sort_exprs;
-    sort_exprs.emplace_back(make_sort_expression(bare_key(res, "d_year"), sort_order::asc));
-    sort_exprs.emplace_back(make_sort_expression(bare_key(res, "c_nation"), sort_order::asc));
+    sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "d_year"), sort_order::asc));
+    sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "c_nation"), sort_order::asc));
     auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
 
     // An EXPLICIT projection (present, not SELECT *) so the reorder does not bail.

@@ -207,13 +207,41 @@ namespace components::sql::transform {
 
         switch (nodeTag(node)) {
             case T_ColumnRef: {
+                auto* col_ref = pg_ptr_cast<ColumnRef>(node);
+                // `*` and `t.*` name a whole row
+                if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
+                    if (col_ref->fields->lst.size() == 1) {
+                        return param_storage{expression_ptr{make_scalar_expression(resource_,
+                                                                                   scalar_type::star_expand,
+                                                                                   expressions::key_t{resource_})}};
+                    }
+                    VALUE_OR_RETURN(auto star_col, columnref_to_field(resource_, col_ref, names));
+                    if (!star_col.table.empty()) {
+                        // Carry the qualifier so the validator expands it by result_alias.
+                        std::pmr::vector<std::pmr::string> star_path{resource_};
+                        star_path.emplace_back(std::pmr::string{star_col.table, resource_});
+                        star_path.emplace_back(std::pmr::string{"*", resource_});
+                        return param_storage{
+                            expression_ptr{make_scalar_expression(resource_,
+                                                                  scalar_type::star_expand,
+                                                                  expressions::key_t{std::move(star_path)})}};
+                    }
+                }
                 // A correlated outer column lowers to the correlation parameter. Every
                 // consumer reads parameters live per row, so the lateral join's
                 // per-outer-row rebind is honoured wherever the column appears.
-                if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
-                    return *corr;
+                if (auto corr = try_lateral_correlate(col_ref, names)) {
+                    if (context.aggregates != expression_placement_t::select) {
+                        return *corr;
+                    }
+                    auto correlated = make_scalar_expression(
+                        resource_,
+                        scalar_type::constant,
+                        expressions::key_t{resource_, std::string(strVal(col_ref->fields->lst.back().data))});
+                    correlated->append_param(*corr);
+                    return param_storage{expression_ptr{correlated}};
                 }
-                VALUE_OR_RETURN(auto key, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names));
+                VALUE_OR_RETURN(auto key, columnref_to_field(resource_, col_ref, names));
                 return key.field;
             }
             case T_A_Indirection: {
@@ -274,6 +302,12 @@ namespace components::sql::transform {
                     return param_storage{
                         expression_ptr{make_cast_expression(resource_, bound, target_type, casts::cast_t{}, kind)}};
                 }
+                if (cast->arg && nodeTag(cast->arg) != T_A_Const) {
+                    VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
+                    VALUE_OR_RETURN(auto operand, recurse(cast->arg));
+                    return param_storage{
+                        expression_ptr{make_cast_expression(resource_, operand, target_type, casts::cast_t{}, kind)}};
+                }
                 VALUE_OR_RETURN(auto param, add_param_value(node, params));
                 return param;
             }
@@ -314,9 +348,18 @@ namespace components::sql::transform {
                         VALUE_OR_RETURN(auto call, lower_operator_function(sub, sub_op, function, context));
                         return param_storage{std::move(call)};
                     }
+                    if (auto compare_op = get_compare_type(sub_op);
+                        compare_op != compare_type::invalid && compare_op != compare_type::regex && sub->lexpr) {
+                        VALUE_OR_RETURN(auto lhs, recurse(sub->lexpr));
+                        VALUE_OR_RETURN(auto rhs, recurse(sub->rexpr));
+                        auto compare = make_compare_expression(resource_, compare_op, lhs, rhs);
+                        // Unaliased, the clause names the column after the operator, as PostgreSQL does.
+                        compare->set_key(expressions::key_t{resource_, std::string{sub_op}});
+                        return param_storage{expression_ptr{compare}};
+                    }
                 }
-                return core::error_t(core::error_code_t::sql_parse_error,
-                                     std::pmr::string{"unsupported operator expression as an operand", resource_});
+                VALUE_OR_RETURN(auto predicate, transform_a_expr(sub, names, context.plan));
+                return param_storage{std::move(predicate)};
             }
             case T_FuncCall: {
                 auto* func = pg_ptr_cast<FuncCall>(node);
@@ -360,6 +403,17 @@ namespace components::sql::transform {
                     auto expr,
                     case_expr_to_scalar(pg_ptr_cast<CaseExpr>(node), nullptr, names, context.plan, context.group));
                 return param_storage{std::move(expr)};
+            }
+            case T_CoalesceExpr: {
+                auto* coalesce = pg_ptr_cast<CoalesceExpr>(node);
+                auto expr = make_scalar_expression(resource_,
+                                                   scalar_type::coalesce,
+                                                   expressions::key_t{resource_, std::string{"coalesce"}});
+                for (const auto& arg : coalesce->args->lst) {
+                    VALUE_OR_RETURN(auto resolved, recurse(pg_ptr_cast<Node>(arg.data)));
+                    expr->append_param(std::move(resolved));
+                }
+                return param_storage{expression_ptr{expr}};
             }
             case T_MinMaxExpr: {
                 auto* expr = pg_ptr_cast<MinMaxExpr>(node);
@@ -406,6 +460,13 @@ namespace components::sql::transform {
                         return param_id;
                     }
                     case ARRAY_SUBLINK: {
+                        // ARRAY(SELECT ...) is not supported yet
+                        if (!context.array_operand) {
+                            return core::error_t(
+                                core::error_code_t::unimplemented_yet,
+                                std::pmr::string{"ARRAY(SELECT ...) is supported only as a comparison operand",
+                                                 resource_});
+                        }
                         auto inner = transform_inner();
                         if (inner.has_error()) {
                             return inner.error();
@@ -425,9 +486,19 @@ namespace components::sql::transform {
                                              std::pmr::string{"unsupported subquery form as an operand", resource_});
                 }
             }
-            default:
-                return core::error_t(core::error_code_t::sql_parse_error,
-                                     std::pmr::string{"unsupported expression as an operand", resource_});
+            case T_NullTest: {
+                // Read here rather than through the predicate path so the operand keeps this
+                // context: an aggregate under an IS NULL binds to the group like any other.
+                VALUE_OR_RETURN(auto test, transform_null_test(pg_ptr_cast<NullTest>(node), context));
+                return param_storage{std::move(test)};
+            }
+            // The sub-link forms yield a boolean, which is a value like any other.
+            // transform_predicate carries the only remaining dead-end for a node that is
+            // neither, so an unknown shape is still reported once, from one place.
+            default: {
+                VALUE_OR_RETURN(auto predicate, transform_predicate(node, names, context.plan));
+                return param_storage{std::move(predicate)};
+            }
         }
     }
 
@@ -641,7 +712,7 @@ namespace components::sql::transform {
                         case T_FuncCall:
                             return transform_a_expr_func(pg_ptr_cast<FuncCall>(node), names, plan);
                         case T_NullTest:
-                            return transform_null_test(pg_ptr_cast<NullTest>(node), names, plan);
+                            return transform_null_test(pg_ptr_cast<NullTest>(node), expression_context_t{names, plan});
                         case T_SubLink: {
                             return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
                         }
@@ -870,7 +941,7 @@ namespace components::sql::transform {
             case T_FuncCall:
                 return transform_a_expr_func(pg_ptr_cast<FuncCall>(node), names, plan);
             case T_NullTest:
-                return transform_null_test(pg_ptr_cast<NullTest>(node), names, plan);
+                return transform_null_test(pg_ptr_cast<NullTest>(node), expression_context_t{names, plan});
             case T_SubLink: {
                 return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
             }
@@ -1417,7 +1488,8 @@ namespace components::sql::transform {
                     condition = transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, plan);
                 } else if (nodeTag(cond_node) == T_NullTest) {
                     // CASE WHEN col IS [NOT] NULL THEN ...
-                    condition = transform_null_test(pg_ptr_cast<NullTest>(cond_node), names, plan);
+                    condition =
+                        transform_null_test(pg_ptr_cast<NullTest>(cond_node), expression_context_t{names, plan});
                 } else {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"Unsupported WHEN condition type", resource_});
@@ -1542,14 +1614,13 @@ namespace components::sql::transform {
                 return expr;
             }
         }
-        return core::error_t(core::error_code_t::sql_parse_error,
-                             std::pmr::string{"Unsupported expression in HAVING clause", resource_});
+        VALUE_OR_RETURN(auto operand, resolve_having_operand(node, names, plan, group));
+        return as_expression(std::move(operand));
     }
 
     core::result_wrapper_t<expression_ptr> transformer::transform_null_test(NullTest* node,
-                                                                            const name_collection_t& names,
-                                                                            logical_plan::execution_plan_t* plan) {
-        auto* params = plan->parameters.get();
+                                                                            const expression_context_t& context) {
+        auto* params = context.plan->parameters.get();
         auto cmp = node->nulltesttype == IS_NULL ? compare_type::is_null : compare_type::is_not_null;
         // is_null/is_not_null don't need a value, use a dummy parameter
         auto param_id = params->add_parameter(
@@ -1557,12 +1628,12 @@ namespace components::sql::transform {
 
         // A bare column keeps the fast validity-bitmap path in the predicate operator.
         if (nodeTag(node->arg) == T_ColumnRef || nodeTag(node->arg) == T_A_Indirection) {
-            VALUE_OR_RETURN(auto key, node_to_field(resource_, pg_ptr_cast<Node>(node->arg), names));
+            VALUE_OR_RETURN(auto key, node_to_field(resource_, pg_ptr_cast<Node>(node->arg), context.names));
             return make_compare_expression(resource_, cmp, key.field, param_id);
         }
 
         // A computed argument — `(expr) IS NULL`
-        VALUE_OR_RETURN(auto operand, transform_a_expr_operand(pg_ptr_cast<Node>(node->arg), names, plan));
+        VALUE_OR_RETURN(auto operand, transform_expression(pg_ptr_cast<Node>(node->arg), context));
         return make_compare_expression(resource_, cmp, operand, param_id);
     }
 

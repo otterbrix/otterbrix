@@ -36,7 +36,7 @@ namespace otterbrix {
     expression_wrapper_t expression_factory_t::sort_expression(const std::string& arg) {
         auto* resource = space->dispatcher()->resource();
         return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(
-            make_sort_expression(expressions::key_t(resource, arg), sort_order::asc)));
+            make_sort_expression(resource, expressions::key_t(resource, arg), sort_order::asc)));
     }
 
     namespace {
@@ -49,7 +49,7 @@ namespace otterbrix {
                                                                                        sort_order order) {
         auto* resource = space->dispatcher()->resource();
         if (arg.is_key()) {
-            return expression_wrapper_t(make_sort_expression(arg.key(), order));
+            return expression_wrapper_t(make_sort_expression(resource, arg.key(), order));
         }
         if (arg.is_expression()) {
             if (arg.expression()->group() == expression_group::sort) {

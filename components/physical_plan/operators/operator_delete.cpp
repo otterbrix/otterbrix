@@ -23,7 +23,7 @@ namespace components::operators {
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
-                                     std::pmr::vector<select_column_t> returning,
+                                     std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
                                      std::int64_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::remove)

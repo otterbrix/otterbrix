@@ -26,6 +26,7 @@ namespace services::dispatcher::validation {
         const named_schema* schema_right{nullptr};
         // Resolved GROUP BY key paths
         const std::pmr::vector<std::pmr::vector<size_t>>* group_key_paths{nullptr};
+        components::types::complex_logical_type required_type{components::types::logical_type::ANY};
     };
 
     [[nodiscard]] core::error_t resolve_expression(components::expressions::expression_ptr& expression,

@@ -618,7 +618,8 @@ namespace components::sql::transform {
                             core::error_code_t::unimplemented_yet,
                             std::pmr::string{"ORDER BY over UNION supports only column references", resource_});
                     }
-                    sort_exprs.emplace_back(make_sort_expression(field.field,
+                    sort_exprs.emplace_back(make_sort_expression(resource_,
+                                                                 field.field,
                                                                  is_desc ? sort_order::desc : sort_order::asc,
                                                                  map_sortby_nulls(sortby->sortby_nulls)));
                 }
@@ -737,45 +738,11 @@ namespace components::sql::transform {
                         args.reserve(func->args->lst.size());
                         // Note: AGGREGATE(*) invokes parameterless aggregate (agg_star is set to true)
                         for (const auto& arg : func->args->lst) {
-                            auto arg_value = pg_ptr_cast<Node>(arg.data);
-                            if (nodeTag(arg_value) == T_ColumnRef) {
-                                VALUE_OR_RETURN(
-                                    auto key,
-                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_value), names));
-                                args.emplace_back(std::move(key.field));
-                            } else if (nodeTag(arg_value) == T_A_Expr) {
-                                auto sub = pg_ptr_cast<A_Expr>(arg_value);
-                                if (sub->kind == AEXPR_OP &&
-                                    is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                    VALUE_OR_RETURN(auto arith, transform_a_expr_arithmetic(sub, names, plan));
-                                    args.emplace_back(std::move(arith));
-                                } else {
-                                    VALUE_OR_RETURN(auto param, add_param_value(arg_value, plan->parameters.get()));
-                                    args.emplace_back(param);
-                                }
-                            } else if (nodeTag(arg_value) == T_A_Indirection) {
-                                // sum(v[2]) / sum((s).f): an indirection over a column reference is
-                                // still a column, not a constant — reading it as one made the whole
-                                // statement fail to parse.
-                                VALUE_OR_RETURN(auto key, node_to_field(resource_, arg_value, names));
-                                args.emplace_back(std::move(key.field));
-                            } else if (nodeTag(arg_value) == T_FuncCall) {
-                                VALUE_OR_RETURN(auto call,
-                                                transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, plan));
-                                args.emplace_back(std::move(call));
-                            } else if (nodeTag(arg_value) == T_CaseExpr) {
-                                // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
-                                VALUE_OR_RETURN(auto case_expr,
-                                                case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),
-                                                                    nullptr,
-                                                                    names,
-                                                                    plan,
-                                                                    select_node));
-                                args.emplace_back(std::move(case_expr));
-                            } else {
-                                VALUE_OR_RETURN(auto param, add_param_value(arg_value, plan->parameters.get()));
-                                args.emplace_back(param);
-                            }
+                            logical_plan::node_ptr arg_scope = select_node;
+                            VALUE_OR_RETURN(
+                                auto resolved,
+                                resolve_select_operand(pg_ptr_cast<Node>(arg.data), names, plan, arg_scope));
+                            args.emplace_back(std::move(resolved));
                         }
 
                         // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...)
@@ -841,6 +808,13 @@ namespace components::sql::transform {
                                 std::pmr::vector<std::pmr::string> star_path{resource_};
                                 star_path.emplace_back(std::pmr::string{col.table, resource_});
                                 star_path.emplace_back(std::pmr::string{"*", resource_});
+                                if (res->name) {
+                                    // `AS` names one column; a star stands for however many the
+                                    // table has, so there is nothing for the name to attach to.
+                                    return core::error_t(
+                                        core::error_code_t::sql_parse_error,
+                                        std::pmr::string{"a column alias cannot be given to '*'", resource_});
+                                }
                                 select_node->append_expression(
                                     make_scalar_expression(resource_,
                                                            scalar_type::star_expand,
@@ -991,13 +965,12 @@ namespace components::sql::transform {
                                                                             a_expr->lexpr) {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
-                                VALUE_OR_RETURN(auto lhs, resolve_select_operand(a_expr->lexpr, names, plan, sel_node));
-                                VALUE_OR_RETURN(auto rhs, resolve_select_operand(a_expr->rexpr, names, plan, sel_node));
-                                auto compare = make_compare_expression(resource_, compare_op, lhs, rhs);
-                                compare->set_key(
-                                    expressions::key_t{resource_,
-                                                       res->name ? std::string{res->name} : std::string{op_str}});
-                                select_node->append_expression(compare);
+                                VALUE_OR_RETURN(auto operand, resolve_select_operand(res->val, names, plan, sel_node));
+                                auto expr = as_expression(std::move(operand));
+                                if (res->name) {
+                                    expr->key() = expressions::key_t{resource_, res->name};
+                                }
+                                select_node->append_expression(std::move(expr));
                                 break;
                             }
                             if (is_jsonb_nav_operator(op_str)) {
@@ -1026,9 +999,16 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"Unknown A_Expr kind in field clause", resource_});
+                        // Every other operator spelling yields a boolean
+                        has_non_star = true;
+                        logical_plan::node_ptr operator_node = select_node;
+                        VALUE_OR_RETURN(auto operand, resolve_select_operand(res->val, names, plan, operator_node));
+                        auto operator_expr = as_expression(std::move(operand));
+                        if (res->name) {
+                            operator_expr->key() = expressions::key_t{resource_, res->name};
+                        }
+                        select_node->append_expression(std::move(operator_expr));
+                        break;
                     }
                     case T_A_Indirection: {
                         auto* indirection = pg_ptr_cast<A_Indirection>(res->val);
@@ -1081,67 +1061,26 @@ namespace components::sql::transform {
                     }
                     case T_CoalesceExpr: {
                         has_non_star = true;
-                        auto* coalesce = pg_ptr_cast<CoalesceExpr>(res->val);
-                        std::string expr_name;
-                        if (res->name) {
-                            expr_name = res->name;
-                        } else {
-                            expr_name = "coalesce";
-                        }
-                        auto expr = make_scalar_expression(resource_,
-                                                           scalar_type::coalesce,
-                                                           expressions::key_t{resource_, std::move(expr_name)});
                         logical_plan::node_ptr coalesce_node = select_node;
-                        for (auto& arg_item : coalesce->args->lst) {
-                            auto arg_node = pg_ptr_cast<Node>(arg_item.data);
-                            VALUE_OR_RETURN(auto arg, resolve_select_operand(arg_node, names, plan, coalesce_node));
-                            expr->append_param(std::move(arg));
+                        VALUE_OR_RETURN(auto operand, resolve_select_operand(res->val, names, plan, coalesce_node));
+                        auto expr = as_expression(std::move(operand));
+                        if (res->name) {
+                            expr->key() = expressions::key_t{resource_, res->name};
                         }
-                        select_node->append_expression(expr);
+                        select_node->append_expression(std::move(expr));
                         break;
                     }
-                    case T_SubLink: {
-                        auto sub = pg_ptr_cast<SubLink>(res->val);
-                        if (sub->subLinkType != EXPR_SUBLINK) {
-                            // ARRAY(SELECT ...) / EXISTS(...) / other sub-link kinds projected in the SELECT
-                            // list are not yet supported (deferred, tracked in #559); only a scalar
-                            // EXPR_SUBLINK is handled. Report it clearly rather than as an "unknown node type".
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"unsupported subquery in the SELECT list; only a scalar subquery "
-                                                 "is supported",
-                                                 resource_});
-                        }
+                    default: {
                         has_non_star = true;
-                        // Scalar sub-query as a projected value: flatten it into a sub-query whose single
-                        // compacted result binds to a parameter, then project that parameter as a constant
-                        // column (read live at execution; a NULL/0-row result is typed from the sub-query's
-                        // output types). Save/restore the pending internal-aggregate stash so the
-                        // inner transform's clear() does not drop this level's aggregates.
-                        auto param_id =
-                            plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
-                        auto prev_pending = std::move(pending_internal_aggs_);
-                        pending_internal_aggs_.clear();
-                        auto sub_node = transform(*sub->subselect, plan);
-                        pending_internal_aggs_ = std::move(prev_pending);
-                        if (sub_node.has_error()) {
-                            return sub_node.error();
+                        logical_plan::node_ptr sel_node = select_node;
+                        VALUE_OR_RETURN(auto operand, resolve_select_operand(res->val, names, plan, sel_node));
+                        auto expr = as_expression(std::move(operand));
+                        if (res->name) {
+                            expr->key() = expressions::key_t{resource_, res->name};
                         }
-                        plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
-                        plan->sub_queries.emplace_back(std::move(sub_node.value()));
-                        auto expr = make_scalar_expression(resource_,
-                                                           scalar_type::constant,
-                                                           res->name ? expressions::key_t{resource_, res->name}
-                                                                     : expressions::key_t{resource_});
-                        expr->append_param(param_id);
-                        select_node->append_expression(expr);
+                        select_node->append_expression(std::move(expr));
                         break;
                     }
-                    default:
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"Unknown node type in field clause: " +
-                                                                  node_tag_to_string(nodeTag(res->val)),
-                                                              resource_});
                 }
             }
 
@@ -1440,83 +1379,30 @@ namespace components::sql::transform {
                 // Unary plus is the identity: strip every `+`-layer and dispatch on what remains
                 // (`+v` sorts as v, `+(a+b)` as the expression, `+2` as the positional constant).
                 // A unary operator arrives as A_Expr{op, lexpr = NULL, rexpr = operand}.
-                Node* sort_node = sortby->node;
-                while (sort_node && nodeTag(sort_node) == T_A_Expr) {
-                    auto* plus = pg_ptr_cast<A_Expr>(sort_node);
-                    if (plus->lexpr != nullptr || !plus->name || plus->name->lst.empty() ||
-                        std::string_view(strVal(plus->name->lst.front().data)) != "+") {
-                        break;
-                    }
-                    sort_node = plus->rexpr;
-                }
+                // Unary plus is the identity: `+v` sorts as v, `+2` as the positional constant.
+                Node* sort_node = strip_unary_plus(sortby->node);
                 if (!sort_node) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"ORDER BY operator is missing its operand", resource_});
                 }
-                if (nodeTag(sort_node) == T_ColumnRef) {
-                    VALUE_OR_RETURN(auto field,
-                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sort_node), names));
-                    sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
-                } else if (nodeTag(sort_node) == T_A_Indirection) {
-                    VALUE_OR_RETURN(auto res,
-                                    indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sort_node), names));
-                    column_ref_t field = std::move(res);
-                    sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
-                } else if (nodeTag(sort_node) == T_A_Expr) {
-                    // Arithmetic ORDER BY: encode as scalar_expression_t with sort order in key.path()[0]
-                    // (0 = ascending, 1 = descending) and the NULLS placement in key.path()[1]
-                    // (0 = default, 1 = first, 2 = last). create_plan_sort detects this and builds a
-                    // computed sort-key spec instead of a regular sort key.
-                    auto a_expr = pg_ptr_cast<A_Expr>(sort_node);
-                    if (!a_expr->name || a_expr->name->lst.empty()) {
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"Unsupported operator in ORDER BY", resource_});
-                    }
-                    auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
-                    if (!is_arithmetic_operator(op_str)) {
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"Unsupported operator in ORDER BY", resource_});
-                    }
-                    // A unary operator carries its operand in rexpr only; after `+`-stripping the
-                    // only arithmetic one left is negation, evaluated as the one-operand
-                    // scalar_type::unary_minus (never as a one-legged binary subtract).
-                    const bool is_unary = a_expr->lexpr == nullptr;
-                    if (!a_expr->rexpr || (is_unary && op_str != "-")) {
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"Unsupported operator in ORDER BY", resource_});
-                    }
-                    auto stype = is_unary ? expressions::scalar_type::unary_minus : get_arithmetic_scalar_type(op_str);
-                    expressions::key_t order_key(resource_);
-                    order_key.set_path({is_desc ? size_t(1) : size_t(0), static_cast<size_t>(null_ord)});
-                    auto computed_sort = make_scalar_expression(resource_, stype, std::move(order_key));
-                    // Resolve operands (without appending to any node — purely for sort)
-                    logical_plan::node_ptr dummy_node = group; // resolve_select_operand needs a node_ptr
-                    if (!is_unary) {
-                        VALUE_OR_RETURN(auto lhs, resolve_select_operand(a_expr->lexpr, names, plan, dummy_node));
-                        computed_sort->append_param(std::move(lhs));
-                    }
-                    VALUE_OR_RETURN(auto rhs, resolve_select_operand(a_expr->rexpr, names, plan, dummy_node));
-                    computed_sort->append_param(std::move(rhs));
-                    sort_exprs.emplace_back(std::move(computed_sort));
-                } else if (nodeTag(sort_node) == T_A_Const) {
-                    // Positional `ORDER BY <n>`: map to the n-th output column of this SELECT.
-                    auto* value = &(pg_ptr_cast<A_Const>(sort_node)->val);
-                    if (nodeTag(value) != T_Integer) {
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"non-integer constant in ORDER BY", resource_});
-                    }
+                const auto order = is_desc ? sort_order::desc : sort_order::asc;
+                // `ORDER BY <n>` addresses the n-th output column instead of computing n.
+                if (nodeTag(sort_node) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(sort_node)->val) == T_Integer) {
                     column_ref_t field(resource_);
-                    RETURN_IF_ERROR(positional_sort_field(node.targetList, intVal(value), names, field));
-                    sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
-                } else {
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"Unknown node type in ORDER BY: " + node_tag_to_string(nodeTag(sort_node)),
-                                         resource_});
+                    RETURN_IF_ERROR(positional_sort_field(node.targetList,
+                                                          intVal(&pg_ptr_cast<A_Const>(sort_node)->val),
+                                                          names,
+                                                          field));
+                    sort_exprs.emplace_back(make_sort_expression(resource_, field.field, order, null_ord));
+                    continue;
                 }
+                // Everything else is an ordinary expression
+                logical_plan::node_ptr sort_scope = group;
+                VALUE_OR_RETURN(auto operand, resolve_select_operand(sort_node, names, plan, sort_scope));
+                if (!std::holds_alternative<expressions::key_t>(operand)) {
+                    operand = param_storage{as_expression(std::move(operand))};
+                }
+                sort_exprs.emplace_back(make_sort_expression(resource_, operand, order, null_ord));
             }
             agg->append_child(logical_plan::make_node_sort(resource_,
                                                            core::dbname_t{agg->dbname()},

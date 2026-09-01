@@ -402,6 +402,7 @@ namespace components::execution_dag {
             size_t input_column{std::numeric_limits<size_t>::max()};
             bool bound{false};
             bool typed{false};
+            bool constant{false};
         };
 
         node_id_t append(execution_node_ptr node);

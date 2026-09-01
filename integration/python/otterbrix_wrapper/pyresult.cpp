@@ -11,6 +11,7 @@ namespace otterbrix {
                              const std::vector<components::table::column_definition_t>& defs)
         : env(env)
         , result(std::move(result_p)) {
+        (void) this->env;
         if (!result) {
             throw std::runtime_error("PyResult created without a result object");
         }

@@ -25,6 +25,7 @@ namespace components::types {
         template<typename T>
         requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
+            (void) memory_ownership;
             std::memcpy(&data_, &value, sizeof(value));
         }
 
@@ -91,9 +92,9 @@ namespace components::types {
         }
 
         physical_type type_ = physical_type::NA;
-        [[maybe_unused]] bool memory_ownership = false; // for now is always false
-        uint32_t size_ = 0;                             // only for pointers
-        uint64_t data_ = 0;                             // buffer but allocated on a stack to make it trivially copyable
+        bool memory_ownership = false; // for now is always false
+        uint32_t size_ = 0;            // only for pointers
+        uint64_t data_ = 0;            // buffer but allocated on a stack to make it trivially copyable
     };
 
     static_assert(sizeof(physical_value) == 16);

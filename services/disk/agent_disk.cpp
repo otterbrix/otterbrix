@@ -44,7 +44,9 @@ namespace services::disk {
 #endif
 
     agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource, const path_t& path_db, log_t& log)
-        : agent_disk_t(resource, path_db, log, agent_role_t::CATALOG, 0) {}
+        : agent_disk_t(resource, path_db, log, agent_role_t::CATALOG, 0) {
+        (void) role_;
+    }
 
     agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
                                const path_t& path_db,
@@ -61,6 +63,7 @@ namespace services::disk {
         , storages_(resource)
         , active_scans_(resource)
         , dropped_storages_(resource) {
+        (void) role_;
         trace(log_,
               "agent_disk::create (role={}, pool_idx={})",
               role == agent_role_t::CATALOG ? "CATALOG" : "USER_POOL",

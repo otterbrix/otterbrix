@@ -109,6 +109,9 @@ namespace services::index {
         , dropped_table_agents_(resource)
         , disk_agents_per_oid_(resource)
         , pending_void_(resource) {
+        (void) bitcask_flush_threshold_;
+        (void) bitcask_segment_record_limit_;
+        (void) btree_flush_threshold_;
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
         }

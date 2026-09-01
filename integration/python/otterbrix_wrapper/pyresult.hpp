@@ -34,7 +34,7 @@ namespace otterbrix {
         bool is_closed() const;
 
     private:
-        [[maybe_unused]] py_connection_t* env;
+        py_connection_t* env;
 
         components::cursor::cursor_t_ptr result;
         std::vector<components::table::column_definition_t> columns;

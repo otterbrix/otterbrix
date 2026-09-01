@@ -87,7 +87,7 @@ namespace otterbrix {
     private:
         std::pmr::memory_resource* resource_;
         services::dispatcher::manager_dispatcher_t* manager_dispatcher_;
-        [[maybe_unused]] actor_zeta::scheduler_raw scheduler_;
+        actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         components::sql::parser::parser_extension_registry_t parser_extensions_;
         std::atomic_int i = 0;

@@ -613,7 +613,7 @@ namespace services::disk {
         core::filesystem::local_file_system_t fs_;
         file_ptr file_wal_id_;
 
-        agent_role_t role_;
+        [[maybe_unused]] agent_role_t role_;
         std::size_t pool_idx_;
 
         // This agent's storage slice (incomplete value type safe via the deferred

@@ -300,9 +300,9 @@ namespace services::index {
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         std::filesystem::path path_db_;
-        uint64_t bitcask_flush_threshold_{1000};
-        uint64_t bitcask_segment_record_limit_{100};
-        uint64_t btree_flush_threshold_{1000};
+        [[maybe_unused]] uint64_t bitcask_flush_threshold_{1000};
+        [[maybe_unused]] uint64_t bitcask_segment_record_limit_{100};
+        [[maybe_unused]] uint64_t btree_flush_threshold_{1000};
 
         // Per-collection in-memory index engines (keyed by table oid). Sole
         // owner — no engine state is shared with other actors. Populated by

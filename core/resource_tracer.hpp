@@ -7,7 +7,7 @@
 #include <mutex>
 #include <unordered_map>
 
-static size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
+static inline size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
 
 class resource_tracer_t final : public std::pmr::memory_resource {
 public:

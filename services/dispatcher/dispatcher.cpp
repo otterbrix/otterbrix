@@ -500,6 +500,20 @@ namespace services::dispatcher {
         }
     }
 
+    void manager_dispatcher_t::seed_default_timezone_sync(std::string_view name) {
+        if (name.empty()) {
+            return;
+        }
+        if (auto err = default_tz_cat_.set_timezone(resource(), name); err.contains_error()) {
+            warn(log_,
+                 "manager_dispatcher_t::seed_default_timezone_sync , persisted timezone '{}' rejected: {}",
+                 name,
+                 err.what);
+            return;
+        }
+        trace(log_, "manager_dispatcher_t::seed_default_timezone_sync , restored session timezone {}", name);
+    }
+
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        components::logical_plan::execution_plan_t plan) {

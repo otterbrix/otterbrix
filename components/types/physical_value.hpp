@@ -91,9 +91,9 @@ namespace components::types {
         }
 
         physical_type type_ = physical_type::NA;
-        bool memory_ownership = false; // for now is always false
-        uint32_t size_ = 0;            // only for pointers
-        uint64_t data_ = 0;            // buffer but allocated on a stack to make it trivially copyable
+        [[maybe_unused]] bool memory_ownership = false; // for now is always false
+        uint32_t size_ = 0;                             // only for pointers
+        uint64_t data_ = 0;                             // buffer but allocated on a stack to make it trivially copyable
     };
 
     static_assert(sizeof(physical_value) == 16);

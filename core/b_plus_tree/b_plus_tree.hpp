@@ -248,8 +248,8 @@ namespace core::b_plus_tree {
         first_leaf->unlock_shared();
 
         while (first_leaf) {
-            for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+            for (auto block = first_leaf->cbegin(); block != first_leaf->cend(); block++) {
+                for (auto it = block->cbegin(); it != block->cend(); it++) {
                     T t = deserializer(reinterpret_cast<void*>(it->item.data), it->item.size);
                     if (predicate(it->index, t)) {
                         result->emplace_back(std::move(t));

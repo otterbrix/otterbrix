@@ -1130,7 +1130,7 @@ namespace components::sql::transform {
                         if (sub_node.has_error()) {
                             return sub_node.error();
                         }
-                        plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                        plan->sub_query_results.push_back({&vector::compact_to_single_value, param_id});
                         plan->sub_queries.emplace_back(std::move(sub_node.value()));
                         auto expr = make_scalar_expression(resource_,
                                                            scalar_type::constant,
@@ -1257,7 +1257,7 @@ namespace components::sql::transform {
                     auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
                     auto param_exists =
                         plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
-                    plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_exists);
+                    plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_exists});
                     if (body && body->type() == logical_plan::node_type::aggregate_t) {
                         const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());
                         const auto& rel = static_cast<const std::string&>(body_agg->relname());

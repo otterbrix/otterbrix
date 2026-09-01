@@ -21,7 +21,7 @@ namespace components::table {
     class row_group_segment_tree_t : public segment_tree_t<row_group_t, true> {
     public:
         explicit row_group_segment_tree_t(collection_t& collection);
-        ~row_group_segment_tree_t() override = default;
+        ~row_group_segment_tree_t() override;
 
     protected:
         collection_t& collection_;

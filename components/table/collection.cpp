@@ -15,6 +15,9 @@ namespace components::table {
         , current_row_group_(0)
         , max_row_group_(0) {}
 
+    // because of linking issues default has to be written here
+    row_group_segment_tree_t::~row_group_segment_tree_t() = default;
+
     collection_t::collection_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                std::pmr::vector<types::complex_logical_type> types,

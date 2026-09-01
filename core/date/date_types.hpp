@@ -143,4 +143,10 @@ namespace core::date {
         return interval_total(a) == interval_total(b);
     }
 
+    inline interval_t operator*(interval_t iv, double f) noexcept {
+        return {microseconds{std::llround(static_cast<double>(iv.time.count()) * f)},
+                days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) * f))},
+                months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) * f))}};
+    }
+
 } // namespace core::date

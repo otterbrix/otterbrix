@@ -5,8 +5,7 @@
 namespace components::catalog {
     table_id::table_id(std::pmr::memory_resource* resource, const qualified_name_t& full_name)
         : namespace_parts_(resource)
-        , name_(full_name.collection)
-        , resource_(resource) {
+        , name_(full_name.collection) {
         // Storage order is database-first (see header); empty parts omitted.
         if (!full_name.database.empty()) {
             namespace_parts_.emplace_back(full_name.database.c_str());

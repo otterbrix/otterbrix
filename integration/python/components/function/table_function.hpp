@@ -13,7 +13,7 @@
 #include <vector>
 
 namespace components::tableref {
-    class table_ref_t;
+    struct table_ref_t;
 } // namespace components::tableref
 
 namespace components::function {

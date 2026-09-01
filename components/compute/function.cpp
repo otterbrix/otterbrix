@@ -360,9 +360,8 @@ namespace components::compute {
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (!function) {
-            core::error_t(core::error_code_t::function_registry_error,
-
-                          std::pmr::string{"Cannot add null function", resource_});
+            return core::error_t(core::error_code_t::function_registry_error,
+                                 std::pmr::string{"Cannot add null function", resource_});
         }
 
         auto uid = current_uid_++;

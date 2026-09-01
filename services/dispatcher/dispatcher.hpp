@@ -135,6 +135,9 @@ namespace services::dispatcher {
         // is not started yet. Idempotent (never lowers either half).
         void seed_commit_clock_sync(uint64_t high_water);
 
+        // Restore default_tz_cat_ from the TimeZone persisted in pg_settings
+        void seed_default_timezone_sync(std::string_view name);
+
         // Like the on_drop_resource_marked() mailbox handler but usable before
         // scheduler.start: base_spaces calls these after rebuilding the dropped-
         // resource queues so the first post-start horizon advance broadcasts

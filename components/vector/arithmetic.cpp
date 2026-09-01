@@ -450,12 +450,6 @@ namespace components::vector {
             }
         }
 
-        inline core::date::interval_t scale_interval(core::date::interval_t iv, double f) noexcept {
-            return {core::date::microseconds{std::llround(static_cast<double>(iv.time.count()) * f)},
-                    core::date::days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) * f))},
-                    core::date::months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) * f))}};
-        }
-
         template<typename T>
         void scale_ivl_vec(const ivl_ro& ivl, ivl_rw& out, const T* factors, bool divide, uint64_t count) noexcept {
             for (uint64_t i = 0; i < count; i++) {

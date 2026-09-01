@@ -1745,8 +1745,6 @@ namespace components::types {
         }
 
         switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return op<abs<>>(value, &logical_value_t::value<bool>);
             case logical_type::UTINYINT:
             case logical_type::USMALLINT:
             case logical_type::UINTEGER:

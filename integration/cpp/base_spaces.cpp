@@ -162,6 +162,8 @@ namespace otterbrix {
             // load_storage_for_wal_replay_sync on demand; resolve_table lazy-loads
             // anything still missing. Startup is O(system-tables).
             disk_ptr->bootstrap_system_tables_sync();
+            // Restore stored timezone
+            manager_dispatcher_->seed_default_timezone_sync(disk_ptr->read_setting_sync("TimeZone"));
             // Walk config_.path for user-table .otbx files and load each.
             // Loaded storages bring their .otbx.wal_id sidecar into memory,
             // so the WAL-replay filter below can correctly skip

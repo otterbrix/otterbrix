@@ -50,7 +50,7 @@ namespace {
                         chunk.set_value(c, r, static_cast<int32_t>(r + 1));
                         break;
                     case types::logical_type::DOUBLE:
-                        chunk.set_value(c, r, 100.5 * (r + 1));
+                        chunk.set_value(c, r, 100.5 * static_cast<double>(r + 1));
                         break;
                     default:
                         chunk.set_value(c, r, std::string_view{std::string("n_") + std::to_string(r)});

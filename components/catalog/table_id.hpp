@@ -38,7 +38,6 @@ namespace components::catalog {
     private:
         table_namespace_t namespace_parts_;
         std::pmr::string name_;
-        std::pmr::memory_resource* resource_;
         oid_t oid_{INVALID_OID};
     };
 } // namespace components::catalog

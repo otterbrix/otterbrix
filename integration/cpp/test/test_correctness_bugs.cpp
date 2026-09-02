@@ -1889,3 +1889,46 @@ TEST_CASE("integration::cpp::correctness_bugs::subscript_update_of_null_list_cel
     REQUIRE(only.children().size() == 1);
     CHECK(only.children()[0].value<int32_t>() == 7);
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::list_equality_respects_length") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/list_equality_length");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto rows = [&](const std::string& sql) {
+        auto cur = test_helpers::exec(dispatcher, sql);
+        REQUIRE(cur);
+        INFO(sql);
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, ARRAY[1,2]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, ARRAY[1,2,3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (3, ARRAY[1,2,3,4]);")->is_success());
+
+    // A shared prefix is not equality: length is part of the value. Matching only the front would
+    // make every one of these match its longer neighbours.
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2];") == 1);
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2,3];") == 1);
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2,3,4];") == 1);
+    // A prefix that matches nothing in full length matches no row at all.
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1];") == 0);
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2,3,4,5];") == 0);
+    CHECK(rows("SELECT id FROM db.l WHERE v <> ARRAY[1,2];") == 2);
+
+    // Ordering falls back to length once the shared prefix is equal.
+    CHECK(rows("SELECT id FROM db.l WHERE v < ARRAY[1,2,3];") == 1);
+    CHECK(rows("SELECT id FROM db.l WHERE v > ARRAY[1,2,3];") == 1);
+
+    // Column against column, so neither side is a literal.
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.pair (a INT[], b INT[]);")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.pair (a, b) VALUES (ARRAY[1,2], ARRAY[1,2,3]);")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.pair (a, b) VALUES (ARRAY[5,6], ARRAY[5,6]);")->is_success());
+    CHECK(rows("SELECT a FROM db.pair WHERE a = b;") == 1);
+    CHECK(rows("SELECT a FROM db.pair WHERE a <> b;") == 1);
+}

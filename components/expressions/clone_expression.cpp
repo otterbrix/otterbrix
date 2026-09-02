@@ -73,7 +73,11 @@ namespace components::expressions {
             }
             case expression_group::sort: {
                 const auto* src = static_cast<const sort_expression_t*>(expr.get());
-                copy = make_sort_expression(src->key(), src->order(), src->null_order());
+                copy = make_sort_expression(resource,
+                                            clone_param(resource, src->operand()),
+                                            src->order(),
+                                            src->null_order());
+                copy->key() = src->key();
                 break;
             }
             case expression_group::function: {

@@ -20,6 +20,27 @@ namespace components::sql::parser {
 } // namespace components::sql::parser
 
 namespace components::sql::transform {
+
+    // There are some differences for expression parsing, depending on where it is placed
+    enum class expression_placement_t
+    {
+        call,
+        select,
+        bind
+    };
+
+    struct expression_context_t {
+        const name_collection_t& names;
+        logical_plan::execution_plan_t* plan;
+
+        expression_placement_t aggregates = expression_placement_t::call;
+        logical_plan::node_ptr group = nullptr;
+        // Temp placeholder, because documents still use casts as column selection
+        bool cast_annotates_key = false;
+        // Set when an operand is ARRAY(SELECT ...)
+        bool* array_operand = nullptr;
+    };
+
     class transformer {
     public:
         explicit transformer(std::pmr::memory_resource* resource,
@@ -140,13 +161,23 @@ namespace components::sql::transform {
 
         // Arithmetic expression: returns scalar_expression_t
         core::result_wrapper_t<expressions::expression_ptr>
-        transform_a_expr_arithmetic(A_Expr* node,
-                                    const name_collection_t& names,
-                                    logical_plan::parameter_node_t* params);
+        transform_a_expr_arithmetic(A_Expr* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
+
+        core::result_wrapper_t<expressions::param_storage> transform_expression(Node* node,
+                                                                                const expression_context_t& context);
+
+        // A param_storage in expression position.
+        expressions::expression_ptr as_expression(expressions::param_storage operand);
 
         // Resolve any node to param_storage for arithmetic operand
         core::result_wrapper_t<expressions::param_storage>
-        transform_a_expr_operand(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+        transform_a_expr_operand(Node* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
+
+        core::result_wrapper_t<expressions::expression_ptr>
+        lower_operator_function(A_Expr* node,
+                                std::string_view op,
+                                operator_function_t function,
+                                const expression_context_t& context);
 
         // Handle T_A_Expr in SELECT target list (may contain aggregates)
         core::error_t transform_select_a_expr(A_Expr* node,
@@ -169,7 +200,7 @@ namespace components::sql::transform {
                                                                                   logical_plan::node_ptr& group);
 
         core::result_wrapper_t<expressions::expression_ptr>
-        transform_a_expr_func(FuncCall* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+        transform_a_expr_func(FuncCall* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         // Lower an aggregate FILTER (WHERE p) clause by wrapping each aggregate argument in a CASE:
         //   agg(x)   FILTER (WHERE p)  ->  agg(CASE WHEN p THEN x END)
@@ -258,8 +289,8 @@ namespace components::sql::transform {
                                logical_plan::parameter_node_t* params,
                                std::string_view op);
 
-        core::result_wrapper_t<expressions::expression_ptr>
-        transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+        core::result_wrapper_t<expressions::expression_ptr> transform_null_test(NullTest* node,
+                                                                                const expression_context_t& context);
 
         core::result_wrapper_t<logical_plan::node_ptr>
         transform_function(RangeFunction& node, const name_collection_t& names, logical_plan::parameter_node_t* params);
@@ -300,7 +331,7 @@ namespace components::sql::transform {
         transform_from_source(List* from_items, name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         core::result_wrapper_t<expressions::expression_ptr>
-        transform_update_expr(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+        transform_update_expr(Node* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         core::result_wrapper_t<std::string> get_str_value(Node* node);
 

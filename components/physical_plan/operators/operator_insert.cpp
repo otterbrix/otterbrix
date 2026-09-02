@@ -26,7 +26,7 @@ namespace components::operators {
     operator_insert::operator_insert(std::pmr::memory_resource* resource,
                                      log_t log,
                                      catalog::oid_t table_oid,
-                                     std::pmr::vector<select_column_t> returning)
+                                     std::pmr::vector<projected_column_t> returning)
         : read_write_operator_t(resource, log, operator_type::insert)
         , table_oid_(table_oid)
         , returning_(std::move(returning)) {}

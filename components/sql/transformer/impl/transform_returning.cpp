@@ -16,70 +16,50 @@ namespace components::sql::transform {
         }
         for (auto target : returning_list->lst) {
             auto* res = pg_ptr_cast<ResTarget>(target.data);
-            switch (nodeTag(res->val)) {
-                case T_ColumnRef: {
-                    auto* col_ref = pg_ptr_cast<ColumnRef>(res->val);
-                    // RETURNING *
-                    if (col_ref->fields->lst.size() == 1 && nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
-                        out.push_back(
-                            make_scalar_expression(resource_, scalar_type::star_expand, expressions::key_t{resource_}));
-                        break;
-                    }
+            if (nodeTag(res->val) == T_ColumnRef) {
+                auto* col_ref = pg_ptr_cast<ColumnRef>(res->val);
+                // RETURNING *
+                if (col_ref->fields->lst.size() == 1 && nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
+                    out.push_back(
+                        make_scalar_expression(resource_, scalar_type::star_expand, expressions::key_t{resource_}));
+                    continue;
+                }
+                if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
                     VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                     // RETURNING table.* — carry the table qualifier so the validator
                     // can expand it by result_alias.
-                    if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
+                    if (!col.table.empty()) {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
                         star_path.emplace_back(std::pmr::string{col.table, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
                         out.push_back(make_scalar_expression(resource_,
                                                              scalar_type::star_expand,
                                                              expressions::key_t{std::move(star_path)}));
-                        break;
+                        continue;
                     }
-                    if (res->name) {
-                        // Carry the deduced side onto the output-alias key so the
-                        // validator resolves the column against the right schema.
-                        expressions::key_t out_key{resource_, res->name};
-                        out_key.set_side(col.field.side());
-                        out.push_back(
-                            make_scalar_expression(resource_, scalar_type::get_field, std::move(out_key), col.field));
-                    } else {
-                        out.push_back(make_scalar_expression(resource_, scalar_type::get_field, col.field));
-                    }
-                    break;
                 }
-                case T_A_Expr: {
-                    auto* a_expr = pg_ptr_cast<A_Expr>(res->val);
-                    if (a_expr->kind == AEXPR_OP && a_expr->name && !a_expr->name->lst.empty() &&
-                        is_arithmetic_operator(strVal(a_expr->name->lst.front().data))) {
-                        VALUE_OR_RETURN(auto expr, transform_a_expr_arithmetic(a_expr, names, plan->parameters.get()));
-                        if (res->name) {
-                            static_cast<scalar_expression_t*>(expr.get())->key() =
-                                expressions::key_t{resource_, res->name};
-                        }
-                        out.push_back(std::move(expr));
-                        break;
-                    }
-                    return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string{"unsupported expression in RETURNING clause", resource_});
-                }
-                case T_A_Const:
-                case T_TypeCast:
-                case T_ParamRef: {
-                    auto expr = make_scalar_expression(resource_,
-                                                       scalar_type::constant,
-                                                       res->name ? expressions::key_t{resource_, res->name}
-                                                                 : expressions::key_t{resource_});
-                    VALUE_OR_RETURN(auto param, add_param_value(res->val, plan->parameters.get()));
-                    expr->append_param(param);
-                    out.push_back(std::move(expr));
-                    break;
-                }
-                default:
-                    return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string{"unsupported expression in RETURNING clause", resource_});
             }
+            VALUE_OR_RETURN(auto operand, transform_expression(res->val, expression_context_t{names, plan}));
+            const bool reads_column = std::holds_alternative<expressions::key_t>(operand);
+            if (res->name) {
+                expressions::key_t out_key{resource_, res->name};
+                if (reads_column) {
+                    // Carry the deduced side onto the output-alias key so the
+                    // validator resolves the column against the right schema.
+                    out_key.set_side(std::get<expressions::key_t>(operand).side());
+                }
+                auto expr = as_expression(std::move(operand));
+                expr->key() = std::move(out_key);
+                out.push_back(std::move(expr));
+                continue;
+            }
+            // Unaliased, a bare column names its output after the column it reads.
+            if (reads_column) {
+                out.push_back(
+                    make_scalar_expression(resource_, scalar_type::get_field, std::get<expressions::key_t>(operand)));
+                continue;
+            }
+            out.push_back(as_expression(std::move(operand)));
         }
         return out;
     }

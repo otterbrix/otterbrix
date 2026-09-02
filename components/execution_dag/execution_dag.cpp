@@ -636,6 +636,7 @@ namespace components::execution_dag {
 
     node_id_t execution_dag_t::add_parameter(core::parameter_id_t id) {
         auto output = declare_slot();
+        slots_[output].constant = true;
         return append(new parameter_node_t(resource_, id, output));
     }
 
@@ -1045,8 +1046,10 @@ namespace components::execution_dag {
                                                 const graph_execution_context& context) {
         // strings are allocated on extenal heaps (basically an arena)
         // and that will allocate new memory for each batch if not reset
-        for (auto& slot : data_storage_) {
-            slot.reset_string_heap();
+        for (size_t index = 0; index < data_storage_.size(); index++) {
+            if (!slots_[index].constant) {
+                data_storage_[index].reset_string_heap();
+            }
         }
         if (auto error = bind_inputs(input); error.contains_error()) {
             return error;

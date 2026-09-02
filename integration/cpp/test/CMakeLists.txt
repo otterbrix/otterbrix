@@ -82,6 +82,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_hash_join.cpp
         test_star_join_e2e.cpp
         test_returning.cpp
+        test_expression_matrix.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp

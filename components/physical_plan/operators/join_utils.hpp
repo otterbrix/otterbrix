@@ -104,6 +104,8 @@ namespace components::operators::join_detail {
         // out vector, so the operator re-seats this per call; the PENDING chunk is
         // unaffected and keeps filling across them.
         void set_output(chunks_vector_t* out) noexcept { out_ = out; }
+        // Whether this builder has pushed any chunk since construction
+        [[nodiscard]] bool emitted() const noexcept { return emitted_; }
 
         void emit_matched(const vector::data_chunk_t& L, uint64_t li, const vector::data_chunk_t& R, uint64_t rj);
 
@@ -144,6 +146,7 @@ namespace components::operators::join_detail {
         const std::vector<size_t>& indices_right_;
         const std::vector<size_t>& active_indices_;
         chunks_vector_t* out_ = nullptr;
+        bool emitted_ = false;
 
         // The pending output chunk, held in a one-element vector: data_chunk_t has no
         // empty state to use as a sentinel and no default constructor, and the vector's

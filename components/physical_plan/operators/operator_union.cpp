@@ -119,6 +119,15 @@ namespace components::operators {
             return; // nothing to emit and no schema to type an empty result with
         }
 
+        const size_t emitted_before = out_chunks.size();
+        auto emit_shape_if_silent = [&]() {
+            if (out_chunks.size() == emitted_before) {
+                vector::data_chunk_t empty(res, types, 0);
+                empty.set_cardinality(0);
+                out_chunks.emplace_back(std::move(empty));
+            }
+        };
+
         if (all_) {
             auto copy_all = [&](const chunks_vector_t& src_chunks) {
                 for (const auto& chunk : src_chunks) {
@@ -135,6 +144,7 @@ namespace components::operators {
             };
             copy_all(left_chunks);
             copy_all(right_chunks);
+            emit_shape_if_silent();
             return;
         }
 
@@ -183,6 +193,7 @@ namespace components::operators {
         for (const auto& chunk : right_chunks) {
             process(chunk);
         }
+        emit_shape_if_silent();
     }
 
     core::error_t operator_union_t::push(pipeline::context_t*, vector::data_chunk_t&&, chunks_vector_t&) {

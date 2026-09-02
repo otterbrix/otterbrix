@@ -106,6 +106,7 @@ set( ${PROJECT_NAME}_SOURCES
         # TODO: casts for dynamic schema
         # test_jsonb_support.cpp
         test_select_intermediate.cpp
+        test_empty_result_schema.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

@@ -77,6 +77,9 @@ namespace components::operators {
             return;
         }
         auto types = schema->types();
+        if (shape_.empty()) {
+            shape_.assign(types.begin(), types.end());
+        }
 
         vector::data_chunk_t cur(res, types, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t filled = 0;
@@ -86,6 +89,7 @@ namespace components::operators {
             }
             cur.set_cardinality(filled);
             out.emplace_back(std::move(cur));
+            note_emitted();
             cur = vector::data_chunk_t(res, types, vector::DEFAULT_VECTOR_CAPACITY);
             filled = 0;
         };
@@ -138,8 +142,15 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    core::error_t operator_distinct_t::finalize(pipeline::context_t*, chunks_vector_t&) {
-        // push() already emitted every distinct row as it arrived; nothing buffered.
+    core::error_t operator_distinct_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        // push() already emitted every distinct row as it arrived; nothing buffered. What may be
+        // outstanding is the columns themselves, when no row survived (or none arrived).
+        if (emitted() || shape_.empty()) {
+            return core::error_t::no_error();
+        }
+        vector::data_chunk_t empty(resource_, shape_, 0);
+        empty.set_cardinality(0);
+        out.emplace_back(std::move(empty));
         return core::error_t::no_error();
     }
 

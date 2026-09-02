@@ -50,6 +50,9 @@ namespace components::operators {
         // DISTINCT ON key subset (empty ⇒ whole-row dedup). Set via set_on_keys by the planner.
         std::pmr::vector<size_t> on_keys_;
 
+        // captured schema, in case result is empty
+        std::pmr::vector<types::complex_logical_type> shape_{resource_};
+
         // The shared dedup core: for each row of each chunk, hash it, verify against the
         // retained rows, and on first occurrence copy the row into `out` (chunks of
         // <= DEFAULT_VECTOR_CAPACITY) AND into retained_. Output preserves input order.

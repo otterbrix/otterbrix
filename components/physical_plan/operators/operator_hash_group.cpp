@@ -256,12 +256,8 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_group_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
-        // GROUP BY over an empty input has no groups, so it emits no rows at all — whereas an
-        // implicit GROUP BY () is ONE group that owes its identity row (SELECT COUNT(*) FROM
-        // empty) even though nothing arrived.
-        if (!keys_.empty() && group_count_ == 0) {
-            return core::error_t::no_error();
-        }
+        // GROUP BY over an empty input has no groups, so it emits no ROWS — but it still emits its columns
+        const bool no_groups = !keys_.empty() && group_count_ == 0;
         if (!plan_built_) {
             // The source drained before a single chunk arrived, so the graph was never built. It
             // still has to exist to emit that one row, over the schema the plan resolved.
@@ -274,9 +270,11 @@ namespace components::operators {
                 return error;
             }
         }
-        group_count_ = std::max<uint64_t>(group_count_, 1);
-        if (auto error = graph_->reserve_groups(group_count_); error.contains_error()) {
-            return error;
+        if (!no_groups) {
+            group_count_ = std::max<uint64_t>(group_count_, 1);
+            if (auto error = graph_->reserve_groups(group_count_); error.contains_error()) {
+                return error;
+            }
         }
 
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
@@ -284,7 +282,9 @@ namespace components::operators {
         for (auto slot : graph_->output_slots()) {
             out_types.push_back(graph_->slot_type(slot));
         }
-        if (output_types_.size() == out_types.size()) {
+        // size and types will match, but alias may change, so we just copy it just in case
+        if (!output_types_.empty()) {
+            assert(output_types_.size() == out_types.size() && "group output width disagrees with the plan");
             out_types = output_types_;
         }
 
@@ -308,6 +308,13 @@ namespace components::operators {
                 return error;
             }
             batch.set_cardinality(count);
+            out.emplace_back(std::move(batch));
+            note_emitted();
+        }
+
+        if (!emitted()) {
+            vector::data_chunk_t batch(resource_, out_types, 0);
+            batch.set_cardinality(0);
             out.emplace_back(std::move(batch));
         }
         return core::error_t::no_error();

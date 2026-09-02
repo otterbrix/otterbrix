@@ -1464,6 +1464,40 @@ TEST_CASE("integration::cpp::correctness_bugs::order_by_array_subscript") {
     CHECK(cur->value(0, 0).value<int64_t>() == 2);
     CHECK(cur->value(0, 1).value<int64_t>() == 3);
     CHECK(cur->value(0, 2).value<int64_t>() == 1);
+
+    // The key above always has a value, so it says nothing about the shapes where a subscript has
+    // none: a LIST row too short to reach it, a NULL element, or a NULL cell. All three sort as
+    // NULL — last for ASC, first for DESC.
+    auto order = [&](const std::string& sql) {
+        auto rows = test_helpers::exec(dispatcher, sql);
+        REQUIRE(rows);
+        INFO(sql);
+        REQUIRE(rows->is_success());
+        std::vector<int64_t> ids;
+        for (uint64_t row = 0; row < rows->size(); ++row) {
+            ids.push_back(rows->value(0, row).value<int64_t>());
+        }
+        return ids;
+    };
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher,
+                               "INSERT INTO db.l (id, v) VALUES (1, ARRAY[10,30]), (2, ARRAY[20,10]), "
+                               "(3, ARRAY[30]), (4, NULL), (5, ARRAY[5,NULL]);")
+                ->is_success());
+    CHECK(order("SELECT id FROM db.l ORDER BY v[2] ASC;") == std::vector<int64_t>{2, 1, 3, 4, 5});
+    CHECK(order("SELECT id FROM db.l ORDER BY v[2] DESC;") == std::vector<int64_t>{3, 4, 5, 1, 2});
+    CHECK(order("SELECT id FROM db.l ORDER BY v[1] ASC;") == std::vector<int64_t>{5, 1, 2, 3, 4});
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.a (id BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher,
+                               "INSERT INTO db.a (id, v) VALUES (1, ARRAY[10,30,0]), (2, ARRAY[20,10,0]), "
+                               "(3, ARRAY[30,NULL,0]), (4, NULL);")
+                ->is_success());
+    CHECK(order("SELECT id FROM db.a ORDER BY v[2] ASC;") == std::vector<int64_t>{2, 1, 3, 4});
+    CHECK(order("SELECT id FROM db.a ORDER BY v[2] DESC;") == std::vector<int64_t>{3, 4, 1, 2});
+    // An explicit NULLS FIRST overrides the ASC default.
+    CHECK(order("SELECT id FROM db.a ORDER BY v[2] ASC NULLS FIRST;") == std::vector<int64_t>{3, 4, 2, 1});
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column") {

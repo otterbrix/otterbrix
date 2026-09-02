@@ -1809,3 +1809,83 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
     REQUIRE(subquery_projection->size() == 1);
     CHECK(subquery_projection->value(0, 0).value<int64_t>() == 7);
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::out_of_bounds_subscript_update_extends") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/oob_subscript_update");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, ARRAY[10,20]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, ARRAY[30,40,50]);")->is_success());
+
+    // Assigning past the end used to skip the row silently while reporting it as updated. It now
+    // extends the list, filling the gap between the old end and the new element with NULLs.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[5] = 77 WHERE id = 1;")->is_success());
+
+    auto grown = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(grown->is_success());
+    REQUIRE(grown->size() == 1);
+    auto value = grown->value(0, 0);
+    REQUIRE(value.children().size() == 5);
+    CHECK(value.children()[0].value<int32_t>() == 10);
+    CHECK(value.children()[1].value<int32_t>() == 20);
+    // The gap EXISTS and is NULL — distinct from being absent.
+    CHECK(value.children()[2].is_null());
+    CHECK(value.children()[3].is_null());
+    CHECK_FALSE(value.children()[4].is_null());
+    CHECK(value.children()[4].value<int32_t>() == 77);
+
+    // An untouched row keeps its own length: the rebuild re-lays out every row.
+    auto untouched = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 2;");
+    REQUIRE(untouched->is_success());
+    auto other = untouched->value(0, 0);
+    REQUIRE(other.children().size() == 3);
+    CHECK(other.children()[0].value<int32_t>() == 30);
+    CHECK(other.children()[2].value<int32_t>() == 50);
+
+    // An in-range subscript still writes in place, without changing the length.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[2] = 99 WHERE id = 2;")->is_success());
+    auto in_range = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 2;");
+    REQUIRE(in_range->is_success());
+    auto updated = in_range->value(0, 0);
+    REQUIRE(updated.children().size() == 3);
+    CHECK(updated.children()[0].value<int32_t>() == 30);
+    CHECK(updated.children()[1].value<int32_t>() == 99);
+    CHECK(updated.children()[2].value<int32_t>() == 50);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::subscript_update_of_null_list_cell") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/subscript_null_cell");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, NULL);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, NULL);")->is_success());
+
+    // A NULL cell is an empty list: assigning into it materialises the list rather than leaving the
+    // row untouched while reporting it as updated.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[3] = 42 WHERE id = 1;")->is_success());
+    auto grown = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(grown->is_success());
+    REQUIRE(grown->size() == 1);
+    auto value = grown->value(0, 0);
+    REQUIRE_FALSE(value.is_null());
+    REQUIRE(value.children().size() == 3);
+    CHECK(value.children()[0].is_null());
+    CHECK(value.children()[1].is_null());
+    CHECK_FALSE(value.children()[2].is_null());
+    CHECK(value.children()[2].value<int32_t>() == 42);
+
+    // The very first element of a NULL cell is the same rule with no gap to fill.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[1] = 7 WHERE id = 2;")->is_success());
+    auto single = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 2;");
+    REQUIRE(single->is_success());
+    auto only = single->value(0, 0);
+    REQUIRE_FALSE(only.is_null());
+    REQUIRE(only.children().size() == 1);
+    CHECK(only.children()[0].value<int32_t>() == 7);
+}

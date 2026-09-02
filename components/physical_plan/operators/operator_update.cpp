@@ -55,7 +55,7 @@ namespace components::operators {
 
             // A nested path addresses one element inside the column's flat child vector.
             if (target.path().size() > 1) {
-                const vector::vector_t* parent = &out_chunk.data[target.path().front()];
+                vector::vector_t* parent = &out_chunk.data[target.path().front()];
                 for (size_t depth = 1; depth + 1 < target.path().size(); ++depth) {
                     parent = parent->entries()[target.path()[depth]].get();
                 }
@@ -67,16 +67,62 @@ namespace components::operators {
                     return core::error_t::no_error();
                 }
                 if (parent->type().type() == types::logical_type::LIST) {
-                    const auto* offlen = parent->data<types::list_entry_t>();
-                    for (uint64_t row = 0; row < count; ++row) {
-                        if (element_index >= offlen[row].length) {
-                            continue;
+                    auto* offlen = parent->data<types::list_entry_t>();
+                    const uint64_t needed = element_index + 1;
+                    // A NULL cell is an empty list, so it holds nothing and always needs building.
+                    auto held = [&](uint64_t row) { return parent->is_null(row) ? uint64_t{0} : offlen[row].length; };
+                    bool extends = false;
+                    for (uint64_t row = 0; row < count && !extends; ++row) {
+                        extends = held(row) < needed;
+                    }
+
+                    // Every row already holds that element: write it where it lies.
+                    if (!extends) {
+                        for (uint64_t row = 0; row < count; ++row) {
+                            vector::vector_ops::copy(new_values,
+                                                     *col_vec,
+                                                     row + 1,
+                                                     row,
+                                                     offlen[row].offset + element_index);
                         }
-                        vector::vector_ops::copy(new_values,
-                                                 *col_vec,
-                                                 row + 1,
-                                                 row,
-                                                 offlen[row].offset + element_index);
+                        return core::error_t::no_error();
+                    }
+
+                    // Assigning past the end extends the list, the gap filled with NULLs
+                    auto* resource = out_chunk.resource();
+                    const auto& old_elements = parent->entry();
+                    uint64_t total = 0;
+                    for (uint64_t row = 0; row < count; ++row) {
+                        total += std::max<uint64_t>(held(row), needed);
+                    }
+
+                    vector::vector_t staged(resource, old_elements.type(), total);
+                    std::pmr::vector<types::list_entry_t> layout(count, types::list_entry_t{0, 0}, resource);
+                    uint64_t cursor = 0;
+                    for (uint64_t row = 0; row < count; ++row) {
+                        const auto previous = offlen[row];
+                        const uint64_t have = held(row);
+                        if (have > 0) {
+                            vector::vector_ops::copy(old_elements,
+                                                     staged,
+                                                     previous.offset + have,
+                                                     previous.offset,
+                                                     cursor);
+                        }
+                        for (uint64_t gap = have; gap < element_index; ++gap) {
+                            staged.set_null(cursor + gap, true);
+                        }
+                        vector::vector_ops::copy(new_values, staged, row + 1, row, cursor + element_index);
+                        // parent now is not null
+                        parent->set_null(row, false);
+                        layout[row] = types::list_entry_t{cursor, std::max<uint64_t>(have, needed)};
+                        cursor += layout[row].length;
+                    }
+
+                    parent->set_list_size(0);
+                    parent->append(staged, total, 0);
+                    for (uint64_t row = 0; row < count; ++row) {
+                        offlen[row] = layout[row];
                     }
                     return core::error_t::no_error();
                 }

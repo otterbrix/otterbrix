@@ -153,6 +153,7 @@ namespace components::operators {
                             continue;
                         }
                         col_vec->append(elements, slice.offset + slice.length, slice.offset);
+                        col_vec->set_null(row, false);
                         row_entries[row] = types::list_entry_t{target_offset, slice.length};
                         target_offset += slice.length;
                     }
@@ -183,6 +184,7 @@ namespace components::operators {
                     for (uint64_t j = copied; j < target_stride; ++j) {
                         target_child.set_null(row * target_stride + j, true);
                     }
+                    col_vec->set_null(row, false);
                 }
                 return core::error_t::no_error();
             }

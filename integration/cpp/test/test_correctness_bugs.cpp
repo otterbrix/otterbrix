@@ -1932,3 +1932,46 @@ TEST_CASE("integration::cpp::correctness_bugs::list_equality_respects_length") {
     CHECK(rows("SELECT a FROM db.pair WHERE a = b;") == 1);
     CHECK(rows("SELECT a FROM db.pair WHERE a <> b;") == 1);
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::whole_array_update_over_null_row") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/whole_array_over_null");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.a (id BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, NULL);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, NULL);")->is_success());
+
+    // Assigning a whole array over a NULL row must clear the cell's NULL: the elements were written
+    // underneath it, so a stale NULL discarded the assignment entirely.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v = ARRAY[1,2,3] WHERE id = 1;")->is_success());
+    auto list_row = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(list_row->is_success());
+    auto list_value = list_row->value(0, 0);
+    REQUIRE_FALSE(list_value.is_null());
+    REQUIRE(list_value.children().size() == 3);
+    CHECK(list_value.children()[0].value<int32_t>() == 1);
+    CHECK(list_value.children()[2].value<int32_t>() == 3);
+
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.a SET v = ARRAY[1,2,3] WHERE id = 1;")->is_success());
+    auto array_row = test_helpers::exec(dispatcher, "SELECT v FROM db.a WHERE id = 1;");
+    REQUIRE(array_row->is_success());
+    auto array_value = array_row->value(0, 0);
+    REQUIRE_FALSE(array_value.is_null());
+    REQUIRE(array_value.children().size() == 3);
+    CHECK(array_value.children()[0].value<int32_t>() == 1);
+    CHECK(array_value.children()[2].value<int32_t>() == 3);
+
+    // The reverse still works: assigning NULL over a populated row makes the cell NULL again.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v = NULL WHERE id = 1;")->is_success());
+    auto cleared_list = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(cleared_list->is_success());
+    CHECK(cleared_list->value(0, 0).is_null());
+
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.a SET v = NULL WHERE id = 1;")->is_success());
+    auto cleared_array = test_helpers::exec(dispatcher, "SELECT v FROM db.a WHERE id = 1;");
+    REQUIRE(cleared_array->is_success());
+    CHECK(cleared_array->value(0, 0).is_null());
+}

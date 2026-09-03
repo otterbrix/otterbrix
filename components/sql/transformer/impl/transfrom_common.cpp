@@ -258,7 +258,11 @@ namespace components::sql::transform {
             case T_TypeCast: {
                 auto* cast = pg_ptr_cast<TypeCast>(node);
                 const auto kind = cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast;
-                if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                if (!cast->arg) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"cast is missing its operand", resource_});
+                }
+                if (nodeTag(cast->arg) == T_ColumnRef) {
                     VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
                     VALUE_OR_RETURN(auto col, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names));
                     if (context.cast_annotates_key) {
@@ -270,7 +274,7 @@ namespace components::sql::transform {
                                                                              casts::cast_t{},
                                                                              kind)}};
                 }
-                if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
+                if (nodeTag(cast->arg) == T_A_Expr) {
                     auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
                     if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
                         is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
@@ -290,8 +294,8 @@ namespace components::sql::transform {
                                                                                  kind)}};
                     }
                 }
-                if (context.cast_annotates_key && cast->arg && nodeTag(cast->arg) == T_A_Const) {
-                    VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
+                VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
+                if (nodeTag(cast->arg) == T_A_Const) {
                     VALUE_OR_RETURN(auto value, get_value(resource_, node));
                     const bool converts = value.type() != target_type;
                     param_storage bound{params->add_parameter(std::move(value))};
@@ -302,14 +306,9 @@ namespace components::sql::transform {
                     return param_storage{
                         expression_ptr{make_cast_expression(resource_, bound, target_type, casts::cast_t{}, kind)}};
                 }
-                if (cast->arg && nodeTag(cast->arg) != T_A_Const) {
-                    VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
-                    VALUE_OR_RETURN(auto operand, recurse(cast->arg));
-                    return param_storage{
-                        expression_ptr{make_cast_expression(resource_, operand, target_type, casts::cast_t{}, kind)}};
-                }
-                VALUE_OR_RETURN(auto param, add_param_value(node, params));
-                return param;
+                VALUE_OR_RETURN(auto operand, recurse(cast->arg));
+                return param_storage{
+                    expression_ptr{make_cast_expression(resource_, operand, target_type, casts::cast_t{}, kind)}};
             }
             case T_A_Expr: {
                 auto* sub = pg_ptr_cast<A_Expr>(node);

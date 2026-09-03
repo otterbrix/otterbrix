@@ -897,7 +897,15 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-                        [[fallthrough]];
+                        has_non_star = true;
+                        logical_plan::node_ptr cast_node = select_node;
+                        VALUE_OR_RETURN(auto cast_operand, resolve_select_operand(res->val, names, plan, cast_node));
+                        auto cast_expr = as_expression(std::move(cast_operand));
+                        if (res->name) {
+                            cast_expr->key() = expressions::key_t{resource_, res->name};
+                        }
+                        select_node->append_expression(std::move(cast_expr));
+                        break;
                     }
                     case T_A_Const: {
                         has_non_star = true;

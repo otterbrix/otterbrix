@@ -146,8 +146,11 @@ TEST_CASE("integration::cpp::select_rework::cast applied to an arithmetic result
 
     auto cursor = run(d, "SELECT CAST(x + 1 AS BIGINT) AS v FROM sel.f64 ORDER BY x;");
     REQUIRE(cursor->is_success());
-    CHECK(cursor->size() == 2);
-    CHECK(column_count(cursor) == 1);
+    REQUIRE(cursor->size() == 2);
+    REQUIRE(column_count(cursor) == 1);
+    CHECK(cursor->chunks().front().data[0].type().type() == components::types::logical_type::BIGINT);
+    CHECK(numeric_at(cursor, 0) == Catch::Approx(-1.0));
+    CHECK(numeric_at(cursor, 1) == Catch::Approx(4.0));
 }
 
 TEST_CASE("integration::cpp::select_rework::two columns of different types unify") {
@@ -279,8 +282,70 @@ TEST_CASE("integration::cpp::select_rework::cast on column, on literal and on re
 
     auto cursor = run(d, "SELECT CAST(abs(x + 1) AS DOUBLE PRECISION) AS v FROM sel.i16 ORDER BY x;");
     REQUIRE(cursor->is_success());
-    CHECK(cursor->size() == 2);
-    CHECK(column_count(cursor) == 1);
+    REQUIRE(cursor->size() == 2);
+    REQUIRE(column_count(cursor) == 1);
+    CHECK(cursor->chunks().front().data[0].type().type() == components::types::logical_type::DOUBLE);
+    CHECK(numeric_at(cursor, 0) == Catch::Approx(1.0));
+    CHECK(numeric_at(cursor, 1) == Catch::Approx(4.0));
+}
+
+TEST_CASE("integration::cpp::select_rework::cast of a literal folds into the target type") {
+    auto config = make_test_config("/tmp/test_select_rework/literal_cast");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    // A cast over a literal folds at parse time, so it has to fold INTO the target type:
+    // a fold that reads the literal in its own type and keeps the target only as a label
+    // hands back a column whose declared type and contents disagree.
+    auto rounded = run(d, "SELECT 1.9::INT AS v;");
+    REQUIRE(rounded->is_success());
+    REQUIRE(rounded->size() == 1);
+    REQUIRE(column_count(rounded) == 1);
+    CHECK(rounded->chunks().front().data[0].type().type() == components::types::logical_type::INTEGER);
+    CHECK(numeric_at(rounded, 0) == Catch::Approx(2.0));
+
+    auto spelled_out = run(d, "SELECT CAST(1.4 AS INT) AS v;");
+    REQUIRE(spelled_out->is_success());
+    REQUIRE(spelled_out->size() == 1);
+    REQUIRE(column_count(spelled_out) == 1);
+    CHECK(spelled_out->chunks().front().data[0].type().type() == components::types::logical_type::INTEGER);
+    CHECK(numeric_at(spelled_out, 0) == Catch::Approx(1.0));
+
+    // TRUE and FALSE reach the transformer as a cast of 't'/'f' to bool, so they travel this
+    // same path. The fold lands on the target type by itself and owes no conversion.
+    auto flag = run(d, "SELECT true AS v;");
+    REQUIRE(flag->is_success());
+    REQUIRE(flag->size() == 1);
+    REQUIRE(column_count(flag) == 1);
+    CHECK(bool_at(flag, 0));
+
+    auto flag_as_number = run(d, "SELECT false::INT AS v;");
+    REQUIRE(flag_as_number->is_success());
+    REQUIRE(flag_as_number->size() == 1);
+    REQUIRE(column_count(flag_as_number) == 1);
+    CHECK(flag_as_number->chunks().front().data[0].type().type() == components::types::logical_type::INTEGER);
+    CHECK(numeric_at(flag_as_number, 0) == Catch::Approx(0.0));
+}
+
+TEST_CASE("integration::cpp::select_rework::a stored literal cast survives as a predicate operand") {
+    auto config = make_test_config("/tmp/test_select_rework/literal_cast_stored");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(run(d, "CREATE DATABASE lit;")->is_success());
+    REQUIRE(run(d, "CREATE TABLE lit.t (id BIGINT, v INT);")->is_success());
+    REQUIRE(run(d, "INSERT INTO lit.t (id, v) VALUES (1, 1.9::INT);")->is_success());
+
+    auto stored = run(d, "SELECT v FROM lit.t WHERE id = 1;");
+    REQUIRE(stored->is_success());
+    REQUIRE(stored->size() == 1);
+    REQUIRE(column_count(stored) == 1);
+    CHECK(stored->chunks().front().data[0].type().type() == components::types::logical_type::INTEGER);
+    CHECK(numeric_at(stored, 0) == Catch::Approx(2.0));
+
+    // The value the cast produced has to be the value a predicate matches against.
+    auto matched = run(d, "SELECT id FROM lit.t WHERE v = 2;");
+    REQUIRE(matched->is_success());
+    CHECK(matched->size() == 1);
 }
 
 TEST_CASE("integration::cpp::select_rework::several computed columns keep their own slots") {

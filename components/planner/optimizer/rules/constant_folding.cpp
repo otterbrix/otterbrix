@@ -71,6 +71,14 @@ namespace components::planner::optimizer {
                 return false;
             }
 
+            // TODO: return an error
+            // For now it will results in an error during processing
+            if (op == arithmetic_op::divide || op == arithmetic_op::mod) {
+                if (right_val == logical_value_t{resource, right_val.type()}) {
+                    return false;
+                }
+            }
+
             // TODO: this is even worse than using logical_value_t...
             // TODO(L4): skipped — the only non-throwing alternatives are this 1-element-vector
             // boxing or a brand-new scalar arithmetic helper (a new abstraction, forbidden).

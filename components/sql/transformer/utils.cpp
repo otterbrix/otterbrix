@@ -792,6 +792,14 @@ namespace components::sql::transform {
             return right;
         }
 
+        if (op_str == "/" || op_str == "%") {
+            const auto& divisor = right.value();
+            if (!divisor.is_null() && divisor == types::logical_value_t{resource, divisor.type()}) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"division by zero", resource});
+            }
+        }
+
         if (op_str == "+")
             return types::logical_value_t::sum(left.value(), right.value());
         if (op_str == "-")

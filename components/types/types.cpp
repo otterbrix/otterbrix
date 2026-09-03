@@ -1,10 +1,11 @@
 #include "types.hpp"
 #include "logical_value.hpp"
 
+#include <concepts>
+
 #include <cassert>
 
 namespace components::types {
-
     namespace {
         std::array<physical_type, 256> make_physical_type_table() {
             std::array<physical_type, 256> t{};
@@ -63,6 +64,20 @@ namespace components::types {
                 throw std::runtime_error("can not create decimal with width bigger than: " +
                                          std::to_string(static_cast<int>(max_width_128)));
             }
+        }
+
+        template<typename Extension>
+        concept typed_extension =
+            std::derived_from<Extension, logical_type_extension> && requires {
+                { Extension::kind } -> std::convertible_to<logical_type_extension::extension_type>;
+            };
+
+        template<typed_extension Extension>
+        Extension* extension_cast(logical_type_extension* extension) {
+            if (extension == nullptr || extension->type() != Extension::kind) {
+                return nullptr;
+            }
+            return static_cast<Extension*>(extension);
         }
     } // anonymous namespace
 
@@ -347,7 +362,13 @@ namespace components::types {
 
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
+        const auto& fields = child_types();
+        assert(index < fields.size());
+        if (index >= fields.size()) {
+            static const std::string no_name;
+            return no_name;
+        }
+        return fields[index].alias();
     }
 
     bool complex_logical_type::is_unnamed() const { return extension_->alias().empty(); }
@@ -395,17 +416,17 @@ namespace components::types {
 
     const complex_logical_type& complex_logical_type::child_type() const {
         assert(type_ == logical_type::ARRAY || type_ == logical_type::LIST || type_ == logical_type::MAP);
-        if (type_ == logical_type::ARRAY) {
-            return static_cast<array_logical_type_extension*>(extension_.get())->internal_type();
+        if (auto* array = extension_cast<array_logical_type_extension>(extension_.get())) {
+            return array->internal_type();
         }
-        if (type_ == logical_type::LIST) {
-            return static_cast<list_logical_type_extension*>(extension_.get())->node();
+        if (auto* list = extension_cast<list_logical_type_extension>(extension_.get())) {
+            return list->node();
         }
-        if (type_ == logical_type::MAP) {
+        if (auto* map = extension_cast<map_logical_type_extension>(extension_.get())) {
             // MAP is physically a LIST of struct<"key", "value">.
-            return static_cast<map_logical_type_extension*>(extension_.get())->node();
+            return map->node();
         }
-
+        assert(false && "complex_logical_type::child_type: tag has no matching extension");
         return INVALID_TYPE;
     }
 
@@ -422,8 +443,15 @@ namespace components::types {
                 complex_logical_type{logical_type::INTEGER}};
             return interval_fields;
         }
-        assert(extension_);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+        auto* fields = extension_cast<struct_logical_type_extension>(extension_.get());
+        assert(fields && "complex_logical_type::child_types: type is not a STRUCT");
+        if (fields == nullptr) {
+            // Shared because nothing in the tree mutates through this overload;
+            // the assert above is what catches misuse in a Debug build.
+            static std::pmr::vector<complex_logical_type> no_children;
+            return no_children;
+        }
+        return fields->child_types();
     }
 
     const std::pmr::vector<complex_logical_type>& complex_logical_type::child_types() const {
@@ -440,8 +468,14 @@ namespace components::types {
                 complex_logical_type{logical_type::INTEGER}};
             return interval_fields;
         }
-        assert(extension_);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+        const auto* fields =
+            extension_cast<struct_logical_type_extension>(extension_.get());
+        assert(fields && "complex_logical_type::child_types: type is not a STRUCT");
+        if (fields == nullptr) {
+            static const std::pmr::vector<complex_logical_type> no_children;
+            return no_children;
+        }
+        return fields->child_types();
     }
 
     logical_type_extension* complex_logical_type::extension() const { return extension_.get(); }
@@ -509,8 +543,13 @@ namespace components::types {
             return true;
         }
         if (type_ == logical_type::STRUCT && other.type_ == logical_type::STRUCT) {
-            const auto* struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());
-            const auto* other_struct_ext = static_cast<const struct_logical_type_extension*>(other.extension_.get());
+            const auto* struct_ext =
+                extension_cast<struct_logical_type_extension>(extension_.get());
+            const auto* other_struct_ext =
+                extension_cast<struct_logical_type_extension>(other.extension_.get());
+            if (struct_ext == nullptr || other_struct_ext == nullptr) {
+                return false;
+            }
 
             if (struct_ext->child_types().size() != other_struct_ext->child_types().size()) {
                 return false;

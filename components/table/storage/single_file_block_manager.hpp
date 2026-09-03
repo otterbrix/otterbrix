@@ -15,7 +15,6 @@ namespace core::filesystem {
 } // namespace core::filesystem
 
 namespace components::table::storage {
-
     static constexpr uint64_t BLOCK_START = 3 * SECTOR_SIZE; // 12288
 
     struct main_header_t {
@@ -26,7 +25,7 @@ namespace components::table::storage {
         // is 4088, not 4096. The stride is NOT stored in the file (it is recomputed on open), so
         // a file written by an earlier build has its metadata chain read at the wrong offsets.
         // Such files are refused, not migrated.
-        static constexpr uint32_t CURRENT_VERSION = 0;
+        static constexpr uint32_t CURRENT_VERSION = 1;
 
         uint32_t magic;
         uint32_t version;
@@ -128,5 +127,4 @@ namespace components::table::storage {
         uint64_t iteration_{0};
         uint64_t meta_block_{INVALID_INDEX};
     };
-
 } // namespace components::table::storage

@@ -1,6 +1,7 @@
 #pragma once
 #include "column_data.hpp"
 #include "row_version_manager.hpp"
+#include "persistent_column_data.hpp"
 #include "storage/data_pointer.hpp"
 #include <optional>
 
@@ -9,7 +10,6 @@ namespace components::vector {
 }
 
 namespace components::table {
-
 #ifdef DEV_MODE
     // Test-observable count of STRING cells the late-materialisation gather would leave BORROWED
     // from a pin that dies with the gather while the result chunk outlives it (see the guard on
@@ -127,7 +127,7 @@ namespace components::table {
         // the row group pointer on success.
         [[nodiscard]] core::result_wrapper_t<storage::row_group_pointer_t>
         write_to_disk(storage::partial_block_manager_t& partial_block_manager);
-        void create_from_pointer(const storage::row_group_pointer_t& pointer);
+        [[nodiscard]] core::error_t create_from_pointer(const storage::row_group_pointer_t& pointer);
 
         // Write-through: re-point every COMPLETE managed column segment of this row group to a
         // disk-backed segment (call once the row group is closed -> its segments are final). No-op for

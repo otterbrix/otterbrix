@@ -1,9 +1,9 @@
 #include "manager_disk_impl.hpp"
 
 #include <charconv>
+#include <optional>
 
 namespace services::disk {
-
     using namespace core::filesystem;
     namespace catalog = components::catalog;
     using namespace detail;
@@ -606,6 +606,13 @@ namespace services::disk {
             std::int32_t attnum{0};
             std::string name;
             components::types::complex_logical_type type;
+            // Carried because the storage is what answers for them later: the agent fills an
+            // absent column from the STORAGE column's default at storage_append, and enforces
+            // NOT NULL against the STORAGE column. Dropping them here left a rehydrated table
+            // with neither, so a post-restart INSERT wrote NULL into a NOT NULL DEFAULT column
+            // without complaint (BUGS.md B-051 / #566.B1, #566.B2). The catalog holds both.
+            bool not_null{false};
+            std::optional<components::types::logical_value_t> default_value;
         };
         std::unordered_map<catalog::oid_t, std::vector<rehydrate_col_t>> cols_by_relid;
         {
@@ -614,7 +621,7 @@ namespace services::disk {
                 return;
             }
             auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
-            if (attr_table.column_count() < 9 || attr_table.calculate_size() == 0) {
+            if (attr_table.column_count() < 10 || attr_table.calculate_size() == 0) {
                 return;
             }
             std::unordered_set<catalog::oid_t> wanted(need_oids.begin(), need_oids.end());
@@ -665,6 +672,14 @@ namespace services::disk {
                                                   : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                         rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
                     }
+                    rc.not_null = !chunk.is_null(5, i) && chunk.get_value<bool>(5, i);
+                    if (!chunk.is_null(9, i)) {
+                        auto defspec_v = chunk.get_value<std::string_view>(9, i);
+                        if (!defspec_v.empty()) {
+                            rc.default_value =
+                                catalog::decode_default_spec(resource_, std::string{defspec_v});
+                        }
+                    }
                     if (!rc.name.empty() && !rc.type.has_alias()) {
                         rc.type.set_alias(rc.name);
                     }
@@ -687,7 +702,7 @@ namespace services::disk {
             std::vector<components::table::column_definition_t> defs;
             defs.reserve(cols.size());
             for (auto& c : cols) {
-                defs.emplace_back(c.name, c.type);
+                defs.emplace_back(c.name, c.type, c.not_null, std::move(c.default_value));
             }
             trace(log_,
                   "manager_disk_t::rehydrate_in_memory_user_storages_sync : oid={} cols={}",
@@ -1100,5 +1115,4 @@ namespace services::disk {
         }
         return last_value;
     }
-
 } // namespace services::disk

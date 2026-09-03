@@ -1,9 +1,9 @@
 #include "struct_column_data.hpp"
 
+#include "persistent_column_data.hpp"
 #include "row_group.hpp"
 
 namespace components::table {
-
     struct_column_data_t::struct_column_data_t(std::pmr::memory_resource* resource,
                                                storage::block_manager_t& block_manager,
                                                uint64_t column_index,
@@ -151,7 +151,7 @@ namespace components::table {
             }
             state.child_appends.push_back(std::move(child_append));
         }
-        return true;
+        return core::error_t::no_error();
     }
 
     core::result_wrapper_t<bool>
@@ -175,7 +175,7 @@ namespace components::table {
             }
         }
         count_ += count;
-        return true;
+        return core::error_t::no_error();
     }
 
     void struct_column_data_t::revert_append(int64_t start_row) {
@@ -214,7 +214,7 @@ namespace components::table {
                 return child;
             }
         }
-        return true;
+        return core::error_t::no_error();
     }
 
     core::result_wrapper_t<bool> struct_column_data_t::update_column(const std::vector<uint64_t>& column_path,
@@ -265,5 +265,36 @@ namespace components::table {
             sub_columns[i]->get_column_segment_info(row_group_index, col_path, result);
         }
     }
+
+    core::error_t
+    struct_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                                              persistent_column_data_t& persistent) {
+        for (auto& sub_column : sub_columns) {
+            auto child = sub_column->checkpoint(partial_block_manager);
+            if (child.has_error()) {
+                return child.error();
+            }
+            persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t
+    struct_column_data_t::initialize_children(const persistent_column_data_t& persistent_data) {
+        if (persistent_data.child_columns.size() != sub_columns.size()) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"column metadata: field count differs from the schema",
+                                                  resource()});
+        }
+        for (size_t i = 0; i < sub_columns.size(); i++) {
+            if (auto error = sub_columns[i]->initialize_column(*persistent_data.child_columns[i]);
+                error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    validity_column_data_t* struct_column_data_t::validity_column() { return &validity; }
 
 } // namespace components::table

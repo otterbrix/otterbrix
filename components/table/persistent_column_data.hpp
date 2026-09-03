@@ -13,12 +13,12 @@ namespace components::table::storage {
 } // namespace components::table::storage
 
 namespace components::table {
-
     struct persistent_column_data_t {
         explicit persistent_column_data_t(std::pmr::memory_resource* resource)
             : statistics(resource) {}
 
         std::vector<storage::data_pointer_t> data_pointers;
+        std::unique_ptr<persistent_column_data_t> validity;
         std::vector<std::unique_ptr<persistent_column_data_t>> child_columns;
         base_statistics_t statistics;
         std::vector<base_statistics_t> segment_statistics; // per-segment stats (parallel to data_pointers)
@@ -27,5 +27,16 @@ namespace components::table {
         static persistent_column_data_t deserialize(std::pmr::memory_resource* resource,
                                                     storage::metadata_reader_t& reader);
     };
-
 } // namespace components::table
+
+namespace components::table::storage {
+    struct row_group_pointer_t {
+        uint64_t row_start{0};
+        uint64_t tuple_count{0};
+        std::vector<persistent_column_data_t> columns;
+        std::vector<data_pointer_t> deletes_pointers;
+
+        void serialize(metadata_writer_t& writer) const;
+        static row_group_pointer_t deserialize(std::pmr::memory_resource* resource, metadata_reader_t& reader);
+    };
+} // namespace components::table::storage

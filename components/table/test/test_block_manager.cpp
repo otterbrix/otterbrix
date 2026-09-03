@@ -10,6 +10,7 @@
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -454,4 +455,31 @@ TEST_CASE("buffer_pool/standard_buffer_manager: set_memory_limit success returns
         REQUIRE_NOTHROW(r = env.buffer_manager.set_memory_limit(uint64_t(1) << 24));
         REQUIRE_FALSE(r.has_error());
     }
+}
+
+TEST_CASE("single_file_block_manager: a file written by another format version is refused") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+    }
+
+    // A file this build would accept becomes a file from a foreign format version by
+    // rewriting one word -- everything else about it stays valid, including the magic.
+    {
+        std::fstream file(test_db_path(), std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(file.is_open());
+        const uint32_t foreign_version = main_header_t::CURRENT_VERSION + 1;
+        file.seekp(static_cast<std::streamoff>(offsetof(main_header_t, version)));
+        file.write(reinterpret_cast<const char*>(&foreign_version), sizeof(foreign_version));
+        file.flush();
+        REQUIRE(file.good());
+    }
+
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    auto opened = bm.load_existing_database();
+    REQUIRE(opened.has_error());
 }

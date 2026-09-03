@@ -10,32 +10,68 @@ using namespace services::wal;
 using namespace components::types;
 using namespace components::vector;
 
-// encode_insert/encode_update now take a chunk batch; wrap a single chunk (deep copy).
-static std::pmr::vector<components::vector::data_chunk_t>
-to_chunk_batch(const components::vector::data_chunk_t& chunk) {
-    std::pmr::vector<components::vector::data_chunk_t> batch(chunk.resource());
-    components::vector::data_chunk_t copy(chunk.resource(), chunk.types(), chunk.size() == 0 ? 1 : chunk.size());
-    chunk.copy(copy, 0);
-    batch.emplace_back(std::move(copy));
-    return batch;
-}
+namespace {
+    // encode_insert/encode_update now take a chunk batch; wrap a single chunk (deep copy).
+    static std::pmr::vector<components::vector::data_chunk_t>
+    to_chunk_batch(const components::vector::data_chunk_t& chunk) {
+        std::pmr::vector<components::vector::data_chunk_t> batch(chunk.resource());
+        components::vector::data_chunk_t copy(chunk.resource(), chunk.types(), chunk.size() == 0 ? 1 : chunk.size());
+        chunk.copy(copy, 0);
+        batch.emplace_back(std::move(copy));
+        return batch;
+    }
 
-// WAL binary serialization supports fixed-size and STRING types.
-// ARRAY/LIST not yet supported in binary format — use explicit types.
-static std::pmr::vector<components::types::complex_logical_type> wal_test_types(std::pmr::memory_resource* r) {
-    using namespace components::types;
-    std::pmr::vector<complex_logical_type> types(r);
-    types.emplace_back(logical_type::BIGINT, "count");
-    types.emplace_back(logical_type::STRING_LITERAL, "count_str");
-    types.emplace_back(logical_type::DOUBLE, "count_double");
-    types.emplace_back(logical_type::BOOLEAN, "count_bool");
-    return types;
-}
+    // WAL binary serialization supports fixed-size and STRING types.
+    // ARRAY/LIST not yet supported in binary format — use explicit types.
+    static std::pmr::vector<components::types::complex_logical_type> wal_test_types(std::pmr::memory_resource* r) {
+        using namespace components::types;
+        std::pmr::vector<complex_logical_type> types(r);
+        types.emplace_back(logical_type::BIGINT, "count");
+        types.emplace_back(logical_type::STRING_LITERAL, "count_str");
+        types.emplace_back(logical_type::DOUBLE, "count_double");
+        types.emplace_back(logical_type::BOOLEAN, "count_bool");
+        return types;
+    }
 
-// WAL records carry table_oid (4 bytes) instead of (database, collection)
-// strings. Tests pass arbitrary oids to verify the round-trip; production code uses
-// the actual catalog OIDs.
-constexpr components::catalog::oid_t kTestTableOid = 16500;
+    // WAL records carry table_oid (4 bytes) instead of (database, collection)
+    // strings. Tests pass arbitrary oids to verify the round-trip; production code uses
+    // the actual catalog OIDs.
+    constexpr components::catalog::oid_t kTestTableOid = 16500;
+
+    std::string describe(const complex_logical_type& type) {
+        const auto* extension = type.extension();
+        std::string out = "tag=" + std::to_string(static_cast<int>(type.type())) +
+                          " ext=" + (extension ? std::to_string(static_cast<int>(extension->type())) : "<none>");
+        if (extension && extension->type() == logical_type_extension::extension_type::STRUCT) {
+            out += " children=" + std::to_string(type.child_types().size());
+        }
+        return out;
+    }
+
+    void check_type_header_roundtrip(std::pmr::memory_resource* resource, const complex_logical_type& column_type) {
+        std::pmr::vector<complex_logical_type> types(resource);
+        types.emplace_back(column_type);
+
+        data_chunk_t chunk(resource, types, 1);
+        chunk.set_cardinality(0);
+
+        buffer_t buffer(resource);
+        serialize_binary(chunk, buffer);
+        REQUIRE(buffer.size() > 0);
+
+        bool ok = false;
+        auto result = deserialize_binary(buffer.data(), buffer.size(), resource, ok);
+        REQUIRE(ok);
+        REQUIRE(result.column_count() == 1);
+
+        const auto& decoded = result.data[0].type();
+        INFO("in : " << describe(column_type));
+        INFO("out: " << describe(decoded));
+
+        REQUIRE(decoded == column_type);
+        REQUIRE(decoded.alias() == column_type.alias());
+    }
+} // namespace
 
 TEST_CASE("wal_binary::encode_decode_insert") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
@@ -279,4 +315,59 @@ TEST_CASE("wal_binary::data_chunk_binary_with_nulls") {
         REQUIRE(result.data[col].validity().row_is_valid(8));
         REQUIRE(result.data[col].validity().row_is_valid(9));
     }
+}
+
+TEST_CASE("wal_binary::type_header_generic") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    check_type_header_roundtrip(&resource, complex_logical_type(logical_type::BIGINT, "plain"));
+}
+
+TEST_CASE("wal_binary::type_header_array") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    check_type_header_roundtrip(
+        &resource,
+        complex_logical_type::create_array(complex_logical_type(logical_type::INTEGER), 3, "xs"));
+}
+
+TEST_CASE("wal_binary::type_header_decimal") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    check_type_header_roundtrip(&resource, complex_logical_type::create_decimal(18, 2, "price"));
+}
+
+TEST_CASE("wal_binary::type_header_struct") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    std::pmr::vector<complex_logical_type> fields(&resource);
+    fields.emplace_back(logical_type::STRING_LITERAL, "city");
+    fields.emplace_back(logical_type::STRING_LITERAL, "country");
+    check_type_header_roundtrip(&resource, complex_logical_type::create_struct("addr_t", fields, "a"));
+}
+
+TEST_CASE("wal_binary::type_header_list") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    check_type_header_roundtrip(&resource,
+                                complex_logical_type::create_list(complex_logical_type(logical_type::INTEGER), "xs"));
+}
+
+TEST_CASE("wal_binary::type_header_map") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    check_type_header_roundtrip(&resource,
+                                complex_logical_type::create_map(&resource,
+                                                                 complex_logical_type(logical_type::STRING_LITERAL),
+                                                                 complex_logical_type(logical_type::BIGINT),
+                                                                 "m"));
+}
+
+TEST_CASE("wal_binary::type_header_enum") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    std::vector<logical_value_t> entries;
+    entries.emplace_back(&resource, 0);
+    entries.back().set_alias("red");
+    entries.emplace_back(&resource, 1);
+    entries.back().set_alias("green");
+    check_type_header_roundtrip(&resource, complex_logical_type::create_enum("color_t", std::move(entries), "c"));
+}
+
+TEST_CASE("wal_binary::type_header_unknown") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    check_type_header_roundtrip(&resource, complex_logical_type::create_unknown("mystery_t", "u"));
 }

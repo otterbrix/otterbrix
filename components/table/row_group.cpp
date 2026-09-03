@@ -18,7 +18,6 @@
 #include <components/vector/vector_operations.hpp>
 
 namespace components::table {
-
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_gathered_borrowed_strings{0};
@@ -898,14 +897,14 @@ namespace components::table {
         pointer.tuple_count = count;
 
         auto col_count = get_column_count();
-        pointer.data_pointers.resize(col_count);
+        pointer.columns.reserve(col_count);
 
         for (uint64_t i = 0; i < col_count; i++) {
             auto persistent = columns_[i]->checkpoint(partial_block_manager);
             if (persistent.has_error()) {
                 return persistent.convert_error<storage::row_group_pointer_t>(); // out_of_memory
             }
-            pointer.data_pointers[i] = std::move(persistent.value().data_pointers);
+            pointer.columns.push_back(std::move(persistent.value()));
         }
 
         return pointer;
@@ -936,17 +935,20 @@ namespace components::table {
         return true;
     }
 
-    void row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
+    core::error_t row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
         count = pointer.tuple_count;
-        auto col_count = get_column_count();
-        auto ptrs_count = pointer.data_pointers.size();
-        auto min_count = std::min(col_count, static_cast<uint64_t>(ptrs_count));
-
-        for (uint64_t i = 0; i < min_count; i++) {
-            persistent_column_data_t pcd(columns_[i]->resource());
-            pcd.data_pointers = pointer.data_pointers[i];
-            columns_[i]->initialize_column(pcd);
+        const auto col_count = get_column_count();
+        if (pointer.columns.size() != col_count) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"row group metadata: column count differs from the schema",
+                                                  columns_.empty() ? std::pmr::get_default_resource()
+                                                                   : columns_[0]->resource()});
         }
+        for (uint64_t i = 0; i < col_count; i++) {
+            if (auto error = columns_[i]->initialize_column(pointer.columns[i]); error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
     }
-
 } // namespace components::table

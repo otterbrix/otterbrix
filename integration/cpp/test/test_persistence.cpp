@@ -11,6 +11,75 @@ using namespace components::types;
 
 static const database_name_t database_name = "testdatabase";
 
+namespace {
+    components::cursor::cursor_t_ptr run_sql(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& query) {
+        return dispatcher->execute_sql(otterbrix::session_id_t(), query);
+    }
+
+    void sql_ok(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& query) {
+        auto cur = run_sql(dispatcher, query);
+        INFO("query: " << query);
+        REQUIRE(cur->is_success());
+    }
+
+    std::string describe_type(const complex_logical_type& type) {
+        std::string out = "tag=" + std::to_string(static_cast<int>(type.type()));
+        const auto* extension = type.extension();
+        if (extension == nullptr) {
+            return out + " ext=<none>";
+        }
+        out += " ext=" + std::to_string(static_cast<int>(extension->type()));
+        using extension_kind = logical_type_extension::extension_type;
+        if (extension->type() == extension_kind::DECIMAL) {
+            const auto* decimal = type.extension_as<decimal_logical_type_extension>();
+            out += " width=" + std::to_string(static_cast<int>(decimal->width())) +
+                   " scale=" + std::to_string(static_cast<int>(decimal->scale()));
+        } else if (extension->type() == extension_kind::ARRAY) {
+            out += " size=" + std::to_string(type.extension_as<array_logical_type_extension>()->size());
+        } else if (extension->type() == extension_kind::STRUCT) {
+            out += " children=" + std::to_string(type.child_types().size());
+        }
+        return out;
+    }
+
+    void check_column_type_survives_reopen(const std::string& directory,
+                                           const std::string& column_definition,
+                                           const std::string& values,
+                                           const std::string& type_prelude = {}) {
+        auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/" + directory);
+        test_clear_directory(config);
+
+        std::string before;
+        {
+            test_spaces space(config);
+            auto* dispatcher = space.dispatcher();
+            sql_ok(dispatcher, "CREATE DATABASE " + database_name + ";");
+            if (!type_prelude.empty()) {
+                sql_ok(dispatcher, type_prelude);
+            }
+            sql_ok(dispatcher,
+                   "CREATE TABLE " + database_name + ".t (id bigint, c " + column_definition +
+                       ") WITH (storage = 'disk');");
+            sql_ok(dispatcher, "INSERT INTO " + database_name + ".t (id, c) VALUES " + values + ";");
+            sql_ok(dispatcher, "CHECKPOINT;");
+
+            auto cur = run_sql(dispatcher, "SELECT * FROM " + database_name + ".t;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->type_data().size() == 2);
+            before = describe_type(cur->type_data()[1]);
+        }
+        {
+            test_spaces space(config);
+            auto* dispatcher = space.dispatcher();
+            auto cur = run_sql(dispatcher, "SELECT * FROM " + database_name + ".t;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->type_data().size() == 2);
+            INFO("before=" << before << "  after=" << describe_type(cur->type_data()[1]));
+            REQUIRE(describe_type(cur->type_data()[1]) == before);
+        }
+    }
+} // namespace
+
 #define CHECK_FIND_SQL(QUERY, COUNT)                                                                                   \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
@@ -2369,5 +2438,141 @@ TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::decimal_type_survives_reopen") {
+    check_column_type_survives_reopen("type_decimal", "decimal(18,2)", "(1, 12.34)");
+}
+
+TEST_CASE("integration::cpp::test_persistence::array_type_survives_reopen") {
+    check_column_type_survives_reopen("type_array", "int[3]", "(1, ARRAY[1,2,3])");
+}
+
+TEST_CASE("integration::cpp::test_persistence::struct_type_survives_reopen") {
+    check_column_type_survives_reopen("type_struct",
+                                      "addr_t",
+                                      "(1, NULL)",
+                                      "CREATE TYPE addr_t AS (city string, country string);");
+}
+
+TEST_CASE("integration::cpp::test_persistence::varlen_array_survives_reopen") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/varlen_array");
+    test_clear_directory(config);
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "CREATE DATABASE " + database_name + ";");
+        sql_ok(dispatcher, "CREATE TABLE " + database_name + ".a (xs INT[]);");
+        sql_ok(dispatcher, "INSERT INTO " + database_name + ".a (xs) VALUES (ARRAY[1]);");
+    }
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto cur = run_sql(dispatcher, "SELECT * FROM " + database_name + ".a;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::array_values_survive_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/array_values");
+    test_clear_directory(config);
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "CREATE DATABASE " + database_name + ";");
+        sql_ok(dispatcher, "CREATE TABLE " + database_name + ".t (id bigint, xs int[3]) WITH (storage = 'disk');");
+        sql_ok(dispatcher, "INSERT INTO " + database_name + ".t (id, xs) VALUES (1, ARRAY[10,20,30]);");
+        sql_ok(dispatcher, "CHECKPOINT;");
+    }
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto cur = run_sql(dispatcher, "SELECT xs FROM " + database_name + ".t WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto xs = cur->value(0, 0);
+        REQUIRE(xs.children().size() == 3);
+        REQUIRE(xs.children()[0].value<int32_t>() == 10);
+        REQUIRE(xs.children()[1].value<int32_t>() == 20);
+        REQUIRE(xs.children()[2].value<int32_t>() == 30);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::nulls_survive_checkpoint_and_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/nulls");
+    test_clear_directory(config);
+
+    auto probe = [](otterbrix::wrapper_dispatcher_t* dispatcher, const char* stage) {
+        auto is_null = run_sql(dispatcher, "SELECT id FROM " + database_name + ".t WHERE n IS NULL;");
+        REQUIRE(is_null->is_success());
+        auto counted = run_sql(dispatcher, "SELECT COUNT(n) FROM " + database_name + ".t;");
+        REQUIRE(counted->is_success());
+        REQUIRE(counted->size() == 1);
+        INFO("stage: " << stage);
+        REQUIRE(is_null->size() == 1);
+        REQUIRE(counted->value(0, 0).value<int64_t>() == 2);
+    };
+
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "CREATE DATABASE " + database_name + ";");
+        sql_ok(dispatcher,
+               "CREATE TABLE " + database_name + ".t (id bigint, n bigint, s string) WITH (storage = 'disk');");
+        sql_ok(dispatcher,
+               "INSERT INTO " + database_name + ".t (id, n, s) VALUES (1,10,'a'), (2,NULL,NULL), (3,30,'c');");
+        probe(dispatcher, "pre-checkpoint");
+        sql_ok(dispatcher, "CHECKPOINT;");
+        probe(dispatcher, "post-checkpoint, same session");
+    }
+    {
+        test_spaces space(config);
+        probe(space.dispatcher(), "after restart");
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::column_default_applies_after_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_after_restart");
+    test_clear_directory(config);
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "CREATE DATABASE " + database_name + ";");
+        sql_ok(dispatcher, "CREATE TABLE " + database_name + ".t (a bigint, b bigint DEFAULT 7);");
+        sql_ok(dispatcher, "INSERT INTO " + database_name + ".t (a) VALUES (1);");
+    }
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "INSERT INTO " + database_name + ".t (a) VALUES (2);");
+        auto cur = run_sql(dispatcher, "SELECT b FROM " + database_name + ".t WHERE a = 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE_FALSE(cur->value(0, 0).is_null());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 7);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::not_null_default_applies_after_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/not_null_default");
+    test_clear_directory(config);
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "CREATE DATABASE " + database_name + ";");
+        sql_ok(dispatcher, "CREATE TABLE " + database_name + ".t (a bigint, b bigint NOT NULL DEFAULT 7);");
+        sql_ok(dispatcher, "INSERT INTO " + database_name + ".t (a) VALUES (1);");
+    }
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        sql_ok(dispatcher, "INSERT INTO " + database_name + ".t (a) VALUES (2);");
+        auto cur = run_sql(dispatcher, "SELECT b FROM " + database_name + ".t WHERE a = 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE_FALSE(cur->value(0, 0).is_null());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 7);
     }
 }

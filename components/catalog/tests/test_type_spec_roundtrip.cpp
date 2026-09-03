@@ -1,14 +1,43 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/types/type_binary.hpp>
 #include <components/types/types.hpp>
 
 #include <set>
+#include <vector>
 
 using namespace components::catalog;
 using namespace components::types;
 
 namespace {
     auto* g_resource = std::pmr::new_delete_resource();
+
+    // Mirror of the real catalog read-back (operator_resolve_table, bootstrap):
+    // a non-empty spec wins, otherwise the type comes from atttypid alone
+    complex_logical_type through_catalog(const complex_logical_type& t) {
+        auto spec = encode_type_spec(t);
+        if (!spec.empty()) {
+            return decode_type_spec(g_resource, spec);
+        }
+        return complex_logical_type{oid_to_builtin_type(builtin_type_to_oid(t.type()))};
+    }
+
+    complex_logical_type through_storage(const complex_logical_type& t) {
+        std::vector<char> bytes(type_binary_size(t));
+        type_binary_write(bytes.data(), t);
+        const char* scan = bytes.data();
+        auto decoded = type_binary_read(scan, bytes.data() + bytes.size(), g_resource);
+        INFO("storage round-trip: " << (decoded.has_error() ? decoded.error().what.c_str() : ""));
+        REQUIRE_FALSE(decoded.has_error());
+        return std::move(decoded.value());
+    }
+
+    void check_codecs_agree(const complex_logical_type& t) {
+        const auto catalog_side = through_catalog(t);
+        const auto storage_side = through_storage(t);
+        INFO("tag=" << static_cast<int>(t.type()) << " spec='" << encode_type_spec(t) << "'");
+        REQUIRE(catalog_side == storage_side);
+    }
 } // namespace
 
 TEST_CASE("catalog::type_spec::scalars_encode_empty") {
@@ -223,4 +252,40 @@ TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
     // accidentally-valid input — we only verify no exception is thrown.
     auto t = decode_type_spec(g_resource, "garbage_that_is_not_valid_type_spec");
     (void) t; // result type is implementation-defined for garbage input
+}
+
+TEST_CASE("catalog::type_spec::codecs_agree_on_scalars") {
+    for (auto lt : {logical_type::BOOLEAN,
+                    logical_type::INTEGER,
+                    logical_type::BIGINT,
+                    logical_type::DOUBLE,
+                    logical_type::STRING_LITERAL,
+                    logical_type::TIMESTAMP,
+                    logical_type::BLOB,
+                    logical_type::UUID}) {
+        check_codecs_agree(complex_logical_type{lt});
+    }
+}
+
+TEST_CASE("catalog::type_spec::codecs_agree_on_decimal") {
+    check_codecs_agree(complex_logical_type::create_decimal(18, 6));
+}
+
+TEST_CASE("catalog::type_spec::codecs_agree_on_array") {
+    check_codecs_agree(complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 3));
+}
+
+TEST_CASE("catalog::type_spec::codecs_agree_on_list") {
+    check_codecs_agree(complex_logical_type::create_list(complex_logical_type{logical_type::INTEGER}));
+}
+
+TEST_CASE("catalog::type_spec::codecs_agree_on_struct") {
+    std::pmr::vector<complex_logical_type> fields(g_resource);
+    fields.emplace_back(logical_type::STRING_LITERAL, "city");
+    fields.emplace_back(logical_type::STRING_LITERAL, "country");
+    check_codecs_agree(complex_logical_type::create_struct("addr_t", fields));
+}
+
+TEST_CASE("catalog::type_spec::codecs_agree_on_unknown") {
+    check_codecs_agree(complex_logical_type::create_unknown("mystery_t"));
 }

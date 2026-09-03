@@ -3,7 +3,6 @@
 #include "validity_column_data.hpp"
 
 namespace components::table {
-
     class standard_column_data_t : public column_data_t {
     public:
         standard_column_data_t(std::pmr::memory_resource* resource,
@@ -52,7 +51,7 @@ namespace components::table {
                                      std::vector<uint64_t> col_path,
                                      std::vector<column_segment_info>& result) override;
 
-        void initialize_column(const persistent_column_data_t& persistent_data) override;
+        validity_column_data_t* validity_column() override;
 
         // Transition the main data segments AND the validity child's segments to disk (both packed via `pbm`).
         [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm) override;
@@ -60,5 +59,4 @@ namespace components::table {
         // Compact reclaim: collect the main column's blocks AND the validity child's blocks.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const override;
     };
-
 } // namespace components::table

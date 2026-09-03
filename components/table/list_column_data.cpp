@@ -1,7 +1,8 @@
 #include "list_column_data.hpp"
 
-namespace components::table {
+#include "persistent_column_data.hpp"
 
+namespace components::table {
     list_column_data_t::list_column_data_t(std::pmr::memory_resource* resource,
                                            storage::block_manager_t& block_manager,
                                            uint64_t column_index,
@@ -169,7 +170,7 @@ namespace components::table {
             return child;
         }
         state.child_appends.push_back(std::move(child_append_state));
-        return true;
+        return core::error_t::no_error();
     }
 
     core::result_wrapper_t<bool>
@@ -310,7 +311,7 @@ namespace components::table {
             remaining_count -= batch;
             remaining_column_index++;
         }
-        return true;
+        return core::error_t::no_error();
     }
 
     core::result_wrapper_t<bool> list_column_data_t::update_column(const std::vector<uint64_t>& column_path,
@@ -334,7 +335,7 @@ namespace components::table {
             remaining_child_ids += batch;
             remaining_count -= batch;
         }
-        return true;
+        return core::error_t::no_error();
     }
 
     void list_column_data_t::fetch_row(column_fetch_state& state,
@@ -386,4 +387,27 @@ namespace components::table {
         col_path.back() = 1;
         child_column->get_column_segment_info(row_group_index, col_path, result);
     }
+
+    core::error_t
+    list_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                               persistent_column_data_t& persistent) {
+        auto child = child_column->checkpoint(partial_block_manager);
+        if (child.has_error()) {
+            return child.error();
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
+        return core::error_t::no_error();
+    }
+
+    core::error_t list_column_data_t::initialize_children(const persistent_column_data_t& persistent_data) {
+        if (persistent_data.child_columns.size() != 1) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"column metadata: expected exactly one element column",
+                                                  resource()});
+        }
+        return child_column->initialize_column(*persistent_data.child_columns[0]);
+    }
+
+    validity_column_data_t* list_column_data_t::validity_column() { return &validity; }
+
 } // namespace components::table

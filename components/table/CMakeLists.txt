@@ -24,6 +24,7 @@ set(SOURCE_${PROJECT_NAME}
         column_data_checkpointer.cpp
 
         storage/file_buffer.cpp
+        storage/type_record.cpp
         storage/block_handle.cpp
         storage/block_manager.cpp
         storage/buffer_handle.cpp

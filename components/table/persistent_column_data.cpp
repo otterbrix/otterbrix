@@ -4,12 +4,17 @@
 #include <components/table/storage/metadata_writer.hpp>
 
 namespace components::table {
-
     void persistent_column_data_t::serialize(storage::metadata_writer_t& writer) const {
         // data pointers
         writer.write<uint32_t>(static_cast<uint32_t>(data_pointers.size()));
         for (const auto& dp : data_pointers) {
             dp.serialize(writer);
+        }
+
+        // validity (recursive, optional)
+        writer.write<uint8_t>(validity ? 1 : 0);
+        if (validity) {
+            validity->serialize(writer);
         }
 
         // child columns (recursive)
@@ -45,6 +50,11 @@ namespace components::table {
         result.data_pointers.resize(dp_count);
         for (uint32_t i = 0; i < dp_count; i++) {
             result.data_pointers[i] = storage::data_pointer_t::deserialize(reader);
+        }
+
+        if (reader.read<uint8_t>() != 0) {
+            result.validity =
+                std::make_unique<persistent_column_data_t>(persistent_column_data_t::deserialize(resource, reader));
         }
 
         auto child_count = reader.read<uint32_t>();
@@ -83,3 +93,41 @@ namespace components::table {
     }
 
 } // namespace components::table
+
+namespace components::table::storage {
+    void row_group_pointer_t::serialize(metadata_writer_t& writer) const {
+        writer.write<uint64_t>(row_start);
+        writer.write<uint64_t>(tuple_count);
+
+        writer.write<uint32_t>(static_cast<uint32_t>(columns.size()));
+        for (const auto& column : columns) {
+            column.serialize(writer);
+        }
+
+        writer.write<uint32_t>(static_cast<uint32_t>(deletes_pointers.size()));
+        for (const auto& dp : deletes_pointers) {
+            dp.serialize(writer);
+        }
+    }
+
+    row_group_pointer_t row_group_pointer_t::deserialize(std::pmr::memory_resource* resource,
+                                                         metadata_reader_t& reader) {
+        row_group_pointer_t result;
+        result.row_start = reader.read<uint64_t>();
+        result.tuple_count = reader.read<uint64_t>();
+
+        auto column_count = reader.read<uint32_t>();
+        result.columns.reserve(column_count);
+        for (uint32_t i = 0; i < column_count; i++) {
+            result.columns.push_back(persistent_column_data_t::deserialize(resource, reader));
+        }
+
+        auto deletes_count = reader.read<uint32_t>();
+        result.deletes_pointers.resize(deletes_count);
+        for (uint32_t i = 0; i < deletes_count; i++) {
+            result.deletes_pointers[i] = data_pointer_t::deserialize(reader);
+        }
+
+        return result;
+    }
+} // namespace components::table::storage

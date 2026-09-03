@@ -3,7 +3,6 @@
 #include "validity_column_data.hpp"
 
 namespace components::table {
-
     class struct_column_data_t : public column_data_t {
     public:
         struct_column_data_t(std::pmr::memory_resource* resource,
@@ -17,6 +16,13 @@ namespace components::table {
         validity_column_data_t validity;
 
         void set_start(int64_t new_start) override;
+        validity_column_data_t* validity_column() override;
+        [[nodiscard]] core::error_t
+        checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                            persistent_column_data_t& persistent) override;
+        [[nodiscard]] core::error_t
+        initialize_children(const persistent_column_data_t& persistent_data) override;
+
         uint64_t max_entry() override;
 
         void initialize_scan(column_scan_state& state) override;
@@ -54,5 +60,4 @@ namespace components::table {
                                      std::vector<uint64_t> col_path,
                                      std::vector<column_segment_info>& result) override;
     };
-
 } // namespace components::table

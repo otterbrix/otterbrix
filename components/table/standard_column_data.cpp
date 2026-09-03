@@ -3,7 +3,6 @@
 #include "persistent_column_data.hpp"
 
 namespace components::table {
-
     standard_column_data_t::standard_column_data_t(std::pmr::memory_resource* resource,
                                                    storage::block_manager_t& block_manager,
                                                    uint64_t column_index,
@@ -169,11 +168,6 @@ namespace components::table {
         validity.get_column_segment_info(row_group_index, std::move(col_path), result);
     }
 
-    void standard_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
-        column_data_t::initialize_column(persistent_data);
-
-        // create matching transient validity segments for each data segment
-        validity.initialize_column_validity(persistent_data);
-    }
+    validity_column_data_t* standard_column_data_t::validity_column() { return &validity; }
 
 } // namespace components::table

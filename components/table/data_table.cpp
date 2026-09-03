@@ -1,16 +1,18 @@
 #include "data_table.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <components/table/storage/type_record.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <cstdlib>
 #include <unordered_set>
+#include <vector>
 
 #include "row_group.hpp"
 
 namespace components::table {
-
     data_table_t::data_table_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                std::vector<column_definition_t> column_definitions,
@@ -589,7 +591,7 @@ namespace components::table {
         writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
         for (const auto& col : column_definitions_) {
             writer.write_string(col.name());
-            writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
+            storage::write_type_record(writer, col.type());
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
         }
 
@@ -614,11 +616,13 @@ namespace components::table {
         columns.reserve(col_count);
         for (uint32_t i = 0; i < col_count; i++) {
             auto col_name = reader.read_string();
-            auto logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
+            auto col_type = storage::read_type_record(reader, resource);
+            if (col_type.has_error()) {
+                return col_type.error();
+            }
             auto not_null = reader.read<uint8_t>() != 0;
-            types::complex_logical_type col_type(logical_type);
-            col_type.set_alias(col_name);
-            columns.emplace_back(col_name, std::move(col_type), not_null);
+            col_type.value().set_alias(col_name);
+            columns.emplace_back(col_name, std::move(col_type.value()), not_null);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));
@@ -626,12 +630,14 @@ namespace components::table {
         uint64_t total_loaded_rows = 0;
         auto rg_count = reader.read<uint32_t>();
         for (uint32_t i = 0; i < rg_count; i++) {
-            auto pointer = storage::row_group_pointer_t::deserialize(reader);
+            auto pointer = storage::row_group_pointer_t::deserialize(resource, reader);
 
             // create a new row group and populate from disk pointer
             auto* rg = table->row_groups_->append_row_group(static_cast<int64_t>(pointer.row_start));
             if (rg) {
-                rg->create_from_pointer(pointer);
+                if (auto error = rg->create_from_pointer(pointer); error.contains_error()) {
+                    return error;
+                }
                 total_loaded_rows += pointer.tuple_count;
             }
         }
@@ -646,5 +652,4 @@ namespace components::table {
 
         return table;
     }
-
 } // namespace components::table

@@ -541,6 +541,8 @@ namespace components::types {
 
     class array_logical_type_extension : public logical_type_extension {
     public:
+        static constexpr extension_type kind = extension_type::ARRAY;
+
         explicit array_logical_type_extension(const complex_logical_type& type, uint64_t size);
 
         const complex_logical_type& internal_type() const noexcept { return items_type_; }
@@ -555,6 +557,8 @@ namespace components::types {
 
     class map_logical_type_extension : public logical_type_extension {
     public:
+        static constexpr extension_type kind = extension_type::MAP;
+
         map_logical_type_extension(std::pmr::memory_resource* resource,
                                    const complex_logical_type& key,
                                    const complex_logical_type& value);
@@ -588,6 +592,8 @@ namespace components::types {
 
     class list_logical_type_extension : public logical_type_extension {
     public:
+        static constexpr extension_type kind = extension_type::LIST;
+
         explicit list_logical_type_extension(complex_logical_type type);
         list_logical_type_extension(uint64_t field_id, complex_logical_type type, bool required);
 
@@ -605,6 +611,8 @@ namespace components::types {
 
     class struct_logical_type_extension : public logical_type_extension {
     public:
+        static constexpr extension_type kind = extension_type::STRUCT;
+
         explicit struct_logical_type_extension(std::string name, const std::pmr::vector<complex_logical_type>& fields);
 
         // fields must be aliased

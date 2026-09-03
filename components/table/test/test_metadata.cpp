@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <unistd.h>
 #include <vector>
 
@@ -236,10 +237,9 @@ TEST_CASE("metadata: sub-blocks fit inside the block's usable region") {
 }
 
 // The metadata sub-block stride is NOT stored in the file — metadata_manager_t recomputes it
-// from the block size on open. Pre-reset builds wrote it as 4096 under version 1; the current
-// format (CURRENT_VERSION == 0) uses 4088, so such a chain read by this build walks to wrong
-// offsets and returns garbage rather than failing. The version has to be matched EXACTLY and an
-// older file refused through the error channel — there is no compatibility path.
+// from the block size on open, so a chain written under a different layout is read at wrong
+// offsets and returns garbage rather than failing. The version therefore has to match EXACTLY
+// and a foreign file be refused through the error channel; there is no compatibility path.
 TEST_CASE("metadata: a file from an older format version is refused") {
     using namespace components::table::storage;
     cleanup_test_file();
@@ -250,11 +250,11 @@ TEST_CASE("metadata: a file from an older format version is refused") {
         REQUIRE(!bm.create_new_database().has_error());
     }
 
-    // Rewrite the version field in place to the previous format version.
+    // Rewrite the version field in place to a version this build cannot have written.
     {
         std::FILE* f = std::fopen(test_db_path().c_str(), "r+b");
         REQUIRE(f != nullptr);
-        const uint32_t legacy_version = 1;                       // what pre-reset builds wrote
+        const uint32_t legacy_version = std::numeric_limits<uint32_t>::max();
         REQUIRE(std::fseek(f, sizeof(uint32_t), SEEK_SET) == 0); // past the magic
         REQUIRE(std::fwrite(&legacy_version, sizeof(legacy_version), 1, f) == 1);
         std::fclose(f);
@@ -266,7 +266,7 @@ TEST_CASE("metadata: a file from an older format version is refused") {
         auto result = bm.load_existing_database();
         REQUIRE(result.has_error());
         INFO("error: " << result.error().what);
-        CHECK(result.error().type == core::error_code_t::data_corruption);
+        REQUIRE(result.error().type == core::error_code_t::data_corruption);
     }
 
     cleanup_test_file();

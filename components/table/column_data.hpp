@@ -8,7 +8,6 @@
 #include <components/types/tri_bool.hpp>
 
 namespace components::table {
-
 #ifdef DEV_MODE
     // Test-observable count of segment transitions performed while SOMEONE ELSE still holds a pin on
     // the segment's block. The swap drops that block_handle_t, so an outstanding buffer_handle_t is
@@ -43,6 +42,8 @@ namespace components::table {
     using filter_match_t = types::tri_bool_t;
 
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
+
+    class validity_column_data_t;
 
     class column_data_t {
         friend class column_segment_t;
@@ -164,8 +165,7 @@ namespace components::table {
         // the persistent data on success.
         [[nodiscard]] core::result_wrapper_t<persistent_column_data_t>
         checkpoint(storage::partial_block_manager_t& partial_block_manager);
-        virtual void initialize_column(const persistent_column_data_t& persistent_data);
-        void initialize_column_validity(const persistent_column_data_t& persistent_data);
+        [[nodiscard]] core::error_t initialize_column(const persistent_column_data_t& persistent_data);
 
         // Write-through: re-point every COMPLETE managed (in-memory, non-reloadable) segment of this column
         // to a disk-backed segment so the pool can evict+reload them (bounded memory). Called when a row
@@ -179,6 +179,15 @@ namespace components::table {
         // call `pbm.flush_partial_blocks()` before any concurrent scan/eviction of a re-pointed segment can
         // occur (else a re-pointed live segment could load() an unflushed block -> data_corruption).
         [[nodiscard]] virtual core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
+
+        virtual validity_column_data_t* validity_column() { return nullptr; }
+        [[nodiscard]] virtual core::error_t checkpoint_children(storage::partial_block_manager_t&,
+                                                                persistent_column_data_t&) {
+            return core::error_t::no_error();
+        }
+        [[nodiscard]] virtual core::error_t initialize_children(const persistent_column_data_t&) {
+            return core::error_t::no_error();
+        }
 
         // Compact reclaim: append the ids of disk blocks EXCLUSIVELY owned by this column (and its
         // sub-columns) to `out`, so the caller can mark them free once this collection is replaced by a
@@ -242,5 +251,4 @@ namespace components::table {
 
         std::pmr::memory_resource* resource_;
     };
-
 } // namespace components::table

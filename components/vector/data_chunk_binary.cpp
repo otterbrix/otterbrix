@@ -5,12 +5,12 @@
 #include <stdexcept>
 #include <string_view>
 
+#include <components/types/type_binary.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
 #include <components/vector/vector_buffer.hpp>
 
 namespace components::vector {
-
     // -----------------------------------------------------------------------
     // Little-endian helpers
     // -----------------------------------------------------------------------
@@ -60,150 +60,6 @@ namespace components::vector {
 
         bool is_variable_type(types::physical_type physical_type) {
             return physical_type == types::physical_type::STRING;
-        }
-
-        // Compute the size of the type header for a single column.
-        // Format: [logical_type:1][alias_length:2][alias:N][extension_type:1][extension_data:0-5]
-        uint32_t compute_type_header_size(const types::complex_logical_type& column_type) {
-            uint32_t header_size = 1 + 2; // logical_type + alias_length
-            if (column_type.has_alias()) {
-                header_size += static_cast<uint32_t>(column_type.alias().size());
-            }
-            header_size += 1; // extension_type byte
-            auto* extension = column_type.extension();
-            if (extension) {
-                switch (extension->type()) {
-                    case types::logical_type_extension::extension_type::ARRAY:
-                        header_size += 5; // inner_logical_type(1) + array_size(4)
-                        break;
-                    case types::logical_type_extension::extension_type::DECIMAL:
-                        header_size += 2; // width(1) + scale(1)
-                        break;
-                    default:
-                        break;
-                }
-            }
-            return header_size;
-        }
-
-        // Write the type header for a single column. Returns pointer past written data.
-        char* write_type_header(char* output, const types::complex_logical_type& column_type) {
-            // Logical type
-            *reinterpret_cast<uint8_t*>(output) = static_cast<uint8_t>(column_type.type());
-            output += 1;
-
-            // Alias
-            if (column_type.has_alias()) {
-                auto alias_length = static_cast<uint16_t>(column_type.alias().size());
-                write_le16(output, alias_length);
-                output += 2;
-                std::memcpy(output, column_type.alias().data(), alias_length);
-                output += alias_length;
-            } else {
-                write_le16(output, 0);
-                output += 2;
-            }
-
-            // Extension
-            auto* extension = column_type.extension();
-            if (!extension) {
-                *reinterpret_cast<uint8_t*>(output) = 0; // no extension
-                output += 1;
-            } else {
-                switch (extension->type()) {
-                    case types::logical_type_extension::extension_type::ARRAY: {
-                        *reinterpret_cast<uint8_t*>(output) = 1;
-                        output += 1;
-                        auto* array_extension = static_cast<const types::array_logical_type_extension*>(extension);
-                        *reinterpret_cast<uint8_t*>(output) =
-                            static_cast<uint8_t>(array_extension->internal_type().type());
-                        output += 1;
-                        write_le32(output, static_cast<uint32_t>(array_extension->size()));
-                        output += 4;
-                        break;
-                    }
-                    case types::logical_type_extension::extension_type::DECIMAL: {
-                        *reinterpret_cast<uint8_t*>(output) = 2;
-                        output += 1;
-                        auto* decimal_extension = static_cast<const types::decimal_logical_type_extension*>(extension);
-                        *reinterpret_cast<uint8_t*>(output) = decimal_extension->width();
-                        output += 1;
-                        *reinterpret_cast<uint8_t*>(output) = decimal_extension->scale();
-                        output += 1;
-                        break;
-                    }
-                    default:
-                        *reinterpret_cast<uint8_t*>(output) = 0; // unknown extension → none
-                        output += 1;
-                        break;
-                }
-            }
-
-            return output;
-        }
-
-        // Read the type header for a single column. Advances scan pointer. On any
-        // buffer-overflow sets ok=false and returns an INVALID-typed placeholder
-        // (caller must check ok before using the result).
-        types::complex_logical_type read_type_header(const char*& scan, const char* end, bool& ok) {
-            if (scan + 4 > end) {
-                ok = false;
-                return types::complex_logical_type{types::logical_type::INVALID};
-            }
-
-            // Logical type
-            auto logical_type_value = static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
-            scan += 1;
-
-            // Alias
-            uint16_t alias_length = read_le16(scan);
-            scan += 2;
-            std::string alias;
-            if (alias_length > 0) {
-                if (scan + alias_length > end) {
-                    ok = false;
-                    return types::complex_logical_type{types::logical_type::INVALID};
-                }
-                alias.assign(scan, alias_length);
-                scan += alias_length;
-            }
-
-            // Extension type
-            if (scan >= end) {
-                ok = false;
-                return types::complex_logical_type{types::logical_type::INVALID};
-            }
-            uint8_t extension_type = *reinterpret_cast<const uint8_t*>(scan);
-            scan += 1;
-
-            switch (extension_type) {
-                case 1: { // ARRAY
-                    if (scan + 5 > end) {
-                        ok = false;
-                        return types::complex_logical_type{types::logical_type::INVALID};
-                    }
-                    auto inner_logical_type = static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
-                    scan += 1;
-                    uint32_t array_size = read_le32(scan);
-                    scan += 4;
-                    return types::complex_logical_type::create_array(inner_logical_type,
-                                                                     static_cast<size_t>(array_size),
-                                                                     std::move(alias));
-                }
-                case 2: { // DECIMAL
-                    if (scan + 2 > end) {
-                        ok = false;
-                        return types::complex_logical_type{types::logical_type::INVALID};
-                    }
-                    uint8_t width = *reinterpret_cast<const uint8_t*>(scan);
-                    scan += 1;
-                    uint8_t scale = *reinterpret_cast<const uint8_t*>(scan);
-                    scan += 1;
-                    return types::complex_logical_type::create_decimal(width, scale, std::move(alias));
-                }
-                default: // no extension
-                    return types::complex_logical_type(logical_type_value, std::move(alias));
-            }
         }
 
         // Empty/sentinel chunk returned on deserialize failure. Caller must check
@@ -262,7 +118,7 @@ namespace components::vector {
                 column_data_sizes[column_index] = static_cast<uint32_t>(element_size * num_rows);
             }
 
-            column_type_header_sizes[column_index] = compute_type_header_size(column.type());
+            column_type_header_sizes[column_index] = types::type_binary_size(column.type());
             total += column_type_header_sizes[column_index] + 4 + column_data_sizes[column_index];
         }
 
@@ -299,7 +155,10 @@ namespace components::vector {
             auto physical_type = column.type().to_physical_type();
 
             // Write type header (logical_type + alias + extension)
-            output = write_type_header(output, column.type());
+            [[maybe_unused]] const char* type_header_begin = output;
+            output = types::type_binary_write(output, column.type());
+            assert(static_cast<uint32_t>(output - type_header_begin) == column_type_header_sizes[column_index] &&
+                   "type header writer disagrees with compute_type_header_size");
 
             // Write data_size
             write_le32(output, column_data_sizes[column_index]);
@@ -367,11 +226,12 @@ namespace components::vector {
             const char* scan = pointer;
             for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
                 // Read type header
-                auto column_type = read_type_header(scan, end, ok);
-                if (!ok) {
+                auto column_type = types::type_binary_read(scan, end, resource);
+                if (column_type.has_error()) {
+                    ok = false;
                     return make_empty_error_chunk(resource);
                 }
-                column_types.push_back(std::move(column_type));
+                column_types.push_back(std::move(column_type.value()));
 
                 // Skip data_size + data
                 if (scan + 4 > end) {
@@ -394,8 +254,9 @@ namespace components::vector {
         // Second pass: populate column data.
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             // Skip type header (already parsed in first pass)
-            read_type_header(pointer, end, ok);
-            if (!ok) {
+            auto skipped = types::type_binary_read(pointer, end, resource);
+            if (skipped.has_error()) {
+                ok = false;
                 return make_empty_error_chunk(resource);
             }
 
@@ -451,5 +312,4 @@ namespace components::vector {
 
         return chunk;
     }
-
 } // namespace components::vector

@@ -33,8 +33,12 @@ namespace components::operators {
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
 
+        [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
+
     private:
         const logical_plan::limit_t limit_;
+
+        std::pmr::vector<types::complex_logical_type> shape_;
 
         // Count of input rows SEEN across all push() batches so far — the stream
         // position of the first row of the NEXT batch. The emit window is intersected

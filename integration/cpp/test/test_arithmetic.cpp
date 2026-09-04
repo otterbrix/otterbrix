@@ -2165,3 +2165,92 @@ TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_reject
         CHECK(cur->value(0, 0).value<int64_t>() == 6);
     }
 }
+
+TEST_CASE("integration::cpp::test_arithmetic::constant_division_by_zero_is_an_error") {
+    auto config = test_create_config("/tmp/test_arithmetic_const_div_zero");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE z;")->is_success());
+    REQUIRE(exec("CREATE TABLE z.t (id BIGINT, x BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO z.t (id, x) VALUES (1, 9);")->is_success());
+
+    // The reference spellings, already correct.
+    CHECK(exec("SELECT 1 / 0 AS v;")->is_error());
+    CHECK(exec("SELECT x / 0 AS v FROM z.t;")->is_error());
+    CHECK(exec("SELECT id FROM z.t WHERE x / 0 = 1;")->is_error());
+    CHECK(exec("UPDATE z.t SET x = x / 0;")->is_error());
+
+    // The INSERT VALUES fold: '/' stored a zero, '%' trapped with SIGFPE.
+    CHECK(exec("INSERT INTO z.t (id, x) VALUES (2, 1 / 0);")->is_error());
+    CHECK(exec("INSERT INTO z.t (id, x) VALUES (3, 1 % 0);")->is_error());
+
+    // The optimizer fold: a constant zero divisor answered NULL, so the predicate
+    // succeeded and matched nothing rather than reporting the division.
+    CHECK(exec("SELECT id FROM z.t WHERE 1 / 0 = 1;")->is_error());
+    CHECK(exec("SELECT id FROM z.t WHERE 1 % 0 = 1;")->is_error());
+    CHECK(exec("SELECT id FROM z.t WHERE x = 1 / 0;")->is_error());
+
+    // Nothing above may have been written.
+    auto rows = exec("SELECT id FROM z.t;");
+    REQUIRE(rows->is_success());
+    CHECK(rows->size() == 1);
+}
+
+TEST_CASE("integration::cpp::test_arithmetic::constant_folding_still_folds") {
+    auto config = test_create_config("/tmp/test_arithmetic_const_fold_ok");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE z;")->is_success());
+    REQUIRE(exec("CREATE TABLE z.t (id BIGINT, x BIGINT, d DATE);")->is_success());
+
+    REQUIRE(exec("INSERT INTO z.t (id, x) VALUES (1, 2 + 3);")->is_success());
+    REQUIRE(exec("INSERT INTO z.t (id, x) VALUES (2, 10 / 2);")->is_success());
+    REQUIRE(exec("INSERT INTO z.t (id, x) VALUES (3, 11 % 3);")->is_success());
+    {
+        auto cur = exec("SELECT x FROM z.t ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        CHECK(cur->value(0, 0).value<int64_t>() == 5);
+        CHECK(cur->value(0, 1).value<int64_t>() == 5);
+        CHECK(cur->value(0, 2).value<int64_t>() == 2);
+    }
+
+    // Temporal constant arithmetic in a VALUES list goes through the same fold.
+    REQUIRE(exec("INSERT INTO z.t (id, d) VALUES (4, DATE '2020-01-01' + INTERVAL '1 day');")->is_success());
+
+    // A folded constant predicate still decides the scan.
+    {
+        auto cur = exec("SELECT id FROM z.t WHERE 10 / 2 = 5;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 4);
+    }
+    {
+        auto cur = exec("SELECT id FROM z.t WHERE 10 / 2 = 4;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 0);
+    }
+
+    // A NULL divisor is NULL, not a division by zero.
+    {
+        auto cur = exec("SELECT x / NULL AS v FROM z.t WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        CHECK(cur->chunks().front().data[0].is_null(0));
+    }
+}

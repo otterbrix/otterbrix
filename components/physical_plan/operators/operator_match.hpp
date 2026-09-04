@@ -57,6 +57,7 @@ namespace components::operators {
         }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
+        [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
         // SOURCE entry for the sourceless no-table shape (left_ == nullptr): there is
         // no input to filter, so drain immediately with the 0-column sentinel — the
         // streaming equivalent of the materialized path's early-return-with-no-output.

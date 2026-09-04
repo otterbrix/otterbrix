@@ -1464,6 +1464,40 @@ TEST_CASE("integration::cpp::correctness_bugs::order_by_array_subscript") {
     CHECK(cur->value(0, 0).value<int64_t>() == 2);
     CHECK(cur->value(0, 1).value<int64_t>() == 3);
     CHECK(cur->value(0, 2).value<int64_t>() == 1);
+
+    // The key above always has a value, so it says nothing about the shapes where a subscript has
+    // none: a LIST row too short to reach it, a NULL element, or a NULL cell. All three sort as
+    // NULL — last for ASC, first for DESC.
+    auto order = [&](const std::string& sql) {
+        auto rows = test_helpers::exec(dispatcher, sql);
+        REQUIRE(rows);
+        INFO(sql);
+        REQUIRE(rows->is_success());
+        std::vector<int64_t> ids;
+        for (uint64_t row = 0; row < rows->size(); ++row) {
+            ids.push_back(rows->value(0, row).value<int64_t>());
+        }
+        return ids;
+    };
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher,
+                               "INSERT INTO db.l (id, v) VALUES (1, ARRAY[10,30]), (2, ARRAY[20,10]), "
+                               "(3, ARRAY[30]), (4, NULL), (5, ARRAY[5,NULL]);")
+                ->is_success());
+    CHECK(order("SELECT id FROM db.l ORDER BY v[2] ASC;") == std::vector<int64_t>{2, 1, 3, 4, 5});
+    CHECK(order("SELECT id FROM db.l ORDER BY v[2] DESC;") == std::vector<int64_t>{3, 4, 5, 1, 2});
+    CHECK(order("SELECT id FROM db.l ORDER BY v[1] ASC;") == std::vector<int64_t>{5, 1, 2, 3, 4});
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.a (id BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher,
+                               "INSERT INTO db.a (id, v) VALUES (1, ARRAY[10,30,0]), (2, ARRAY[20,10,0]), "
+                               "(3, ARRAY[30,NULL,0]), (4, NULL);")
+                ->is_success());
+    CHECK(order("SELECT id FROM db.a ORDER BY v[2] ASC;") == std::vector<int64_t>{2, 1, 3, 4});
+    CHECK(order("SELECT id FROM db.a ORDER BY v[2] DESC;") == std::vector<int64_t>{3, 4, 1, 2});
+    // An explicit NULLS FIRST overrides the ASC default.
+    CHECK(order("SELECT id FROM db.a ORDER BY v[2] ASC NULLS FIRST;") == std::vector<int64_t>{3, 4, 2, 1});
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column") {
@@ -1808,4 +1842,170 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
     REQUIRE(subquery_projection->is_success());
     REQUIRE(subquery_projection->size() == 1);
     CHECK(subquery_projection->value(0, 0).value<int64_t>() == 7);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::out_of_bounds_subscript_update_extends") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/oob_subscript_update");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, ARRAY[10,20]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, ARRAY[30,40,50]);")->is_success());
+
+    // Assigning past the end used to skip the row silently while reporting it as updated. It now
+    // extends the list, filling the gap between the old end and the new element with NULLs.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[5] = 77 WHERE id = 1;")->is_success());
+
+    auto grown = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(grown->is_success());
+    REQUIRE(grown->size() == 1);
+    auto value = grown->value(0, 0);
+    REQUIRE(value.children().size() == 5);
+    CHECK(value.children()[0].value<int32_t>() == 10);
+    CHECK(value.children()[1].value<int32_t>() == 20);
+    // The gap EXISTS and is NULL — distinct from being absent.
+    CHECK(value.children()[2].is_null());
+    CHECK(value.children()[3].is_null());
+    CHECK_FALSE(value.children()[4].is_null());
+    CHECK(value.children()[4].value<int32_t>() == 77);
+
+    // An untouched row keeps its own length: the rebuild re-lays out every row.
+    auto untouched = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 2;");
+    REQUIRE(untouched->is_success());
+    auto other = untouched->value(0, 0);
+    REQUIRE(other.children().size() == 3);
+    CHECK(other.children()[0].value<int32_t>() == 30);
+    CHECK(other.children()[2].value<int32_t>() == 50);
+
+    // An in-range subscript still writes in place, without changing the length.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[2] = 99 WHERE id = 2;")->is_success());
+    auto in_range = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 2;");
+    REQUIRE(in_range->is_success());
+    auto updated = in_range->value(0, 0);
+    REQUIRE(updated.children().size() == 3);
+    CHECK(updated.children()[0].value<int32_t>() == 30);
+    CHECK(updated.children()[1].value<int32_t>() == 99);
+    CHECK(updated.children()[2].value<int32_t>() == 50);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::subscript_update_of_null_list_cell") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/subscript_null_cell");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, NULL);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, NULL);")->is_success());
+
+    // A NULL cell is an empty list: assigning into it materialises the list rather than leaving the
+    // row untouched while reporting it as updated.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[3] = 42 WHERE id = 1;")->is_success());
+    auto grown = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(grown->is_success());
+    REQUIRE(grown->size() == 1);
+    auto value = grown->value(0, 0);
+    REQUIRE_FALSE(value.is_null());
+    REQUIRE(value.children().size() == 3);
+    CHECK(value.children()[0].is_null());
+    CHECK(value.children()[1].is_null());
+    CHECK_FALSE(value.children()[2].is_null());
+    CHECK(value.children()[2].value<int32_t>() == 42);
+
+    // The very first element of a NULL cell is the same rule with no gap to fill.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v[1] = 7 WHERE id = 2;")->is_success());
+    auto single = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 2;");
+    REQUIRE(single->is_success());
+    auto only = single->value(0, 0);
+    REQUIRE_FALSE(only.is_null());
+    REQUIRE(only.children().size() == 1);
+    CHECK(only.children()[0].value<int32_t>() == 7);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::list_equality_respects_length") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/list_equality_length");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto rows = [&](const std::string& sql) {
+        auto cur = test_helpers::exec(dispatcher, sql);
+        REQUIRE(cur);
+        INFO(sql);
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, ARRAY[1,2]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, ARRAY[1,2,3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (3, ARRAY[1,2,3,4]);")->is_success());
+
+    // A shared prefix is not equality: length is part of the value. Matching only the front would
+    // make every one of these match its longer neighbours.
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2];") == 1);
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2,3];") == 1);
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2,3,4];") == 1);
+    // A prefix that matches nothing in full length matches no row at all.
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1];") == 0);
+    CHECK(rows("SELECT id FROM db.l WHERE v = ARRAY[1,2,3,4,5];") == 0);
+    CHECK(rows("SELECT id FROM db.l WHERE v <> ARRAY[1,2];") == 2);
+
+    // Ordering falls back to length once the shared prefix is equal.
+    CHECK(rows("SELECT id FROM db.l WHERE v < ARRAY[1,2,3];") == 1);
+    CHECK(rows("SELECT id FROM db.l WHERE v > ARRAY[1,2,3];") == 1);
+
+    // Column against column, so neither side is a literal.
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.pair (a INT[], b INT[]);")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.pair (a, b) VALUES (ARRAY[1,2], ARRAY[1,2,3]);")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.pair (a, b) VALUES (ARRAY[5,6], ARRAY[5,6]);")->is_success());
+    CHECK(rows("SELECT a FROM db.pair WHERE a = b;") == 1);
+    CHECK(rows("SELECT a FROM db.pair WHERE a <> b;") == 1);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::whole_array_update_over_null_row") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/whole_array_over_null");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.a (id BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, NULL);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, NULL);")->is_success());
+
+    // Assigning a whole array over a NULL row must clear the cell's NULL: the elements were written
+    // underneath it, so a stale NULL discarded the assignment entirely.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v = ARRAY[1,2,3] WHERE id = 1;")->is_success());
+    auto list_row = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(list_row->is_success());
+    auto list_value = list_row->value(0, 0);
+    REQUIRE_FALSE(list_value.is_null());
+    REQUIRE(list_value.children().size() == 3);
+    CHECK(list_value.children()[0].value<int32_t>() == 1);
+    CHECK(list_value.children()[2].value<int32_t>() == 3);
+
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.a SET v = ARRAY[1,2,3] WHERE id = 1;")->is_success());
+    auto array_row = test_helpers::exec(dispatcher, "SELECT v FROM db.a WHERE id = 1;");
+    REQUIRE(array_row->is_success());
+    auto array_value = array_row->value(0, 0);
+    REQUIRE_FALSE(array_value.is_null());
+    REQUIRE(array_value.children().size() == 3);
+    CHECK(array_value.children()[0].value<int32_t>() == 1);
+    CHECK(array_value.children()[2].value<int32_t>() == 3);
+
+    // The reverse still works: assigning NULL over a populated row makes the cell NULL again.
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.l SET v = NULL WHERE id = 1;")->is_success());
+    auto cleared_list = test_helpers::exec(dispatcher, "SELECT v FROM db.l WHERE id = 1;");
+    REQUIRE(cleared_list->is_success());
+    CHECK(cleared_list->value(0, 0).is_null());
+
+    REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.a SET v = NULL WHERE id = 1;")->is_success());
+    auto cleared_array = test_helpers::exec(dispatcher, "SELECT v FROM db.a WHERE id = 1;");
+    REQUIRE(cleared_array->is_success());
+    CHECK(cleared_array->value(0, 0).is_null());
 }

@@ -32,7 +32,6 @@ namespace {
         // Without a GROUP BY the whole table is one group, so only
         // aggregates and column-free expressions have a defined value in HAVING.
         bool reads_columns;
-        const char* unsupported{nullptr};
     };
 
     constexpr shape_t shapes[] = {
@@ -55,7 +54,7 @@ namespace {
         {"cast", "amount::TEXT", yields::value, true},
         {"function_numeric", "abs(amount)", yields::value, true},
         {"function_text", "length(name)", yields::value, true},
-        {"function_unregistered", "upper(name)", yields::value, true, "no 'upper' function is registered"},
+        {"function_case", "upper(name)", yields::value, true},
         {"aggregate", "sum(amount)", yields::aggregate, true},
         {"subscript", "tags[1]", yields::value, true},
         {"array_literal", "ARRAY[1, 2, 3]", yields::array_value, false},
@@ -143,28 +142,6 @@ namespace {
         return false;
     }
 
-    //! This is what we do not support for now
-    // Returns why a legal cell is not built, or nullptr when it is. Each entry is required to
-    // be rejected today; when one starts working the test says so, so it can be promoted.
-    const char* unbuilt(const placement_t& placement, const shape_t& shape) {
-        if (shape.unsupported) {
-            return shape.unsupported;
-        }
-        const std::string_view clause{placement.name};
-        // Grouping by a computed expression is a separate feature; only key references work.
-        if (clause == "group_by" && shape.kind != yields::column_ref) {
-            return "GROUP BY takes a key reference only; grouping by a computed value is not built";
-        }
-        // The SET value is cast to the target's type by this placement.
-        if (clause == "update_set" && shape.kind == yields::array_value) {
-            return "no implicit or assignment cast from a whole array to text";
-        }
-        if (clause == "aggregate_argument" && shape.kind == yields::array_value) {
-            return "no aggregate kernel accumulates a whole array";
-        }
-        return nullptr;
-    }
-
     std::string substitute(const char* text, const char* expression, int row_id) {
         std::string out{text};
         for (auto at = out.find("#E#"); at != std::string::npos; at = out.find("#E#")) {
@@ -210,15 +187,7 @@ namespace {
                 CHECK(cursor->is_error());
                 return;
             }
-            const char* gap = unbuilt(placement, shape);
-            if (gap == nullptr) {
-                CHECK(cursor->is_success());
-                return;
-            }
-            INFO("not built yet: " << gap);
-            INFO("correct SQL allows this. If it now succeeds the gap has closed — move this "
-                 "cell out of unbuilt() so the behavior becomes required.");
-            CHECK_FALSE(cursor->is_success());
+            CHECK(cursor->is_success());
         }
 
     private:

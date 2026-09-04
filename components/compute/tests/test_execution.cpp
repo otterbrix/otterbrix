@@ -712,6 +712,107 @@ TEST_CASE("components::compute::string::length_over_a_chunk") {
     REQUIRE(res.value().data[0].data<int64_t>()[2] == 3);
 }
 
+TEST_CASE("components::compute::string::upper_basic") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("upper");
+    REQUIRE(fn != nullptr);
+
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("Hello World")});
+
+    auto res = fn->execute(args);
+    REQUIRE_FALSE(res.has_error());
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "HELLO WORLD");
+}
+
+TEST_CASE("components::compute::string::lower_basic") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("lower");
+    REQUIRE(fn != nullptr);
+
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("Hello World")});
+
+    auto res = fn->execute(args);
+    REQUIRE_FALSE(res.has_error());
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "hello world");
+}
+
+// Digits, punctuation and bytes >= 0x80 carry no case under the "C" locale these tests run in, so
+// they pass through unchanged. This pins the byte-wise mapping, NOT case folding for other
+// languages — that is not supported in either direction.
+TEST_CASE("components::compute::string::case_fold_leaves_non_ascii_alone") {
+    string_registry_fixture fx;
+    auto* upper = fx.get("upper");
+    auto* lower = fx.get("lower");
+    REQUIRE(upper != nullptr);
+    REQUIRE(lower != nullptr);
+
+    const std::string_view mixed{"a1-\xD0\xB4\xD0\xB0 Z"};
+    auto upper_res = upper->execute(one_row_chunk(&fx.resource, {arg_t::text(mixed)}));
+    REQUIRE_FALSE(upper_res.has_error());
+    REQUIRE(upper_res.value().data[0].data<std::string_view>()[0] == "A1-\xD0\xB4\xD0\xB0 Z");
+
+    auto lower_res = lower->execute(one_row_chunk(&fx.resource, {arg_t::text(mixed)}));
+    REQUIRE_FALSE(lower_res.has_error());
+    REQUIRE(lower_res.value().data[0].data<std::string_view>()[0] == "a1-\xD0\xB4\xD0\xB0 z");
+}
+
+// Every row reserves its own span of the output's string heap, so rows of different lengths must
+// not overlap or truncate each other. Empty and null rows sit in the middle deliberately.
+TEST_CASE("components::compute::string::upper_over_a_chunk") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("upper");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<complex_logical_type> types(&fx.resource);
+    types.emplace_back(logical_type::STRING_LITERAL);
+    data_chunk_t args(&fx.resource, types, uint64_t{5});
+    args.data[0].set_value(0, std::string_view{"a"});
+    args.data[0].set_value(1, std::string_view{"bbbbbbbbbbbbbbbb"});
+    args.data[0].set_value(2, std::string_view{""});
+    args.data[0].set_null(3, true);
+    args.data[0].set_value(4, std::string_view{"cCdD"});
+    args.set_cardinality(5);
+
+    auto res = fn->execute(args);
+    REQUIRE_FALSE(res.has_error());
+    const auto* out = res.value().data[0].data<std::string_view>();
+    REQUIRE(out[0] == "A");
+    REQUIRE(out[1] == "BBBBBBBBBBBBBBBB");
+    REQUIRE(out[2].empty());
+    REQUIRE(res.value().data[0].is_null(3));
+    REQUIRE(out[4] == "CCDD");
+}
+
+// The argument is not mutated in place: folding writes to the output's own heap.
+TEST_CASE("components::compute::string::case_fold_does_not_touch_the_input") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("upper");
+    REQUIRE(fn != nullptr);
+
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("abc")});
+
+    auto res = fn->execute(args);
+    REQUIRE_FALSE(res.has_error());
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "ABC");
+    REQUIRE(args.data[0].data<std::string_view>()[0] == "abc");
+}
+
+TEST_CASE("components::compute::string::upper_null") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("upper");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<complex_logical_type> types(&fx.resource);
+    types.emplace_back(logical_type::STRING_LITERAL);
+    data_chunk_t args(&fx.resource, types, uint64_t{1});
+    args.data[0].set_null(0, true);
+    args.set_cardinality(1);
+
+    auto res = fn->execute(args);
+    REQUIRE_FALSE(res.has_error());
+    REQUIRE(res.value().data[0].is_null(0));
+}
+
 // One null row among valid ones: the validity mask carries it, the valid rows still compute.
 TEST_CASE("components::compute::string::length_null_row_within_chunk") {
     string_registry_fixture fx;

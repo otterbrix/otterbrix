@@ -73,6 +73,12 @@ namespace services::planner::impl {
                 bool emits_output = true;
                 switch (s->type()) {
                     case ce::scalar_type::group_field:
+                        // A pushed_group_key_t is a name plus a resolved column-index path, and the
+                        // agent rebuilds operator_group by that path. A key that computes something
+                        // has no path so we can not push it
+                        if (!s->params().empty()) {
+                            return false;
+                        }
                         field = &s->key();
                         emits_output = false;
                         break;

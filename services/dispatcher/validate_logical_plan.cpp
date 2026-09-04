@@ -1618,10 +1618,9 @@ namespace services::dispatcher {
                         }
                     };
 
-                    // The GROUP BY keys, resolved first: whether a column reference is a grouping
-                    // key or a bare row value decides the cardinality of every expression that
-                    // reads it, so the key set is an input to the resolutions below.
-                    std::pmr::vector<std::pmr::vector<size_t>> key_paths(resource);
+                    // The GROUP BY keys, resolved first, because it influences what is allowed in SELECT
+                    std::pmr::vector<validation::precomputed_column_t> group_keys(resource);
+                    named_schema grouping_schema(incoming_schema.begin(), incoming_schema.end(), resource);
                     for (const auto& expr : node_group->expressions()) {
                         if (expr->group() != expression_group::scalar) {
                             continue;
@@ -1630,11 +1629,43 @@ namespace services::dispatcher {
                         if (scalar_expr->type() != scalar_type::group_field) {
                             continue;
                         }
-                        auto res = validation::validate_key(resource, scalar_expr->key(), &incoming_schema);
-                        if (res.has_error()) {
-                            return res.convert_error<named_schema>();
+                        validation::precomputed_column_t key{resource};
+                        // Reading a grouping key yields one value per group.
+                        key.cardinality = cardinality_t::group;
+                        if (scalar_expr->params().empty()) {
+                            auto res = validation::validate_key(resource, scalar_expr->key(), &incoming_schema);
+                            if (res.has_error()) {
+                                return res.convert_error<named_schema>();
+                            }
+                            key.reference = scalar_expr->key();
+                            group_keys.push_back(std::move(key));
+                            continue;
                         }
-                        key_paths.emplace_back(scalar_expr->key().path().begin(), scalar_expr->key().path().end());
+                        // A vector-only mask is what refuses GROUP BY sum(x): an aggregate has no
+                        // signature this clause admits.
+                        const validation::expression_context_t key_context{
+                            context.resource,
+                            incoming_schema,
+                            parameters,
+                            context.cast_registry,
+                            context.function_registry,
+                            context.execution_context,
+                            components::compute::create_mask(components::compute::function_type_t::vector)};
+                        auto& operand = std::get<expression_ptr>(scalar_expr->params().front());
+                        if (auto error = validation::resolve_expression(operand, key_context); error.contains_error()) {
+                            return error;
+                        }
+                        // Held for comparison only — the resolved operand stays in the plan, and
+                        // the comparison never mutates either side.
+                        key.expression = operand;
+                        key.reference = components::expressions::key_t{resource, scalar_expr->key().as_string()};
+                        std::pmr::vector<size_t> path(resource);
+                        path.push_back(grouping_schema.size());
+                        key.reference.set_path(std::move(path));
+                        auto key_type = operand->result_type();
+                        key_type.set_alias(scalar_expr->key().as_string());
+                        grouping_schema.emplace_back(type_from_t{node->result_alias(), key_type});
+                        group_keys.push_back(std::move(key));
                     }
 
                     // resolve_type/compute_type_entry have no return-channel for
@@ -1644,7 +1675,7 @@ namespace services::dispatcher {
                     auto compute_type_entry =
                         [&](scalar_expression_t* scalar_expr,
                             const named_schema& schema,
-                            const std::pmr::vector<std::pmr::vector<size_t>>* group_keys) -> type_from_t {
+                            const std::pmr::vector<validation::precomputed_column_t>* keys) -> type_from_t {
                         const validation::expression_context_t expression_context{
                             context.resource,
                             schema,
@@ -1654,7 +1685,7 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             nullptr,
-                            group_keys};
+                            keys};
                         expression_ptr expression{scalar_expr};
                         if (auto error = validation::resolve_expression(expression, expression_context);
                             error.contains_error()) {
@@ -1673,7 +1704,7 @@ namespace services::dispatcher {
                         // The target list of a grouped query:
                         const validation::expression_context_t projection_context{
                             context.resource,
-                            incoming_schema,
+                            grouping_schema,
                             parameters,
                             context.cast_registry,
                             context.function_registry,
@@ -1682,7 +1713,7 @@ namespace services::dispatcher {
                                                              components::compute::function_type_t::aggregate,
                                                              components::compute::function_type_t::expand),
                             nullptr,
-                            &key_paths};
+                            &group_keys};
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::scalar) {
                                 const auto kind = static_cast<scalar_expression_t*>(expr.get())->type();
@@ -1727,12 +1758,12 @@ namespace services::dispatcher {
                                     scalar_expr->params().empty()
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
-                                auto res = validation::validate_key(resource, key, &incoming_schema);
+                                auto res = validation::validate_key(resource, key, &grouping_schema);
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
 
-                                const auto& col_type = incoming_schema[key.path()[0]].type;
+                                const auto& col_type = grouping_schema[key.path()[0]].type;
                                 const components::types::complex_logical_type* res_type = &col_type;
                                 for (size_t j = 1; j < key.path().size(); j++) {
                                     if (!res_type->is_nested()) {
@@ -1746,13 +1777,19 @@ namespace services::dispatcher {
                                         res_type = &res_type->child_type();
                                     }
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
+                                auto field_type = *res_type;
+                                if (!scalar_expr->params().empty() && !scalar_expr->key().is_null()) {
+                                    field_type.set_alias(scalar_expr->key().as_string());
+                                }
+                                result.emplace_back(type_from_t{node->result_alias(), std::move(field_type)});
                                 key_schema.emplace_back(result.back());
                             } else if (scalar_expr->type() == scalar_type::group_field) {
-                                auto& key = scalar_expr->key();
-                                auto res = validation::validate_key(resource, key, &incoming_schema);
-                                if (res.has_error()) {
-                                    return res.convert_error<named_schema>();
+                                if (scalar_expr->params().empty()) {
+                                    auto& key = scalar_expr->key();
+                                    auto res = validation::validate_key(resource, key, &incoming_schema);
+                                    if (res.has_error()) {
+                                        return res.convert_error<named_schema>();
+                                    }
                                 }
                             } else if (scalar_expr->type() == scalar_type::constant) {
                                 if (scalar_expr->params().empty() ||
@@ -1776,13 +1813,13 @@ namespace services::dispatcher {
                                 result.emplace_back(type_from_t{node->result_alias(), constant_type});
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
-                                // Try resolve against incoming_schema
+                                // Try resolve against the group's input
                                 auto res =
-                                    impl::resolve_key_paths_in_group(resource, scalar_expr->params(), incoming_schema);
+                                    impl::resolve_key_paths_in_group(resource, scalar_expr->params(), grouping_schema);
                                 if (res.has_error()) {
                                     post_agg_indices.push_back(i); // defer to Pass 2
                                 } else {
-                                    auto entry = compute_type_entry(scalar_expr, incoming_schema, &key_paths);
+                                    auto entry = compute_type_entry(scalar_expr, grouping_schema, &group_keys);
                                     if (compute_type_error.contains_error()) {
                                         return compute_type_error;
                                     }
@@ -1800,7 +1837,7 @@ namespace services::dispatcher {
                             // transformer is resolved here for the first time.
                             const validation::expression_context_t aggregate_context{
                                 context.resource,
-                                incoming_schema,
+                                grouping_schema,
                                 parameters,
                                 context.cast_registry,
                                 context.function_registry,

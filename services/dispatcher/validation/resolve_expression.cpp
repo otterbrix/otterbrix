@@ -6,6 +6,7 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/expression_equivalence.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
@@ -135,6 +136,7 @@ namespace services::dispatcher::validation {
                 if (error_.contains_error()) {
                     return error_;
                 }
+                bind_to_precomputed_column(expression, inside_aggregate);
                 expression->set_cardinality(last_cardinality_);
                 return core::error_t::no_error();
             }
@@ -180,20 +182,52 @@ namespace services::dispatcher::validation {
                 if (inside_aggregate) {
                     return cardinality_t::group;
                 }
-                if (context_.group_key_paths == nullptr) {
+                if (context_.precomputed == nullptr) {
                     return cardinality_t::row;
                 }
                 const auto& path = key.path();
                 if (path.empty()) {
                     return cardinality_t::row;
                 }
-                for (const auto& candidate : *context_.group_key_paths) {
-                    if (candidate.size() == path.size() &&
-                        std::equal(candidate.begin(), candidate.end(), path.begin())) {
-                        return cardinality_t::group;
+                for (const auto& candidate : *context_.precomputed) {
+                    // A computed column is matched as a whole expression, not by the columns it
+                    // reads: `a` is a bare row value under `GROUP BY a + b`.
+                    if (candidate.expression) {
+                        continue;
+                    }
+                    const auto& key_path = candidate.reference.path();
+                    if (key_path.size() == path.size() && std::equal(key_path.begin(), key_path.end(), path.begin())) {
+                        return candidate.cardinality;
                     }
                 }
                 return cardinality_t::row;
+            }
+
+            // same expressions do not require aliases to be referenced
+            void bind_to_precomputed_column(expression_ptr& expression, bool inside_aggregate) {
+                if (context_.precomputed == nullptr || inside_aggregate) {
+                    return;
+                }
+                for (const auto& candidate : *context_.precomputed) {
+                    if (!candidate.expression) {
+                        continue;
+                    }
+                    if (!components::expressions::same_computation(expression,
+                                                                   candidate.expression,
+                                                                   context_.parameters.parameters)) {
+                        continue;
+                    }
+                    auto reference =
+                        components::expressions::make_scalar_expression(context_.resource,
+                                                                        components::expressions::scalar_type::get_field,
+                                                                        expression->key(),
+                                                                        candidate.reference);
+                    reference->set_result_type(expression->result_type());
+                    reference->set_result_alias(expression->result_alias());
+                    expression = reference;
+                    last_cardinality_ = candidate.cardinality;
+                    return;
+                }
             }
 
             cardinality_t combine(cardinality_t left, cardinality_t right) const {

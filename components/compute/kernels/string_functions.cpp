@@ -1,10 +1,13 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
+#include <components/vector/vector_buffer.hpp>
 
 #include <core/regex/like_to_regex.hpp>
 #include <core/regex/regex.hpp>
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstddef>
 #include <optional>
 #include <regex>
@@ -88,13 +91,41 @@ namespace {
         return core::error_t::no_error();
     }
 
+    template<bool to_upper>
+    core::error_t vector_case_fold(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+        const auto& strings = inputs.data.front();
+        const auto* source = strings.data<std::string_view>();
+        const bool all_valid = all_inputs_valid(inputs);
+        // output will not use more memory than input
+        auto* heap = static_cast<string_vector_buffer_t*>(output.auxiliary().get());
+        auto* rows = output.data<std::string_view>();
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            if (!all_valid && strings.is_null(row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            const auto text = source[row];
+            auto* folded = reinterpret_cast<char*>(heap->empty_string(text.size()));
+            std::transform(text.begin(), text.end(), folded, [](unsigned char symbol) {
+                if constexpr (to_upper) {
+                    return static_cast<char>(std::toupper(symbol));
+                } else {
+                    return static_cast<char>(std::tolower(symbol));
+                }
+            });
+            rows[row] = std::string_view{folded, text.size()};
+            output.set_null(row, false);
+        }
+        return core::error_t::no_error();
+    }
+
     // ------------------------------------------------------------------
     // REGEXP_REPLACE(s, pattern, replacement) — std::regex ECMAScript.
     // Invalid pattern => kernel_error.
     // ------------------------------------------------------------------
 
     // Cached regex, because it is expensive and there is a good chance it would be reused
-    // TODO: cache all encountered putterns, because alternating patterns will cause recompile for each row
+    // TODO: cache all encountered patterns, because alternating patterns will cause recompile for each row
     class regexp_replace_state_t final : public kernel_state {
     public:
         std::regex compiled{"", std::regex::ECMAScript};
@@ -258,6 +289,24 @@ namespace {
         return fn;
     }
 
+    std::unique_ptr<vector_function> make_case_fold_func(std::pmr::memory_resource* resource,
+                                                         const std::string& name,
+                                                         const std::string& short_doc,
+                                                         const std::string& full_doc,
+                                                         vector_exec_fn fold) {
+        function_doc doc{short_doc, full_doc, {"string"}, false};
+
+        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
+
+        kernel_signature_t sig(function_type_t::vector,
+                               {parameter_type::exact(logical_type::STRING_LITERAL)},
+                               {output_type::fixed(logical_type::STRING_LITERAL)});
+        vector_kernel k(std::move(sig), fold);
+        (void) fn->add_kernel(resource, std::move(k));
+
+        return fn;
+    }
+
     std::unique_ptr<vector_function> make_regexp_replace_func(std::pmr::memory_resource* resource,
                                                               const std::string& name,
                                                               const std::string& short_doc,
@@ -307,7 +356,7 @@ namespace {
 
 namespace components::compute {
 
-    // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..8 in function.hpp —
+    // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..10 in function.hpp —
     // a uid is the REGISTRATION ORDER, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
         (void) r.add_function(make_substring_func(r.resource(),
@@ -325,6 +374,16 @@ namespace components::compute {
                                   "regexp_like",
                                   "Regex match test",
                                   "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
+        (void) r.add_function(make_case_fold_func(r.resource(),
+                                                  "upper",
+                                                  "Upper case",
+                                                  "UPPER(s) -> text; folded per byte, per LC_CTYPE",
+                                                  vector_case_fold<true>));
+        (void) r.add_function(make_case_fold_func(r.resource(),
+                                                  "lower",
+                                                  "Lower case",
+                                                  "LOWER(s) -> text; folded per byte, per LC_CTYPE",
+                                                  vector_case_fold<false>));
     }
 
 } // namespace components::compute

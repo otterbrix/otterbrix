@@ -94,10 +94,17 @@ namespace components::operators {
         if (!opened_) {
             opened_ = true;
 
+            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_types,
+                                             ctx->session,
+                                             table_oid_);
+            guard_types_ = co_await std::move(tf);
+
             // Short-circuit: all_false → empty result, immediately drained.
             if (expression_ && expression_->type() == expressions::compare_type::all_false) {
                 drained_ = true;
-                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                emitted_any_ = true;
+                co_return make_drain_chunk(guard_types_);
             }
 
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
@@ -111,18 +118,12 @@ namespace components::operators {
                 if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
                     if (expression_->type() != expressions::compare_type::all) {
                         drained_ = true;
-                        co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                        emitted_any_ = true;
+                        co_return make_drain_chunk(guard_types_);
                     }
                     null_param_skip_filter = true;
                 }
             }
-
-            // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
-            guard_types_ = co_await std::move(tf);
 
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {

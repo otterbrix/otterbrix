@@ -1,7 +1,10 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
+#include <components/vector/operations/apply_operator.hpp>
+#include <components/vector/vector_operations.hpp>
 
 #include <cassert>
+#include <compare>
 #include <string_view>
 #include <tuple>
 
@@ -154,24 +157,33 @@ namespace {
         return arithmetic_dispatch<numeric_layout_t>(inputs.front(), no_layout);
     }
 
-    // MIN/MAX over text. A vector stores its strings as string_view into an auxiliary buffer that
-    // belongs to the input chunk, so the accumulator must own its copy: the winning row's chunk is
-    // long gone by the time finalize runs.
-    struct string_state_t {
-        explicit string_state_t(std::pmr::memory_resource* resource)
-            : value(resource) {}
-        std::pmr::string value;
+    // MIN/MAX does not accumulate a running total: it keeps the winning ROW
+    struct min_max_state_t {
         bool has_value{false};
     };
 
+    template<typename>
+    struct orderable_t {
+        bool operator()() const { return true; }
+    };
+
+    [[nodiscard]] bool is_orderable(const complex_logical_type& type) {
+        if (type.type() == logical_type::LIST || type.type() == logical_type::ARRAY) {
+            return is_orderable(type.child_type());
+        }
+        if (type.to_physical_type() == physical_type::STRING) {
+            return true;
+        }
+        return ordered_dispatch<orderable_t>(type, [] { return false; });
+    }
+
     aggregate_state_layout_t min_max_layout(const std::pmr::vector<complex_logical_type>& inputs) {
-        if (inputs.size() != 1) {
+        if (inputs.size() != 1 || !is_orderable(inputs.front())) {
             return {};
         }
-        if (inputs.front().to_physical_type() == physical_type::STRING) {
-            return aggregate_state_of<string_state_t>();
-        }
-        return ordered_dispatch<numeric_layout_t>(inputs.front(), no_layout);
+        auto layout = aggregate_state_of<min_max_state_t>();
+        layout.argument_type = inputs.front();
+        return layout;
     }
 
     aggregate_state_layout_t avg_layout(const std::pmr::vector<complex_logical_type>& inputs) {
@@ -200,46 +212,6 @@ namespace {
                 auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
                 accumulator.value = static_cast<T>(accumulator.value + data[row]);
                 accumulator.has_value = true;
-            }
-            return core::error_t::no_error();
-        }
-    };
-
-    template<typename T>
-    struct min_update_t {
-        core::error_t
-        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
-            const auto* data = input.data<T>();
-            const bool all_valid = input.validity().all_valid();
-            for (uint64_t row = 0; row < groups.size(); row++) {
-                if (!all_valid && input.is_null(row)) {
-                    continue;
-                }
-                auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
-                if (!accumulator.has_value || data[row] < accumulator.value) {
-                    accumulator.value = data[row];
-                    accumulator.has_value = true;
-                }
-            }
-            return core::error_t::no_error();
-        }
-    };
-
-    template<typename T>
-    struct max_update_t {
-        core::error_t
-        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
-            const auto* data = input.data<T>();
-            const bool all_valid = input.validity().all_valid();
-            for (uint64_t row = 0; row < groups.size(); row++) {
-                if (!all_valid && input.is_null(row)) {
-                    continue;
-                }
-                auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
-                if (!accumulator.has_value || accumulator.value < data[row]) {
-                    accumulator.value = data[row];
-                    accumulator.has_value = true;
-                }
             }
             return core::error_t::no_error();
         }
@@ -276,57 +248,44 @@ namespace {
             states);
     }
 
-    // Shared by min and max: `keep` decides whether the incoming string replaces the accumulator.
-    template<typename keep_t>
-    core::error_t
-    string_min_max_update(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) {
-        const auto* data = input.data<std::string_view>();
+    // One update for every type MIN/MAX accepts: order the incoming row against the group's
+    // current winner, and when it wins, copy it in. `wants_greater` picks max.
+    template<bool wants_greater>
+    core::error_t min_max_update(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) {
         const bool all_valid = input.validity().all_valid();
-        const keep_t keep{};
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && input.is_null(row)) {
                 continue;
             }
-            auto& accumulator = states.at<string_state_t>(groups[row]);
-            const std::string_view candidate = data[row];
-            if (!accumulator.has_value || keep(candidate, std::string_view{accumulator.value})) {
-                accumulator.value.assign(candidate);
-                accumulator.has_value = true;
+            auto& accumulator = states.at<min_max_state_t>(groups[row]);
+            vector_t& winners = states.values(groups[row]);
+            const uint64_t slot = states.slot_of(groups[row]);
+            if (accumulator.has_value) {
+                const std::partial_ordering ordering = operations::compare_cells(input, row, winners, slot);
+                const bool wins = wants_greater ? ordering == std::partial_ordering::greater
+                                                : ordering == std::partial_ordering::less;
+                if (!wins) {
+                    continue;
+                }
             }
+            vector_ops::copy(input, winners, row + 1, row, slot);
+            accumulator.has_value = true;
         }
         return core::error_t::no_error();
     }
 
-    core::error_t min_update(kernel_context& ctx,
+    core::error_t min_update(kernel_context&,
                              const data_chunk_t& input,
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
-        const auto& column = input.data.front();
-        if (column.type().to_physical_type() == physical_type::STRING) {
-            return string_min_max_update<std::less<std::string_view>>(column, groups, states);
-        }
-        return ordered_dispatch<min_update_t>(
-            column.type(),
-            [&ctx] { return unsupported_argument(ctx, "min"); },
-            column,
-            groups,
-            states);
+        return min_max_update</*wants_greater*/ false>(input.data.front(), groups, states);
     }
 
-    core::error_t max_update(kernel_context& ctx,
+    core::error_t max_update(kernel_context&,
                              const data_chunk_t& input,
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
-        const auto& column = input.data.front();
-        if (column.type().to_physical_type() == physical_type::STRING) {
-            return string_min_max_update<std::greater<std::string_view>>(column, groups, states);
-        }
-        return ordered_dispatch<max_update_t>(
-            column.type(),
-            [&ctx] { return unsupported_argument(ctx, "max"); },
-            column,
-            groups,
-            states);
+        return min_max_update</*wants_greater*/ true>(input.data.front(), groups, states);
     }
 
     core::error_t avg_update(kernel_context& ctx,
@@ -411,27 +370,19 @@ namespace {
     }
 
     core::error_t
-    min_max_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
-        if (output.type().to_physical_type() == physical_type::STRING) {
-            // set_value copies the bytes into the output vector's own string buffer, so the
-            // accumulator's storage is free to die with the arena.
-            for (uint64_t row = 0; row < count; row++) {
-                const auto& accumulator = states.at<string_state_t>(first + row);
-                if (!accumulator.has_value) {
-                    output.set_null(row, true);
-                    continue;
-                }
-                output.set_value(row, std::string_view{accumulator.value});
+    min_max_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        // The winners already sit one row per group in a vector of this very type, so emitting
+        // them is a copy — whatever the type, and with no accumulator to unpack.
+        for (uint64_t row = 0; row < count; row++) {
+            const uint64_t group = first + row;
+            if (!states.at<min_max_state_t>(group).has_value) {
+                output.set_null(row, true);
+                continue;
             }
-            return core::error_t::no_error();
+            const uint64_t slot = states.slot_of(group);
+            vector_ops::copy(states.values(group), output, slot + 1, slot, row);
         }
-        return ordered_dispatch<numeric_finalize_t>(
-            output.type(),
-            [&ctx] { return unsupported_argument(ctx, "min/max"); },
-            states,
-            first,
-            count,
-            output);
+        return core::error_t::no_error();
     }
 
     core::error_t

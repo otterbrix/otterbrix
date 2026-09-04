@@ -18,12 +18,6 @@ namespace components::operators {
 
     core::error_t
     operator_having_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
-        // Empty-batch guard: defensive symmetry with operator_match (and the schema'd-0-row source
-        // contract). operator_group does not actually hand HAVING a 0-row chunk in current code.
-        if (input.size() == 0) {
-            return core::error_t::no_error();
-        }
-
         // Build + cache the predicate on the first batch. The group-output schema is stable across
         // every finalize chunk (operator_group fixes out_types once), and resource_ (context.resource)
         // outlives them all, so the predicate's value-getter closures stay valid across all chunks.
@@ -57,6 +51,10 @@ namespace components::operators {
             stream_ready_ = true;
         }
 
+        if (input.size() == 0) {
+            return core::error_t::no_error();
+        }
+
         if (condition_ == expressions::condition_kind::never) {
             return core::error_t::no_error();
         }
@@ -86,7 +84,7 @@ namespace components::operators {
             }
         }
         if (out_count == 0) {
-            return core::error_t::no_error(); // nothing survived — emit no chunk (matches operator_match)
+            return core::error_t::no_error(); // nothing survived — finalize() emits the columns
         }
 
         // TYPED, no-box gather: data_chunk_t::copy routes each column through vector_ops::copy
@@ -97,6 +95,20 @@ namespace components::operators {
                            : vector::data_chunk_t(resource_, stream_types_, out_count);
         input.copy(out_chunk, sel, out_count);
         out.emplace_back(std::move(out_chunk));
+        note_emitted();
+        return core::error_t::no_error();
+    }
+
+    core::error_t operator_having_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        if (emitted() || stream_types_.empty()) {
+            return core::error_t::no_error();
+        }
+        // Built exactly as a surviving batch would be, so the columns match position for position.
+        vector::data_chunk_t empty = stream_sparse_
+                                         ? vector::data_chunk_t(resource_, stream_types_, stream_populated_cols_, 0)
+                                         : vector::data_chunk_t(resource_, stream_types_, 0);
+        empty.set_cardinality(0);
+        out.emplace_back(std::move(empty));
         return core::error_t::no_error();
     }
 

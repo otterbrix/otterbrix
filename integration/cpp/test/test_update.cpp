@@ -76,11 +76,38 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
     }
 }
 
-// transform_update_expr's switch fell off for node tags it does not handle
-// (function calls, CASE, subqueries) and returned nullptr WITHOUT setting the
-// transformer error, so a null child shipped in the plan: nested cases
-// segfaulted the executor, a top-level one was silently dropped (success
-// reported, nothing updated).
+TEST_CASE("integration::cpp::test_update::set_function_call") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_function_call");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE TABLE t.fn (x BIGINT, s TEXT);")->is_success());
+    REQUIRE(exec("INSERT INTO t.fn (x, s) VALUES (9, 'ab'), (-4, 'Cd');")->is_success());
+
+    REQUIRE(exec("UPDATE t.fn SET s = upper(s);")->is_success());
+    REQUIRE(exec("UPDATE t.fn SET x = abs(x);")->is_success());
+    {
+        auto cur = exec("SELECT x, s FROM t.fn ORDER BY x;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        CHECK(cur->value(0, 0).value<int64_t>() == 4); // -4 -> 4, per row
+        CHECK(cur->value(1, 0).value<std::string_view>() == "CD");
+        CHECK(cur->value(0, 1).value<int64_t>() == 9);
+        CHECK(cur->value(1, 1).value<std::string_view>() == "AB");
+    }
+}
+
+// A SET value the engine cannot build must be REFUSED rather than shipped as a null child in the
+// plan — a null child segfaults the executor when nested, and when top-level reports success
+// while updating nothing.
 TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unsupported_expressions");
     test_clear_directory(config);
@@ -97,7 +124,9 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
     REQUIRE(exec("CREATE TABLE t.uf (x BIGINT, s TEXT);")->is_success());
     REQUIRE(exec("INSERT INTO t.uf (x, s) VALUES (9, 'ab');")->is_success());
 
-    CHECK_FALSE(exec("UPDATE t.uf SET s = upper(s);")->is_success());
+    // A name that resolves to no function cannot be built, so the statement is refused and the
+    // row keeps its value. Any silent drop shows up as the data having changed anyway.
+    CHECK_FALSE(exec("UPDATE t.uf SET s = no_such_function(s);")->is_success());
     {
         auto cur = exec("SELECT x, s FROM t.uf;");
         REQUIRE(cur->is_success());

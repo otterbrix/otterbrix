@@ -8,70 +8,9 @@
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
+#include <components/physical_plan/operators/operator_select.hpp>
 
 namespace components::operators {
-
-    struct group_key_t {
-        explicit group_key_t(std::pmr::memory_resource* r)
-            : name(r)
-            , full_path(r)
-            , coalesce_entries(r)
-            , case_clauses(r)
-            , else_constant(r, nullptr) {}
-
-        std::pmr::string name;
-        enum class kind
-        {
-            column,
-            coalesce,
-            case_when
-        } type = kind::column;
-        std::pmr::vector<size_t> full_path;
-
-        expressions::side_t side = expressions::side_t::undefined;
-
-        // for coalesce: ordered list of sources (col index or constant)
-        struct coalesce_entry {
-            explicit coalesce_entry(std::pmr::memory_resource* r)
-                : constant(r, nullptr) {}
-            enum class source
-            {
-                column,
-                constant
-            } type = source::column;
-            size_t col_index = 0;
-            types::logical_value_t constant;
-        };
-        std::pmr::vector<coalesce_entry> coalesce_entries;
-
-        // for case_when: list of when-clauses
-        struct case_clause {
-            explicit case_clause(std::pmr::memory_resource* r)
-                : condition_value(r, nullptr)
-                , res_constant(r, nullptr) {}
-            size_t condition_col = 0;
-            expressions::compare_type cmp = expressions::compare_type::eq;
-            types::logical_value_t condition_value;
-            enum class result_source
-            {
-                column,
-                constant
-            } res_type = result_source::column;
-            size_t res_col = 0;
-            types::logical_value_t res_constant;
-        };
-        std::pmr::vector<case_clause> case_clauses;
-
-        // else result for case_when
-        enum class else_source
-        {
-            column,
-            constant,
-            null_value
-        } else_type = else_source::null_value;
-        size_t else_col = 0;
-        types::logical_value_t else_constant;
-    };
 
     struct group_value_t {
         std::pmr::string name;
@@ -82,16 +21,13 @@ namespace components::operators {
     public:
         operator_hash_group_t(std::pmr::memory_resource* resource, log_t log);
 
-        void add_key(group_key_t&& key);
-        void add_key(const std::pmr::string& name);
+        // A grouping key is a named expression exactly like a projected column: a plain column
+        // reference, or anything else the engine can compute.
+        void add_key(projected_column_t&& key);
         void add_value(const std::pmr::string& name, const types::complex_logical_type& result_type);
         void add_output(const expressions::expression_ptr& output);
 
-        // Plan-time resolved output column types, by FINAL output position (keys first,
-        // then aggregate values), forwarded from the logical aggregate node's
-        // output_schema(). Used to build correctly-typed results over ZERO input rows
-        // instead of falling back to the 0-byte logical_type::NA sentinel (which crashes
-        // downstream under gcc -O3). Empty when not forwarded -> data-derived fallback.
+        // Plan-time resolved output column types, by FINAL output position
         void set_output_types(const std::pmr::vector<types::complex_logical_type>& types) override;
 
         void set_input_types(const std::pmr::vector<types::complex_logical_type>& types);
@@ -104,7 +40,13 @@ namespace components::operators {
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
     private:
-        std::pmr::vector<group_key_t> keys_;
+        std::pmr::vector<projected_column_t> keys_;
+        std::pmr::vector<projected_column_t> computed_keys_;
+        std::unique_ptr<execution_dag::execution_dag_t> computed_keys_graph_;
+        // What the keys graph writes into
+        vector::data_chunk_t computed_keys_chunk_;
+        // Ordinal of the first appended key column: the width of the chunk the group is fed.
+        size_t computed_key_base_{0};
         std::pmr::vector<group_value_t> values_;
         std::pmr::vector<expressions::expression_ptr> outputs_;
         // Plan-time resolved output types by final output position (see set_output_types).
@@ -144,7 +86,11 @@ namespace components::operators {
         bool plan_built_{false};
         bool any_input_{false};
 
-        // First-push setup: builds the graph over the input schema, declaring a slot per key.
+        // Evaluates the computed keys and appends one column per key to `chunk`. A no-op when
+        // every key is a plain column reference.
+        core::error_t append_computed_keys(pipeline::context_t* pipeline_context, vector::data_chunk_t* chunk);
+        // First-push setup: builds the graph over the (already extended) input schema, declaring
+        // a slot per key.
         core::error_t build_plan(pipeline::context_t* pipeline_context, const vector::data_chunk_t& probe);
         // Finds or creates the group of every row of the current key columns, filling row_groups_.
         core::error_t resolve_groups(vector::data_chunk_t& keys);

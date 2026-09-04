@@ -55,38 +55,6 @@ namespace {
 
 } // namespace
 
-TEST_CASE("group operator contracts: unresolved column key surfaces operator error", "[group_contracts]") {
-    // Pre-fix this aborted in Debug via assert(!key.full_path.empty()) in
-    // extract_key_value (operator_group.cpp); in Release the assert is compiled
-    // out and chunk.value(empty_path, row) is UB.
-    auto resource = core::pmr::otterbrix_resource();
-
-    std::pmr::vector<types::complex_logical_type> cols(&resource);
-    cols.emplace_back(types::logical_type::BIGINT);
-    cols.back().set_alias("k");
-    vector::data_chunk_t chunk(&resource, cols, 2);
-    chunk.set_value(0, 0, int64_t(1));
-    chunk.set_value(0, 1, int64_t(2));
-    chunk.set_cardinality(2);
-
-    boost::intrusive_ptr<operators::operator_hash_group_t> group(
-        new operators::operator_hash_group_t(&resource, log_t{}));
-    operators::group_key_t key(&resource);
-    key.name = std::pmr::string("k", &resource);
-    key.type = operators::group_key_t::kind::column;
-    // full_path deliberately left empty: an unresolved key must become an
-    // operator error, not an assert/UB.
-    group->add_key(std::move(key));
-    group->set_children(make_child(&resource, std::move(chunk)));
-
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
-    drive_group(group.get(), &resource, &ctx);
-
-    REQUIRE(group->has_error());
-    REQUIRE(group->get_error().type == core::error_code_t::schema_error);
-    REQUIRE(group->get_error().what.find("k") != std::pmr::string::npos);
-}
-
 TEST_CASE("group operator contracts: struct-field key type comes from input schema, not first group value",
           "[group_contracts]") {
     // Key with a multi-part path ({struct column, field index}) where the FIRST
@@ -118,12 +86,12 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
 
     boost::intrusive_ptr<operators::operator_hash_group_t> group(
         new operators::operator_hash_group_t(&resource, log_t{}));
-    operators::group_key_t key(&resource);
-    key.name = std::pmr::string("kf", &resource);
-    key.type = operators::group_key_t::kind::column;
-    key.full_path.push_back(0); // struct column
-    key.full_path.push_back(0); // field "f"
-    group->add_key(std::move(key));
+    expressions::key_t key{&resource, std::string("kf")};
+    std::pmr::vector<size_t> key_path{&resource};
+    key_path.push_back(0); // struct column
+    key_path.push_back(0); // field "f"
+    key.set_path(std::move(key_path));
+    group->add_key(operators::projected_column_t{&resource, "kf", expressions::param_storage{key}});
     // A grouping key is not an output on its own — a group emits its TARGET LIST — so the column
     // under test has to be named, exactly as create_plan_group does for `SELECT s.f ... GROUP BY s.f`.
     expressions::key_t output_key{&resource, std::string("kf")};

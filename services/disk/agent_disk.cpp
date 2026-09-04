@@ -1122,11 +1122,9 @@ namespace services::disk {
         //     columns (the optimizer never stamps those).
         ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
-            ops::group_key_t key{resource};
-            key.name.assign(gk.name.begin(), gk.name.end());
-            key.type = ops::group_key_t::kind::column;
-            key.full_path.assign(gk.path.begin(), gk.path.end());
-            group.add_key(std::move(key));
+            components::expressions::key_t field{resource, std::string{gk.name}};
+            field.set_path(std::pmr::vector<size_t>{gk.path.begin(), gk.path.end(), resource});
+            group.add_key(ops::projected_column_t{resource, gk.name, components::expressions::param_storage{field}});
         }
         for (const auto& agg : spec.aggregates) {
             group.add_value(agg.alias, agg.result_type);

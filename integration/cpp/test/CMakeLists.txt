@@ -83,6 +83,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_star_join_e2e.cpp
         test_returning.cpp
         test_expression_matrix.cpp
+        test_group_by_expressions.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp

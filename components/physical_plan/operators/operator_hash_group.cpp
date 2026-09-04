@@ -17,6 +17,9 @@ namespace components::operators {
     operator_hash_group_t::operator_hash_group_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, log, operator_type::aggregate)
         , keys_(resource_)
+        , computed_keys_(resource_)
+        // actual columns will be added later
+        , computed_keys_chunk_(resource_, {}, vector::DEFAULT_VECTOR_CAPACITY)
         , values_(resource_)
         , outputs_(resource_)
         , output_types_(resource_)
@@ -31,12 +34,10 @@ namespace components::operators {
         input_types_.assign(types.begin(), types.end());
     }
 
-    void operator_hash_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
-
-    void operator_hash_group_t::add_key(const std::pmr::string& name) {
-        group_key_t key(resource_);
-        key.name = name;
-        key.type = group_key_t::kind::column;
+    void operator_hash_group_t::add_key(projected_column_t&& key) {
+        if (!expressions::is_key(key.value)) {
+            computed_keys_.push_back(key);
+        }
         keys_.push_back(std::move(key));
     }
 
@@ -47,23 +48,71 @@ namespace components::operators {
 
     void operator_hash_group_t::add_output(const expressions::expression_ptr& output) { outputs_.push_back(output); }
 
+    core::error_t operator_hash_group_t::append_computed_keys(pipeline::context_t* pipeline_context,
+                                                              vector::data_chunk_t* chunk) {
+        if (computed_keys_.empty()) {
+            return core::error_t::no_error();
+        }
+        computed_key_base_ = chunk->column_count();
+        if (computed_keys_graph_ == nullptr) {
+            if (auto error = build_projection_graph(resource_,
+                                                    computed_keys_,
+                                                    pipeline_context->parameters,
+                                                    *chunk,
+                                                    0,
+                                                    &computed_keys_graph_);
+                error.contains_error()) {
+                return error;
+            }
+            for (auto slot : computed_keys_graph_->output_slots()) {
+                computed_keys_chunk_.data.emplace_back(resource_,
+                                                       computed_keys_graph_->slot_type(slot),
+                                                       vector::DEFAULT_VECTOR_CAPACITY);
+            }
+        }
+        computed_keys_graph_->set_parameters(&pipeline_context->parameters.parameters);
+        if (auto error = computed_keys_graph_->process(*chunk, pipeline_context->execution_context);
+            error.contains_error()) {
+            return error;
+        }
+        if (auto error = computed_keys_graph_->finalize_inplace(pipeline_context->execution_context,
+                                                                chunk->size(),
+                                                                &computed_keys_chunk_,
+                                                                0);
+            error.contains_error()) {
+            return error;
+        }
+        computed_keys_chunk_.set_cardinality(chunk->size());
+        for (const auto& column : computed_keys_chunk_.data) {
+            chunk->data.emplace_back(column);
+        }
+        return core::error_t::no_error();
+    }
+
     core::error_t operator_hash_group_t::build_plan(pipeline::context_t* pipeline_context,
                                                     const vector::data_chunk_t& probe) {
         auto types = probe.types();
         graph_ = std::make_unique<execution_dag::execution_dag_t>(resource_, vector::DEFAULT_VECTOR_CAPACITY);
 
-        // A grouping key is an expression like any other: the graph evaluates it per chunk, and
-        // its slot is what the operator hashes and later writes back per group.
+        // Every key reaches the group graph as an input column: a plain key at its own ordinal,
+        // a computed one at the ordinal append_computed_keys() placed it at. Its slot is what the
+        // operator hashes and later writes back per group.
+        size_t computed_index = 0;
         for (const auto& key : keys_) {
-            if (key.type != group_key_t::kind::column || key.full_path.empty()) {
-                std::pmr::string msg{"group key '", resource_};
-                msg += key.name;
-                msg += "' has no resolved column path";
-                return core::error_t(core::error_code_t::schema_error, std::move(msg));
-            }
             expressions::key_t field{resource_, std::string{key.name}};
-            field.set_path(std::pmr::vector<size_t>{key.full_path.begin(), key.full_path.end(), resource_});
-            field.set_side(key.side);
+            if (expressions::is_key(key.value)) {
+                const auto& source = expressions::as_key(key.value);
+                // Validation resolves every column key's path before the plan is lowered, so an
+                // unresolved one here is a broken invariant rather than a query the engine refuses.
+                assert(!source.path().empty() && "group key reached the operator with no resolved column path");
+                field.set_path(std::pmr::vector<size_t>{source.path().begin(), source.path().end(), resource_});
+                field.set_side(source.side());
+            } else {
+                std::pmr::vector<size_t> path(resource_);
+                path.push_back(computed_key_base_ + computed_index);
+                field.set_path(std::move(path));
+                computed_index++;
+            }
             auto expression =
                 expressions::make_scalar_expression(resource_, expressions::scalar_type::get_field, field);
             auto slot = expressions::build_expression(graph_.get(),
@@ -227,6 +276,11 @@ namespace components::operators {
         if (input.size() > 0) {
             any_input_ = true;
         }
+        // The computed keys become columns of this chunk BEFORE anything looks at it, so the
+        // group graph is built and driven over one uniform schema.
+        if (auto error = append_computed_keys(ctx, &input); error.contains_error()) {
+            return error;
+        }
         if (!plan_built_) {
             if (auto error = build_plan(ctx, input); error.contains_error()) {
                 return error;
@@ -263,6 +317,9 @@ namespace components::operators {
             // still has to exist to emit that one row, over the schema the plan resolved.
             vector::data_chunk_t empty(resource_, input_types_, 1);
             empty.set_cardinality(0);
+            if (auto error = append_computed_keys(ctx, &empty); error.contains_error()) {
+                return error;
+            }
             if (auto error = build_plan(ctx, empty); error.contains_error()) {
                 return error;
             }

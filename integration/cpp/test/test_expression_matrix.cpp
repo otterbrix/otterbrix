@@ -151,10 +151,6 @@ namespace {
             return shape.unsupported;
         }
         const std::string_view clause{placement.name};
-        // Grouping by a computed expression is a separate feature; only key references work.
-        if (clause == "group_by" && shape.kind != yields::column_ref) {
-            return "GROUP BY takes a key reference only; grouping by a computed value is not built";
-        }
         // The SET value is cast to the target's type by this placement.
         if (clause == "update_set" && shape.kind == yields::array_value) {
             return "no implicit or assignment cast from a whole array to text";

@@ -1,4 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/clone_expression.hpp>
+#include <components/expressions/expression_equivalence.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -194,6 +196,42 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<param_storage> transformer::transform_expression(Node* node,
                                                                             const expression_context_t& context) {
+        VALUE_OR_RETURN(auto operand, transform_expression_impl(node, context));
+        if (context.group_keys == nullptr || !expressions::is_expr(operand)) {
+            return operand;
+        }
+        const auto& produced = expressions::as_expr(operand);
+        const auto& parameters = context.plan->parameters->parameters().parameters;
+        for (size_t index = 0; index < context.group_keys->size(); index++) {
+            const auto& key = (*context.group_keys)[index];
+            if (!expressions::same_computation(produced, key, parameters)) {
+                continue;
+            }
+            expressions::key_t reference{resource_, group_key_alias(index)};
+            bool emitted = false;
+            for (const auto& expr : context.group->expressions()) {
+                const bool is_marker =
+                    expr->group() == expression_group::scalar &&
+                    static_cast<const scalar_expression_t*>(expr.get())->type() == scalar_type::group_field;
+                if (!is_marker && expr->key() == reference) {
+                    emitted = true;
+                    break;
+                }
+            }
+            if (!emitted) {
+                auto hidden = expressions::clone_expression(resource_, key);
+                hidden->key() = reference;
+                context.group->append_expression(std::move(hidden));
+            }
+            return param_storage{reference};
+        }
+        return operand;
+    }
+
+    std::string transformer::group_key_alias(size_t index) { return "__group_key_" + std::to_string(index); }
+
+    core::result_wrapper_t<param_storage> transformer::transform_expression_impl(Node* node,
+                                                                                 const expression_context_t& context) {
         const auto& names = context.names;
         auto* params = context.plan->parameters.get();
         auto recurse = [&](Node* operand) { return transform_expression(operand, context); };
@@ -369,9 +407,12 @@ namespace components::sql::transform {
                 auto funcname = std::string{strVal(linitial(func->funcname))};
                 std::pmr::vector<param_storage> args(resource_);
                 if (!func->agg_star && func->args) {
+                    expression_context_t argument_context = context;
+                    argument_context.group_keys = nullptr;
                     args.reserve(func->args->lst.size());
                     for (const auto& arg : func->args->lst) {
-                        VALUE_OR_RETURN(auto resolved, recurse(pg_ptr_cast<Node>(arg.data)));
+                        VALUE_OR_RETURN(auto resolved,
+                                        transform_expression(pg_ptr_cast<Node>(arg.data), argument_context));
                         args.emplace_back(std::move(resolved));
                     }
                 }
@@ -565,11 +606,15 @@ namespace components::sql::transform {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<param_storage> transformer::resolve_select_operand(Node* node,
-                                                                              const name_collection_t& names,
-                                                                              logical_plan::execution_plan_t* plan,
-                                                                              logical_plan::node_ptr& group) {
-        return transform_expression(node, expression_context_t{names, plan, expression_placement_t::select, group});
+    core::result_wrapper_t<param_storage>
+    transformer::resolve_select_operand(Node* node,
+                                        const name_collection_t& names,
+                                        logical_plan::execution_plan_t* plan,
+                                        logical_plan::node_ptr& group,
+                                        const std::pmr::vector<expression_ptr>* group_keys) {
+        return transform_expression(
+            node,
+            expression_context_t{names, plan, expression_placement_t::select, group, group_keys});
     }
 
     // Render a jsonb operator's right-hand key/path operand into its textual form.
@@ -1562,17 +1607,22 @@ namespace components::sql::transform {
     }
 
     // Resolve a HAVING operand: FuncCall → find matching aggregate alias in group
-    core::result_wrapper_t<param_storage> transformer::resolve_having_operand(Node* node,
-                                                                              const name_collection_t& names,
-                                                                              logical_plan::execution_plan_t* plan,
-                                                                              const logical_plan::node_ptr& group) {
-        return transform_expression(node, expression_context_t{names, plan, expression_placement_t::bind, group});
+    core::result_wrapper_t<param_storage>
+    transformer::resolve_having_operand(Node* node,
+                                        const name_collection_t& names,
+                                        logical_plan::execution_plan_t* plan,
+                                        const logical_plan::node_ptr& group,
+                                        const std::pmr::vector<expression_ptr>* group_keys) {
+        return transform_expression(node,
+                                    expression_context_t{names, plan, expression_placement_t::bind, group, group_keys});
     }
 
-    core::result_wrapper_t<expression_ptr> transformer::transform_having_expr(Node* node,
-                                                                              const name_collection_t& names,
-                                                                              logical_plan::execution_plan_t* plan,
-                                                                              const logical_plan::node_ptr& group) {
+    core::result_wrapper_t<expression_ptr>
+    transformer::transform_having_expr(Node* node,
+                                       const name_collection_t& names,
+                                       logical_plan::execution_plan_t* plan,
+                                       const logical_plan::node_ptr& group,
+                                       const std::pmr::vector<expression_ptr>* group_keys) {
         if (nodeTag(node) == T_TypeCast) {
             // HAVING TRUE / FALSE — constant predicate, no aggregate involved.
             return transform_predicate(node, names, plan);
@@ -1598,22 +1648,22 @@ namespace components::sql::transform {
                         return core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"invalid comparison operand", resource_});
                     }
-                    VALUE_OR_RETURN(auto left, resolve_having_operand(a_expr->lexpr, names, plan, group));
-                    VALUE_OR_RETURN(auto right, resolve_having_operand(a_expr->rexpr, names, plan, group));
+                    VALUE_OR_RETURN(auto left, resolve_having_operand(a_expr->lexpr, names, plan, group, group_keys));
+                    VALUE_OR_RETURN(auto right, resolve_having_operand(a_expr->rexpr, names, plan, group, group_keys));
                     return make_compare_expression(resource_, comp_type, left, right);
                 }
             } else if (a_expr->kind == AEXPR_AND || a_expr->kind == AEXPR_OR) {
                 auto expr = make_compare_union_expression(resource_,
                                                           a_expr->kind == AEXPR_AND ? compare_type::union_and
                                                                                     : compare_type::union_or);
-                VALUE_OR_RETURN(auto lhs, transform_having_expr(a_expr->lexpr, names, plan, group));
+                VALUE_OR_RETURN(auto lhs, transform_having_expr(a_expr->lexpr, names, plan, group, group_keys));
                 expr->append_child(std::move(lhs));
-                VALUE_OR_RETURN(auto rhs, transform_having_expr(a_expr->rexpr, names, plan, group));
+                VALUE_OR_RETURN(auto rhs, transform_having_expr(a_expr->rexpr, names, plan, group, group_keys));
                 expr->append_child(std::move(rhs));
                 return expr;
             }
         }
-        VALUE_OR_RETURN(auto operand, resolve_having_operand(node, names, plan, group));
+        VALUE_OR_RETURN(auto operand, resolve_having_operand(node, names, plan, group, group_keys));
         return as_expression(std::move(operand));
     }
 

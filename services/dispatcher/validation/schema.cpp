@@ -43,6 +43,9 @@ namespace services::dispatcher::validation {
                     return type.type_name();
                 }
                 break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+                return describe_type(type.child_type()) + "[]";
             default:
                 break;
         }

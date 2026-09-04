@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace components::casts {
@@ -221,6 +223,118 @@ namespace components::casts {
             }};
         }
 
+        [[nodiscard]] bool is_list_or_array(const types::complex_logical_type& type) {
+            return type.type() == types::logical_type::LIST || type.type() == types::logical_type::ARRAY;
+        }
+
+        [[nodiscard]] types::list_entry_t element_span(const vector::vector_t& source, uint64_t row) {
+            if (source.type().type() == types::logical_type::LIST) {
+                return source.data<types::list_entry_t>()[row];
+            }
+            const uint64_t stride = source.type().extension_as<types::array_logical_type_extension>()->size();
+            return types::list_entry_t{row * stride, stride};
+        }
+
+        [[nodiscard]] uint64_t child_element_count(const vector::vector_t& source, uint64_t count) {
+            if (source.type().type() == types::logical_type::LIST) {
+                return static_cast<const vector::list_vector_buffer_t*>(source.auxiliary().get())->size();
+            }
+            return count * source.type().extension_as<types::array_logical_type_extension>()->size();
+        }
+
+        [[nodiscard]] bool is_ascii_space(char character) noexcept {
+            return character == ' ' || character == '\t' || character == '\n' || character == '\r' ||
+                   character == '\v' || character == '\f';
+        }
+
+        [[nodiscard]] bool spells_null(std::string_view text) noexcept {
+            static constexpr std::string_view null_word{"null"};
+            if (text.size() != null_word.size()) {
+                return false;
+            }
+            for (size_t index = 0; index < text.size(); ++index) {
+                char character = text[index];
+                if (character >= 'A' && character <= 'Z') {
+                    character = static_cast<char>(character - 'A' + 'a');
+                }
+                if (character != null_word[index]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] bool needs_quoting(std::string_view text) noexcept {
+            if (text.empty() || spells_null(text)) {
+                return true;
+            }
+            for (char character : text) {
+                if (character == '{' || character == '}' || character == ',' || character == '"' || character == '\\' ||
+                    is_ascii_space(character)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void append_quoted(std::pmr::string* text, std::string_view element) {
+            text->push_back('"');
+            for (char character : element) {
+                if (character == '"' || character == '\\') {
+                    text->push_back('\\');
+                }
+                text->push_back(character);
+            }
+            text->push_back('"');
+        }
+
+        [[nodiscard]] cast_t list_or_array_to_string_cast(cast_t element, bool element_is_list_or_array) {
+            return cast_t{
+                [element = std::move(element), element_is_list_or_array](cast_kind kind,
+                                                                         const vector::vector_t& source,
+                                                                         vector::vector_t* result,
+                                                                         const graph_execution_context& context,
+                                                                         uint64_t count) -> core::error_t {
+                    const uint64_t child_count = child_element_count(source, count);
+                    vector::vector_t rendered{result->resource(),
+                                              types::complex_logical_type{types::logical_type::STRING_LITERAL},
+                                              child_count == 0 ? uint64_t{1} : child_count};
+                    core::error_t error = element(kind, source.entry(), &rendered, context, child_count);
+                    if (error.contains_error()) {
+                        return error;
+                    }
+                    std::pmr::string text{result->resource()};
+                    for (uint64_t row = 0; row < count; ++row) {
+                        if (source.is_null(row)) {
+                            result->set_null(row, true);
+                            continue;
+                        }
+                        const types::list_entry_t span = element_span(source, row);
+                        text.clear();
+                        text.push_back('{');
+                        for (uint64_t offset = 0; offset < span.length; ++offset) {
+                            if (offset != 0) {
+                                text.push_back(',');
+                            }
+                            const uint64_t index = span.offset + offset;
+                            if (rendered.is_null(index)) {
+                                text.append("NULL");
+                                continue;
+                            }
+                            const std::string_view value = rendered.get_value<std::string_view>(index);
+                            if (!element_is_list_or_array && needs_quoting(value)) {
+                                append_quoted(&text, value);
+                            } else {
+                                text.append(value);
+                            }
+                        }
+                        text.push_back('}');
+                        result->set_value(row, std::string_view{text});
+                    }
+                    return core::error_t::no_error();
+                }};
+        }
+
     } // namespace
 
     cast_t leaf_closure(cast_function_t fn) {
@@ -254,6 +368,13 @@ namespace components::casts {
                 return array_to_list_cast(std::move(*element));
             }
             return list_to_array_cast(std::move(*element));
+        }
+        if ((source_is_list || source_is_array) && target.type() == types::logical_type::STRING_LITERAL) {
+            std::optional<cast_t> element = registry.resolve(source.child_type(), target, allowed);
+            if (!element.has_value()) {
+                return std::nullopt;
+            }
+            return list_or_array_to_string_cast(std::move(*element), is_list_or_array(source.child_type()));
         }
         if (source.type() == types::logical_type::MAP && target.type() == types::logical_type::MAP) {
             // Built over the key and the value directly, mirroring how the registry derives a

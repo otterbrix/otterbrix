@@ -1,6 +1,8 @@
 #pragma once
 
+#include <components/types/types.hpp>
 #include <components/vector/indexing_vector.hpp>
+#include <components/vector/vector.hpp>
 #include <cstddef>
 #include <memory_resource>
 #include <new>
@@ -16,21 +18,37 @@ namespace components::compute {
     struct aggregate_state_layout_t {
         size_t size{0};
         size_t alignment{alignof(std::max_align_t)};
-        void (*construct)(void* slot, std::pmr::memory_resource* resource){nullptr};
+        // The resolved argument type, for an accumulator whose STORAGE follows it
+        types::complex_logical_type argument_type{};
+        void (*construct)(void* slot,
+                          std::pmr::memory_resource* resource,
+                          const types::complex_logical_type& argument_type){nullptr};
         void (*destroy)(void* slot){nullptr};
     };
 
-    // Layout of a plain accumulator struct. A state that needs an allocator declares a
-    // constructor taking one, everything else is default-constructed.
+    template<typename state_t>
+    inline constexpr bool takes_argument_type =
+        !std::is_aggregate_v<state_t> &&
+        std::is_constructible_v<state_t, std::pmr::memory_resource*, const types::complex_logical_type&>;
+
+    template<typename state_t>
+    inline constexpr bool takes_resource =
+        !std::is_aggregate_v<state_t> && std::is_constructible_v<state_t, std::pmr::memory_resource*>;
+
     template<typename state_t>
     aggregate_state_layout_t aggregate_state_of() {
         return {sizeof(state_t),
                 alignof(state_t),
-                [](void* slot, std::pmr::memory_resource* resource) {
-                    if constexpr (std::is_constructible_v<state_t, std::pmr::memory_resource*>) {
+                types::complex_logical_type{},
+                [](void* slot, std::pmr::memory_resource* resource, const types::complex_logical_type& type) {
+                    if constexpr (takes_argument_type<state_t>) {
+                        new (slot) state_t(resource, type);
+                    } else if constexpr (takes_resource<state_t>) {
+                        static_cast<void>(type);
                         new (slot) state_t(resource);
                     } else {
                         static_cast<void>(resource);
+                        static_cast<void>(type);
                         new (slot) state_t();
                     }
                 },
@@ -46,19 +64,26 @@ namespace components::compute {
     class aggregate_states_t {
     public:
         aggregate_states_t() = default;
-        aggregate_states_t(std::byte* const* blocks, size_t stride) noexcept
+        aggregate_states_t(std::byte* const* blocks, size_t stride, vector::vector_t* values) noexcept
             : blocks_(blocks)
-            , stride_(stride) {}
+            , stride_(stride)
+            , values_(values) {}
 
         template<typename state_t>
         state_t& at(uint64_t group) const noexcept {
-            return *reinterpret_cast<state_t*>(blocks_[group / states_per_block] +
-                                               (group % states_per_block) * stride_);
+            return *reinterpret_cast<state_t*>(blocks_[group / states_per_block] + slot_of(group) * stride_);
         }
+
+        // The block's vector of accumulated VALUES, one row per group
+        [[nodiscard]] vector::vector_t& values(uint64_t group) const noexcept {
+            return values_[group / states_per_block];
+        }
+        [[nodiscard]] uint64_t slot_of(uint64_t group) const noexcept { return group % states_per_block; }
 
     private:
         std::byte* const* blocks_{nullptr};
         size_t stride_{0};
+        vector::vector_t* values_{nullptr};
     };
 
     // Owns the accumulators of one aggregate. Blocks are fixed size and never reallocated, so a
@@ -80,15 +105,21 @@ namespace components::compute {
         void clear();
 
         [[nodiscard]] uint64_t size() const noexcept { return count_; }
-        [[nodiscard]] aggregate_states_t states() const noexcept { return {blocks_.data(), stride_}; }
+        // Not const: the view it hands out writes into the accumulators.
+        [[nodiscard]] aggregate_states_t states() noexcept { return {blocks_.data(), stride_, value_blocks_.data()}; }
 
     private:
         void release();
+        [[nodiscard]] bool keeps_values() const noexcept {
+            return layout_.argument_type.type() != types::logical_type::NA;
+        }
 
         std::pmr::memory_resource* resource_;
         aggregate_state_layout_t layout_;
         size_t stride_;
         std::pmr::vector<std::byte*> blocks_;
+        // One per block, parallel to blocks_, only when the layout named an argument_type.
+        std::pmr::vector<vector::vector_t> value_blocks_;
         uint64_t count_{0};
     };
 

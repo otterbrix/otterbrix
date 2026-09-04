@@ -155,6 +155,13 @@ namespace components::casts {
             }
             return cast_info{least_permissive(element->level, cast_type::assignment), no_cost};
         }
+        if (is_list_or_array(source) && target.type() == types::logical_type::STRING_LITERAL) {
+            std::optional<cast_info> element = lookup(source.child_type(), target);
+            if (!element.has_value()) {
+                return std::nullopt;
+            }
+            return cast_info{least_permissive(element->level, cast_type::assignment), no_cost};
+        }
         if (source.type() == types::logical_type::MAP && target.type() == types::logical_type::MAP) {
             // A map is a container over its key and value
             const auto* source_map = source.extension_as<types::map_logical_type_extension>();

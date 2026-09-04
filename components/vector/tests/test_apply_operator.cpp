@@ -193,17 +193,31 @@ TEST_CASE("vector::operations::comparison walks ARRAY elements, length-aware") {
         REQUIRE(out.is_null(1));
     }
 
-    SECTION("a NULL ELEMENT makes the row UNKNOWN, unless an earlier element already differs") {
+    // A NULL ELEMENT is not a NULL row. Comparing whole containers is a TOTAL order — a NULL
+    // element sorts after every value and two NULLs are equivalent — so the row still answers
+    // true or false. PostgreSQL agrees: `ARRAY[1,NULL] = ARRAY[1,NULL]` is TRUE and
+    // `ARRAY[1,NULL] < ARRAY[1,2]` is FALSE, neither of them NULL. Only a NULL ROW is UNKNOWN.
+    SECTION("a NULL ELEMENT does not make the row UNKNOWN: it orders after every value") {
         auto left = arrays({{1, 2, 3}, {1, 2, 3}});
-        auto right = arrays({{1, 2, 3}, {9, 2, 3}});
-        left.set_null({0, 1}, true); // row 0: null in the middle, otherwise equal -> UNKNOWN
-        left.set_null({1, 2}, true); // row 1: differs at element 0 already -> definitely unequal
-        auto out = slot(logical_type::BOOLEAN);
-        REQUIRE_FALSE(
-            vector::operations::apply_binary(operator_code::equal, left, right, &out, context(), 2).contains_error());
-        REQUIRE(out.is_null(0));
-        REQUIRE_FALSE(out.is_null(1));
-        REQUIRE_FALSE(out.get_value<bool>(1));
+        auto right = arrays({{1, 2, 3}, {1, 2, 3}});
+        left.set_null({0, 1}, true); // row 0: NULL where the right side holds 2 -> unequal
+        left.set_null({1, 1}, true); // row 1: both sides NULL in the same place -> equal
+        right.set_null({1, 1}, true);
+
+        auto equality = slot(logical_type::BOOLEAN);
+        REQUIRE_FALSE(vector::operations::apply_binary(operator_code::equal, left, right, &equality, context(), 2)
+                          .contains_error());
+        REQUIRE_FALSE(equality.is_null(0));
+        REQUIRE_FALSE(equality.get_value<bool>(0));
+        REQUIRE_FALSE(equality.is_null(1));
+        REQUIRE(equality.get_value<bool>(1));
+
+        auto ordering = slot(logical_type::BOOLEAN);
+        REQUIRE_FALSE(vector::operations::apply_binary(operator_code::less, left, right, &ordering, context(), 2)
+                          .contains_error());
+        REQUIRE_FALSE(ordering.is_null(0));
+        REQUIRE_FALSE(ordering.get_value<bool>(0)); // {1,NULL,3} sorts AFTER {1,2,3}
+        REQUIRE_FALSE(ordering.get_value<bool>(1)); // two equal rows: neither is less
     }
 
     SECTION("a CONSTANT operand is read at its single row, not at the loop index") {

@@ -142,21 +142,6 @@ namespace {
         return false;
     }
 
-    //! This is what we do not support for now
-    // Returns why a legal cell is not built, or nullptr when it is. Each entry is required to
-    // be rejected today; when one starts working the test says so, so it can be promoted.
-    const char* unbuilt(const placement_t& placement, const shape_t& shape) {
-        const std::string_view clause{placement.name};
-        // The SET value is cast to the target's type by this placement.
-        if (clause == "update_set" && shape.kind == yields::array_value) {
-            return "no implicit or assignment cast from a whole array to text";
-        }
-        if (clause == "aggregate_argument" && shape.kind == yields::array_value) {
-            return "no aggregate kernel accumulates a whole array";
-        }
-        return nullptr;
-    }
-
     std::string substitute(const char* text, const char* expression, int row_id) {
         std::string out{text};
         for (auto at = out.find("#E#"); at != std::string::npos; at = out.find("#E#")) {
@@ -202,15 +187,7 @@ namespace {
                 CHECK(cursor->is_error());
                 return;
             }
-            const char* gap = unbuilt(placement, shape);
-            if (gap == nullptr) {
-                CHECK(cursor->is_success());
-                return;
-            }
-            INFO("not built yet: " << gap);
-            INFO("correct SQL allows this. If it now succeeds the gap has closed — move this "
-                 "cell out of unbuilt() so the behavior becomes required.");
-            CHECK_FALSE(cursor->is_success());
+            CHECK(cursor->is_success());
         }
 
     private:

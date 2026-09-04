@@ -690,9 +690,6 @@ namespace components::vector::operations {
             return {row * stride, row * stride + stride};
         }
 
-        std::partial_ordering
-        compare_element_at(const vector_t& left, uint64_t left_index, const vector_t& right, uint64_t right_index);
-
         template<typename...>
         struct element_ordering {
             template<typename T>
@@ -708,10 +705,10 @@ namespace components::vector::operations {
         };
 
         // Lexicographic over the shared prefix, then by length.
-        std::partial_ordering compare_container_rows(const vector_t& left_vector,
-                                                     uint64_t left_row,
-                                                     const vector_t& right_vector,
-                                                     uint64_t right_row) {
+        [[nodiscard]] std::partial_ordering compare_list_or_array_rows(const vector_t& left_vector,
+                                                                       uint64_t left_row,
+                                                                       const vector_t& right_vector,
+                                                                       uint64_t right_row) {
             const auto [left, left_index] = resolve_row(left_vector, left_row);
             const auto [right, right_index] = resolve_row(right_vector, right_row);
             const auto [left_begin, left_end] = element_range(*left, left_index);
@@ -723,7 +720,7 @@ namespace components::vector::operations {
             const vector_t& right_child = right->entry();
             for (uint64_t offset = 0; offset < shared; offset++) {
                 const std::partial_ordering ordering =
-                    compare_element_at(left_child, left_begin + offset, right_child, right_begin + offset);
+                    compare_cells(left_child, left_begin + offset, right_child, right_begin + offset);
                 if (ordering != std::partial_ordering::equivalent) {
                     return ordering;
                 }
@@ -734,24 +731,12 @@ namespace components::vector::operations {
             return left_length < right_length ? std::partial_ordering::less : std::partial_ordering::greater;
         }
 
-        std::partial_ordering
-        compare_element_at(const vector_t& left, uint64_t left_index, const vector_t& right, uint64_t right_index) {
-            if (left.is_null(left_index) || right.is_null(right_index)) {
-                return std::partial_ordering::unordered;
-            }
-            const auto physical = left.type().to_physical_type();
-            if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
-                return compare_container_rows(left, left_index, right, right_index); // nested containers
-            }
-            return types::simple_physical_type_switch<element_ordering>(physical, left, left_index, right, right_index);
-        }
-
-        core::error_t container_compare(operator_code code,
-                                        const vector_t& left,
-                                        const vector_t& right,
-                                        vector_t* output,
-                                        uint64_t count,
-                                        const bool* active) {
+        core::error_t list_or_array_compare(operator_code code,
+                                            const vector_t& left,
+                                            const vector_t& right,
+                                            vector_t* output,
+                                            uint64_t count,
+                                            const bool* active) {
             for (uint64_t row = 0; row < count; row++) {
                 if (skip_row(active, row)) {
                     continue;
@@ -760,11 +745,7 @@ namespace components::vector::operations {
                     output->set_null(row, true);
                     continue;
                 }
-                const std::partial_ordering ordering = compare_container_rows(left, row, right, row);
-                if (ordering == std::partial_ordering::unordered) {
-                    output->set_null(row, true);
-                    continue;
-                }
+                const std::partial_ordering ordering = compare_list_or_array_rows(left, row, right, row);
                 output->set_null(row, false);
                 switch (code) {
                     case operator_code::equal:
@@ -786,9 +767,10 @@ namespace components::vector::operations {
                         write<bool>(output, row, ordering != std::partial_ordering::less);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"container_compare encountered unsupported operator code",
-                                                              output->resource()});
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"list_or_array_compare encountered unsupported operator code",
+                                             output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -876,6 +858,26 @@ namespace components::vector::operations {
 
     } // namespace
 
+    std::partial_ordering
+    compare_cells(const vector_t& left, uint64_t left_row, const vector_t& right, uint64_t right_row) {
+        // A NULL sorts after every value, and two NULLs are equivalent. That is what makes the
+        // order total, so `=` and `<` over a list holding a NULL still answer true or false
+        // rather than UNKNOWN.
+        const bool left_null = left.is_null(left_row);
+        const bool right_null = right.is_null(right_row);
+        if (left_null || right_null) {
+            if (left_null && right_null) {
+                return std::partial_ordering::equivalent;
+            }
+            return left_null ? std::partial_ordering::greater : std::partial_ordering::less;
+        }
+        const auto physical = left.type().to_physical_type();
+        if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
+            return compare_list_or_array_rows(left, left_row, right, right_row);
+        }
+        return types::simple_physical_type_switch<element_ordering>(physical, left, left_row, right, right_row);
+    }
+
     bool is_comparison(operator_code code) noexcept {
         switch (code) {
             case operator_code::equal:
@@ -922,7 +924,7 @@ namespace components::vector::operations {
             }
             const auto physical = left.type().to_physical_type();
             if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
-                return container_compare(code, left, right, output, count, active_rows);
+                return list_or_array_compare(code, left, right, output, count, active_rows);
             }
         } else if (is_temporal_arithmetic(left, right)) {
             return temporal_arithmetic(code, left, right, output, count, active_rows);

@@ -304,7 +304,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, function_uid>, 15> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, function_uid>, 17> DEFAULT_FUNCTIONS{
         std::pair<std::string, function_uid>{"sum", 0},
         std::pair<std::string, function_uid>{"min", 1},
         std::pair<std::string, function_uid>{"max", 2},
@@ -314,12 +314,14 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"length", 6},
         std::pair<std::string, function_uid>{"regexp_replace", 7},
         std::pair<std::string, function_uid>{"regexp_like", 8},
-        std::pair<std::string, function_uid>{"generate_series", 9},
-        std::pair<std::string, function_uid>{"abs", 10},
-        std::pair<std::string, function_uid>{"pow", 11},
-        std::pair<std::string, function_uid>{"sqrt", 12},
-        std::pair<std::string, function_uid>{"cbrt", 13},
-        std::pair<std::string, function_uid>{"factorial", 14}};
+        std::pair<std::string, function_uid>{"upper", 9},
+        std::pair<std::string, function_uid>{"lower", 10},
+        std::pair<std::string, function_uid>{"generate_series", 11},
+        std::pair<std::string, function_uid>{"abs", 12},
+        std::pair<std::string, function_uid>{"pow", 13},
+        std::pair<std::string, function_uid>{"sqrt", 14},
+        std::pair<std::string, function_uid>{"cbrt", 15},
+        std::pair<std::string, function_uid>{"factorial", 16}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);

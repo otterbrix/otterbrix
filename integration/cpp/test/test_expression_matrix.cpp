@@ -32,7 +32,6 @@ namespace {
         // Without a GROUP BY the whole table is one group, so only
         // aggregates and column-free expressions have a defined value in HAVING.
         bool reads_columns;
-        const char* unsupported{nullptr};
     };
 
     constexpr shape_t shapes[] = {
@@ -55,7 +54,7 @@ namespace {
         {"cast", "amount::TEXT", yields::value, true},
         {"function_numeric", "abs(amount)", yields::value, true},
         {"function_text", "length(name)", yields::value, true},
-        {"function_unregistered", "upper(name)", yields::value, true, "no 'upper' function is registered"},
+        {"function_case", "upper(name)", yields::value, true},
         {"aggregate", "sum(amount)", yields::aggregate, true},
         {"subscript", "tags[1]", yields::value, true},
         {"array_literal", "ARRAY[1, 2, 3]", yields::array_value, false},
@@ -147,9 +146,6 @@ namespace {
     // Returns why a legal cell is not built, or nullptr when it is. Each entry is required to
     // be rejected today; when one starts working the test says so, so it can be promoted.
     const char* unbuilt(const placement_t& placement, const shape_t& shape) {
-        if (shape.unsupported) {
-            return shape.unsupported;
-        }
         const std::string_view clause{placement.name};
         // The SET value is cast to the target's type by this placement.
         if (clause == "update_set" && shape.kind == yields::array_value) {

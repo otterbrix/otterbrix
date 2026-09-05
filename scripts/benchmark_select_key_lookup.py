@@ -65,7 +65,6 @@ def run_key_lookup_benchmark(
             csv_path,
             query_sql,
             id_type=id_type,
-            storage_disk=False,
         )
 
         results: dict[str, QueryMetrics] = {}

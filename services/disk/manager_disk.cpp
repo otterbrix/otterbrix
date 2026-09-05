@@ -47,11 +47,10 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
@@ -145,7 +144,10 @@ namespace services::disk {
         table_ = std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns));
     }
 
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
+    table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
+                                     const std::filesystem::path& otbx_path,
+                                     std::vector<components::table::column_definition_t> catalog_columns,
+                                     bool allow_schemaless)
         : mode_(storage_mode_t::DISK)
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
@@ -155,12 +157,38 @@ namespace services::disk {
         // load_existing_database + load_from_disk report io_error / data_corruption rather than throwing.
         // This DISK ctor can run on the agent thread (bootstrap_disk_inner_sync is noexcept), where a throw
         // would std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
-        // construction_failed() and maps it onto .prev corrupt-recovery.
+        // construction_failed() and refuses the file loudly, leaving it byte-identical (A7.5).
         if (auto r = bm->load_existing_database(); r.has_error()) {
             construction_error_ = r.error();
             return;
         }
         block_manager_ = std::move(bm);
+
+        // A7.6: meta_block == INVALID_INDEX past load_existing_database means the file is
+        // PROVEN young — the block manager refused every other file carrying it (a corrupted
+        // newest slot falls back to the initial header, but then the file's size betrays the
+        // blocks a checkpoint laid down). A young file holds no serialized schema, so the
+        // catalog's columns are the only schema there is: construct the table legitimately
+        // EMPTY with them. Feeding INVALID_INDEX to the metadata reader instead (what this
+        // ctor did before) produced a sticky "attempted to read past end of chain" — an
+        // accidental refusal of a legal state.
+        if (block_manager_->meta_block() == components::table::storage::INVALID_INDEX) {
+            if (catalog_columns.empty() && !allow_schemaless) {
+                construction_error_ = core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{otbx_path.string() +
+                                         " has no checkpointed content (never checkpointed — legal), but the "
+                                         "catalog supplies no columns for it; refusing to fabricate a schema-less "
+                                         "table (the caller must defer the load until the catalog knows the table)",
+                                     resource});
+                return;
+            }
+            never_checkpointed_ = true;
+            table_ = std::make_unique<components::table::data_table_t>(resource,
+                                                                       *block_manager_,
+                                                                       std::move(catalog_columns));
+            return;
+        }
 
         components::table::storage::metadata_manager_t meta_mgr(*block_manager_);
         auto meta_block = block_manager_->meta_block();
@@ -175,9 +203,36 @@ namespace services::disk {
         table_ = std::move(loaded.value());
     }
 
+    bool table_storage_t::storage_degraded() const noexcept {
+        if (mode_ != storage_mode_t::DISK || !block_manager_) {
+            return false;
+        }
+        return block_manager_->degraded();
+    }
+
     core::result_wrapper_t<bool> table_storage_t::checkpoint() {
         if (mode_ != storage_mode_t::DISK) {
             return true;
+        }
+
+        // The block manager latched a failure earlier: a block write or an fsync did not reach
+        // the device, or the free list it allocates from was proven corrupt. write_header would
+        // refuse to commit anyway, but it would refuse AFTER this round had already rewritten
+        // the whole table into freshly extended blocks -- and it would do that again next
+        // round, and the next. Refuse up front and hand the caller the latched error, so a
+        // degraded file stops growing and the failure keeps being reported until the file is
+        // rebuilt (rule 6: loud, and every CHECKPOINT says so, but the table keeps serving).
+        auto* disk_bm_check =
+            static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
+        if (disk_bm_check->has_durability_error()) {
+            // A7.7: nothing of a header was written on this path, so whatever the LAST round
+            // took and never committed is provably unreferenced. Give it back before reporting.
+            disk_bm_check->roll_back_uncommitted_round();
+            return core::error_t(disk_bm_check->durability_error());
+        }
+        if (disk_bm_check->has_allocation_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
+            return core::error_t(disk_bm_check->allocation_error());
         }
 
         components::table::storage::metadata_manager_t meta_mgr(*block_manager_);
@@ -185,27 +240,63 @@ namespace services::disk {
         // data_table_t::checkpoint reports out_of_memory on a column flush pin failure; abort the
         // checkpoint BEFORE the header swap so a partial write never becomes the durable state, and
         // surface the error.
+        //
+        // A7.7: every failure from here down to (but not including) write_header returns before a
+        // single byte of a header slot is written, so the durable root is provably still the one
+        // the round started from and the round's own allocations are named by nothing. Roll them
+        // back rather than leaving them stranded in used_blocks_ — that stranding is what made a
+        // persistent failure cost ~655 KB per round on a 7.8 MB table with degraded() false the
+        // whole time. write_header is EXCLUDED from this rule on purpose: only it can tell
+        // "nothing landed" from "something may have", and it does its own rollback in the branch
+        // where the read-back proves the previous root still stands.
         auto cp_r = table_->checkpoint(writer);
         if (cp_r.has_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
             return cp_r;
         }
-        writer.flush();
+        // Every link below can fail, and a checkpoint that reports success on a link that
+        // did not land is how rows between the durable root and the .wal_id sidecar came to
+        // exist in no file at all. None of these results may be dropped.
+        if (auto flush_r = writer.flush(); flush_r.has_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
+            return flush_r;
+        }
 
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         // Set meta_block_ so write_header() persists it
         disk_bm->set_meta_block(writer.get_block_pointer().block_pointer);
-        // Serialize free list to metadata blocks
-        auto free_list_ptr = disk_bm->serialize_free_list();
+        // Serialize free list to metadata blocks. Its chain is written through the same
+        // block writes as everything else, so a failure here means the header would name a
+        // free-list chain nothing proves was laid down.
+        auto free_list_r = disk_bm->serialize_free_list();
+        if (free_list_r.has_error()) {
+            disk_bm->roll_back_uncommitted_round();
+            return free_list_r.convert_error<bool>();
+        }
         // W-TORN spec: durability of metadata + data blocks BEFORE header swap.
         // 1st fsync: ensure data/metadata blocks are on disk; without this, a crash after the
-        // header write but before fsync of data could leave a header pointing to non-durable blocks.
-        disk_bm->file_sync();
+        // header write but before fsync of data could leave a header pointing to non-durable
+        // blocks. This barrier is what gives the header its meaning, so its result is the last
+        // one that may be ignored — it is not.
+        if (auto barrier_r = disk_bm->file_sync(); barrier_r.has_error()) {
+            disk_bm->roll_back_uncommitted_round();
+            return barrier_r;
+        }
         components::table::storage::database_header_t header;
         header.initialize();
-        header.free_list = free_list_ptr.block_pointer;
-        disk_bm->write_header(header);
-        // 2nd fsync: commit the new header — this is the atomic point of the checkpoint.
-        disk_bm->file_sync();
+        header.free_list = free_list_r.value().block_pointer;
+        // 2nd barrier + the atomic point of the checkpoint, in one call: write_header writes
+        // the slot this iteration owns AND fsyncs it, and reports io_error when either step
+        // fails. Propagating that is what makes a checkpoint's success mean something — the
+        // caller (agent_disk_t::checkpoint_inner) uses this answer to decide whether it may
+        // advance the .wal_id sidecar. Returning true regardless
+        // is how rows between the durable root and the sidecar came to exist in no file.
+        // There is no separate trailing file_sync(): write_header's own fsync IS the commit,
+        // and a second one would only add an unchecked syscall on the write path.
+        auto header_r = disk_bm->write_header(header);
+        if (header_r.has_error()) {
+            return header_r;
+        }
         return true;
     }
 
@@ -217,8 +308,13 @@ namespace services::disk {
         // error is surfaced so the caller skips this entry's seal.
         auto cp_r = checkpoint();
         if (cp_r.has_error()) {
+            // Remember it: the next round must attempt the checkpoint again (a transient error
+            // has to be able to recover) but must NOT compact first. See
+            // last_checkpoint_failed() for why a failed header write cannot simply latch.
+            last_checkpoint_failed_ = true;
             return cp_r;
         }
+        last_checkpoint_failed_ = false;
         prev_checkpoint_wal_id_ = checkpoint_wal_id_;
         checkpoint_wal_id_ = new_wal_id;
         return true;
@@ -424,12 +520,12 @@ namespace services::disk {
                 break;
             }
             // Storage data operations
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch_next_batch, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_close_cursor, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {
@@ -438,10 +534,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_segment, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>: {

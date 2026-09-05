@@ -43,19 +43,21 @@ namespace components::sql::transform {
             return nullptr;
         }
 
-        // Parse WITH (storage = 'disk') clause
-        bool disk_storage = false;
+        // B1a: every table is disk-backed; the WITH (storage = ...) option is gone.
+        // A user writing it believes it still selects a storage mode, so refuse it
+        // loudly (rule 6) instead of silently handing back a disk table.
         if (node.options) {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
                 if (!def->defname)
                     continue;
-                std::string opt_name(def->defname);
-                if (opt_name == "storage" && def->arg) {
-                    std::string val(strVal(def->arg));
-                    if (val == "disk") {
-                        disk_storage = true;
-                    }
+                if (std::string_view(def->defname) == "storage") {
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"the WITH (storage = ...) option has been removed: "
+                                         "tables are always disk-backed",
+                                         resource_});
+                    return nullptr;
                 }
             }
         }
@@ -64,7 +66,6 @@ namespace components::sql::transform {
                                                             core::relname_t{qn.relname},
                                                             std::move(col_defs.value()),
                                                             std::move(constraints.value()),
-                                                            disk_storage,
                                                             node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type

@@ -306,7 +306,7 @@ int main(int argc, char** argv) {
 
         const std::string load_setup_sql =
             "-- @database " + db_name + "\n"
-            "CREATE TABLE kv (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
+            "CREATE TABLE kv (id INTEGER, payload STRING) ;\n"
             "-- @load_csv " + csv_path.string() + " kv ,";
 
         create_benchmark_layout(no_index_dir, load_setup_sql);

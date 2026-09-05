@@ -47,7 +47,7 @@ def write_rows_csv(path: Path, start_id: int, row_count: int, payload_bytes: int
 def setup_sql(db_name: str, csv_name: str, with_hash_index: bool) -> str:
     lines = [
         f"-- @database {db_name}",
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) WITH (storage = 'disk');",
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;",
         f"-- @load_csv {csv_name} {TABLE_NAME} ,",
     ]
     if with_hash_index:

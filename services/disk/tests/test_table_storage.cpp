@@ -105,7 +105,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
 
     // Load and verify
     {
-        table_storage_t ts(&resource, otbx_path);
+        table_storage_t ts(&resource, otbx_path, {});
         REQUIRE(ts.mode() == storage_mode_t::DISK);
 
         auto& table = ts.table();
@@ -201,7 +201,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
 
     // Load and verify both columns
     {
-        table_storage_t ts(&resource, otbx_path);
+        table_storage_t ts(&resource, otbx_path, {});
         REQUIRE(ts.mode() == storage_mode_t::DISK);
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
         REQUIRE(ts.table().column_count() == 2);

@@ -771,6 +771,17 @@ namespace components::sql::transform {
                                     return nullptr;
                                 }
                                 auto col_ref = std::move(col_ref_res.value());
+                                // 'col ::? type' in a predicate — variant selection, not a
+                                // cast (mirrors the jsonb-chain '::?' branch below): the key
+                                // carries the requested type so find_types picks the matching
+                                // multi-type variant column instead of refusing the name as
+                                // ambiguous.
+                                if (cast->variant_select) {
+                                    auto k = std::move(col_ref.field);
+                                    k.set_cast_type(target_type_res.value());
+                                    k.set_variant_select(true);
+                                    return k;
+                                }
                                 note_cast_type(target_type_res.value());
                                 auto conversion = make_cast_expression(resource_,
                                                                        param_storage{std::move(col_ref.field)},

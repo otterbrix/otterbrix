@@ -90,7 +90,7 @@ def write_csv(path: Path, rows: int) -> None:
 def write_setup(db_name: str) -> str:
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;\n"
         f"CREATE INDEX {INDEX_NAME} ON {db_name}.{TABLE_NAME} USING hash (id);\n"
         f"-- @load_csv data.csv {TABLE_NAME} ,\n"
     )

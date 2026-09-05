@@ -939,6 +939,23 @@ namespace components::sql::transform {
                             auto field_name = std::string(col_ref.field.storage().back());
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
+                            // 'col ::? type' — type-VARIANT selection, not a cast: carry the
+                            // requested type on the key so find_types picks the matching
+                            // multi-type variant column (mirrors the jsonb-chain '::?'
+                            // branch below). Emitting a plain cast here left the key without
+                            // its variant annotation and the validator refused the name as
+                            // ambiguous on any computed table with several variants.
+                            if (cast->variant_select) {
+                                auto field_key = std::move(col_ref.field);
+                                field_key.set_cast_type(target_type_res.value());
+                                field_key.set_variant_select(true);
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::get_field,
+                                                           expressions::key_t{resource_, alias},
+                                                           std::move(field_key)));
+                                break;
+                            }
                             auto conversion = make_cast_expression(resource_,
                                                                    param_storage{std::move(col_ref.field)},
                                                                    target_type_res.value(),

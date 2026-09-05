@@ -483,7 +483,7 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, auto_ctx(), pg_depend, std::int64_t{1}, dep_objid);
 
         // (3) append a pg_index row — a DIFFERENT catalog, after the delete.
-        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true);
+        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true, components::catalog::indtype::single);
         appends_local.push_back(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row)));
 
@@ -521,7 +521,7 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t idx_oid = oids[0];
 
-        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true);
+        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true, components::catalog::indtype::single);
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));

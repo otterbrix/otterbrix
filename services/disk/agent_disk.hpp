@@ -33,9 +33,9 @@ namespace services::disk {
 
 #ifdef DEV_MODE
     // Test-observable count of checkpoint ROUNDS reaching this agent (rounds, not tables, so the
-    // number does not move when the catalog gains a table). A round copies the .otbx file of every
-    // disk table in the agent's slice whole (copy_file to .prev, then remove), so it costs O(data)
-    // and a load that triggers one per commit is quadratic in the rows already written.
+    // number does not move when the catalog gains a table). A compacting round rewrites every disk
+    // table in the agent's slice whole, so it costs O(data) and a load that triggers one per commit
+    // is quadratic in the rows already written.
     uint64_t table_checkpoints() noexcept;
     void reset_table_checkpoints() noexcept;
 #endif
@@ -141,6 +141,21 @@ namespace services::disk {
         /// the storage_* mailbox handlers.
         [[nodiscard]] bool has_storage_sync(components::catalog::oid_t oid) const noexcept;
 
+        // compact() gate: a live index-resume cursor holds an ABSOLUTE row position into the current
+        // (un-swapped) collection, so compact()'s atomic row_groups_ swap on that oid would shift the
+        // positions out from under the cursor (R17 result drift). true == at least one open cursor
+        // targets `oid`; the three compact sites skip such oids. Public because manager_disk_t routes
+        // the observability probe (has_active_scan_for_oid_sync) to the owning agent. Agent-thread
+        // only (active_scans_ is agent-owned and the mailbox serializes every access), so no lock.
+        [[nodiscard]] bool has_active_scan_for_oid(components::catalog::oid_t oid) const noexcept {
+            for (const auto& [_cursor, scan] : active_scans_) {
+                if (scan.table_oid == oid) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // Const raw-pointer accessor into the storages_ slice; nullptr when the OID
         // isn't owned. The unique_ptr gives the entry a stable address and the agent
         // mailbox serializes all writes to storages_, so a sync read is race-free
@@ -164,15 +179,26 @@ namespace services::disk {
         // mailbox handlers — safe pre-scheduler-start because nothing else has touched
         // the agent's resource() yet. Both return false on duplicate key.
         //   bootstrap_disk_inner_sync       — load existing .otbx; seeds
-        //     checkpoint_wal_id from the caller-supplied sidecar_wal_id.
-        //   bootstrap_create_disk_inner_sync — create new .otbx.
-        [[nodiscard]] bool bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                                     const std::filesystem::path& otbx_path,
-                                                     wal::id_t sidecar_wal_id) noexcept;
+        //     checkpoint_wal_id from the caller-supplied sidecar_wal_id. `catalog_columns`
+        //     is the A7.6 schema overlay for a never-checkpointed file (see
+        //     table_storage_t's load ctor); ignored for a checkpointed one. `is_computed`
+        //     marks a relkind='g' table (empty catalog schema is legal; dynamic-schema
+        //     append semantics survive the restart).
+        //   bootstrap_create_disk_inner_sync — create new .otbx. B1b: `is_computed` is
+        //     the relkind='g' fact, resolved by the caller (see
+        //     manager_disk_t::create_storage_disk[_sync]); the entry no longer infers it
+        //     from an empty column set.
+        [[nodiscard]] bool
+        bootstrap_disk_inner_sync(components::catalog::oid_t oid,
+                                  const std::filesystem::path& otbx_path,
+                                  wal::id_t sidecar_wal_id,
+                                  std::vector<components::table::column_definition_t> catalog_columns,
+                                  bool is_computed) noexcept;
 
         [[nodiscard]] bool bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
                                                             std::vector<components::table::column_definition_t> columns,
-                                                            const std::filesystem::path& otbx_path) noexcept;
+                                                            const std::filesystem::path& otbx_path,
+                                                            bool is_computed) noexcept;
 
         // Runtime CREATE mailbox handlers. The manager routers forward by oid (+ columns
         // by value / path as string) so the entry is built with the AGENT's OWN
@@ -190,7 +216,8 @@ namespace services::disk {
                                           std::vector<components::table::column_definition_t> columns);
         unique_future<bool> create_storage_disk_inner(components::catalog::oid_t oid,
                                                       std::vector<components::table::column_definition_t> columns,
-                                                      std::filesystem::path otbx_path);
+                                                      std::filesystem::path otbx_path,
+                                                      bool is_computed);
 
         // WAL-replay direct_* helpers: the manager-side direct_*_sync routers forward
         // here to apply the mutation against the local slice (missing OIDs no-op).
@@ -279,8 +306,10 @@ namespace services::disk {
 
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
         //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks
-        //   (empty when the agent doesn't own the OID).
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        //   (empty when the agent doesn't own the OID). The wrapper carries the
+        //   buffer-pool OOM / data_corruption the point-fetch surfaced — the first
+        //   window error aborts the batch (a partial answer must not ship).
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch_inner(components::catalog::oid_t table_oid,
                             components::vector::vector_t row_ids,
                             uint64_t count,
@@ -327,6 +356,14 @@ namespace services::disk {
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn);
 
+        // storage_close_cursor_inner — release a fetch-next cursor abandoned before it drained
+        // (A4). Erases active_scans_[cursor_id], which also lifts the compact() gate this
+        // cursor held on its oid. Idempotent: an unknown id is a no-op, since the drain path
+        // erases the entry itself.
+        unique_future<void> storage_close_cursor_inner(session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       uint64_t cursor_id);
+
         // storage_reduce_inner — the aggregate-pushdown REDUCE, a dedicated protocol
         //   leg (NOT a scan mode): runs the whole GROUP BY over this agent's OWN slice via
         //   operator_group rebuilt from the POD spec (WHERE rides `filter`, projection
@@ -340,11 +377,6 @@ namespace services::disk {
                              std::vector<size_t> projected_cols,
                              components::table::transaction_data txn,
                              components::operators::pushed_aggregate_spec_t spec);
-
-        // storage_scan_segment_inner — start-offset / count window scan. Returns the
-        //   segment as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks (as storage yields them).
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-        storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 
         // scan_by_keys_inner — batched keyed scan for one owned table. Resolves the
         //   key column NAMES to storage indices once, then delegates to the streaming
@@ -425,12 +457,19 @@ namespace services::disk {
         unique_future<checkpoint_result_t>
         checkpoint_inner(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
 
-        // vacuum_inner — cleanup_versions + compact per entry. compact_watermark:
-        //   same visible-to-all horizon contract as checkpoint_inner.
+        // vacuum_inner — cleanup_versions per entry, plus compact for IN_MEMORY entries only.
+        //   compact_watermark: same visible-to-all horizon contract as checkpoint_inner.
+        //   ITEM B: a DISK-backed entry is NOT compacted here. Under A7.2's split free pool a
+        //   compact whose release is never committed by a header cannot return space, only
+        //   spend it, so compaction of a DISK table is one indivisible unit with the checkpoint
+        //   that commits it — and checkpoint_inner already performs that unit. See the long
+        //   note at maybe_cleanup_inner's definition for the full reasoning, including why
+        //   "checkpoint after compacting" here would duplicate rows on recovery.
         unique_future<void>
         vacuum_inner(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
 
-        // maybe_cleanup_inner — single-OID target. If deleted/total > 0.3, runs
+        // maybe_cleanup_inner — single-OID target, IN_MEMORY entries only (ITEM B, as above).
+        //   If deleted/total > 0.3, runs
         //   table.compact(compact_watermark). compact_watermark is the dispatcher's
         //   visible-to-all horizon (txn_publish_msg return) forwarded verbatim;
         //   compact() itself refuses the rebuild when any version stamp is above
@@ -528,7 +567,7 @@ namespace services::disk {
         //   carries that agent's whole oid slice (manager partitioned by pool_idx_for_oid)
         //   plus the shared dropped_at_commit_id. Loops the canonical per-oid mark body
         //   (mark_storage_dropped_one_local) over the slice. Each oid reads its otbx_path
-        //   + derives .wal_id/.prev sidecars from this agent's own slice, then records the
+        //   + derives the .wal_id sidecar from this agent's own slice, then records the
         //   GC entry via register_dropped_storage_inner_sync. IN_MEMORY storages leave the
         //   path empty (uniform GC bookkeeping, no-op sweep). Over-routed oids no-op.
         unique_future<void> mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
@@ -560,8 +599,8 @@ namespace services::disk {
                                                             &agent_disk_t::storage_fetch_inner,
                                                             &agent_disk_t::storage_scan_inner,
                                                             &agent_disk_t::storage_fetch_next_batch_inner,
+                                                            &agent_disk_t::storage_close_cursor_inner,
                                                             &agent_disk_t::storage_reduce_inner,
-                                                            &agent_disk_t::storage_scan_segment_inner,
                                                             &agent_disk_t::scan_by_keys_inner,
                                                             &agent_disk_t::read_chunks_by_key_inner,
                                                             &agent_disk_t::read_chunks_by_keys_inner,
@@ -603,8 +642,8 @@ namespace services::disk {
         // drop_storage_many_inner. Synchronous; agent-thread callers only.
         void drop_storage_one_local(components::catalog::oid_t oid);
 
-        // Canonical single-oid DROP-mark: read otbx_path + derive .wal_id/.prev
-        // sidecars from this agent's own slice, then record the GC entry via
+        // Canonical single-oid DROP-mark: read otbx_path + derive the .wal_id
+        // sidecar from this agent's own slice, then record the GC entry via
         // register_dropped_storage_inner_sync. Used by mark_storage_dropped_many_inner,
         // which loops it over its oid slice. Synchronous; agent-thread callers only.
         void mark_storage_dropped_one_local(components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
@@ -648,19 +687,6 @@ namespace services::disk {
         // is (session, counter) per R16. 0 is reserved for the OPEN request sentinel.
         uint64_t next_scan_cursor_id_{1};
 
-        // compact() gate: a live index-resume cursor holds an ABSOLUTE row position into the current
-        // (un-swapped) collection, so compact()'s atomic row_groups_ swap on that oid would shift the
-        // positions out from under the cursor (R17 result drift). true == at least one open cursor
-        // targets `oid`; the three compact sites skip such oids. Agent-thread only (active_scans_ is
-        // agent-owned and the mailbox serializes every access), so no lock is needed.
-        [[nodiscard]] bool has_active_scan_for_oid(components::catalog::oid_t oid) const noexcept {
-            for (const auto& [_cursor, scan] : active_scans_) {
-                if (scan.table_oid == oid) {
-                    return true;
-                }
-            }
-            return false;
-        }
 
         // Per-agent GC slice — sole owner of GC state. Populated by
         // register_dropped_storage_inner_sync; on_horizon_advanced_inner removes entries

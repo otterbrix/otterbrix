@@ -1429,13 +1429,13 @@ namespace services::collection::executor {
 
         // CREATE INDEX: indexed table oid captured at rewrite time (the plan
         // tree is move-consumed by the execute_plan delegate before the
-        // backfill-commit tail runs). The index name is captured alongside so
-        // the CREATE INDEX failure path can drop the engine+agent
-        // (manager_index_t::drop_index) without re-probing the consumed plan
-        // tree; the pg_index row itself is reverted via the statement's
-        // pg_catalog append ranges.
+        // backfill-commit tail runs). The index oid (pg_index.indexrelid) is
+        // captured alongside so the CREATE INDEX failure path can drop the
+        // engine+agent (manager_index_t::drop_index) without re-probing the
+        // consumed plan tree; the pg_index row itself is reverted via the
+        // statement's pg_catalog append ranges.
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;
-        std::pmr::string create_index_name{resource()};
+        components::catalog::oid_t create_index_oid = components::catalog::INVALID_OID;
 
         // Destructive rewrites. enrich_plan / planner.create_plan are NOT
         // idempotent — in particular create_plan wraps insert/update/delete in
@@ -1669,11 +1669,11 @@ namespace services::collection::executor {
                 plan.sub_queries.back() =
                     ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
 
-                // CREATE INDEX: capture indexed table oid + index name NOW — the
+                // CREATE INDEX: capture indexed table oid + index oid NOW — the
                 // plan is move-consumed by the execute_plan delegate below, so the
                 // backfill/undo tail can no longer probe the tree. The trailing
                 // create_index_t (last child of the rewritten sequence_t) carries
-                // the pg_index row oid (set by rewrite_create_index) and the name.
+                // the pg_index row oid (set by rewrite_create_index).
                 if (original_type == node_type::create_index_t) {
                     if (auto* eff2 = components::logical_plan::effective_root_node(plan.sub_queries.back().get());
                         eff2 && !eff2->children().empty()) {
@@ -1681,7 +1681,7 @@ namespace services::collection::executor {
                         if (back && back->type() == node_type::create_index_t) {
                             const auto* ci = static_cast<const components::logical_plan::node_create_index_t*>(back);
                             create_index_table_oid = ci->table_oid();
-                            create_index_name.assign(ci->name().c_str(), ci->name().size());
+                            create_index_oid = ci->index_oid();
                         }
                     }
                 }
@@ -2052,7 +2052,7 @@ namespace services::collection::executor {
                 [this, session, resolve_txn, &create_index_pg_index_range, &has_create_index_pg_index_range](
                     [[maybe_unused]] executor_t* self,
                     components::catalog::oid_t table_oid,
-                    std::pmr::string index_name) -> executor_t::unique_future<void> {
+                    components::catalog::oid_t index_oid) -> executor_t::unique_future<void> {
                 if (has_create_index_pg_index_range && disk_address_ != actor_zeta::address_t::empty_address()) {
                     std::vector<components::pg_catalog_append_range_t> revert_ranges;
                     revert_ranges.push_back(create_index_pg_index_range);
@@ -2069,7 +2069,7 @@ namespace services::collection::executor {
                                                        &services::index::manager_index_t::drop_index,
                                                        session,
                                                        table_oid,
-                                                       services::index::index_name_t(index_name.c_str()));
+                                                       index_oid);
                     co_await std::move(dif);
                 }
                 co_return;
@@ -2105,7 +2105,7 @@ namespace services::collection::executor {
                     // A CREATE INDEX whose commit failed never published the
                     // pg_index row nor brought up a usable engine — undo both.
                     if (original_type == node_type::create_index_t) {
-                        co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                        co_await undo_create_index(this, create_index_table_oid, create_index_oid);
                     }
                 }
                 // Inline CREATE INDEX backfill index-commit (index ONLY — see
@@ -2137,7 +2137,7 @@ namespace services::collection::executor {
                         auto ci_result = co_await std::move(cif);
                         if (ci_result.contains_error()) {
                             exec_result.cursor = make_cursor(resource(), ci_result);
-                            co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                            co_await undo_create_index(this, create_index_table_oid, create_index_oid);
                         }
                     }
                 }
@@ -2458,10 +2458,25 @@ namespace services::collection::executor {
             }
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
+            // A4: a source that stops early (error mid-pump, satisfied LIMIT, abandoned
+            // sub-plan) leaves its agent-side fetch-next cursor open forever — nothing else
+            // reclaims it, and a live cursor permanently gates compact() on that table. Every
+            // exit from this loop therefore goes through release_cursor, which is idempotent
+            // and a no-op for a drained or cursor-less source.
+            // The resource is a PARAMETER, not a capture: unique_future's promise takes the
+            // coroutine frame's allocator from the coroutine's ARGUMENTS, so an argless
+            // coroutine lambda aborts in extract_resource_or_abort the first time it runs.
+            auto release_source_cursor = [&](std::pmr::memory_resource*) -> actor_zeta::unique_future<void> {
+                if (source->holds_open_cursor()) {
+                    co_await source->release_cursor(ctx);
+                }
+                co_return;
+            };
             while (true) {
                 const analyze_scope scope{analyze};
                 auto next = co_await source->source_next(ctx);
                 if (next.has_error()) {
+                    co_await release_source_cursor(resource());
                     co_return next.convert_error<ops::chunks_vector_t>();
                 }
                 auto batch = std::move(next.value());
@@ -2475,12 +2490,17 @@ namespace services::collection::executor {
                 }
                 auto err = pump_one(std::move(batch));
                 if (err.contains_error()) {
+                    co_await release_source_cursor(resource());
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
                 }
                 if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
+                    co_await release_source_cursor(resource());
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
                 }
             }
+            // Normal exit (drain sentinel or an early break): the drained case already erased
+            // the cursor agent-side, so this only fires for a break that left one open.
+            co_await release_source_cursor(resource());
         } else if (chain[start - 1]->output()) {
             // Materialized input: stream the already-executed operator's output_ chunks through the
             // remaining (un-executed) operators. COPY (not move) the chunks — this operator's

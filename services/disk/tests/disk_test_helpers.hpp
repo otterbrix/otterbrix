@@ -91,7 +91,6 @@ namespace disk_test_helpers {
                                                          std::string("public"),
                                                          name,
                                                          cols,
-                                                         false,
                                                          ns_oid,
                                                          batch,
                                                          relkind_char);
@@ -114,7 +113,6 @@ namespace disk_test_helpers {
                                                          std::string("public"),
                                                          name,
                                                          {},
-                                                         false,
                                                          ns_oid,
                                                          batch,
                                                          catalog::relkind::computed);
@@ -132,15 +130,19 @@ namespace disk_test_helpers {
                                      catalog::oid_t ns_oid,
                                      catalog::oid_t table_oid,
                                      const std::string& index_name,
-                                     const std::vector<std::string>& col_names,
+                                     const std::vector<std::string>& /*col_names*/, // dropped from build_create_index_writes
                                      const std::vector<catalog::oid_t>& col_attoids) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t index_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
-        (void) col_names; // column_names dropped from build_create_index_writes
-        auto writes =
-            catalog::build_create_index_writes(&fx.resource, index_name, ns_oid, table_oid, index_oid, col_attoids);
+        auto writes = catalog::build_create_index_writes(&fx.resource,
+                                                         index_name,
+                                                         ns_oid,
+                                                         table_oid,
+                                                         index_oid,
+                                                         col_attoids,
+                                                         catalog::indtype::single);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         constexpr catalog::oid_t pg_index = catalog::well_known_oid::pg_index_table;
@@ -151,7 +153,8 @@ namespace disk_test_helpers {
                 indkey += ',';
             indkey += std::to_string(col_attoids[i]);
         }
-        auto valid_row = catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true);
+        auto valid_row =
+            catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true, catalog::indtype::single);
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row));
         appends_local.push_back(std::move(rng));
         std::set<catalog::oid_t> deletes_local{pg_index};

@@ -185,11 +185,14 @@ namespace services::disk {
                                     components::catalog::oid_t table_oid,
                                     components::catalog::oid_t database_oid,
                                     std::vector<components::table::column_definition_t> columns);
+        // B1b: `is_computed` = the pg_class.relkind='g' fact, derived by the caller
+        // (see manager_disk_t::create_storage_disk).
         actor_zeta::unique_future<void>
         create_storage_disk(session_id_t session,
                             components::catalog::oid_t table_oid,
                             components::catalog::oid_t database_oid,
-                            std::vector<components::table::column_definition_t> columns);
+                            std::vector<components::table::column_definition_t> columns,
+                            bool is_computed);
         // Batched DROP: partition oids per agent, fan out one inner per agent.
         actor_zeta::unique_future<void> drop_storage_many(session_id_t session,
                                                           std::pmr::vector<components::catalog::oid_t> table_oids);
@@ -199,18 +202,13 @@ namespace services::disk {
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session,
                                                                components::catalog::oid_t table_oid);
-        // Storage data operations.
-        // Returns a vector of chunks and applies index-based column projection at the
-        // disk layer. Empty `projected_cols` means "read all columns" (pass-through). The
-        // reply wraps the batches so a buffer-pool OOM / data_corruption from the table-layer
-        // scan reaches the scan operators as a value rather than a throw across the mailbox.
-        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan(session_id_t session,
-                     components::catalog::oid_t table_oid,
-                     std::unique_ptr<components::table::table_filter_t> filter,
-                     int64_t limit,
-                     std::vector<size_t> projected_cols,
-                     components::table::transaction_data txn);
+        // Storage data operations. The read contract has exactly TWO legs and cannot be
+        // reduced to one (A1): streaming-by-predicate below, and point-by-row-id
+        // (storage_fetch) further down. A row-id SET is not expressible as a scan filter —
+        // selection inside a vector is a mask, and a mask can neither repeat a row nor
+        // reorder one — and parking a row-id list on a cursor would both bloat the
+        // deliberately position-only active_scan_t and make every point read gate compact()
+        // on its oid, which point reads have no need of.
         // Streaming fetch-next scan source (STEP 3 / phase B). Holds LIVE scan state
         // per cursor on the owning agent instead of materializing the whole batch
         // vector. cursor_id==0 OPENs a fresh cursor (mints an id from the filter /
@@ -227,8 +225,17 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
+        // Close a fetch-next cursor WITHOUT draining it. A source that stops early (an error
+        // mid-pump, a satisfied LIMIT, a dropped sub-plan) otherwise leaves its active_scans_
+        // entry behind forever: nothing else erases it, and a live entry permanently gates
+        // compact() on that oid (A4). Idempotent — closing an unknown or already-drained
+        // cursor is a no-op, because the drain path erases the entry itself.
+        actor_zeta::unique_future<void>
+        storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
-        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // The wrapper carries the owning agent's buffer-pool OOM / data_corruption as a
+        // value (no throw across the mailbox); callers read has_error() before .value().
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         // projected_cols holds storage chunk indices; EMPTY means every column, matching
         // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come
         // back as buffer-less stubs, so the reply is indexed the same way either way.
@@ -237,8 +244,6 @@ namespace services::disk {
                       components::vector::vector_t row_ids,
                       uint64_t count,
                       std::vector<size_t> projected_cols);
-        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-        storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
         // table-layer append chain reaches operator_insert as a value.
@@ -330,11 +335,10 @@ namespace services::disk {
                                                             &disk_contract::storage_types,
                                                             &disk_contract::storage_total_rows,
                                                             // Storage data operations
-                                                            &disk_contract::storage_scan,
                                                             &disk_contract::storage_fetch_next_batch,
+                                                            &disk_contract::storage_close_cursor,
                                                             &disk_contract::storage_reduce,
                                                             &disk_contract::storage_fetch,
-                                                            &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,
                                                             &disk_contract::storage_update,
                                                             &disk_contract::storage_delete_rows,

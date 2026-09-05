@@ -17,7 +17,9 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 #include <unistd.h>
 
@@ -234,4 +236,86 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
 
     // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
     REQUIRE_NOTHROW(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database));
+}
+// 11. A7.6: a never-checkpointed .otbx (created, crashed before any checkpoint) loads as a
+// legitimately EMPTY disk table with its schema overlaid from the catalog. Before A7.6 the
+// metadata reader hit "attempted to read past end of chain", the storage stayed unloaded,
+// and queries were answered by the storage-less record branch — empty by accident.
+TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catalog_schema") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_a76a");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto rt_oid = test_create_table(fx, ns_oid, "young_t", std::move(cols));
+
+    // Lay down the young .otbx exactly where the manager expects it, through the real
+    // create path (never checkpointed => header sectors only, meta_block INVALID), and
+    // release the WRITE_LOCK by scope exit.
+    const auto tbl_dir = std::filesystem::path(d4_dir()) /
+                         std::to_string(static_cast<unsigned>(well_known_oid::main_database)) /
+                         std::to_string(static_cast<unsigned>(rt_oid));
+    std::filesystem::create_directories(tbl_dir);
+    const auto otbx = tbl_dir / "table.otbx";
+    {
+        core::pmr::otterbrix_resource create_resource;
+        std::vector<components::table::column_definition_t> create_cols;
+        create_cols.emplace_back("id",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_storage_t ts(&create_resource, std::move(create_cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+    }
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database);
+    // The load succeeded: the young file opened as an empty DISK storage whose columns came
+    // from pg_attribute — not a warning, not a skip.
+    REQUIRE(fx.manager->has_storage(rt_oid));
+    // Loading wrote nothing: the file still carries the never-checkpointed signature.
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+}
+
+// 12. A7.6 contradiction: the .wal_id sidecar is written solely by a COMMITTED checkpoint,
+// so a sidecar claiming wal id N next to a never-checkpointed .otbx means the table file
+// was rebuilt or truncated out from under its sidecar. Opening it as empty would silently
+// discard whatever that checkpoint held: the load must REFUSE (sidecar consulted in the
+// refusing direction only), and both files stay byte-identical.
+TEST_CASE("services::disk::d4::young_otbx_with_checkpoint_sidecar_is_refused") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_a76b");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto rt_oid = test_create_table(fx, ns_oid, "contradicted_t", std::move(cols));
+
+    const auto tbl_dir = std::filesystem::path(d4_dir()) /
+                         std::to_string(static_cast<unsigned>(well_known_oid::main_database)) /
+                         std::to_string(static_cast<unsigned>(rt_oid));
+    std::filesystem::create_directories(tbl_dir);
+    const auto otbx = tbl_dir / "table.otbx";
+    {
+        core::pmr::otterbrix_resource create_resource;
+        std::vector<components::table::column_definition_t> create_cols;
+        create_cols.emplace_back("id",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_storage_t ts(&create_resource, std::move(create_cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+    }
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+    // A sidecar only a committed checkpoint writes — deliberately contradictory input for a
+    // refusal test (no prepared database is hand-placed; the .otbx itself is engine-made).
+    {
+        std::ofstream sidecar(tbl_dir / "table.otbx.wal_id", std::ios::binary | std::ios::trunc);
+        REQUIRE(sidecar.is_open());
+        const uint64_t claimed = 5;
+        sidecar.write(reinterpret_cast<const char*>(&claimed), sizeof(claimed));
+        REQUIRE(sidecar.good());
+    }
+
+    fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database);
+    // Refused loudly inside load_storage_disk_sync: no storage may appear for a table whose
+    // on-disk state is self-contradictory.
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    // Refusal touched neither file.
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+    REQUIRE(std::filesystem::file_size(tbl_dir / "table.otbx.wal_id") == sizeof(uint64_t));
 }

@@ -200,10 +200,10 @@ namespace components::storage {
             return table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
         }
 
-        void fetch(vector::data_chunk_t& output,
-                   const vector::vector_t& row_ids,
-                   uint64_t count,
-                   const std::vector<size_t>& projected_cols) override {
+        [[nodiscard]] core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
+                                                         const vector::vector_t& row_ids,
+                                                         uint64_t count,
+                                                         const std::vector<size_t>& projected_cols) override {
             table::column_fetch_state state;
             // The chunk we fill is returned to the caller and then moved across a mailbox; the pins
             // taken below die with `state` when this function returns. Without this flag the string
@@ -234,12 +234,15 @@ namespace components::storage {
             // fetch mapping is positional: a shorter list would compact the chunk and shift every
             // column a consumer addresses by ordinal.
             table_.fetch(output, column_indices, row_ids, count, state, projected_cols);
-        }
-
-        void scan_segment(int64_t start,
-                          uint64_t count,
-                          const std::function<void(vector::data_chunk_t& chunk)>& callback) override {
-            table_.scan_table_segment(start, count, callback);
+            // The string leg records buffer-pool OOM / data_corruption in
+            // state.fetch_error; surface it as a value so the agent_disk fetch
+            // reply can carry it across the mailbox (same shape as
+            // fetch_next_batch's scan_error above). On error the partially
+            // filled chunk is meaningless — the caller must not ship it.
+            if (state.fetch_error.contains_error()) {
+                return state.fetch_error;
+            }
+            return true;
         }
 
         // Replay/legacy path (no txn). The table-layer append chain returns result_wrapper_t

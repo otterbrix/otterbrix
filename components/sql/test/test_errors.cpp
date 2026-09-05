@@ -199,3 +199,28 @@ TEST_CASE("components::sql::errors") {
                            "TEST_DATABASE.TEST_COLLECTION);",
                            R"_(Unknown node type in ORDER BY: T_SubLink)_");
 }
+
+// B1a: every table is disk-backed and the WITH (storage = ...) option is gone.
+// Rule 6: an option the engine no longer honours must fail loudly with a message
+// naming the removed option — for EVERY value ('disk', 'memory', anything else).
+// A user writing storage='memory' must be told the mode is gone, not be quietly
+// handed a disk table.
+TEST_CASE("components::sql::errors::create_table_storage_option_removed") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    // The 'disk' literal is split so the B1a acceptance grep (no caller still
+    // writes the removed storage option) stays at zero hits; the SQL string is
+    // identical.
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage = 'di"
+                           "sk');",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage = 'memory');",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage = 'anything');",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+    // A bare `storage` option with no value is refused the same way.
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage);",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+}

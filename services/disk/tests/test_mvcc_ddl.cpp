@@ -288,7 +288,6 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
                                                                      std::string("public"),
                                                                      std::string("ephemeral"),
                                                                      cols,
-                                                                     false,
                                                                      ns_oid,
                                                                      batch,
                                                                      catalog::relkind::regular);

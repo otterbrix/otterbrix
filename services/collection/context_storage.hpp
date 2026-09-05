@@ -55,8 +55,24 @@ namespace services {
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
         std::unordered_set<components::catalog::oid_t> known_oids;
-        std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
-        std::pmr::vector<components::index::index_description_t> indexed_descriptions;
+        // Per-table index info fetched by enrich_logical_plan (get_indexed_keys +
+        // get_indexed_descriptions), keyed by resolved table_oid — one entry per
+        // queried table of the statement, read through the oid-taking accessors
+        // below (mirrors table_metadata / table_metadata_for). An oid without an
+        // entry has, definitively, no usable index: a table without indexes, a
+        // statement enriched without an index service, and an unresolved oid all
+        // land there. NEVER flatten this across tables — a multi-table statement
+        // would judge one table's predicate by another table's index set (the
+        // "last table wins" defect: a bogus index_scan silently returns zero rows).
+        struct table_index_info_t {
+            std::pmr::vector<components::index::keys_base_storage_t> keys;
+            std::pmr::vector<components::index::index_description_t> descriptions;
+
+            explicit table_index_info_t(std::pmr::memory_resource* resource)
+                : keys(resource)
+                , descriptions(resource) {}
+        };
+        std::pmr::unordered_map<components::catalog::oid_t, table_index_info_t> table_indexes;
         const components::logical_plan::storage_parameters* parameters = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's
         // operator_resolve_table_t. Plan generators (transfer_scan in
@@ -81,8 +97,7 @@ namespace services {
             : resource(resource)
             , log(std::move(log))
             , execution_context{.timezone_offset = session_timezone}
-            , indexed_keys(resource)
-            , indexed_descriptions(resource)
+            , table_indexes(resource)
             , cte_working_sets(resource)
             , row_counts(resource) {}
 
@@ -96,8 +111,27 @@ namespace services {
             return it != table_metadata.end() ? it->second : nullptr;
         }
 
-        bool has_index_on(const components::expressions::key_t& key) const {
-            for (const auto& keys : indexed_keys) {
+        const table_index_info_t* index_info_for(components::catalog::oid_t oid) const noexcept {
+            auto it = table_indexes.find(oid);
+            return it != table_indexes.end() ? &it->second : nullptr;
+        }
+
+        // The ONE mutation point (enrich_logical_plan + planner tests): the
+        // table_indexes entry for `oid`, created empty on `resource` if absent.
+        table_index_info_t& index_info_slot(components::catalog::oid_t oid) {
+            auto it = table_indexes.find(oid);
+            if (it == table_indexes.end()) {
+                it = table_indexes.emplace(oid, table_index_info_t{resource}).first;
+            }
+            return it->second;
+        }
+
+        bool has_index_on(components::catalog::oid_t oid, const components::expressions::key_t& key) const {
+            const auto* info = index_info_for(oid);
+            if (info == nullptr) {
+                return false;
+            }
+            for (const auto& keys : info->keys) {
                 if (keys.size() == 1 && keys[0].as_string() == key.as_string()) {
                     return true;
                 }
@@ -105,8 +139,14 @@ namespace services {
             return false;
         }
 
-        bool has_index_on(const components::expressions::key_t& key, components::logical_plan::index_type type) const {
-            for (const auto& desc : indexed_descriptions) {
+        bool has_index_on(components::catalog::oid_t oid,
+                          const components::expressions::key_t& key,
+                          components::logical_plan::index_type type) const {
+            const auto* info = index_info_for(oid);
+            if (info == nullptr) {
+                return false;
+            }
+            for (const auto& desc : info->descriptions) {
                 if (desc.type != type) {
                     continue;
                 }
@@ -117,9 +157,14 @@ namespace services {
             return false;
         }
 
-        bool has_index_on_with_other_type(const components::expressions::key_t& key,
+        bool has_index_on_with_other_type(components::catalog::oid_t oid,
+                                          const components::expressions::key_t& key,
                                           components::logical_plan::index_type type) const {
-            for (const auto& desc : indexed_descriptions) {
+            const auto* info = index_info_for(oid);
+            if (info == nullptr) {
+                return false;
+            }
+            for (const auto& desc : info->descriptions) {
                 if (desc.type == type) {
                     continue;
                 }
@@ -131,17 +176,18 @@ namespace services {
         }
 
         components::logical_plan::index_type
-        preferred_index_type_for_compare(const components::expressions::key_t& key,
+        preferred_index_type_for_compare(components::catalog::oid_t oid,
+                                         const components::expressions::key_t& key,
                                          components::expressions::compare_type compare) const {
             const bool is_range = compare == components::expressions::compare_type::lt ||
                                   compare == components::expressions::compare_type::lte ||
                                   compare == components::expressions::compare_type::gt ||
                                   compare == components::expressions::compare_type::gte;
 
-            if (!is_range && has_index_on(key, components::logical_plan::index_type::hashed)) {
+            if (!is_range && has_index_on(oid, key, components::logical_plan::index_type::hashed)) {
                 return components::logical_plan::index_type::hashed;
             }
-            if (is_range && has_index_on(key, components::logical_plan::index_type::single)) {
+            if (is_range && has_index_on(oid, key, components::logical_plan::index_type::single)) {
                 return components::logical_plan::index_type::single;
             }
             return components::logical_plan::index_type::no_valid;

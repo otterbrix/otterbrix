@@ -46,6 +46,32 @@ namespace {
         return batch;
     }
 
+    // A1 removed the whole-table storage_scan leg; the streaming leg drained to
+    // completion is the same read. Counts rows so the assertions below are unchanged.
+    template<typename Fx>
+    size_t drain_row_count(Fx& fx, catalog::oid_t table_oid) {
+        size_t total = 0;
+        uint64_t cursor_id = 0; // 0 == OPEN
+        while (true) {
+            auto reply = fx.invoke(&manager_disk_t::storage_fetch_next_batch,
+                                   session_id_t{},
+                                   table_oid,
+                                   cursor_id,
+                                   std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                   int64_t{-1},
+                                   std::vector<size_t>{},
+                                   components::table::transaction_data{0, 0});
+            REQUIRE_FALSE(reply.has_error());
+            auto batch = std::move(reply.value());
+            cursor_id = batch.cursor_id;
+            if (!batch.batch || batch.batch->size() == 0) {
+                break;
+            }
+            total += batch.batch->size();
+        }
+        return total;
+    }
+
     std::string ddl_dir() {
         static std::string p = "/tmp/test_otterbrix_ddl_" + std::to_string(::getpid());
         return p;
@@ -801,20 +827,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         // (zero-initialized) values for the new column.
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 2);
-        auto scan_r = fx.invoke(&manager_disk_t::storage_scan,
-                                session_id_t{},
-                                table_oid,
-                                std::unique_ptr<components::table::table_filter_t>{},
-                                /*limit=*/int64_t{-1},
-                                std::vector<size_t>{},
-                                components::table::transaction_data{0, 0});
-        REQUIRE_FALSE(scan_r.has_error());
-        const auto& batches = scan_r.value();
-        size_t total = 0;
-        for (const auto& ch : batches) {
-            total += ch.size();
-        }
-        REQUIRE(total == 2);
+        REQUIRE(drain_row_count(fx, table_oid) == 2);
     }
 
     auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
@@ -839,20 +852,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     {
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 3);
-        auto scan_r = fx.invoke(&manager_disk_t::storage_scan,
-                                session_id_t{},
-                                table_oid,
-                                std::unique_ptr<components::table::table_filter_t>{},
-                                /*limit=*/int64_t{-1},
-                                std::vector<size_t>{},
-                                components::table::transaction_data{0, 0});
-        REQUIRE_FALSE(scan_r.has_error());
-        const auto& batches = scan_r.value();
-        size_t total = 0;
-        for (const auto& ch : batches) {
-            total += ch.size();
-        }
-        REQUIRE(total == 3);
+        REQUIRE(drain_row_count(fx, table_oid) == 3);
     }
 
     // resolve_table for the relkind='g' table reads columns from
@@ -1003,7 +1003,12 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     auto make_disk_storage = [&](catalog::oid_t tbl) {
         std::vector<column_definition_t> cols;
         cols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, tbl, db_oid, std::move(cols));
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  tbl,
+                  db_oid,
+                  std::move(cols),
+                  /*is_computed=*/false);
     };
 
     for (auto oid : targets) make_disk_storage(oid);

@@ -21,7 +21,11 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include "../../../components/table/test/fault_injection_file.hpp"
+
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <thread>
 #include <unistd.h>
@@ -82,11 +86,11 @@ namespace {
             return std::move(future).take_ready();
         }
 
-        void checkpoint() {
+        void checkpoint(services::wal::id_t wal_id = services::wal::id_t{0}) {
             auto [_, cf] = actor_zeta::otterbrix::send(manager->address(),
                                                        &manager_disk_t::checkpoint_all,
                                                        session_id_t{},
-                                                       services::wal::id_t{0},
+                                                       wal_id,
                                                        // No concurrent snapshots in this fixture —
                                                        // everything is visible-to-all, compact may run.
                                                        std::numeric_limits<uint64_t>::max());
@@ -830,5 +834,169 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         txn_mgr.seed_commit_clock(1);
         REQUIRE(txn_mgr.published_horizon() == max_cid);
     }
+    std::filesystem::remove_all(dir);
+}
+
+// --- H1 caller audit: what agent_disk_t::checkpoint_inner does with the answer ----------
+//
+// checkpoint_inner calls table_storage_t::checkpoint(wal_id) and on success writes the
+// .wal_id sidecar. Until H1 that "success" was unconditional:
+// single_file_block_manager_t::write_header was void and discarded both the write() and the
+// sync() bool, so a header that never reached the platter still advanced the sidecar to WAL
+// position N+1 — while the durable root was still N. Every row between N and N+1 then
+// existed in no file at all.
+namespace {
+
+    // The T3 interposer seam is process-wide, and this fixture opens one .otbx per catalog
+    // table. Filter by path so the fault lands on exactly the table under test; every other
+    // handle is returned unwrapped, i.e. not interposed at all.
+    class one_table_fault_scope_t final
+        : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
+    public:
+        one_table_fault_scope_t(otterbrix_test::fault_plan_t& plan, std::string path_marker)
+            : plan_(plan)
+            , marker_(std::move(path_marker)) {
+            components::table::storage::single_file_block_manager_t::dev_set_file_interposer(this);
+        }
+        ~one_table_fault_scope_t() override {
+            components::table::storage::single_file_block_manager_t::dev_set_file_interposer(nullptr);
+        }
+
+        std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(std::unique_ptr<core::filesystem::file_handle_t> inner) override {
+            if (inner->path().string().find(marker_) == std::string::npos) {
+                return inner;
+            }
+            return std::make_unique<otterbrix_test::faulty_file_handle_t>(std::move(inner), plan_);
+        }
+
+    private:
+        otterbrix_test::fault_plan_t& plan_;
+        std::string marker_;
+    };
+
+    // The sidecar is a bare little-endian uint64 written via tmp+rename.
+    bool read_wal_id_sidecar(const std::filesystem::path& sidecar, uint64_t& out) {
+        std::ifstream f(sidecar, std::ios::binary);
+        if (!f) {
+            return false;
+        }
+        f.read(reinterpret_cast<char*>(&out), sizeof(out));
+        return static_cast<bool>(f);
+    }
+
+} // namespace
+
+TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_id_sidecar") {
+    auto dir = persist_dir() + "/hdrfail";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    constexpr auto ns_table_oid = static_cast<unsigned>(catalog::well_known_oid::pg_namespace_table);
+    constexpr auto db_oid = static_cast<unsigned>(catalog::well_known_oid::main_database);
+    const auto otbx =
+        std::filesystem::path(dir) / std::to_string(db_oid) / std::to_string(ns_table_oid) / "table.otbx";
+    const auto sidecar = std::filesystem::path(otbx.string() + ".wal_id");
+
+    otterbrix_test::fault_plan_t plan;
+    one_table_fault_scope_t scope(plan, "/" + std::to_string(ns_table_oid) + "/");
+
+    fresh_disk fd(dir);
+    fd.manager->bootstrap_system_tables_sync();
+    test_create_namespace(fd, "ns_one");
+    fd.checkpoint(services::wal::id_t{100});
+
+    REQUIRE(std::filesystem::exists(otbx));
+    uint64_t sidecar_after_good = 0;
+    REQUIRE(read_wal_id_sidecar(sidecar, sidecar_after_good));
+    REQUIRE(sidecar_after_good == 100);
+
+    // ENOSPC on this one table from here on: the next round's header write cannot land.
+    test_create_namespace(fd, "ns_two");
+    plan.fail_after_writes = plan.writes_seen;
+    fd.checkpoint(services::wal::id_t{200});
+    plan.fail_after_writes = 0;
+
+    // The durable root is still the one WAL position 100 describes. Advancing the sidecar
+    // to 200 would authorise the WAL to forget everything up to 200 — including the rows
+    // this failed round never wrote.
+    uint64_t sidecar_after_failure = 0;
+    REQUIRE(read_wal_id_sidecar(sidecar, sidecar_after_failure));
+    CHECK(sidecar_after_failure == 100);
+
+    // And a recoverable root still exists: the file the failed round left behind opens and
+    // still resolves the namespace that WAS durable.
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        auto rr =
+            fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"), std::uint64_t{0});
+        CHECK(rr.found);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// H1 caller audit, second finding — reshaped by A7.5. checkpoint_inner's failure branch
+// used to juggle an external whole-file backup (restore it over the .otbx, then delete it),
+// and this case used to pin the one sub-branch where that juggling would have destroyed the
+// last durable root. Under A7.5 there is nothing to juggle: the durable root lives INSIDE
+// the .otbx (two-slot shadow-paged header) and a failed round must leave the filesystem
+// exactly as the committed round left it — no backup created, no restore attempted, no
+// quarantine files, the per-table directory byte-for-byte the committed state plus nothing.
+TEST_CASE("services::disk::persistence::failed_checkpoint_leaves_no_backup_or_quarantine_files") {
+    auto dir = persist_dir() + "/nobackup";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    constexpr auto ns_table_oid = static_cast<unsigned>(catalog::well_known_oid::pg_namespace_table);
+    constexpr auto db_oid = static_cast<unsigned>(catalog::well_known_oid::main_database);
+    const auto table_dir = std::filesystem::path(dir) / std::to_string(db_oid) / std::to_string(ns_table_oid);
+    const auto otbx = table_dir / "table.otbx";
+
+    otterbrix_test::fault_plan_t plan;
+    one_table_fault_scope_t scope(plan, "/" + std::to_string(ns_table_oid) + "/");
+
+    auto dir_listing = [&]() {
+        std::vector<std::string> names;
+        for (const auto& entry : std::filesystem::directory_iterator(table_dir)) {
+            names.push_back(entry.path().filename().string());
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        test_create_namespace(fd, "ns_one");
+        fd.checkpoint(services::wal::id_t{100});
+        REQUIRE(std::filesystem::exists(otbx));
+
+        // The committed round's complete file set: the table file and its wal_id sidecar.
+        const std::vector<std::string> committed_set{"table.otbx", "table.otbx.wal_id"};
+        REQUIRE(dir_listing() == committed_set);
+
+        // Fail the next round's header write. The round is deferred; it must not have
+        // manufactured a single file while failing — the crash protection is the two-slot
+        // root inside the .otbx, not an external copy.
+        test_create_namespace(fd, "ns_two");
+        plan.fail_after_writes = plan.writes_seen;
+        fd.checkpoint(services::wal::id_t{200});
+        plan.fail_after_writes = 0;
+
+        CHECK(dir_listing() == committed_set);
+    }
+
+    // And the durable root the failed round left behind still opens with its DATA: the
+    // namespace committed at WAL position 100 resolves after a full restart.
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        auto rr = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"), std::uint64_t{0});
+        CHECK(rr.found);
+        CHECK(dir_listing() == std::vector<std::string>{"table.otbx", "table.otbx.wal_id"});
+    }
+
     std::filesystem::remove_all(dir);
 }

@@ -173,11 +173,11 @@ def lookup_sql(db_name: str, key_value: str, *, key_is_string: bool = False, sel
     return f"-- @expected_rows 1\nSELECT {select_expr} FROM {db_name}.kv WHERE id = {literal};\n"
 
 
-def standard_setup_sql(db_name: str, csv_path: Path, *, id_type: str = "INTEGER", storage_disk: bool = False) -> str:
-    storage_clause = " WITH (storage = 'disk')" if storage_disk else ""
+def standard_setup_sql(db_name: str, csv_path: Path, *, id_type: str = "INTEGER") -> str:
+    # B1a: tables are always disk-backed; WITH (storage = ...) is a parse error.
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE kv (id {id_type}, payload STRING){storage_clause};\n"
+        f"CREATE TABLE kv (id {id_type}, payload STRING);\n"
         f"-- @load_csv {csv_path} kv ,"
     )
 
@@ -197,9 +197,8 @@ def write_standard_lookup_scenarios(
     query_sql: str,
     *,
     id_type: str = "INTEGER",
-    storage_disk: bool = False,
 ) -> dict[str, Path]:
-    setups = standard_index_setups(db_name, standard_setup_sql(db_name, csv_path, id_type=id_type, storage_disk=storage_disk))
+    setups = standard_index_setups(db_name, standard_setup_sql(db_name, csv_path, id_type=id_type))
     scenario_dirs: dict[str, Path] = {}
     for name in STANDARD_SCENARIO_NAMES:
         scenario_dir = workspace / f"scenario_{name}"

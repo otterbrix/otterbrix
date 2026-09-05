@@ -175,7 +175,8 @@ namespace services::disk {
     manager_disk_t::create_storage_disk(session_id_t session,
                                         catalog::oid_t table_oid,
                                         catalog::oid_t database_oid,
-                                        std::vector<components::table::column_definition_t> columns) {
+                                        std::vector<components::table::column_definition_t> columns,
+                                        bool is_computed) {
         trace(log_,
               "manager_disk_t::create_storage_disk , session : {} , oid : {}",
               session.data(),
@@ -198,7 +199,8 @@ namespace services::disk {
                                                                   &agent_disk_t::create_storage_disk_inner,
                                                                   table_oid,
                                                                   std::move(columns),
-                                                                  std::move(otbx_path));
+                                                                  std::move(otbx_path),
+                                                                  is_computed);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -292,31 +294,25 @@ namespace services::disk {
 
     // --- Storage data operations ---
 
-    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-    manager_disk_t::storage_scan(session_id_t /*session*/,
-                                 catalog::oid_t table_oid,
-                                 std::unique_ptr<components::table::table_filter_t> filter,
-                                 int64_t limit,
-                                 std::vector<size_t> projected_cols,
-                                 components::table::transaction_data txn) {
-        // Transparent router: the agent reply carries the scan_error; forward the wrapper
-        // unchanged so the scan operators turn it into an error cursor.
+    manager_disk_t::unique_future<void> manager_disk_t::storage_close_cursor(session_id_t session,
+                                                                            catalog::oid_t table_oid,
+                                                                            uint64_t cursor_id) {
+        // Transparent router (A4). Fire-and-forget by shape: releasing a cursor has no result
+        // to report and no failure mode — an unknown id is already the desired state.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan_inner,
+                                                                  &agent_disk_t::storage_close_cursor_inner,
+                                                                  session,
                                                                   table_oid,
-                                                                  std::move(filter),
-                                                                  limit,
-                                                                  projected_cols,
-                                                                  txn);
+                                                                  cursor_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            co_return co_await std::move(fut);
+            co_await std::move(fut);
         }
-        co_return std::pmr::vector<components::vector::data_chunk_t>{resource()};
+        co_return;
     }
 
     manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
@@ -384,7 +380,7 @@ namespace services::disk {
         co_return std::pmr::vector<components::vector::data_chunk_t>{resource()};
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
@@ -399,27 +395,6 @@ namespace services::disk {
                                                                   row_ids,
                                                                   count,
                                                                   std::move(projected_cols));
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            co_return co_await std::move(fut);
-        }
-        co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
-    }
-
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan_segment(session_id_t /*session*/,
-                                         catalog::oid_t table_oid,
-                                         int64_t start,
-                                         uint64_t count) {
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan_segment_inner,
-                                                                  table_oid,
-                                                                  start,
-                                                                  count);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

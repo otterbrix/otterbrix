@@ -125,14 +125,14 @@ namespace components::storage {
         // contract fetch_next_batch already uses. Columns outside the set keep their ordinal slot in
         // the output chunk and are left as buffer-less stubs, so a consumer indexes the result the
         // same way whether or not it asked for a projection.
-        virtual void fetch(vector::data_chunk_t& output,
-                           const vector::vector_t& row_ids,
-                           uint64_t count,
-                           const std::vector<size_t>& projected_cols) = 0;
-
-        virtual void scan_segment(int64_t start,
-                                  uint64_t count,
-                                  const std::function<void(vector::data_chunk_t& chunk)>& callback) = 0;
+        // Returns the buffer-pool OOM / data_corruption the point-fetch left in
+        // column_fetch_state::fetch_error (same value-shape as fetch_next_batch's
+        // scan_error above), else true. An error nobody reads is the same silent
+        // failure the old abort was replaced to avoid — every caller must check.
+        [[nodiscard]] virtual core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
+                                                                 const vector::vector_t& row_ids,
+                                                                 uint64_t count,
+                                                                 const std::vector<size_t>& projected_cols) = 0;
 
         virtual uint64_t append(vector::data_chunk_t& data) = 0;
 

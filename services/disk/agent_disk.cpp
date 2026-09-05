@@ -10,7 +10,6 @@
 #include <components/vector/vector_operations.hpp>
 #include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
-#include <unordered_set>
 
 namespace services::disk {
 
@@ -95,9 +94,12 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    bool agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                                 const std::filesystem::path& otbx_path,
-                                                 wal::id_t sidecar_wal_id) noexcept {
+    bool agent_disk_t::bootstrap_disk_inner_sync(
+        components::catalog::oid_t oid,
+        const std::filesystem::path& otbx_path,
+        wal::id_t sidecar_wal_id,
+        std::vector<components::table::column_definition_t> catalog_columns,
+        bool is_computed) noexcept {
         // Probe BEFORE constructing the SFBM: on a duplicate key we must not even
         // open the .otbx, because open-then-close would release the live entry's
         // WRITE_LOCK (per-process posix lock).
@@ -116,10 +118,11 @@ namespace services::disk {
               static_cast<unsigned>(oid),
               otbx_path.string(),
               static_cast<uint64_t>(sidecar_wal_id));
-        auto entry = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
+        auto entry =
+            std::make_unique<collection_storage_entry_t>(resource(), otbx_path, std::move(catalog_columns), is_computed);
         // The DISK load ctor records io_error/data_corruption instead of throwing (this helper is noexcept
         // and reachable on the agent thread). Drop a failed-construction entry so we never emplace a
-        // half-loaded storage; the manager-side probe drives .prev corrupt-recovery before this.
+        // half-loaded storage; the manager-side probe has already refused an unopenable file before this.
         if (entry->table_storage.construction_failed()) {
             warn(log_,
                  "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} failed: {}",
@@ -137,7 +140,8 @@ namespace services::disk {
 
     bool agent_disk_t::bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
                                                         std::vector<components::table::column_definition_t> columns,
-                                                        const std::filesystem::path& otbx_path) noexcept {
+                                                        const std::filesystem::path& otbx_path,
+                                                        bool is_computed) noexcept {
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] oid {} already in slice — drop "
@@ -152,7 +156,7 @@ namespace services::disk {
               pool_idx_,
               static_cast<unsigned>(oid),
               otbx_path.string());
-        auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path);
+        auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path, is_computed);
         // The DISK create ctor records io_error instead of throwing (this helper is noexcept and runs on
         // the agent thread via create_storage_disk_inner). Drop a failed-construction entry rather than
         // emplacing a storage with a null table_/block_manager_.
@@ -201,7 +205,8 @@ namespace services::disk {
     agent_disk_t::unique_future<bool>
     agent_disk_t::create_storage_disk_inner(components::catalog::oid_t oid,
                                             std::vector<components::table::column_definition_t> columns,
-                                            std::filesystem::path otbx_path) {
+                                            std::filesystem::path otbx_path,
+                                            bool is_computed) {
         // create_directories runs on the AGENT thread (manager builds nothing). The SFBM
         // is then constructed by bootstrap_create_disk_inner_sync, which holds the
         // exclusive posix WRITE_LOCK on the .otbx — agent-only, so no construction race.
@@ -214,7 +219,7 @@ namespace services::disk {
                  otbx_path.parent_path().string(),
                  ec.message());
         }
-        const bool ok = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path);
+        const bool ok = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path, is_computed);
         if (!ok) {
             trace(log_,
                   "agent_disk[{}]::create_storage_disk_inner: oid {} already owned (path={}) — duplicate",
@@ -316,8 +321,14 @@ namespace services::disk {
             return;
         }
         auto* s = entry->storage.get();
-        // For each schema column, add it unless a same-named column already exists
+        // For each schema column, add it unless an equivalent column already exists
         // (idempotent replay). The column type carries its alias = the column name.
+        // B1b: presence mirrors stage 1b of storage_append_inner — a computed
+        // (relkind='g') table keys columns by (name, type) so each type variant owns
+        // its own physical column; name-only matching there silently dropped a
+        // replayed variant's ADD_COLUMN and the dependent PHYSICAL_INSERT chunk
+        // (one column wider than the table) aborted in collection_t::append.
+        const bool is_computed_table = entry->is_computed;
         for (uint64_t col = 0; col < schema_chunk.column_count(); ++col) {
             const auto ctype = schema_chunk.data[col].type();
             if (!ctype.has_alias()) {
@@ -326,7 +337,7 @@ namespace services::disk {
             const auto name = std::string(ctype.alias());
             bool present = false;
             for (const auto& tc : s->columns()) {
-                if (tc.name() == name) {
+                if (tc.name() == name && (!is_computed_table || tc.type().type() == ctype.type())) {
                     present = true;
                     break;
                 }
@@ -386,16 +397,16 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_close_cursor_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_close_cursor_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_fetch_next_batch_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_fetch_next_batch_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_reduce_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_reduce_inner, msg);
-                break;
-            }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_segment_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_segment_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::scan_by_keys_inner>: {
@@ -535,12 +546,21 @@ namespace services::disk {
             s->adopt_schema(data->types());
         }
 
-        // 1b. Dynamic schema growth for IN_MEMORY storages. Trigger: alias
-        // mismatch at differing chunk/table width = schema growth; equal
-        // width = positional rename, handled by column expansion below.
+        // 1b. Dynamic schema growth, ANY storage mode. B1a made disk the only
+        // mode, so the old IN_MEMORY gate would have turned growth off for every
+        // table — yet growth is load-bearing twice over: computed (relkind='g')
+        // tables adopt per-document columns (multi-type variants included), and
+        // regular tables materialize an ALTER TABLE ADD COLUMN's storage columns
+        // on the first INSERT that carries them (ALTER writes only pg_attribute;
+        // without growth the catalog says 4 columns while the storage holds 2 and
+        // the next SELECT of the new columns fails). add_column itself is
+        // mode-agnostic (data_table_t rebuild over the same block manager) and
+        // the PHYSICAL_ADD_COLUMN WAL record already replays it.
+        // Trigger: alias mismatch at differing chunk/table width = schema
+        // growth; equal width = positional rename, handled by column expansion
+        // below.
         if (s->has_schema() && data->column_count() > 0 &&
-            (is_computed_table || data->column_count() != s->columns().size()) &&
-            entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
+            (is_computed_table || data->column_count() != s->columns().size())) {
             std::vector<components::table::column_definition_t> new_columns;
             for (uint64_t col = 0; col < data->column_count(); col++) {
                 if (!data->data[col].type().has_alias()) {
@@ -637,65 +657,13 @@ namespace services::disk {
             }
         }
 
-        // 3. Dedup
-        if (s->total_rows() > 0) {
-            int64_t id_col = -1;
-            for (uint64_t col = 0; col < data->column_count(); col++) {
-                if (data->data[col].type().has_alias() && data->data[col].type().alias() == "_id") {
-                    id_col = static_cast<int64_t>(col);
-                    break;
-                }
-            }
-            if (id_col >= 0) {
-                auto existing = std::make_unique<components::vector::data_chunk_t>(resource(), s->types(), 0);
-                s->scan(*existing, nullptr, -1);
-
-                int64_t existing_id_col = -1;
-                for (uint64_t col = 0; col < existing->column_count(); col++) {
-                    if (existing->data[col].type().has_alias() && existing->data[col].type().alias() == "_id") {
-                        existing_id_col = static_cast<int64_t>(col);
-                        break;
-                    }
-                }
-
-                if (existing_id_col >= 0 && existing->size() > 0) {
-                    std::unordered_set<std::string> existing_ids;
-                    auto& existing_id_vec = existing->data[static_cast<size_t>(existing_id_col)];
-                    for (uint64_t i = 0; i < existing->size(); i++) {
-                        if (!existing_id_vec.is_null(i)) {
-                            existing_ids.emplace(existing_id_vec.get_value<std::string_view>(i));
-                        }
-                    }
-
-                    std::vector<uint64_t> keep_rows;
-                    keep_rows.reserve(data->size());
-                    auto& id_vec = data->data[static_cast<size_t>(id_col)];
-                    for (uint64_t i = 0; i < data->size(); i++) {
-                        if (id_vec.is_null(i) || existing_ids.find(std::string(
-                                                     id_vec.get_value<std::string_view>(i))) == existing_ids.end()) {
-                            keep_rows.push_back(i);
-                        }
-                    }
-
-                    if (keep_rows.empty()) {
-                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
-                    }
-
-                    if (keep_rows.size() < data->size()) {
-                        auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                                           data->types(),
-                                                                                           keep_rows.size());
-                        for (uint64_t col = 0; col < data->column_count(); col++) {
-                            for (uint64_t i = 0; i < keep_rows.size(); i++) {
-                                auto val = data->data[col].value(keep_rows[i]);
-                                filtered->data[col].set_value(i, val);
-                            }
-                        }
-                        data = std::move(filtered);
-                    }
-                }
-            }
-        }
+        // (There is deliberately NO row-content dedup here. A pre-#460 document-store
+        // stage used to full-scan the table per batch and silently drop rows whose
+        // `_id` column value already existed — O(table rows) per insert, silent row
+        // loss, and it masked a declared UNIQUE/PK on a column named `_id` by
+        // filtering the duplicate before the constraint operator's existing-row scan
+        // could see it. Uniqueness has exactly one implementation:
+        // operator_unique_constraint_t over declared constraints.)
 
         // 5. WAL-first: allocate the start_row WITHOUT materializing, write WAL,
         //    then materialize. total_rows() is the next append position (the standard
@@ -958,7 +926,7 @@ namespace services::disk {
         co_return entry->storage->delete_rows(row_ids, count);
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_fetch_inner(components::catalog::oid_t table_oid,
                                       components::vector::vector_t row_ids,
                                       uint64_t count,
@@ -989,7 +957,13 @@ namespace services::disk {
             components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
             std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
             components::vector::data_chunk_t chunk(resource(), types, n);
-            entry->storage->fetch(chunk, window_ids, n, projected_cols);
+            auto fetch_r = entry->storage->fetch(chunk, window_ids, n, projected_cols);
+            if (fetch_r.has_error()) {
+                // First window error aborts the whole batch: the reply must never
+                // pair "success" with a chunk whose string cells were left empty
+                // by a failed overflow-block read.
+                co_return fetch_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
+            }
             std::memcpy(chunk.row_ids.data(), ids + offset, n * sizeof(int64_t));
             out.emplace_back(std::move(chunk));
         }
@@ -1300,6 +1274,21 @@ namespace services::disk {
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
 
+    // A4: release a cursor abandoned before it drained. Nothing else erases the entry — the
+    // drain paths above only fire when the source keeps pulling — so a source that stops early
+    // (error mid-pump, satisfied LIMIT, dropped sub-plan) used to leave the entry alive for the
+    // life of the process, and a live entry permanently gates compact() on its oid.
+    agent_disk_t::unique_future<void> agent_disk_t::storage_close_cursor_inner(session_id_t /*session*/,
+                                                                               components::catalog::oid_t table_oid,
+                                                                               uint64_t cursor_id) {
+        trace(log_, "agent_disk[{}]::storage_close_cursor_inner: oid={} cursor={}", pool_idx_,
+              static_cast<unsigned>(table_oid), cursor_id);
+        // Idempotent by construction: an unknown id is already the desired state (the drain
+        // paths erase the entry themselves), so this reports nothing and cannot fail.
+        active_scans_.erase(cursor_id);
+        co_return;
+    }
+
     // AGGREGATE-PUSHDOWN REDUCE — the DEDICATED protocol leg. Runs the whole
     // GROUP BY over this agent's OWN slice (send-free, synchronous: reduce_pushed_aggregate
     // rebuilds the operator_group from the POD and applies the shipped WHERE
@@ -1349,50 +1338,6 @@ namespace services::disk {
         }
 #endif
         co_return reduced_r;
-    }
-
-    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-    agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count) {
-        std::pmr::vector<components::vector::data_chunk_t> out{resource()};
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_scan_segment_inner: oid {} not owned by this agent — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::move(out);
-        }
-        auto& entry = it->second;
-        if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_scan_segment_inner: oid {} is a DISK record-only marker — "
-                  "fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::move(out);
-        }
-        auto types = entry->storage->types();
-        // scan_segment yields ≤DEFAULT_VECTOR_CAPACITY chunks; copy each into its own
-        // owning chunk (the callback chunk is transient) and collect them — no merge into
-        // an oversized chunk.
-        entry->storage->scan_segment(start, count, [&](components::vector::data_chunk_t& chunk) {
-            const auto chunk_rows = chunk.size();
-            if (chunk_rows == 0) {
-                return;
-            }
-            components::vector::data_chunk_t one(resource(), types, chunk_rows);
-            for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                auto& src = chunk.data[col];
-                if (src.get_vector_type() != components::vector::vector_type::FLAT) {
-                    src.flatten(chunk_rows);
-                }
-                components::vector::vector_ops::copy(src, one.data[col], chunk_rows, 0, 0);
-            }
-            components::vector::vector_ops::copy(chunk.row_ids, one.row_ids, chunk_rows, 0, 0);
-            one.set_cardinality(chunk_rows);
-            out.emplace_back(std::move(one));
-        });
-        co_return std::move(out);
     }
 
     // STREAMING SINGLE-PASS HASH SEMI-JOIN. Given the input key-tuple set
@@ -1925,9 +1870,10 @@ namespace services::disk {
     agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
         // Per DISK entry, crash-safe checkpoint sequence (order matters):
-        //   compact (MVCC-gated), backup .otbx → .prev, checkpoint(wal_id), persist
-        //   the .wal_id sidecar via tmp+rename, then delete the .prev backup on
-        //   success. Tally min(prev_checkpoint_wal_id_) for the manager's
+        //   compact (MVCC-gated), checkpoint(wal_id) — whose header write IS the
+        //   atomic commit point under A7.1 shadow paging; no external backup copy
+        //   is taken (A7.5) — then persist the .wal_id sidecar via tmp+rename.
+        //   Tally min(prev_checkpoint_wal_id_) for the manager's
         //   cross-agent std::min. IN_MEMORY twins and null entries are skipped
         //   for checkpointing, but an IN_MEMORY twin flips has_in_memory so
         //   checkpoint_all can gate WAL-floor sealing without a separate sync
@@ -1951,6 +1897,26 @@ namespace services::disk {
                 continue;
             }
 
+            // Degraded-storage gate, FIRST. The block manager latched a write/fsync that never
+            // reached the device, or a free list proven corrupt. Both latches are sticky and
+            // both make write_header refuse to commit — so this entry can no longer produce a
+            // durable root, and every round spent trying costs a full extra copy of the table
+            // inside the .otbx (the released blocks stay quarantined because promotion only
+            // happens on a committed header). Nothing used to look at these latches at all;
+            // this is where they become visible. Defer the entry, feed its UNCHANGED
+            // prev_checkpoint_wal_id into the min so the WAL keeps every record this table
+            // still needs, and say so loudly once per round.
+            if (entry->table_storage.storage_degraded()) {
+                warn(log_,
+                     "agent_disk[{}]::checkpoint_inner oid={} block storage is degraded (a write/fsync did "
+                     "not reach the device, or the free list is corrupt) — deferring this entry and NOT "
+                     "compacting it; the file must be rebuilt",
+                     pool_idx_,
+                     static_cast<unsigned>(tbl_oid));
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                continue;
+            }
+
             // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid —
             // its stored absolute position indexes the un-swapped collection, so the atomic
             // row_groups_ swap would shift rows out from under it (R17). The entry is still
@@ -1965,6 +1931,24 @@ namespace services::disk {
                 continue;
             }
 
+            // Failed-round gate: the previous checkpoint attempt on this entry failed. Retry
+            // the checkpoint below — a transient error must be able to recover — but do NOT
+            // rebuild first. A compact whose header never commits cannot return space under
+            // the split free pool, only spend it: the rebuilt tree is allocated by extending
+            // the file (reusable_ refills only on a committed header) and the outgoing tree
+            // lands in pending_free_ where nothing can reach it. Without this gate a
+            // persistent write error at the header offset — which deliberately does not latch,
+            // so storage_degraded() stays false — costs a full copy of the table every round,
+            // forever, with every health indicator reporting the file healthy.
+            const bool skip_compact_this_round = entry->table_storage.last_checkpoint_failed();
+            if (skip_compact_this_round) {
+                warn(log_,
+                     "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed — retrying WITHOUT "
+                     "compaction; the rebuild resumes once a checkpoint commits",
+                     pool_idx_,
+                     static_cast<unsigned>(tbl_oid));
+            }
+
             // MVCC gate FIRST: compact() refuses the rebuild when any version
             // stamp is above the watermark (an active snapshot or an in-flight
             // commit still needs the history, or a positional commit_append is
@@ -1972,7 +1956,7 @@ namespace services::disk {
             // uncommitted rows on recovery (.otbx has no version metadata), so
             // the entry's checkpoint is deferred to a later round; the WAL keeps
             // its replay records because the old sidecar/prev ids stay in the min.
-            if (!entry->table_storage.table().compact(compact_watermark)) {
+            if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
                 trace(log_,
                       "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
                       "skipping this round",
@@ -1989,47 +1973,25 @@ namespace services::disk {
                   static_cast<unsigned>(tbl_oid));
 
             const auto& otbx_path = entry->otbx_path;
-            auto prev_path = otbx_path;
-            prev_path += ".prev";
 
-            // Backup current checkpoint before overwriting.
-            std::error_code copy_error;
-            if (std::filesystem::exists(otbx_path)) {
-                std::filesystem::copy_file(otbx_path,
-                                           prev_path,
-                                           std::filesystem::copy_options::overwrite_existing,
-                                           copy_error);
-                if (copy_error) {
-                    warn(log_,
-                         "agent_disk[{}]::checkpoint_inner copy {} -> {} failed: {}",
-                         pool_idx_,
-                         otbx_path.string(),
-                         prev_path.string(),
-                         copy_error.message());
-                }
-            }
-
+            // A7.5: no external backup copy is taken before the round. Shadow paging is the
+            // crash protection now — the round writes only fresh blocks (A7.2 split pool keeps
+            // every block the durable root names off-limits), the header write is the atomic
+            // commit point (A7.1 two-slot root), and a failed round's allocations are rolled
+            // back (A7.7) — so on any failure below the durable root N is still on the device,
+            // intact, inside the .otbx itself (proven per crash point by the A7.4 matrix).
+            //
             // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
             // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
-            // defer this entry to a later round (same as the MVCC-gate skip above): restore
-            // the .prev backup over any partial write, do NOT persist the sidecar or delete
-            // the backup, and feed the unchanged prev_checkpoint_wal_id into the min() so the
-            // WAL keeps this table's replay records.
+            // defer this entry to a later round (same as the MVCC-gate skip above): do NOT
+            // persist the sidecar, and feed the unchanged prev_checkpoint_wal_id into the
+            // min() so the WAL keeps this table's replay records.
             auto cp_r = entry->table_storage.checkpoint(current_wal_id);
             if (cp_r.has_error()) {
                 warn(log_,
                      "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this round",
                      pool_idx_,
                      static_cast<unsigned>(tbl_oid));
-                if (std::filesystem::exists(prev_path)) {
-                    std::error_code restore_error;
-                    std::filesystem::copy_file(prev_path,
-                                               otbx_path,
-                                               std::filesystem::copy_options::overwrite_existing,
-                                               restore_error);
-                    std::error_code remove_error;
-                    std::filesystem::remove(prev_path, remove_error);
-                }
                 min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                 continue;
             }
@@ -2056,12 +2018,6 @@ namespace services::disk {
                 }
             }
 
-            // Delete backup only after a successful checkpoint.
-            if (std::filesystem::exists(prev_path)) {
-                std::error_code remove_error;
-                std::filesystem::remove(prev_path, remove_error);
-            }
-
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
         }
         co_return checkpoint_result_t{min_prev_id, has_in_memory};
@@ -2076,7 +2032,22 @@ namespace services::disk {
                 continue;
             }
             auto& table = entry->table_storage.table();
+            // Pure in-memory MVCC version-chain GC. Touches no block manager, costs no blocks,
+            // and is the half of VACUUM that works the same in both storage modes.
             table.cleanup_versions(lowest_active_start_time);
+            // ITEM B — a DISK-backed table is NOT compacted here. See the long note at
+            // maybe_cleanup_inner: under A7.2's split pool a compact without a committed header
+            // cannot return space, only spend it, and VACUUM used to do exactly that for EVERY
+            // entry on EVERY call — even one with nothing dead in it. The compaction of a
+            // DISK-backed table belongs to the checkpoint round, which already performs it and
+            // is the only place that can commit the release.
+            //
+            // IN_MEMORY storages still compact here, and must: they have no block manager to
+            // charge (data_table_t::compact skips the whole reclaim loop for them) and no
+            // checkpoint round would ever do it for them, so this is their only reclaim.
+            if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
+                continue;
+            }
             // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
             // stored absolute position indexes the un-swapped collection; the atomic swap would
             // shift rows out from under it — R17). Reclaim is deferred to a later vacuum round.
@@ -2109,14 +2080,68 @@ namespace services::disk {
             co_return;
         }
 
+        // ITEM B — THE DELIBERATE DECISION about compacting outside a checkpoint round.
+        //
+        // A7.2 split the free pool: mark_as_free files a released id into pending_free_, and
+        // pending_free_ drains into reusable_ in exactly ONE place — promote_durable_root,
+        // reached only once a header naming the NEW root is on the device. free_block_id draws
+        // only from reusable_. So a compact() that is not followed by a committed header cannot
+        // RETURN space; it can only SPEND it: data_table_t::compact rebuilds the live tree
+        // through transition_to_disk -> partial_block_manager_t::get_block_allocation ->
+        // free_block_id (an empty reusable_ means "extend the file"), and files the outgoing
+        // tree where nothing can reach it. Before A7.2 the released ids went straight back to
+        // the single free list and the next allocation reused them, so the footprint plateaued
+        // and this cost was invisible. Measured after A7.2: +2.9 MB per VACUUM call on an
+        // unchanged 12k-row table.
+        //
+        // DECISION: this call site, and vacuum_inner, stop compacting DISK-backed storages.
+        // Compaction of a DISK-backed table is one indivisible unit with the checkpoint that
+        // commits it, and there is exactly one place that performs that unit —
+        // agent_disk_t::checkpoint_inner, which already calls compact() itself immediately
+        // before checkpointing every DISK entry. Doing half of it anywhere else is all cost.
+        //
+        // WHY NOT "checkpoint after compacting" here. Two independent reasons:
+        //   * it would be WRONG without the WAL bookkeeping. The `.otbx.wal_id` sidecar is what
+        //     recovery uses to skip records already absorbed into the durable root
+        //     (integration/cpp/base_spaces.cpp: `record.id <= cp_id` -> skip). Committing a root
+        //     that contains rows NEWER than the sidecar claims, without advancing it, makes
+        //     recovery replay those rows a SECOND time — duplicated rows, which is strictly
+        //     worse than a file that is merely too big. Advancing the sidecar needs the current
+        //     WAL id, which neither this handler nor vacuum_inner has;
+        //   * it would be wrong HERE regardless. maybe_cleanup rides the COMMIT fan-out
+        //     (operator_commit_transaction -> maybe_cleanup_many). Turning a commit into a
+        //     checkpoint — a full-table rewrite and two fsyncs — is not a trade the write
+        //     path can make.
+        //
+        // WHAT VACUUM STILL IS: cleanup_versions (in-memory version-chain GC), the index and
+        // pg_computed_column GC and the index repopulate owned by operator_vacuum_t, plus
+        // IN_MEMORY compaction. Its DISK effect is DEFERRED to the next checkpoint round
+        // instead of being immediate and negative.
+        if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
+            trace(log_,
+                  "agent_disk[{}]::maybe_cleanup_inner: oid={} is DISK-backed — its compaction belongs to the "
+                  "checkpoint round that can commit the release",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return;
+        }
+
         auto& table = entry->table_storage.table();
-        auto rg = table.row_group();
-        auto total = rg->total_rows();
+        // The shared_ptr is scoped to the counting, NOT held across compact(): a holder that
+        // outlives the swap keeps the REPLACED collection's block handles alive past the
+        // reclaim, and their destructors then erase registry slots that a reused id has already
+        // refilled (see block_manager_t::unregister_block).
+        uint64_t total = 0;
+        uint64_t committed = 0;
+        {
+            auto rg = table.row_group();
+            total = rg->total_rows();
+            committed = rg->committed_row_count();
+        }
         if (total == 0) {
             co_return;
         }
 
-        auto committed = rg->committed_row_count();
         auto deleted = total - committed;
 
         // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
@@ -2274,7 +2299,7 @@ namespace services::disk {
     void agent_disk_t::drop_storage_one_local(components::catalog::oid_t oid) {
         // Read otbx_path BEFORE the erase, while the unique_ptr is still live. Empty
         // path (IN_MEMORY twins) skips the remove block. Remove sequence: .otbx +
-        // .wal_id + .prev sidecars + per-oid directory, all via std::error_code
+        // .wal_id sidecar + per-oid directory, all via std::error_code
         // overloads — exceptions FORBIDDEN.
         std::filesystem::path otbx_path;
         if (auto it = storages_.find(oid); it != storages_.end()) {
@@ -2307,9 +2332,6 @@ namespace services::disk {
             auto sidecar = otbx_path;
             sidecar += ".wal_id";
             std::filesystem::remove(sidecar, ec);
-            auto prev = otbx_path;
-            prev += ".prev";
-            std::filesystem::remove(prev, ec);
             std::filesystem::remove(otbx_path.parent_path(), ec);
         }
     }
@@ -2338,7 +2360,7 @@ namespace services::disk {
     // updated on this agent's own slice. The preprocessing body applies only schema
     // adoption + alias-keyed column expansion + numeric/string cast rather than the
     // heavier storage_append_inner pipeline — storage_append_inner adds NOT NULL
-    // rejection, _id dedup, default-value / positional fallback, and broader
+    // rejection, default-value / positional fallback, and broader
     // is_convertable_to casting, none of which the catalog-append path applied, so
     // this lighter path keeps WAL-time semantics faithful.
     agent_disk_t::unique_future<components::pg_catalog_append_range_t>
@@ -2704,8 +2726,8 @@ namespace services::disk {
         co_return dropped;
     }
 
-    // Runtime DROP path, canonical per-oid mark: read otbx_path + derive .wal_id/.prev
-    // sidecars from the own slice, then record the GC entry via
+    // Runtime DROP path, canonical per-oid mark: read otbx_path + derive the .wal_id
+    // sidecar from the own slice, then record the GC entry via
     // register_dropped_storage_inner_sync. Replaces the manager-side storage_entry borrow
     // at mark_storage_dropped_many. Synchronous (no co_await) — the caller runs on the
     // agent thread.
@@ -2724,9 +2746,6 @@ namespace services::disk {
                 auto wal_id_sidecar = otbx_path;
                 wal_id_sidecar += ".wal_id";
                 sidecars.push_back(std::move(wal_id_sidecar));
-                auto prev_sidecar = otbx_path;
-                prev_sidecar += ".prev";
-                sidecars.push_back(std::move(prev_sidecar));
             }
         }
         // IN_MEMORY storages leave otbx_path/sidecars empty, but we still record a GC

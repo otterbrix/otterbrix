@@ -179,7 +179,7 @@ namespace {
         for (std::uint64_t c = 0; c < o.width; ++c) {
             ddl += ", v" + std::to_string(c) + " bigint";
         }
-        ddl += ") WITH (storage = 'disk');";
+        ddl += ") ;";
         if (!run_sql(dispatcher, ddl, nullptr)) {
             return false;
         }

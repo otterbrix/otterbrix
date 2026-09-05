@@ -102,7 +102,10 @@ namespace components::expressions {
                                                           std::to_string(input_types_.size()) + " columns",
                                                       resource()});
             }
-            if (key.has_cast_type()) {
+            // A variant-select key ('col ::? type') is NOT a cast: its cast_type is the
+            // disambiguation hint find_types already consumed when it resolved path() to
+            // the matching type-variant column, whose physical type IS the requested one.
+            if (key.has_cast_type() && !key.is_variant_select()) {
                 return core::error_t(
                     core::error_code_t::unimplemented_yet,
                     std::pmr::string{"execution graph builder: cast spelled on a column reference", resource()});

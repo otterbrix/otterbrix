@@ -10,12 +10,14 @@ set(${PROJECT_NAME}_SOURCES
     test_fk_scan_by_keys_semijoin.cpp
     test_pushdown_reduce.cpp
     test_ddl_methods.cpp
+    test_cursor_lifetime.cpp
     test_wal_catalog.cpp
     test_mvcc_ddl.cpp
     test_error_handling.cpp
     test_recovery.cpp
     test_d4_lazy_load.cpp
     test_persistence.cpp
+    test_vacuum_footprint.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

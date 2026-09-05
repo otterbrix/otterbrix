@@ -71,7 +71,7 @@ class RestartMetrics:
 def setup_sql(db_name: str) -> str:
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;\n"
         f"-- @load_csv data.csv {TABLE_NAME} ,\n"
         f"CREATE INDEX {INDEX_NAME} ON {db_name}.{TABLE_NAME} USING hash (id);\n"
     )

@@ -29,6 +29,17 @@
 
 namespace services::wal {
 
+#ifdef DEV_MODE
+    // Test-observable count of auto-checkpoint rounds that have ENDED — every exit path of
+    // run_auto_checkpoint, the abandoned ones included. The round is fire-and-forget off
+    // commit_txn and its truncation is its LAST step, so a case that wants to read the journal
+    // the round left behind has no other way to know the round is over: waiting on a clock
+    // reads a round that has not got there yet, and waiting on a disk-agent counter reads one
+    // that has only just started.
+    uint64_t auto_checkpoint_rounds() noexcept;
+    void reset_auto_checkpoint_rounds() noexcept;
+#endif
+
     // Bootstrap address bundle for manager_wal_replicate_t::sync (plain named
     // struct — no std::tuple). Mirrors services::dispatcher::manager_dispatcher_t::
     // sync_pack. disk and index feed the auto-checkpoint orchestration (flush
@@ -164,6 +175,15 @@ namespace services::wal {
             wal_bytes_at_last_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
             reset_auto_checkpoint_bytes();
         }
+
+        // THE ONE EXIT OF A ROUND, taken by all four of run_auto_checkpoint's returns —
+        // the completed one and the three that abandon. Being one function is what makes an
+        // ABANDONED round exactly as repeatable as a completed one: the byte window is rebased
+        // on what is actually on disk now, and the dedup guard is released, so the next
+        // threshold trip launches a fresh round instead of finding this one still in flight.
+        // An abandoned round that forgot either half would trade a recoverable failure for a
+        // permanent one, which is the whole reason abandoning is allowed to be the answer here.
+        void end_auto_checkpoint_round() noexcept;
 
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;

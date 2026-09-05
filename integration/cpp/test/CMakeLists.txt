@@ -28,6 +28,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_check_on_update.cpp
         test_index_bootstrap_failure.cpp
         test_catalog_write_refusal.cpp
+        test_catalog_delete_refusal.cpp
         test_catalog_read_refusal.cpp
         test_udf_refusal_registry_state.cpp
         test_oid_alloc_refusal.cpp
@@ -48,6 +49,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_stale_after_compact.cpp
         test_vacuum_index_rebuild.cpp
         test_checkpoint_rebuild_before_truncate.cpp
+        test_auto_checkpoint_rebuild_refusal.cpp
         test_commit_discard_horizon.cpp
         test_index_rebuild_live_snapshot.cpp
         test_dml_dictionary_rowids.cpp

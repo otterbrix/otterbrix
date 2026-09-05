@@ -324,10 +324,21 @@ namespace services::disk {
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
                        std::pmr::vector<components::vector::data_chunk_t> data);
-        actor_zeta::unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
-                                                                components::catalog::oid_t table_oid,
-                                                                components::vector::vector_t row_ids,
-                                                                uint64_t count);
+        // Marks `count` rows deleted under ctx.txn and reports HOW MANY marks it set.
+        //
+        // THE COUNT IS NOT THE ERROR CHANNEL, which is why the reply is wrapped. A
+        // returned count SMALLER than `count` is a legitimate answer: chunk_vector_info::
+        // delete_rows skips a row that already carries a delete stamp, so duplicate ids in
+        // one request, or a row this same transaction deleted earlier, are counted once or
+        // not at all. A bare 0 therefore cannot be told apart from "the request never
+        // reached a storage" — and that is exactly the reading that let ON DELETE CASCADE
+        // report success while deleting no child row at all. Refusals (no agent owns the
+        // oid, the entry is empty) come back as an error; the count only ever counts.
+        actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
+        storage_delete_rows(execution_context_t ctx,
+                            components::catalog::oid_t table_oid,
+                            components::vector::vector_t row_ids,
+                            uint64_t count);
 
         // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>

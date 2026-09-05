@@ -840,9 +840,12 @@ namespace components::vector {
             }
         }
 
-        if (!vector->validity_.row_is_valid(index)) {
-            return types::logical_value_t(vector->resource(), vector->type_);
-        }
+        // NULL rows never reach here: value() screens them with is_null(), which walks the very
+        // same DICTIONARY/CONSTANT chain this loop just walked. The branch that used to stand here
+        // answered a null row with logical_value_t(resource, type_) -- a DEFAULT-CONSTRUCTED value
+        // of the declared type, whose is_null() is false. That is a zero handed back in place of a
+        // NULL, not a null.
+        assert(vector->validity_.row_is_valid(index) && "value_internal reached a NULL row");
 
         switch (vector->type_.type()) {
             case types::logical_type::BOOLEAN:
@@ -956,8 +959,13 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
+                // The cell's type is the column's DECLARED type, never a type inferred from the
+                // field values: a NULL field carries logical_type::NA (that is how logical_value_t
+                // spells "no value"), so deriving the struct type from the children would answer
+                // STRUCT<BIGINT, NA> for a declared STRUCT<BIGINT, BIGINT>. The MAP leg above
+                // already passes vector->type_ through for the same reason.
                 return types::logical_value_t::create_struct(vector->resource(),
-                                                             vector->type_.type_name(),
+                                                             vector->type_,
                                                              std::move(children));
             }
             case types::logical_type::LIST: {
@@ -1137,7 +1145,11 @@ namespace components::vector {
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {
-        if (type_.type() == types::logical_type::NA || !validity_.row_is_valid(index)) {
+        // is_null(), not validity_ directly: on a DICTIONARY vector the caller's index addresses
+        // the indexing vector, while this vector's own validity_ is still the pre-slice mask, and
+        // on a CONSTANT vector every index resolves to row 0. Reading validity_[index] there
+        // answers about a different row than the one value_internal is about to read.
+        if (is_null(index)) {
             types::logical_value_t null_val(resource(), types::complex_logical_type{types::logical_type::NA});
             if (type_.has_alias()) {
                 null_val.set_alias(type_.alias());

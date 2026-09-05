@@ -445,27 +445,36 @@ namespace services::disk {
         co_return std::pair<int64_t, uint64_t>{range_start, total_count};
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(execution_context_t ctx,
-                                                                                catalog::oid_t table_oid,
-                                                                                components::vector::vector_t row_ids,
-                                                                                uint64_t count) {
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[idx];
-            if (agent != nullptr) {
-                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_delete_rows_inner,
-                                                                      table_oid,
-                                                                      std::move(row_ids),
-                                                                      count,
-                                                                      ctx.txn);
-                if (needs_sched) {
-                    scheduler_disk_->enqueue(agent.get());
-                }
-                co_return co_await std::move(fut);
-            }
+    // Router to the agent twin. The reply wraps the count: a route that does not exist is
+    // a delete that did not happen, and reporting it as 0 rows deleted is indistinguishable
+    // from a healthy delete whose rows were already stamped — the reading that let an
+    // ON DELETE CASCADE drop nothing and still report success. Same rule, same shape as
+    // scan_by_keys' routing legs.
+    manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    manager_disk_t::storage_delete_rows(execution_context_t ctx,
+                                        catalog::oid_t table_oid,
+                                        components::vector::vector_t row_ids,
+                                        uint64_t count) {
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_delete_rows: no disk agents", resource()}};
         }
-        co_return 0;
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_delete_rows: owning disk agent is null", resource()}};
+        }
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_delete_rows_inner,
+                                                              table_oid,
+                                                              std::move(row_ids),
+                                                              count,
+                                                              ctx.txn);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
     }
 
     // MVCC commit/revert methods

@@ -160,3 +160,94 @@ TEST_CASE("services::disk::error::resolve_unknown_function") {
     auto rf = test_probe::probe_function(fx, fx.ctx(), ns_oid, std::string("unknown_fn"));
     REQUIRE_FALSE(rf.found);
 }
+// 17. storage_delete_rows separates "how many marks were set" from "the delete could
+//     not be performed". These were the same value — 0 — until the reply got a wrapper,
+//     and both operators that send it (operator_delete, operator_fk_cascade) simply
+//     dropped the reply because there was nothing in it to read. A cascade could then
+//     mark no child row at all and let its parent row go.
+//
+//     THE TWO ZEROS ARE THE POINT. A repeat of the same delete legitimately reports 0 —
+//     chunk_vector_info::delete_rows skips a row that already carries a stamp, which is
+//     also what duplicate ids in one request do — and that zero must stay a SUCCESS. An
+//     oid no agent has storage for must not produce that same zero.
+TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    using components::vector::data_chunk_t;
+    using components::vector::vector_t;
+
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "nsdel");
+
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
+    auto table_oid = test_create_table(fx, ns_oid, "rows", cols);
+    REQUIRE(table_oid >= FIRST_USER_OID);
+    fx.invoke(&manager_disk_t::create_storage_disk,
+              session_id_t{},
+              table_oid,
+              catalog::well_known_oid::main_database,
+              cols,
+              /*is_computed=*/false);
+
+    // Three committed rows.
+    int64_t first_row = 0;
+    {
+        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        complex_logical_type t{logical_type::BIGINT};
+        t.set_alias("a");
+        types.push_back(std::move(t));
+        data_chunk_t chunk(&fx.resource, types, 3);
+        chunk.set_cardinality(3);
+        for (uint64_t i = 0; i < 3; ++i) {
+            chunk.set_value(0, i, static_cast<std::int64_t>(i + 1));
+        }
+        std::pmr::vector<data_chunk_t> batch(&fx.resource);
+        batch.emplace_back(std::move(chunk));
+        components::execution_context_t append_ctx{session_id_t{},
+                                                   components::table::transaction_data{0, 0},
+                                                   {},
+                                                   table_oid};
+        auto appended = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+        REQUIRE_FALSE(appended.has_error());
+        REQUIRE(appended.value().second == 3);
+        first_row = static_cast<int64_t>(appended.value().first);
+    }
+
+    auto ids_of = [&](int64_t base, uint64_t n) {
+        vector_t v(&fx.resource, logical_type::BIGINT, n);
+        for (uint64_t i = 0; i < n; ++i) {
+            v.data<int64_t>()[i] = base + static_cast<int64_t>(i);
+        }
+        return v;
+    };
+
+    INFO("the delete happened: three marks set");
+    {
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), table_oid, ids_of(first_row, 3), std::uint64_t{3});
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value() == 3);
+    }
+
+    INFO("the same rows again: zero marks set, and that is a SUCCESS, not a refusal");
+    {
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), table_oid, ids_of(first_row, 3), std::uint64_t{3});
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value() == 0);
+    }
+
+    INFO("an oid with no storage anywhere: the delete DID NOT HAPPEN, and says so");
+    {
+        const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), nowhere, ids_of(0, 1), std::uint64_t{1});
+        REQUIRE(r.has_error());
+    }
+
+    INFO("asking for nothing is not a refusal, whatever the oid");
+    {
+        const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), nowhere, ids_of(0, 1), std::uint64_t{0});
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value() == 0);
+    }
+}

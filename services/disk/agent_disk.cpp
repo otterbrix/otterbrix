@@ -872,29 +872,36 @@ namespace services::disk {
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
-    agent_disk_t::unique_future<uint64_t>
+    agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     agent_disk_t::storage_delete_rows_inner(components::catalog::oid_t table_oid,
                                             components::vector::vector_t row_ids,
                                             uint64_t count,
                                             components::table::transaction_data txn) {
+        // Nothing asked, nothing marked. An empty request has an empty answer and is not a
+        // refusal — unlike the three legs below, which are a delete that DID NOT HAPPEN.
+        // They used to return 0 with only a trace line, and 0 is also what a perfectly
+        // healthy delete of already-stamped rows returns, so no caller could tell them
+        // apart. See the header: the count counts, the wrapper refuses.
+        if (count == 0) {
+            co_return std::uint64_t{0};
+        }
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_delete_rows_inner: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return 0;
+            std::pmr::string what{"storage_delete_rows: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_delete_rows_inner: oid {} has null entry — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return 0;
+            std::pmr::string what{"storage_delete_rows: table oid has an empty entry on its disk agent: ",
+                                  resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        if (entry->storage == nullptr || count == 0) {
-            co_return 0;
+        if (entry->storage == nullptr) {
+            std::pmr::string what{"storage_delete_rows: table oid has no materialized storage: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         if (txn.transaction_id != 0) {
             co_return entry->storage->delete_rows(row_ids, count, txn.transaction_id);
@@ -1347,10 +1354,27 @@ namespace services::disk {
         for (std::uint64_t i = 0; i < nkeys; ++i) {
             result.emplace_back();
         }
-        // Arity guard: a mismatch (chunk column count != resolved key columns) or an empty key
-        // column set voids the whole batch with one empty bucket per key.
-        if (nkeys == 0 || key_col_indices.empty() || keys.column_count() != key_col_indices.size()) {
+        // Zero keys is not a failure: an empty request has an empty answer, and the
+        // one-bucket-per-key invariant still holds at size 0.
+        if (nkeys == 0) {
             return result;
+        }
+        // ARITY GUARD. A key chunk whose column count disagrees with the resolved key
+        // columns — or an empty key column set — describes a semi-join that CANNOT BE
+        // EVALUATED. This used to answer it with one EMPTY BUCKET PER KEY, and an empty
+        // bucket is the affirmative answer "nothing in this table references that key":
+        // ON DELETE CASCADE / RESTRICT read it as "this parent has no children" and let
+        // the parent row go while its children stayed behind, referencing nothing. The
+        // shape of an unevaluable request is an error, never an all-miss answer — the
+        // same rule read_chunks_by_keys_inner already states for its own key arity.
+        if (key_col_indices.empty()) {
+            return core::error_t{core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"fk semi-join: no key columns given", resource}};
+        }
+        if (keys.column_count() != key_col_indices.size()) {
+            return core::error_t{
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"fk semi-join: key chunk arity does not match key columns", resource}};
         }
 
         const auto& cols = storage.columns();

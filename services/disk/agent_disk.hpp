@@ -279,12 +279,18 @@ namespace services::disk {
                              std::unique_ptr<components::vector::data_chunk_t> data,
                              components::table::transaction_data txn);
 
-        // storage_delete_rows_inner — single-OID DELETE mutation. Returns
-        //   the deleted-row count; 0 on no-op.
-        unique_future<uint64_t> storage_delete_rows_inner(components::catalog::oid_t table_oid,
-                                                          components::vector::vector_t row_ids,
-                                                          uint64_t count,
-                                                          components::table::transaction_data txn);
+        // storage_delete_rows_inner — single-OID DELETE mutation. The wrapper carries the
+        //   deleted-row count on success and an error when this agent cannot perform the
+        //   delete at all (the oid is not in its slice, or the entry has no storage). The
+        //   two used to be the same value — 0 — and the callers, having no channel to read,
+        //   dropped the reply entirely; an ON DELETE CASCADE could then delete nothing and
+        //   still let its parent row go. A count below the requested one is NOT a refusal:
+        //   an already-stamped row is skipped by design (chunk_vector_info::delete_rows).
+        unique_future<core::result_wrapper_t<uint64_t>>
+        storage_delete_rows_inner(components::catalog::oid_t table_oid,
+                                  components::vector::vector_t row_ids,
+                                  uint64_t count,
+                                  components::table::transaction_data txn);
 
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
         //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks

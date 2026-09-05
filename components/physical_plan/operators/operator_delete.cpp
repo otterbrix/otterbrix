@@ -466,7 +466,16 @@ namespace components::operators {
                                                  table_oid_,
                                                  std::move(row_ids),
                                                  static_cast<uint64_t>(modified_size));
-                co_await std::move(df);
+                // The WAL physical_delete above is already written. If the storage mark is
+                // REFUSED, the two disagree: replay would delete rows the live storage still
+                // shows, and this statement would report them deleted without deleting them.
+                // Fail the flush so the executor's abort cascade unwinds the statement. The
+                // COUNT is not checked — it is legitimately below modified_size when a row
+                // already carries a delete stamp from this same transaction.
+                auto deleted_r = co_await std::move(df);
+                if (deleted_r.has_error()) {
+                    co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
+                }
 
                 // 3. Mirror to index (old data). BOTH paths stage the MATCHED old rows +
                 //    their absolute ids into index_old_chunks_/index_old_row_ids_: the

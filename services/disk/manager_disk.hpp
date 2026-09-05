@@ -1141,10 +1141,13 @@ namespace services::disk {
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
                        std::pmr::vector<components::vector::data_chunk_t> data);
-        unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
-                                                    components::catalog::oid_t table_oid,
-                                                    components::vector::vector_t row_ids,
-                                                    uint64_t count);
+        // Marks rows deleted under ctx.txn; the reply wraps the count so a refusal (no
+        // agent owns the oid) is distinguishable from "0 marks set", which is a legitimate
+        // outcome for already-deleted or duplicate ids. See disk_contract.
+        unique_future<core::result_wrapper_t<uint64_t>> storage_delete_rows(execution_context_t ctx,
+                                                                            components::catalog::oid_t table_oid,
+                                                                            components::vector::vector_t row_ids,
+                                                                            uint64_t count);
         // Batched MVCC swap. Each range carries its own table_oid.
         unique_future<void> storage_publish_commits(execution_context_t ctx,
                                                     uint64_t commit_id,

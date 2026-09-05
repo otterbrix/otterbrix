@@ -38,6 +38,29 @@ namespace components::operators {
 
         const auto& par_indices = fk_.parent_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
+
+        // THE TWO COLUMN LISTS MUST BE THE SAME LENGTH, and this is the only place that
+        // says so. The keys-chunk below is built from parent_col_indices (one column per
+        // referenced column) while the key column NAMES sent alongside it are
+        // child_col_names (one per referencing column); the disk side resolves the names
+        // and matches the two counts. Nothing on the DDL path rejects
+        // `FOREIGN KEY (a, b) REFERENCES parent (x)` — the transformer copies both lists
+        // verbatim and each is resolved to attoids on its own — so a lopsided constraint
+        // does reach here. The disk side now refuses it, but it refuses a request it
+        // cannot read; the defect is the CONSTRAINT, and naming it here is what makes the
+        // error legible. Refusing is not optional: a cascade that cannot be evaluated and
+        // reports "no children" deletes the parent and orphans the child rows.
+        if (par_indices.size() != fk_.child_col_names.size()) {
+            std::pmr::string what{"FK constraint: foreign key column count mismatch — ", resource_};
+            what.append(std::to_string(fk_.child_col_names.size()).c_str());
+            what.append(" referencing column(s) vs ");
+            what.append(std::to_string(par_indices.size()).c_str());
+            what.append(" referenced column(s)");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
+        }
+
         // If indices weren't resolved at plan time, skip cascade.
         for (auto idx : par_indices) {
             if (idx == absent) {
@@ -174,7 +197,19 @@ namespace components::operators {
                                                    fk_.child_table_oid,
                                                    std::move(row_ids_vec),
                                                    static_cast<uint64_t>(all_child_ids.size()));
-                co_await std::move(dfut);
+                // READ THE REPLY. The child delete is the whole cascade: if it is refused,
+                // the parent DELETE below it must not stand, or the rows this branch was
+                // supposed to remove outlive the row they reference. The reply used to be
+                // dropped on the floor and storage_delete_rows had no error channel at all,
+                // so a refusal was indistinguishable from a delete of already-stamped rows.
+                // The COUNT is deliberately not checked: it is legitimately lower than the
+                // request when a row already carries a delete stamp.
+                auto deleted_r = co_await std::move(dfut);
+                if (deleted_r.has_error()) {
+                    set_error(deleted_r.error());
+                    mark_failed();
+                    co_return;
+                }
                 // Track the child delete on the parent txn so COMMIT publishes it
                 // and ABORT reverts it. txn_id 0 (direct-API / no active txn) needs
                 // no tracking: the delete is already visible-to-all and irreversible.

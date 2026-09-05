@@ -42,11 +42,13 @@ set( ${PROJECT_NAME}_SOURCES
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp
         test_null_persistence.cpp
+        test_struct_null_field_read.cpp
         test_pump_hops.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
         test_fk_check_on_update.cpp
         test_fk_cascade_row_identity.cpp
+        test_fk_arity_mismatch.cpp
         test_inline_constraints.cpp
         test_text_column_storage.cpp
         test_update.cpp

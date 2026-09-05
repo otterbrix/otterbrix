@@ -36,6 +36,26 @@ namespace components::operators {
         const auto& indices = fk_.child_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
 
+        // THE TWO COLUMN LISTS MUST BE THE SAME LENGTH. The keys-chunk below carries one
+        // column per child_col_indices entry, while the key column NAMES sent with it are
+        // parent_col_names — so the two counts have to agree for the parent-side lookup to
+        // mean anything, and nothing on the DDL path makes them agree:
+        // `FOREIGN KEY (a, b) REFERENCES parent (x)` is accepted verbatim and each list is
+        // resolved to attoids independently. Left unchecked the disk side saw a key chunk
+        // it could not read and answered one empty bucket per key, which this operator
+        // reports as "referenced row not found in parent table" — a violation message
+        // pointing at data that is perfectly fine. Name the actual defect instead.
+        if (indices.size() != fk_.parent_col_names.size()) {
+            std::pmr::string what{"FK constraint: foreign key column count mismatch — ", resource_};
+            what.append(std::to_string(indices.size()).c_str());
+            what.append(" referencing column(s) vs ");
+            what.append(std::to_string(fk_.parent_col_names.size()).c_str());
+            what.append(" referenced column(s)");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
+        }
+
         // An unresolved key column position voids a row's check, but it still counts as
         // NULL for the MATCH policy below — so a MATCH FULL key that is partially absent
         // (or partially NULL) is rejected before the row is skipped (constant per FK).

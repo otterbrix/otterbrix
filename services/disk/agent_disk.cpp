@@ -2716,33 +2716,37 @@ namespace services::disk {
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);
 
-        // transaction_data{} — WRITTEN OUT BECAUSE IT IS WRONG, AND IS NOT SAFE TO CORRECT YET.
+        // ctx.txn, NOT transaction_data{} — and this is the fix, not a widening.
         //
         // This patch runs at STEP 4 of operator_commit_transaction_t, whose own comment states
         // the premise it depends on: "the rows still carry insert_id == transaction_id", i.e.
         // they are not published yet, which is what makes patching them invisible to everyone
-        // else. transaction_data{} is horizon 0 with no owning transaction and cannot see a row
-        // in that state — so EVERY backfill of an in-transaction ALTER logs "attoid not found
-        // (skipping)" below and added_at_commit_id keeps its placeholder 0. Zero reads as "added
-        // before every snapshot", which shows the column to snapshots older than the ALTER that
-        // created it. The delete a few hundred lines up had exactly this defect and ctx.txn is
-        // exactly its fix.
+        // else. A default transaction_data is NOT "horizon 0" — its snapshot_horizon is
+        // UINT64_MAX, it means "see all COMMITTED rows" — and that is exactly why it could not
+        // see these: transaction_version_operator::use_inserted_version rejects any insert_id
+        // at or above TRANSACTION_ID_START unless txn.transaction_id equals it, and a default
+        // transaction_data carries transaction_id 0. So EVERY backfill of an ALTER used to log
+        // "attoid not found (skipping)" below and added_at_commit_id kept its placeholder 0.
+        // Zero reads as "added before every snapshot" (the rule is
+        // added_at_commit_id <= snapshot horizon), which showed the new column to snapshots
+        // older than the ALTER that created it. The delete a few hundred lines up had exactly
+        // this defect and took exactly this fix.
         //
-        // IT DOES NOT WORK HERE, and the failure is below this file: with ctx.txn the scan finds
-        // the row, and the direct_update_sync at the bottom of this body then dies in
+        // WHAT HAD TO BE REPAIRED FIRST. Handing this scan a row it can see was reported as
+        // crashing the direct_update_sync at the bottom of this body, in
         // components::table::update_segment_t::merge_update_loop_internal
-        // (components/table/update_segment.hpp:830) on a base_info pointer that is not an
-        // address — reproducible on a plain autocommit ALTER ... ADD COLUMN. So this backfill
-        // has never once run against a real row, and the update-merge path it would drive does
-        // not survive being handed one. Both halves are one defect and need a red test at the
-        // components/table floor first; widening this scan before that only turns a silent
-        // no-op into a crash. Finding recorded in
-        // integration/cpp/test/test_catalog_delete_refusal.cpp,
-        // an_in_transaction_add_column_row_survives_the_commit.
+        // (components/table/update_segment.hpp:830), "on a garbage base_info". base_info was
+        // not the cause: that function's tail loop advanced its own loop BOUND, never
+        // terminated, and overran result_values[] through its caller frame — the garbage
+        // base_info was the wreckage, one frame's worth of it. And a SECOND defect sat behind
+        // it: the merge stored string values uncopied, so the pg_attribute row it wrote came
+        // back with a dangling attname. Both are fixed at the floor where they live, with
+        // components/table/test/test_update_merge.cpp holding the shapes that reach the merge
+        // leg at all. Only then was this line allowed to move.
         detail::inline_scan(tbl,
                             all_col_indices,
                             &scan_resource,
-                            components::table::transaction_data{},
+                            ctx.txn,
                             [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                                 if (chunk.is_null(0, i))
                                     return true;

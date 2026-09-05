@@ -2424,10 +2424,16 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 // and test_persistence::wal_recovery_dml_full_cycle give equivalent coverage;
 // this case states the intent explicitly so the regression is unmistakable.
 //
-// (The restore also feeds a pg_attribute/added_at branch, but that never fires
-// through real DDL today — ALTER ADD COLUMN leaves added_at=0, which the
-// resolve_table visibility filter never rejects — so the live guard here is the
-// WAL-frontier half of the same restore.)
+// (The restore's OTHER input is the pg_attribute/added_at branch —
+// manager_disk_t::max_persisted_commit_id_sync, which takes the max over
+// added_at_commit_id and dropped_at_commit_id. That branch USED to be dead through
+// real DDL, because ALTER ADD COLUMN left added_at at the placeholder 0: the commit
+// backfill, agent_disk_t::update_pg_attribute_commit_id_field_inner, scanned with a
+// transaction that could not see the row it was asked to patch. It is live now —
+// the backfill stamps a real commit id, so a reopened engine can raise its frontier
+// off pg_attribute alone. This case still exercises the WAL-frontier half; the
+// added_at half is pinned in integration/cpp/test/test_catalog_delete_refusal.cpp
+// — an_added_columns_commit_id_survives_a_restart and its siblings.)
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
     test_clear_directory(config);

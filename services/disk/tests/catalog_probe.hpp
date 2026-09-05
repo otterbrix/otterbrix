@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <memory_resource>
 #include <string>
 #include <unordered_map>
@@ -45,6 +46,62 @@
 namespace services::disk::test_probe {
 
     namespace catalog = components::catalog;
+
+    // A snapshot that really does see every committed column.
+    //
+    // components::table::transaction_data{} -- and the transaction_data{0, 0} most probe
+    // fixtures spell out -- is only HALF a see-all. Its snapshot_horizon defaults to
+    // UINT64_MAX, so ROW visibility sees everything committed; its start_time is 0, and
+    // COLUMN visibility (added_at_commit_id <= start_time) is judged against start_time. A
+    // probe built that way therefore reads as "a snapshot taken before the first commit" and
+    // hides every column an ALTER ... ADD COLUMN ever added.
+    //
+    // That was unobservable while the pg_attribute backfill never ran and added_at_commit_id
+    // was permanently 0 (agent_disk_t::update_pg_attribute_commit_id_field_inner scanned with
+    // a transaction that could not see the row it was asked to patch). Now that the column
+    // carries the real commit id, a probe has to name the snapshot it means on BOTH halves.
+    //
+    // THE SITES THAT STILL BUILD A start_time == 0 CONTEXT, AND WHY EACH IS STILL SAFE.
+    // Both dispatcher probes that DO drive a real ALTER through the commit operator were
+    // moved onto this helper: services/dispatcher/tests/test_oid_alloc_operator_refusal.cpp:250
+    // and services/dispatcher/tests/test_variant_e3_differential.cpp:163. The rest were left
+    // alone deliberately, and the reason is not "nobody noticed":
+    //   * services/disk/tests/test_error_handling.cpp:85 and
+    //     services/disk/tests/test_d4_lazy_load.cpp:86 build
+    //     execution_context_t{..., transaction_data{0, 0}, {}} and hand it to probe_table,
+    //     which judges added_at against ctx.txn.start_time (below, ~line 315). Their columns
+    //     are written by disk_test_helpers::test_add_column, which calls
+    //     catalog::build_pg_attribute_row with the DEFAULT added_at_commit_id = 0 and then
+    //     storage_publish_commits directly. It never goes through
+    //     operator_commit_transaction_t's STEP 4, so no backfill ever stamps those rows and
+    //     a start_time == 0 probe still sees them. They are safe BECAUSE they bypass the
+    //     backfill, not because start_time 0 is a see-all.
+    //   * services/disk/tests/test_checkpoint_dirty.cpp:135 is a transaction_data{0, 0} too,
+    //     but it is a storage_append context, not a probe context -- that file never calls
+    //     probe_table. start_time is not read on the append path.
+    // Any probe fixture that starts driving ALTER ... ADD COLUMN through the real commit
+    // pipeline has to switch to probe_see_all_txn(), or it will stop seeing the column.
+    //
+    // AND THE ASYMMETRY THIS EXPOSES, which is NOT a test-only matter. In production the same
+    // pg_attribute rows are filtered by TWO DIFFERENT CLOCKS:
+    //   * components/physical_plan/operators/operator_resolve_table.cpp:91 takes
+    //     ctx->txn.start_time and applies added_at <= start_time (lines 418/424);
+    //   * components/physical_plan/operators/alter_validators.cpp:46 takes
+    //     exec_ctx.txn.snapshot_horizon and applies added_at <= horizon;
+    //   * ROW visibility (row_version_manager's use_inserted_version) uses horizon plus
+    //     in_flight_snapshot, i.e. the alter_validators clock.
+    // components/table/transaction_manager.cpp draws start_time and every commit_id from the
+    // ONE current_timestamp_ counter, and published_horizon_ only ever holds an already
+    // allocated commit_id, so start_time > snapshot_horizon ALWAYS: resolve_table is strictly
+    // the weaker filter, and it also ignores in_flight_snapshot entirely. The window that
+    // opens: B commits and is handed commit id C (in_flight, not yet published); A begins with
+    // start_time > C and horizon < C; A's resolve_table admits a column added at C while A's
+    // row reads reject every row B wrote. Until this wave the divergence was unreachable
+    // because added_at was permanently 0 -- making the backfill real is what woke it. Both
+    // files are outside this change; recorded here, deliberately not fixed here.
+    inline components::table::transaction_data probe_see_all_txn() {
+        return components::table::transaction_data{0, std::numeric_limits<std::uint64_t>::max()};
+    }
 
     // --- test-local result structs (mirror the deleted resolve_*_result_t) ---
 

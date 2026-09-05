@@ -244,7 +244,10 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
     probe_fixture probe_fx() { return probe_fixture{this, *resource_}; }
 
     components::execution_context_t read_ctx() {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        // probe_see_all_txn, not transaction_data{0, 0}: column visibility is judged against
+        // start_time, so a 0 there means "a snapshot from before the first commit" and hides
+        // every ALTER-added column now that added_at_commit_id carries a real id.
+        return components::execution_context_t{session_id_t{}, test_probe::probe_see_all_txn(), {}};
     }
 
     void execute_sql(const std::string& query) {

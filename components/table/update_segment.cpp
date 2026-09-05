@@ -1,6 +1,7 @@
 #include "update_segment.hpp"
 
 #include <algorithm>
+#include <cstdio>
 
 #include "column_data.hpp"
 #include "column_segment.hpp"
@@ -59,8 +60,12 @@ namespace components::table {
                                              int64_t offset,
                                              std::pmr::memory_resource* resource) {
         while (next_ptr.is_set()) {
-            auto pin = next_ptr.pin();
-            auto& info = pin.update_info();
+            auto pinned = next_ptr.pin();
+            if (pinned.has_error()) {
+                // A conflict scan that cannot read a node cannot say there is no conflict.
+                return core::error_on(resource, pinned.error());
+            }
+            auto& info = pinned.value().update_info();
             uint64_t i = 0, j = 0;
             auto tuples = info.tuples();
             while (true) {
@@ -120,18 +125,55 @@ namespace components::table {
         }
     }
 
-    undo_buffer_pointer_t undo_buffer_reference::buffer_pointer() { return {*entry, position}; }
+    void report_unreachable_update_node(const char* where, const core::error_t& error) {
+        std::fprintf(stderr,
+                     "components::table::%s: the update node could not be pinned (%d: %s); the read below it is "
+                     "left without that overlay\n",
+                     where,
+                     static_cast<int>(error.type),
+                     error.what.c_str());
+    }
 
-    undo_buffer_reference undo_buffer_pointer_t::pin() const {
+    // A default-constructed reference names no node, and undo_buffer_pointer_t() is exactly
+    // that. This used to read `return {*entry, position};`, which forms a reference to *nullptr
+    // for such a reference -- reached today from update_segment_t::update, whose `node_ref` is
+    // never assigned and whose next_info.prev line is not guarded by is_set() the way the
+    // base_info.next line below it is.
+    undo_buffer_pointer_t undo_buffer_reference::buffer_pointer() {
+        if (!entry) {
+            return undo_buffer_pointer_t();
+        }
+        return {*entry, position};
+    }
+
+    // NO SILENT FAILURE ON THIS PATH (rule 6).
+    //
+    // This used to swallow the refusal in an assert and, under NDEBUG, return
+    // undo_buffer_reference(*entry, buffer_handle_t{}, position). Every consumer then calls
+    // update_info(), which is reinterpret_cast<update_info_t*>(handle.ptr() + position) -- with
+    // an empty handle that is `nullptr + position`, i.e. literally a base_info that is not an
+    // address, produced by the one function whose job is to hand out addresses. The premise the
+    // assert rested on ("a resident TRANSACTION block cannot fail to pin") is also not something
+    // this function can check: standard_buffer_manager_t::pin only takes the no-op fast path
+    // while the block is still block_state::LOADED, and the reload branch below it reports
+    // out_of_memory, data_corruption and io_error.
+    //
+    // So the refusal is returned. Callers that own an error channel forward it
+    // (update_segment_t::update, check_for_conflicts); the read paths that do not report it and
+    // stop -- see report_unreachable_update_node above for where the missing channel starts.
+    core::result_wrapper_t<undo_buffer_reference> undo_buffer_pointer_t::pin() const {
+        // These two stay asserts, and the distinction is the whole point of the change above:
+        // they are CALLER preconditions (every caller guards with is_set(), and a position
+        // beyond the entry is a bug in whoever built the pointer), not runtime failures the
+        // caller could be told about. What was wrong before was asserting away a RUNTIME
+        // refusal that has an error value and then continuing on a fabricated address.
+        // An error_t here would also need a resource to put its message on, and a pointer has
+        // none -- std::pmr::string with no resource is the forbidden default resource.
+        assert(entry && "undo_buffer_pointer_t::pin: the pointer names no entry");
         assert(entry->capacity >= position);
-        // entry->block is a TRANSACTION block already allocated by undo_buffer_allocator_t::
-        // allocate(); it is resident, so re-pinning it cannot OOM. The genuine OOM site is
-        // allocate() (which returns a result_wrapper). Assert here and, on the (impossible)
-        // error path, return an empty handle rather than throwing.
         auto pinned = entry->buffer_manager.pin(entry->block);
-        assert(!pinned.has_error() && "undo_buffer_pointer_t::pin: resident TRANSACTION block must not OOM");
         if (pinned.has_error()) {
-            return undo_buffer_reference(*entry, storage::buffer_handle_t{}, position);
+            return pinned.convert_error<undo_buffer_reference>();
         }
         return undo_buffer_reference(*entry, std::move(pinned.value()), position);
     }
@@ -239,7 +281,13 @@ namespace components::table {
             return false;
         }
         auto pin = entry.pin();
-        auto& info = pin.update_info();
+        if (pin.has_error()) {
+            report_unreachable_update_node("update_segment_t::has_uncommitted_updates", pin.error());
+            // Cannot read the chain, so cannot claim it is clean: the honest answer to
+            // "does this vector carry uncommitted updates" is yes, treat it as dirty.
+            return true;
+        }
+        auto& info = pin.value().update_info();
         if (info.has_next()) {
             return true;
         }
@@ -270,7 +318,11 @@ namespace components::table {
         }
         assert(result.get_vector_type() == vector::vector_type::FLAT);
         auto pin = node.pin();
-        fetch_update(pin.update_info(), result_offset, result);
+        if (pin.has_error()) {
+            report_unreachable_update_node("update_segment_t::fetch_updates", pin.error());
+            return;
+        }
+        fetch_update(pin.value().update_info(), result_offset, result);
     }
 
     void update_segment_t::fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result) {
@@ -280,7 +332,11 @@ namespace components::table {
         }
         assert(result.get_vector_type() == vector::vector_type::FLAT);
         auto pin = node.pin();
-        fetch_committed(pin.update_info(), result_offset, result);
+        if (pin.has_error()) {
+            report_unreachable_update_node("update_segment_t::fetch_committed", pin.error());
+            return;
+        }
+        fetch_committed(pin.value().update_info(), result_offset, result);
     }
 
     void update_segment_t::fetch_committed_range(int64_t start_row,
@@ -304,6 +360,10 @@ namespace components::table {
                 continue;
             }
             auto pin = entry.pin();
+            if (pin.has_error()) {
+                report_unreachable_update_node("update_segment_t::fetch_committed_range", pin.error());
+                continue;
+            }
             uint64_t start_in_vector = vector_idx == start_vector ? static_cast<uint64_t>(start_row) -
                                                                         start_vector * vector::DEFAULT_VECTOR_CAPACITY
                                                                   : 0;
@@ -313,7 +373,7 @@ namespace components::table {
             assert(end_in_vector > 0 && end_in_vector <= vector::DEFAULT_VECTOR_CAPACITY);
             uint64_t result_offset = vector_idx * vector::DEFAULT_VECTOR_CAPACITY + start_in_vector -
                                      static_cast<uint64_t>(start_row) + result_offset_base;
-            fetch_committed_range(pin.update_info(), start_in_vector, end_in_vector, result_offset, result);
+            fetch_committed_range(pin.value().update_info(), start_in_vector, end_in_vector, result_offset, result);
         }
     }
 
@@ -344,7 +404,10 @@ namespace components::table {
         if (root_->info[vector_index].is_set()) {
             auto root_pointer = root_->info[vector_index];
             auto root_pin = root_pointer.pin();
-            auto& base_info = root_pin.update_info();
+            if (root_pin.has_error()) {
+                return root_pin.convert_error<bool>(); // out_of_memory / data_corruption / io_error
+            }
+            auto& base_info = root_pin.value().update_info();
 
             undo_buffer_reference node_ref;
             auto conflict = check_for_conflicts(base_info.next,
@@ -368,7 +431,10 @@ namespace components::table {
             node->next = base_info.next;
             if (node->next.is_set()) {
                 auto next_pin = node->next.pin();
-                auto& next_info = next_pin.update_info();
+                if (next_pin.has_error()) {
+                    return next_pin.convert_error<bool>();
+                }
+                auto& next_info = next_pin.value().update_info();
                 next_info.prev = node_ref.buffer_pointer();
             }
             node->prev = root_pointer;
@@ -416,7 +482,11 @@ namespace components::table {
         uint64_t row_in_vector =
             static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
         auto pin = entry.pin();
-        fetch_row(pin.update_info(), row_in_vector, result, result_idx);
+        if (pin.has_error()) {
+            report_unreachable_update_node("update_segment_t::fetch_row", pin.error());
+            return;
+        }
+        fetch_row(pin.value().update_info(), row_in_vector, result, result_idx);
     }
 
     bool update_segment_t::row_is_updated(int64_t row_id) {
@@ -428,7 +498,11 @@ namespace components::table {
         uint64_t row_in_vector =
             static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
         auto pin = entry.pin();
-        auto& info = pin.update_info();
+        if (pin.has_error()) {
+            report_unreachable_update_node("update_segment_t::row_is_updated", pin.error());
+            return false;
+        }
+        auto& info = pin.value().update_info();
         bool found = false;
         update_info_t::update_for_transaction(info, [&](update_info_t* current) {
             auto tuples = current->tuples();

@@ -176,6 +176,9 @@ namespace {
         std::size_t live = 0;
         std::size_t tombstones = 0;
         std::int64_t added_at_commit_id = 0;
+        // Column 11 of the TOMBSTONE row (0 when there is none). The DROP's half of the same
+        // backfill the added_at cases below pin.
+        std::int64_t dropped_at_commit_id = 0;
     };
 
     column_rows_t
@@ -202,6 +205,9 @@ namespace {
                 const bool dropped = !chunk.is_null(7, i) && chunk.get_value<bool>(7, i);
                 if (dropped) {
                     ++out.tombstones;
+                    if (chunk.column_count() > 11 && !chunk.is_null(11, i)) {
+                        out.dropped_at_commit_id = chunk.get_value<std::int64_t>(11, i);
+                    }
                     continue;
                 }
                 ++out.live;
@@ -399,36 +405,34 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
 }
 
 // ===========================================================================
-// THE SAME BLINDNESS, ONE METHOD OVER — DIAGNOSED, NOT FIXED, AND HERE IS WHY.
+// THE SAME BLINDNESS, ONE METHOD OVER — NOW FIXED, AND PINNED HERE.
 //
 // STEP 4 of operator_commit_transaction_t asks the disk to backfill
 // pg_attribute.added_at_commit_id on the rows an in-transaction ALTER ... ADD COLUMN wrote, and
 // hands it the transaction's own transaction_data. agent_disk_t::
-// update_pg_attribute_commit_id_field_inner then looks the row up with a detail::inline_scan
-// that is given components::table::transaction_data{} — and, as that step's own comment states,
-// "the rows still carry insert_id == transaction_id" at that moment. transaction_data{} is
-// horizon 0 with no owning transaction, so it cannot see a single one of them: every backfill of
-// an in-transaction ALTER logs "attoid not found (skipping)" and the column keeps its
-// placeholder 0. That reads as "added before every snapshot" (the rule is
-// added_at_commit_id <= snapshot horizon), i.e. the column shows up in snapshots older than the
-// ALTER that created it.
+// update_pg_attribute_commit_id_field_inner used to look the row up with a detail::inline_scan
+// given components::table::transaction_data{} — and, as that step's own comment states, "the
+// rows still carry insert_id == transaction_id" at that moment. A default transaction_data is
+// not "horizon 0" (its snapshot_horizon is UINT64_MAX — it means "see all COMMITTED rows"); it
+// is its transaction_id 0 that blinded it, because use_inserted_version rejects every insert_id
+// at or above TRANSACTION_ID_START unless the reader owns it. So every backfill logged "attoid
+// not found (skipping)" and the column kept its placeholder 0. That reads as "added before every
+// snapshot" (the rule is added_at_commit_id <= snapshot horizon), i.e. the column showed up in
+// snapshots older than the ALTER that created it. The MVCC column-visibility rule pg_attribute
+// carries two columns for had therefore never once been exercised with a real id.
 //
-// WHY THE ONE-LINE FIX IS NOT IN THIS TREE. Passing ctx.txn there — the same change made to
-// delete_pg_catalog_rows_inner, in the same file — makes the scan find the row, and the
-// direct_update_sync that follows then CRASHES:
+// The scan now carries ctx.txn, the same change delete_pg_catalog_rows_inner took in the same
+// file. It could not be made until the floor under it was repaired: with a row the scan could
+// see, the direct_update_sync below it ran into a non-terminating tail loop in
+// components::table::update_segment_t::merge_update_loop_internal
+// (components/table/update_segment.hpp:830 — the loop advanced its own bound), which overran a
+// stack array through its caller's frame and surfaced as EXC_BAD_ACCESS "on a garbage
+// base_info". Red tests for the merge itself live in
+// components/table/test/test_update_merge.cpp.
 //
-//   EXC_BAD_ACCESS in components::table::update_segment_t::merge_update_loop_internal
-//   <unsigned int, unsigned int>, components/table/update_segment.hpp:830, on a base_info
-//   pointer that is not a valid address. Reproduced on the autocommit ALTER of the case above,
-//   which is how a change confined to the transactional path was caught at all.
-//
-// So the backfill has never once run against a real row, and the update-merge path it would
-// drive does not survive being handed one. That is a defect of its own, below this file, and it
-// needs its own red test at the components/table floor before the scan above may be widened.
-// This case pins what is verifiable today — the row is written and survives the commit — and
-// carries the finding rather than a false green.
+// This case is the second red: the row survives the commit AND carries a real commit id.
 // ===========================================================================
-TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_column_row_survives_the_commit") {
+TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_column_row_carries_its_commit_id") {
     const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_backfill";
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
@@ -448,12 +452,227 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
 
     const auto rows = pg_attribute_rows_for(space, table_oid, "c");
     CHECK(rows.live == 1);
-    if (rows.added_at_commit_id == 0) {
-        WARN("KNOWN, UNFIXED: pg_attribute.added_at_commit_id is still the placeholder 0 after an "
-             "in-transaction ALTER ... ADD COLUMN. agent_disk_t::update_pg_attribute_commit_id_field_inner "
-             "scans with transaction_data{} and cannot see the row it was asked to patch; passing ctx.txn "
-             "there crashes in update_segment_t::merge_update_loop_internal "
-             "(components/table/update_segment.hpp:830).");
+    // The whole point of the column: 0 means "visible to every snapshot ever taken", which is
+    // the one thing a column added by a transaction that has only just committed is not.
+    CHECK(rows.added_at_commit_id != 0);
+}
+
+// The autocommit shape of the same thing. An ALTER outside BEGIN still runs the commit
+// operator, still emits the marker, and still has to end with a real id on the row — this is
+// the path the merge crash was first reproduced on, so it is pinned separately from the
+// in-transaction one above.
+TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_column_row_carries_its_commit_id") {
+    const std::filesystem::path dir =
+        "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_backfill_autocommit";
+    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+
+    delete_refusal_spaces_t space(config);
+    auto* dispatcher = space.dispatcher();
+    const std::string table = "added_at_auto_t";
+    seed_plain_table(dispatcher, table);
+
+    const auto table_oid = table_oid_named(space, table);
+    REQUIRE(table_oid != catalog::INVALID_OID);
+
+    REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
+
+    const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+    CHECK(rows.live == 1);
+    CHECK(rows.added_at_commit_id != 0);
+
+    // The columns the table was created with keep the placeholder: CREATE TABLE passes
+    // added_at_commit_id=0 on purpose (ddl_metadata_builder's contract, "always visible"), and
+    // nothing above backfills them. Stated so the change of meaning is not mistaken for reach.
+    CHECK(pg_attribute_rows_for(space, table_oid, "a").added_at_commit_id == 0);
+}
+
+// TWO backfills, and this is the one that reaches the merge. The FIRST patch of a
+// pg_attribute column takes update_segment_t::update's else-leg and never merges; the second
+// patch of the same vector at a HIGHER row id takes merge_update_loop_internal, whose tail loop
+// advanced its own bound and never terminated (components/table/update_segment.hpp:830, red
+// proof in components/table/test/test_update_merge.cpp). One ALTER could not reach it -- which
+// is why widening the scan alone looked survivable on a single ALTER and was not.
+TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each_carry_their_own_commit_id") {
+    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_backfill_twice";
+    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+
+    delete_refusal_spaces_t space(config);
+    auto* dispatcher = space.dispatcher();
+    const std::string table = "added_at_twice_t";
+    seed_plain_table(dispatcher, table);
+
+    const auto table_oid = table_oid_named(space, table);
+    REQUIRE(table_oid != catalog::INVALID_OID);
+
+    REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN d bigint;")->is_success());
+
+    const auto c = pg_attribute_rows_for(space, table_oid, "c");
+    const auto d = pg_attribute_rows_for(space, table_oid, "d");
+    CHECK(c.live == 1);
+    CHECK(d.live == 1);
+    CHECK(c.added_at_commit_id != 0);
+    CHECK(d.added_at_commit_id != 0);
+    // Distinct commits, in order: the second ALTER's id is strictly the later one.
+    CHECK(d.added_at_commit_id > c.added_at_commit_id);
+
+    // A third ALTER, so the merge leg runs more than once, and every added column stays
+    // NAMED. The merged pg_attribute row used to come back with a DANGLING attname -- phase 2
+    // of merge_update_loop_internal stored the update vector's bytes uncopied, and that vector
+    // is a temporary inside agent_disk_t::direct_update_sync. It surfaced exactly here:
+    // "path 'd' was not found" for the freshly added column, and "path 'a' is ambiguous" once
+    // a garbage name collided with a real one. Red proof at the floor:
+    // components/table/test/test_update_merge.cpp, a_merged_string_update_owns_its_bytes.
+    REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN e bigint;")->is_success());
+    const auto e = pg_attribute_rows_for(space, table_oid, "e");
+    CHECK(e.live == 1);
+    CHECK(e.added_at_commit_id > d.added_at_commit_id);
+
+    for (const char* col : {"a", "b", "c", "d", "e"}) {
+        INFO("column " << col);
+        REQUIRE(
+            test_helpers::exec(dispatcher, std::string("SELECT ") + col + " FROM del." + table + ";")->is_success());
+    }
+
+    // And the added columns are writable, which is the point of the whole rule.
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO del." + table + " (a, b, c, d, e) VALUES (1, 2, 3, 4, 5);")
+                ->is_success());
+    auto cur = test_helpers::exec(dispatcher, "SELECT e FROM del." + table + ";");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+}
+
+// The DROP's half of the same backfill: kind_t::dropped_at, column 11, on the tombstone the
+// DROP leaves behind. It rode the same blind scan and kept the same permanent 0, which read as
+// "never dropped" -- and went unnoticed because attisdropped is checked first by every consumer
+// and rejects the tombstone anyway. Now that it carries the real commit id it also feeds
+// manager_disk_t::max_persisted_commit_id_sync, the reopen frontier, which until now could only
+// ever return 0 from the pg_attribute half.
+TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tombstone_carries_its_commit_id") {
+    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/dropped_at_backfill";
+    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+
+    delete_refusal_spaces_t space(config);
+    auto* dispatcher = space.dispatcher();
+    const std::string table = "dropped_at_t";
+    seed_plain_table(dispatcher, table);
+
+    const auto table_oid = table_oid_named(space, table);
+    REQUIRE(table_oid != catalog::INVALID_OID);
+
+    REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
+    const auto added = pg_attribute_rows_for(space, table_oid, "c");
+    REQUIRE(added.live == 1);
+
+    REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " DROP COLUMN c;")->is_success());
+    const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+    CHECK(rows.live == 0);
+    REQUIRE(rows.tombstones == 1);
+    CHECK(rows.dropped_at_commit_id != 0);
+    // The DROP commits strictly after the ADD, and the tombstone has to say so.
+    CHECK(rows.dropped_at_commit_id > added.added_at_commit_id);
+}
+
+// ===========================================================================
+// THE STAMP HAS TO BE THERE AFTER A RESTART, NOT ONLY AFTER THE COMMIT.
+//
+// EVERYTHING past `if (row_ids.empty()) co_return;` in
+// agent_disk_t::update_pg_attribute_commit_id_field_inner (services/disk/agent_disk.cpp) had
+// never executed before this wave: the scan above that line could not see the row it was asked
+// to patch, so the body always returned there. That includes both legs that make the patch
+// outlive the session --
+//   * the write_physical_update send, i.e. the WAL record a replay would need, and
+//   * the direct_update_sync at the bottom, i.e. the storage write a CHECKPOINT folds into
+//     the .otbx.
+// The cases above prove the stamp is readable in the SAME session, which is exactly what those
+// two legs are NOT needed for: the checkpointer walks data segments and never flushes
+// update_segment_t's updates_, so an unjournalled, uncheckpointed patch is session-local and a
+// same-session assertion passes either way.
+//
+// So this case restarts the engine and reads pg_attribute back. The id must be the SAME id --
+// a different one would mean the reopen re-derived a stamp rather than restoring one.
+//
+// WHICH LEG THIS ACTUALLY PROVES, stated because the two are not interchangeable.
+// ~base_otterbrix_t (integration/cpp/base_spaces.cpp) CHECKPOINTs every disk table on a clean
+// shutdown, so closing the phase-1 scope folds the direct_update_sync patch into the .otbx
+// before phase 2 ever opens it. What is pinned here is therefore the direct_update_sync leg
+// plus that fold. Measured, not assumed: with the write_physical_update send stubbed out this
+// case still passes, and with the ctx.txn scan reverted to transaction_data{} it fails at the
+// phase-1 REQUIRE with `0 != 0`. Isolating the journal leg needs an UNCLEAN restart -- no
+// destructor, no shutdown checkpoint, replay as the only carrier -- which is a crash-injection
+// case of its own and is not this one.
+//
+// It is also the other half of what integration/cpp/test/test_persistence.cpp's
+// reopen_keeps_committed_deletes_invisible names: added_at_commit_id feeds
+// manager_disk_t::max_persisted_commit_id_sync, the reopen commit-clock frontier, which while
+// the stamp was a permanent 0 could only ever contribute 0.
+// ===========================================================================
+TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commit_id_survives_a_restart") {
+    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_restart";
+    // Cleared once, here: every scope below must open the SAME directory.
+    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+
+    const std::string table = "added_at_restart_t";
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    std::int64_t added_at_before = 0;
+
+    INFO("phase 1: ALTER ... ADD COLUMN; the scope exit checkpoints");
+    {
+        delete_refusal_spaces_t space(config);
+        auto* dispatcher = space.dispatcher();
+        seed_plain_table(dispatcher, table);
+
+        table_oid = table_oid_named(space, table);
+        REQUIRE(table_oid != catalog::INVALID_OID);
+
+        REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
+        const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+        REQUIRE(rows.live == 1);
+        REQUIRE(rows.added_at_commit_id != 0);
+        added_at_before = rows.added_at_commit_id;
+    }
+
+    INFO("phase 2: reopen the same directory — the stamp has to come back off the disk");
+    {
+        delete_refusal_spaces_t space(config);
+        auto* dispatcher = space.dispatcher();
+
+        const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+        INFO("added_at_commit_id was " << added_at_before << " before the restart and " << rows.added_at_commit_id
+                                       << " after");
+        CHECK(rows.live == 1);
+        CHECK(rows.added_at_commit_id == added_at_before);
+
+        // The column is still USABLE, which is what the stamp is FOR: the reopened commit clock
+        // is seeded from this very value, and a clock that started below it would make
+        // resolve_table judge the column "added after my snapshot".
+        REQUIRE(test_helpers::exec(dispatcher, "SELECT c FROM del." + table + ";")->is_success());
+        REQUIRE(
+            test_helpers::exec(dispatcher, "INSERT INTO del." + table + " (a, b, c) VALUES (1, 2, 3);")->is_success());
+        auto cur = test_helpers::exec(dispatcher, "SELECT c FROM del." + table + ";");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 1);
+
+        REQUIRE(test_helpers::exec(dispatcher, "CHECKPOINT;")->is_success());
+    }
+
+    INFO("phase 3: a second restart, so the row written after the first one is covered too");
+    {
+        delete_refusal_spaces_t space(config);
+        auto* dispatcher = space.dispatcher();
+
+        const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+        INFO("added_at_commit_id after the second restart = " << rows.added_at_commit_id);
+        CHECK(rows.live == 1);
+        CHECK(rows.added_at_commit_id == added_at_before);
+
+        auto cur = test_helpers::exec(dispatcher, "SELECT c FROM del." + table + ";");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 1);
     }
 }
 
@@ -516,8 +735,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_crea
 
     auto txn = otterbrix::session_id_t();
     REQUIRE(dispatcher->execute_sql(txn, "BEGIN;")->is_success());
-    REQUIRE(
-        dispatcher->execute_sql(txn, "CREATE INDEX one_row_idx ON del." + table + " (a);")->is_success());
+    REQUIRE(dispatcher->execute_sql(txn, "CREATE INDEX one_row_idx ON del." + table + " (a);")->is_success());
     REQUIRE(dispatcher->execute_sql(txn, "COMMIT;")->is_success());
 
     // The index relation's own oid, i.e. the indexrelid every pg_index row for it carries.
@@ -528,7 +746,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_crea
     // wrote and appends the indisvalid=true one. Exactly ONE must survive.
     const auto rows =
         catalog_rows_with(space, catalog::well_known_oid::pg_index_table, catalog::pg_index_col::indexrelid, index_oid);
-    INFO("pg_index rows for indexrelid " << static_cast<unsigned>(index_oid) << " after the in-transaction CREATE INDEX: "
-                                         << rows);
+    INFO("pg_index rows for indexrelid " << static_cast<unsigned>(index_oid)
+                                         << " after the in-transaction CREATE INDEX: " << rows);
     CHECK(rows == 1);
 }

@@ -156,8 +156,11 @@ namespace {
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
+            // probe_see_all_txn, not transaction_data{0, 0}: column visibility is judged
+            // against start_time, so a 0 there means "a snapshot from before the first commit"
+            // and hides every ALTER-added column now that added_at_commit_id carries a real id.
             components::execution_context_t ctx{components::session::session_id_t{},
-                                                components::table::transaction_data{0, 0},
+                                                test_probe::probe_see_all_txn(),
                                                 {}};
             auto adapter = probe_fx();
             return test_probe::probe_table(adapter, ctx, ns_oid, tname);

@@ -58,7 +58,6 @@ namespace {
             cfg.disk_path = sv(disk_path);
             cfg.main_path = sv(main_path);
             cfg.wal_on = false;
-            cfg.disk_on = false;
             cfg.sync_to_disk = false;
 
             ptr = otterbrix_create(cfg);

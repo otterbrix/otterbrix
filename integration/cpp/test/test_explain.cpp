@@ -65,7 +65,6 @@ namespace {
 TEST_CASE("integration::cpp::test_explain::sql") {
     auto config = test_create_config("/tmp/test_explain/sql");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -225,7 +224,6 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
     auto config = test_create_config("/tmp/test_explain/inline_subquery_initplan");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -365,7 +363,6 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
 TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
     auto config = test_create_config("/tmp/test_explain/per_query_renderer");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -467,7 +464,6 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
     auto config = test_create_config("/tmp/test_explain/renderer_registration_edges");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -526,7 +522,6 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
     auto config = test_create_config("/tmp/test_explain/analyze_recursive_cte_rows");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -611,7 +606,6 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
 TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
     auto config = test_create_config("/tmp/test_explain/limit_node_when_effective");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -684,7 +678,6 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
     auto config = test_create_config("/tmp/test_explain/having_node_labeled");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -726,7 +719,6 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
 TEST_CASE("integration::cpp::test_explain::operator_labels") {
     auto config = test_create_config("/tmp/test_explain/operator_labels");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -785,7 +777,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     REQUIRE(contains(label_of("EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders;"), "Unique"));
 }
 
-// End-to-end proof (disk.on=true) that a single-table WHERE conjunct whose column
+// End-to-end proof that a single-table WHERE conjunct whose column
 // NAME also exists on the OTHER join side is pushed to the correct side's Seq Scan
 // — not stranded in a residual Filter above the join. Both t1 and t2 expose "id"
 // and "k"; `WHERE t1.id = 5 AND t2.id = 7` used to bucket by name (id is a subset
@@ -794,7 +786,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 // `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
     auto config =
-        test_helpers::make_test_config("/tmp/test_explain/join_shared_col", /*disk_on=*/true, /*wal_on=*/true);
+        test_helpers::make_test_config("/tmp/test_explain/join_shared_col", true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -845,7 +837,7 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
 }
 
 // ============================================================================
-// TRANSITIVE EQUI-PREDICATE PROPAGATION — end-to-end (disk.on=true).
+// TRANSITIVE EQUI-PREDICATE PROPAGATION — end-to-end.
 //
 // `t1 JOIN t2 ON t1.k = t2.k WHERE t1.k = 5` implies `t2.k = 5` on every matched
 // row, so the optimizer SYNTHESIZES that partner predicate and pushes it below
@@ -872,7 +864,7 @@ namespace {
 
 TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
     auto config =
-        test_helpers::make_test_config("/tmp/test_explain/transitive_equi", /*disk_on=*/true, /*wal_on=*/false);
+        test_helpers::make_test_config("/tmp/test_explain/transitive_equi", false);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -963,7 +955,6 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
 TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
     auto config = test_create_config("/tmp/test_explain/distinct_under_group_by");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

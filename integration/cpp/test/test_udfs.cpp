@@ -157,7 +157,6 @@ std::unique_ptr<row_function> make_modulo_func(std::pmr::memory_resource* resour
 TEST_CASE("integration::cpp::test_udfs") {
     auto config = test_create_config("/tmp/test_udfs");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

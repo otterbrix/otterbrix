@@ -349,8 +349,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
 TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_eviction", "[engine-lifecycle]") {
     // Functional smoke under a plain build; under TSAN it drives concurrent
     // unpin -> eviction_queue_t::add_to_eviction_queue from client/scan threads
-    // against try_dequeue_with_lock/purge on the disk manager threads. disk.on
-    // must stay true so appends/scans run through standard_buffer_manager_t.
+    // against try_dequeue_with_lock/purge on the disk manager threads. Appends and
+    // scans run through standard_buffer_manager_t, as every table's now do.
     auto config = test_create_config("/tmp/test_engine_lifecycle/eviction");
     test_clear_directory(config);
     // Aggressive auto-checkpointing keeps checkpoint_all running on the disk
@@ -540,7 +540,6 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
           "[engine-lifecycle][leak-repro]") {
     auto config = test_create_config("/tmp/test_engine_lifecycle/teardown_leak");
     test_clear_directory(config);
-    config.disk.on = true;
     components::compute::function_registry_t::reset_default();
 
     {
@@ -574,7 +573,6 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
     for (int i = 0; i < kCycles; ++i) {
         auto config = test_create_config("/tmp/test_engine_lifecycle/stress_" + std::to_string(i));
         test_clear_directory(config);
-        config.disk.on = true;
         components::compute::function_registry_t::reset_default();
 
         auto inst = otterbrix::make_otterbrix(config);

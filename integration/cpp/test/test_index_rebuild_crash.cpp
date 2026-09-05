@@ -31,7 +31,6 @@ namespace {
 TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuilt_row_ids") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_rebuild_crash/orig");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -72,7 +71,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
     } // the destructor checkpoint runs against the ORIGINAL dir only
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.disk.on = true;
     crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     {
@@ -107,7 +105,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
 TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_nothing") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_rebuild_crash/orig_all");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -132,7 +129,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_
     }
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.disk.on = true;
     crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     {

@@ -23,7 +23,6 @@
 TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an_index_cannot_open") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_bootstrap_failure/restart");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 

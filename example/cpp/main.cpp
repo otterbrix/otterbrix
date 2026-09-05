@@ -26,7 +26,6 @@ inline void clear_directory(const configuration::config& config) {
 TEST_CASE("example::sql::base") {
     auto config = make_create_config("/tmp/test_collection_sql/base");
     clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     otterbrix::otterbrix_ptr otterbrix;
 
@@ -133,7 +132,6 @@ TEST_CASE("example::sql::base") {
 TEST_CASE("example::sql::group_by") {
     auto config = make_create_config("/tmp/test_collection_sql/group_by");
     clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     otterbrix::otterbrix_ptr otterbrix;
 
@@ -205,7 +203,6 @@ TEST_CASE("example::sql::group_by") {
 TEST_CASE("example::sql::invalid_queries") {
     auto config = make_create_config("/tmp/test_collection_sql/invalid_queries");
     clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 

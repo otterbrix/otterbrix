@@ -28,7 +28,6 @@
 TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_under_a_live_pin", "[.][appendpin]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_append_pin/lifetime");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

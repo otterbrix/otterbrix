@@ -17,7 +17,6 @@
 TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips_the_index") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/plain");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
@@ -47,7 +46,6 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips
 TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/indexed");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

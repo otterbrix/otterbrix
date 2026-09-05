@@ -13,7 +13,6 @@
 TEST_CASE("integration::cpp::test_catalog_scan_cost::scans_per_statement") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_catalog_scan_cost/basic");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

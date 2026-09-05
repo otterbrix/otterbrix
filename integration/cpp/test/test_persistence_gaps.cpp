@@ -34,7 +34,6 @@ using components::types::logical_type;
 TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restart_decimal") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/type_spec_decimal");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -101,7 +100,6 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
 TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restart_list") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/type_spec_list");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -157,7 +155,6 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
 TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/default_lost");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -242,7 +239,6 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
 TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_checkpoint") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/crash_src");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -293,7 +289,6 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
     INFO("phase 2: reopen the crash image — the engine must start and every table must be readable (0 rows)");
     {
         auto crash_config = test_create_config(crash_dir);
-        crash_config.disk.on = true;
         crash_config.wal.on = true;
         crash_config.log.level = log_t::level::off;
 
@@ -355,7 +350,6 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
     INFO("phase 3: reopen the crash image again — the checkpointed rows must come back from disk");
     {
         auto crash_config = test_create_config(crash_dir);
-        crash_config.disk.on = true;
         crash_config.wal.on = true;
         crash_config.log.level = log_t::level::off;
 

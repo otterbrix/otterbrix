@@ -31,7 +31,6 @@ namespace {
 TEST_CASE("integration::cpp::register_cast::duplicate_not_allowed") {
     auto config = test_create_config("/tmp/test_register_cast_dup");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -46,7 +45,6 @@ TEST_CASE("integration::cpp::register_cast::duplicate_not_allowed") {
 TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
     auto config = test_create_config("/tmp/test_register_cast_udt");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -83,7 +81,6 @@ TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
 TEST_CASE("integration::cpp::register_cast::unregister_deletes") {
     auto config = test_create_config("/tmp/test_register_cast_del");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

@@ -19,7 +19,6 @@
 TEST_CASE("integration::cpp::test_check_on_update::update_violating_a_check_is_rejected", "[checkupd]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_check_on_update/probe");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

@@ -15,7 +15,6 @@
 TEST_CASE("integration::cpp::dispatcher::watchdog_quiet_on_healthy_runs") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_dispatcher_watchdog/healthy");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     config.log.level = log_t::level::warn;
 

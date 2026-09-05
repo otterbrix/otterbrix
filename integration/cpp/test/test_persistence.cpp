@@ -2801,7 +2801,6 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     // SSB benchmark config: WAL persistence OFF. B1a: tables are disk-backed
     // regardless; durability across a clean shutdown comes from the shutdown
     // checkpoint.
-    config.disk.on = false;
     config.wal.on = false;
     test_clear_directory(config);
 

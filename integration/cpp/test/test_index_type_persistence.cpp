@@ -59,7 +59,6 @@ namespace {
 TEST_CASE("integration::cpp::test_index_type_persistence::hash_index_type_survives_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_type_persistence/hash_restart");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 

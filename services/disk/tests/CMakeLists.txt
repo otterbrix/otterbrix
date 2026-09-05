@@ -1,6 +1,7 @@
 project(test_disk)
 
 set(${PROJECT_NAME}_SOURCES
+    test_config_layout.cpp
     test_table_storage.cpp
     test_torn_checkpoint.cpp
     test_wal_seal.cpp

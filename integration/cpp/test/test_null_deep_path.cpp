@@ -51,7 +51,6 @@ namespace {
 TEST_CASE("integration::cpp::null_deep::array_subscript_of_null_cell") {
     auto config = test_create_config("/tmp/test_null_deep/arr");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();

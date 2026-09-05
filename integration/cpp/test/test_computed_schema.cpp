@@ -8,12 +8,10 @@
 // Each INSERT can bring new (field_name, type) pairs; each becomes a separate physical column.
 // Subsequent INSERTs with the same field_name but different type create additional columns.
 
-static const database_name_t cs_db = "cs_testdb";
 
 TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
     auto config = test_create_config("/tmp/test_computed_schema/basic");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -67,7 +65,6 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
 TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
     auto config = test_create_config("/tmp/test_computed_schema/evolving");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -123,7 +120,6 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
 TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
     auto config = test_create_config("/tmp/test_computed_schema/multitype_star");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -184,7 +180,6 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
 TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
     auto config = test_create_config("/tmp/test_computed_schema/delete");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -229,7 +224,6 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
     auto config = test_create_config("/tmp/test_computed_schema/jsonb_scalar");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -302,7 +296,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
     auto config = test_create_config("/tmp/test_computed_schema/jsonb_exists");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -352,7 +345,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
     auto config = test_create_config("/tmp/test_computed_schema/jsonb_delete");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -400,7 +392,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
     auto config = test_create_config("/tmp/test_computed_schema/jsonb_expand");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -448,7 +439,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
 TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
     auto config = test_create_config("/tmp/test_computed_schema/multitype_variant");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -501,7 +491,6 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multitype") {
     auto config = test_create_config("/tmp/test_computed_schema/jsonb_multitype");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -567,7 +556,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
     auto config = test_create_config("/tmp/test_computed_schema/jsonb_mt_sem");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -632,7 +620,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
 TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete") {
     auto config = test_create_config("/tmp/test_computed_schema/unary_minus");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

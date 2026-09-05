@@ -52,7 +52,6 @@ namespace {
 TEST_CASE("integration::cpp::test_delete_column_pruning::reads_only_needed_columns") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_delete_pruning/needed_columns");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -95,7 +94,6 @@ TEST_CASE("integration::cpp::test_delete_column_pruning::reads_only_needed_colum
 TEST_CASE("integration::cpp::test_delete_column_pruning::index_stays_consistent_after_delete") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_delete_pruning/index_consistent");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

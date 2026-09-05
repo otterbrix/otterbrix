@@ -2,17 +2,27 @@
 
 #include "file_system.hpp"
 #include <components/log/log.hpp>
+#include <filesystem>
 #include <fstream>
 #include <string>
-
-#if defined(__linux__)
 #include <unistd.h>
-#endif
 
 using namespace std;
 using namespace core::filesystem;
 
-path_t testing_directory = "filesystem_test";
+// Rooted under the system temp directory, not the process CWD: a bare relative name here
+// dropped `filesystem_test/` into whatever directory ctest launched the binary from. The pid
+// keeps two concurrent runs apart. create_directory() below is a bare mkdir(2), so the base
+// has to exist before the test asks for the leaf.
+static path_t make_testing_directory() {
+    const auto base =
+        std::filesystem::temp_directory_path() / ("otterbrix_file_system_" + std::to_string(::getpid()));
+    std::error_code ec;
+    std::filesystem::create_directories(base, ec);
+    return base / "filesystem_test";
+}
+
+path_t testing_directory = make_testing_directory();
 
 static void create_dummy_file(string fname1) {
     ofstream outfile(fname1);

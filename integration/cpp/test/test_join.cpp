@@ -20,7 +20,6 @@ static const std::string collection_name_2 = "testcollection_2";
 TEST_CASE("integration::cpp::test_join") {
     auto config = test_create_config("/tmp/test_join/base");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();

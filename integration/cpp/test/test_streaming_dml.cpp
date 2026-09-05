@@ -46,7 +46,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
     auto config = test_create_config("/tmp/test_streaming_dml_insert");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -112,7 +111,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     // share the same append core).
     auto config = test_create_config("/tmp/test_streaming_dml_values");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -151,7 +149,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
     // readback path lands the right RETURNING rows when VALUES is a streaming source.
     auto config = test_create_config("/tmp/test_streaming_dml_values_returning");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -182,7 +179,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
 TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands") {
     auto config = test_create_config("/tmp/test_streaming_dml_delete");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -246,7 +242,6 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
 TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands") {
     auto config = test_create_config("/tmp/test_streaming_dml_update");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -340,7 +335,6 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
 TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     auto config = test_create_config("/tmp/test_streaming_dml_fk_check");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -399,7 +393,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
 TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_select") {
     auto config = test_create_config("/tmp/test_streaming_dml_check");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -450,7 +443,6 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
 TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
     auto config = test_create_config("/tmp/test_streaming_dml_cascade");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -506,7 +498,6 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
     // DML operator for the USING/FROM semi-join. DML has NO OFFSET (a clean parse error).
     auto config = test_create_config("/tmp/test_streaming_dml_limit");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

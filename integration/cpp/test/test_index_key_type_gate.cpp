@@ -39,7 +39,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types_are_refused") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/refused", true, true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/refused", true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -64,7 +64,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types
 // The mirror image: every type the encoders DO carry must still be accepted. A gate that
 // over-refuses is as much a defect as one that under-refuses.
 TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_are_accepted") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/accepted", true, true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/accepted", true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -90,7 +90,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_a
 // services::index::index_disk unit suite (convert_temporal_preserves_order red-proofs the abort,
 // date_keys / timestamp_keys drive probes and bounds through the tree).
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_the_right_rows") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/temporal", true, true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/temporal", true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -144,7 +144,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_t
 // the acceptance is proven with rows, not just a successful CREATE: the INSERTs after it
 // drive every key through the hash index's maintenance encoder.
 TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/decimal", true, true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/decimal", true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -178,7 +178,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
 // restart. The NULL row rides along to pin the NA leg of reverse_convert (NULL keys are
 // legitimately in the tree; collapsing or refusing them on rehydrate would corrupt this).
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_restart") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/restart", true, true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/restart", true);
 
     {
         test_spaces space(config);

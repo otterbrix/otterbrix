@@ -372,7 +372,6 @@ static externals_by_uid_t one_source(std::pmr::memory_resource* res,
 #define EXT_TEST_BOILERPLATE(DIR)                                                                                      \
     auto config = test_create_config(DIR);                                                                             \
     test_clear_directory(config);                                                                                      \
-    config.disk.on = false;                                                                                            \
     config.wal.on = false;                                                                                             \
     mock_ext_store().clear();                        /* fresh host store per test (keyed by db.rel) */                 \
     test_spaces space(config, &make_mock_extension); /* host injects its create_plan rule at engine start */           \
@@ -494,7 +493,6 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
 TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
     auto config = test_create_config("/tmp/test_ext_norule/base");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     mock_ext_store().clear();
     test_spaces space(config); // NO create_plan rule injected → extension lowers to null

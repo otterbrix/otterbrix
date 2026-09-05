@@ -36,7 +36,6 @@ namespace {
 TEST_CASE("integration::cpp::test_fk_check_on_update::update_to_a_missing_parent_is_rejected", "[fkupdate]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_fk_update/missing_parent");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
@@ -73,7 +72,6 @@ TEST_CASE("integration::cpp::test_fk_check_on_update::update_to_a_missing_parent
 TEST_CASE("integration::cpp::test_fk_check_on_update::update_to_an_existing_parent_still_works", "[fkupdate]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_fk_update/existing_parent");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

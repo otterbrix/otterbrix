@@ -16,33 +16,32 @@ static const collection_name_t collection_name_without_index = "testcollection_w
 static const collection_name_t collection_name_with_index = "testcollection_with_index";
 constexpr int size_collection = 10000;
 
-template<bool on_wal, bool on_disk>
+template<bool on_wal>
 inline configuration::config create_config() {
     auto config = configuration::config::default_config();
     config.log.level = log_t::level::off;
-    config.disk.on = on_disk;
     config.wal.on = on_wal;
     return config;
 }
 
-template<bool on_wal, bool on_disk>
+template<bool on_wal>
 class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
     static test_spaces& get() {
-        static test_spaces<on_wal, on_disk> spaces_;
+        static test_spaces<on_wal> spaces_;
         return spaces_;
     }
 
 private:
     test_spaces()
-        : otterbrix::base_otterbrix_t(create_config<on_wal, on_disk>()) {}
+        : otterbrix::base_otterbrix_t(create_config<on_wal>()) {}
 };
 
-using unique_spaces = test_spaces<false, false>;
+using unique_spaces = test_spaces<false>;
 
-template<bool on_wal, bool on_disk>
+template<bool on_wal>
 void init_collection(const collection_name_t& collection_name) {
-    auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
+    auto* dispatcher = test_spaces<on_wal>::get().dispatcher();
     auto session = otterbrix::session_id_t();
     dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
     dispatcher->execute_sql(session,
@@ -53,9 +52,9 @@ void init_collection(const collection_name_t& collection_name) {
         gen_data_chunk_insert_sql(database_name, collection_name, size_collection));
 }
 
-template<bool on_wal, bool on_disk>
+template<bool on_wal>
 void create_index(const collection_name_t& collection_name) {
-    auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
+    auto* dispatcher = test_spaces<on_wal>::get().dispatcher();
     auto session = otterbrix::session_id_t();
     auto node = make_node_create_index(dispatcher->resource());
     node->keys().emplace_back(dispatcher->resource(), "count");
@@ -63,18 +62,18 @@ void create_index(const collection_name_t& collection_name) {
     dispatcher->execute_plan(session, execution_plan_t{dispatcher->resource(), plan, nullptr});
 }
 
-template<bool on_wal, bool on_disk>
+template<bool on_wal>
 void init_spaces() {
-    init_collection<on_wal, on_disk>(collection_name_without_index);
-    init_collection<on_wal, on_disk>(collection_name_with_index);
-    create_index<on_wal, on_disk>(collection_name_with_index);
+    init_collection<on_wal>(collection_name_without_index);
+    init_collection<on_wal>(collection_name_with_index);
+    create_index<on_wal>(collection_name_with_index);
 }
 
-inline void init_collection() { init_collection<false, false>(collection_name); }
+inline void init_collection() { init_collection<false>(collection_name); }
 
-template<bool on_wal, bool on_disk>
+template<bool on_wal>
 otterbrix::wrapper_dispatcher_t* wr_dispatcher() {
-    return test_spaces<on_wal, on_disk>::get().dispatcher();
+    return test_spaces<on_wal>::get().dispatcher();
 }
 
 template<bool on_index>

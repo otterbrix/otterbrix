@@ -42,7 +42,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
     auto config = test_create_config("/tmp/test_streaming_match_like");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -92,7 +91,6 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
 TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across_batches") {
     auto config = test_create_config("/tmp/test_streaming_match_limit");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -181,7 +179,6 @@ TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correc
     // multi-chunk grouped result.
     auto config = test_create_config("/tmp/test_streaming_match_having");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -200,7 +197,6 @@ TEST_CASE("integration::cpp::streaming_match::join_with_nonpushdown_filter_retur
     // sink, whose output carries no row_ids.
     auto config = test_create_config("/tmp/test_streaming_match_join_filter");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -224,7 +220,6 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
     // segfault / delete the wrong row. After the fix the right rows are deleted.
     auto config = test_create_config("/tmp/test_streaming_match_delete_group");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -261,7 +256,6 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     // iterates the build side per chunk, so the delete lands.
     auto config = test_create_config("/tmp/test_streaming_match_delete_using_large");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -298,7 +292,6 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
     // the storage delete. After the fix exactly those 3 rows are deleted.
     auto config = test_create_config("/tmp/test_streaming_match_delete_using");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -333,7 +326,6 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
     // ANY is unaffected (UNKNOWN and FALSE both drop the row).
     auto config = test_create_config("/tmp/test_streaming_match_like_all_null_disk");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -382,7 +374,6 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
 TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_values_land") {
     auto config = test_create_config("/tmp/test_streaming_match_late_mat_gather");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

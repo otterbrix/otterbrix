@@ -52,7 +52,6 @@ namespace {
 TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
     auto config = test_create_config("/tmp/test_null_agg/grp");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -80,7 +79,6 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
 TEST_CASE("integration::cpp::null_agg::count_over_all_null_table_is_zero") {
     auto config = test_create_config("/tmp/test_null_agg/nogrp");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();

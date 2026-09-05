@@ -66,7 +66,7 @@ namespace {
 //     rows already stored. Counted work, not wall-clock.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow_with_table_size") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/scan_cost", /*disk_on=*/true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/scan_cost");
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -94,7 +94,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow
 //     value is kept, and the caller is told exactly what was inserted.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constraint_is_kept") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/no_constraint", /*disk_on=*/true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/no_constraint");
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -126,7 +126,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constrain
 //     existing-row scan saw no duplicate and the statement succeeded.)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_fails_loud") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/pk", /*disk_on=*/true);
+    auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/pk");
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -157,8 +157,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_rejection_survives_restart") {
     auto config = make_test_config("/tmp/otterbrix/integration/test_insert_scaling/restart",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+                                   true);
 
     INFO("phase 1: table with PRIMARY KEY(_id), two rows, duplicate rejected");
     {

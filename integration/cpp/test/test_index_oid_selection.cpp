@@ -104,7 +104,6 @@ namespace {
 TEST_CASE("integration::cpp::index_oid_selection::unindexed_predicate_column_returns_rows") {
     auto config = test_create_config("/tmp/test_index_oid_selection/rows");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -143,7 +142,6 @@ TEST_CASE("integration::cpp::index_oid_selection::unindexed_predicate_column_ret
 TEST_CASE("integration::cpp::index_oid_selection::each_table_uses_its_own_index") {
     auto config = test_create_config("/tmp/test_index_oid_selection/explain");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

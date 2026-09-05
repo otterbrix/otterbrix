@@ -53,7 +53,6 @@ namespace {
 TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     auto config = test_create_config("/tmp/test_lateral_subquery_where");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -90,7 +89,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     constexpr int64_t N = 1100; // > 1024 so the outer input spans >= 2 chunks
     auto config = test_create_config("/tmp/test_lateral_subquery_multichunk");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -151,7 +149,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
 TEST_CASE("integration::cpp::lateral_subquery::left_join_empty") {
     auto config = test_create_config("/tmp/test_lateral_subquery_left");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -183,7 +180,6 @@ TEST_CASE("integration::cpp::lateral_subquery::left_join_empty") {
 TEST_CASE("integration::cpp::lateral_subquery::correlated_in_arithmetic") {
     auto config = test_create_config("/tmp/test_lateral_subquery_arith");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -213,7 +209,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_in_arithmetic") {
 TEST_CASE("integration::cpp::lateral_subquery::right_full_lateral_rejected") {
     auto config = test_create_config("/tmp/test_lateral_subquery_rightfull");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -238,7 +233,6 @@ TEST_CASE("integration::cpp::lateral_subquery::right_full_lateral_rejected") {
 TEST_CASE("integration::cpp::lateral_subquery::inner_join_on_predicate") {
     auto config = test_create_config("/tmp/test_lateral_subquery_on");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -267,7 +261,6 @@ TEST_CASE("integration::cpp::lateral_subquery::inner_join_on_predicate") {
 TEST_CASE("integration::cpp::lateral_subquery::left_join_on_predicate_null_pads") {
     auto config = test_create_config("/tmp/test_lateral_subquery_on_left");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -296,7 +289,6 @@ TEST_CASE("integration::cpp::lateral_subquery::left_join_on_predicate_null_pads"
 TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
     auto config = test_create_config("/tmp/test_lateral_subquery_fn");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -335,7 +327,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
 TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_arithmetic") {
     auto config = test_create_config("/tmp/test_lateral_subquery_projarith");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -362,7 +353,6 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_arithmetic") 
 TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column") {
     auto config = test_create_config("/tmp/test_lateral_subquery_proj");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -396,7 +386,6 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column"
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series") {
     auto config = test_create_config("/tmp/test_dml_lateral_delete");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -431,7 +420,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series")
 TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquery") {
     auto config = test_create_config("/tmp/test_dml_lateral_update");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -469,7 +457,6 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquer
 TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source") {
     auto config = test_create_config("/tmp/test_dml_lateral_del_nowhere");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -504,7 +491,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source"
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preserves_rows") {
     auto config = test_create_config("/tmp/test_dml_lateral_del_empty");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -531,7 +517,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preser
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_duplicate_matches_delete_once") {
     auto config = test_create_config("/tmp/test_dml_lateral_del_dup");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -560,7 +545,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_duplicate_matches
 TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_change") {
     auto config = test_create_config("/tmp/test_dml_lateral_upd_empty");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -593,7 +577,6 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_chan
 TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_update_once") {
     auto config = test_create_config("/tmp/test_dml_lateral_upd_dup");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

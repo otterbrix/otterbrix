@@ -18,8 +18,8 @@
 // projection the base scan would use (create_plan_aggregate::relkind_projected_cols),
 // so the owning agent runs the reduce over its own slice and streams back the FINAL
 // aggregated rows. The disk manager is always spawned in the test harness, so
-// disk_address_ is non-empty and the capability gate is satisfied even with
-// disk.on == false: these queries route through the live pushed path.
+// disk_address_ is non-empty and the capability gate is satisfied: these queries
+// route through the live pushed path.
 //
 // The assertions pin CONCRETE values (correctness is transparent — identical
 // whichever path runs) AND, for the non-empty aggregates, assert

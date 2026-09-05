@@ -68,7 +68,6 @@ TEST_CASE("benchmark::runner::disk_reset_prevents_accumulation") {
     }
 
     benchmark_configuration_t config;
-    config.disk_on = true;
     config.nruns = 1;
     const auto csv_out = (bench_dir / "result.csv").string();
     config.output_file = csv_out;

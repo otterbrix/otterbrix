@@ -24,7 +24,6 @@
 TEST_CASE("integration::cpp::production::scale_100k_group_by") {
     auto config = test_create_config("/tmp/otterbrix/production/scale_100k");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -93,7 +92,6 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
 TEST_CASE("integration::cpp::production::multi_table_join") {
     auto config = test_create_config("/tmp/otterbrix/production/multi_join");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -203,7 +201,6 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
 TEST_CASE("integration::cpp::production::null_join_keys") {
     auto config = test_create_config("/tmp/otterbrix/production/null_join");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -323,7 +320,6 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
 TEST_CASE("integration::cpp::production::unicode_strings") {
     auto config = test_create_config("/tmp/otterbrix/production/unicode");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -407,7 +403,6 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
 TEST_CASE("integration::cpp::production::concurrent_insert") {
     auto config = test_create_config("/tmp/otterbrix/production/concurrent_insert");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -486,7 +481,6 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
 TEST_CASE("integration::cpp::production::concurrent_read_write") {
     auto config = test_create_config("/tmp/otterbrix/production/concurrent_rw");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -645,7 +639,6 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
 TEST_CASE("integration::cpp::production::complex_where") {
     auto config = test_create_config("/tmp/otterbrix/production/complex_where");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1065,7 +1058,6 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
     test_clear_directory(config);
     // DISK-backed so write-through evicts filled segments and large inserts stay
     // bounded.
-    config.disk.on = true;
     config.wal.on = true;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1218,7 +1210,6 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
 TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoint") {
     auto config = test_create_config("/tmp/otterbrix/production/reopen_resolve_columns");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
 
     INFO("phase 1: disk-backed CREATE TABLE, INSERT, CHECKPOINT");

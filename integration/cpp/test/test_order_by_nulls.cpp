@@ -55,7 +55,6 @@ namespace {
 TEST_CASE("integration::cpp::order_by_nulls::default_placement") {
     auto config = test_create_config("/tmp/test_order_by_nulls/default_placement");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = make_space(space);
@@ -68,7 +67,6 @@ TEST_CASE("integration::cpp::order_by_nulls::default_placement") {
 TEST_CASE("integration::cpp::order_by_nulls::explicit_override") {
     auto config = test_create_config("/tmp/test_order_by_nulls/explicit_override");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = make_space(space);
@@ -84,7 +82,6 @@ TEST_CASE("integration::cpp::order_by_nulls::explicit_override") {
 TEST_CASE("integration::cpp::order_by_nulls::positional_key") {
     auto config = test_create_config("/tmp/test_order_by_nulls/positional_key");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = make_space(space);

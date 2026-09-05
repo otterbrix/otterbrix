@@ -31,7 +31,6 @@ namespace {
 TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_cell") {
     auto config = test_create_config("/tmp/test_null_arr_elem/fixed");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -55,7 +54,6 @@ TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_cell") {
 TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_padded_element") {
     auto config = test_create_config("/tmp/test_null_arr_elem/pad");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -76,7 +74,6 @@ TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_padded_element") {
 TEST_CASE("integration::cpp::null_arr_elem::variadic_list") {
     auto config = test_create_config("/tmp/test_null_arr_elem/list");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();

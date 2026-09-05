@@ -49,8 +49,7 @@ TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple
     // disk ON: the backfill branch only runs when a disk actor is wired, and
     // storage_fetch_next_batch is the disk-backed streaming scan under test.
     auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_backfill/batched",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+                                   true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -86,8 +85,7 @@ TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple
 
 TEST_CASE("integration::cpp::create_index_backfill::aborted_create_index_leaves_no_index") {
     auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_backfill/abort",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+                                   true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -129,8 +127,7 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_after_delete_maps_c
     // entry after the first gap onto the wrong storage row and index-backed
     // lookups return wrong rows.
     auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_backfill/after_delete",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+                                   true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

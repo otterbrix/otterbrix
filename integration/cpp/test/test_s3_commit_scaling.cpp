@@ -48,7 +48,6 @@ namespace {
 TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_size", "[.][s3probe]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_s3/scaling");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

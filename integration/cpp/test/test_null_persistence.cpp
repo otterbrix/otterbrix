@@ -31,7 +31,6 @@
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_null_persistence/basic");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -119,7 +118,6 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
 TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpoint_and_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_null_persistence/nested");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
@@ -256,7 +254,6 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row_group") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_null_persistence/multi_rg");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
 

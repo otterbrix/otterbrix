@@ -404,7 +404,6 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
 TEST_CASE("integration::cpp::test_index::delete_and_update") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/delete_and_update");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1023,7 +1022,6 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
     {
         auto config = test_create_config("/tmp/otterbrix/integration/test_index/out_of_domain_key");
         test_clear_directory(config);
-        config.disk.on = false;
         config.wal.on = false;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
@@ -1077,7 +1075,6 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
 TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/expression_elements_rejected");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

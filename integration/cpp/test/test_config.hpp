@@ -110,12 +110,11 @@ namespace test_helpers {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 
-    // create_config + clear_directory + disk/wal flags in one call.
-    inline configuration::config
-    make_test_config(const std::filesystem::path& path, bool disk_on = false, bool wal_on = false) {
+    // create_config + clear_directory + the WAL flag in one call. There is no disk flag:
+    // every table is disk-backed, so `path` is where the data goes, full stop.
+    inline configuration::config make_test_config(const std::filesystem::path& path, bool wal_on = false) {
         auto config = test_create_config(path);
         test_clear_directory(config);
-        config.disk.on = disk_on;
         config.wal.on = wal_on;
         return config;
     }

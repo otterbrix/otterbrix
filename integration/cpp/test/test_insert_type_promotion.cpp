@@ -33,7 +33,6 @@ namespace {
 TEST_CASE("integration::cpp::test_insert_type_promotion::growth_is_not_quadratic") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/growth");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

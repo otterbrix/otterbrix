@@ -176,7 +176,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_all") {
     // disk ON: constraint enforcement + revert path exercised on disk.
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/atomicity", /*disk_on=*/true);
+    auto config = make_test_config("/tmp/test_bounded_dml_flush/atomicity");
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

@@ -19,7 +19,6 @@
 TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is_an_error") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_create_failure/unopenable");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

@@ -59,7 +59,6 @@ namespace {
 TEST_CASE("integration::cpp::null_cmp::case_when_falls_through_on_null") {
     auto config = test_create_config("/tmp/test_null_cmp/case");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -81,7 +80,6 @@ TEST_CASE("integration::cpp::null_cmp::case_when_falls_through_on_null") {
 TEST_CASE("integration::cpp::null_cmp::having_drops_unknown_group") {
     auto config = test_create_config("/tmp/test_null_cmp/having");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -104,7 +102,6 @@ TEST_CASE("integration::cpp::null_cmp::having_drops_unknown_group") {
 TEST_CASE("integration::cpp::null_cmp::check_constraint_passes_null") {
     auto config = test_create_config("/tmp/test_null_cmp/check");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -123,7 +120,6 @@ TEST_CASE("integration::cpp::null_cmp::check_constraint_passes_null") {
 TEST_CASE("integration::cpp::null_cmp::distinct_collapses_nulls") {
     auto config = test_create_config("/tmp/test_null_cmp/distinct");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();

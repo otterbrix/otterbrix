@@ -488,7 +488,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
 // Flattened columns survive a WAL/disk round-trip, and navigation still resolves
 // against the restored catalog.
 TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/persist", true, true);
+    auto config = make_test_config("/tmp/test_jsonb_matrix/persist", true);
     {
         test_spaces space(config);
         auto* d = space.dispatcher();

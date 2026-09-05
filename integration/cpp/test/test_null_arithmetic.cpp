@@ -66,7 +66,6 @@ namespace {
 TEST_CASE("integration::cpp::null_arith::projection_propagates_null") {
     auto config = test_create_config("/tmp/test_null_arith/proj");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -85,7 +84,6 @@ TEST_CASE("integration::cpp::null_arith::projection_propagates_null") {
 TEST_CASE("integration::cpp::null_arith::division_by_null_does_not_crash") {
     auto config = test_create_config("/tmp/test_null_arith/div");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -102,7 +100,6 @@ TEST_CASE("integration::cpp::null_arith::division_by_null_does_not_crash") {
 TEST_CASE("integration::cpp::null_arith::arithmetic_in_where_excludes_null") {
     auto config = test_create_config("/tmp/test_null_arith/where");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -121,7 +118,6 @@ TEST_CASE("integration::cpp::null_arith::arithmetic_in_where_excludes_null") {
 TEST_CASE("integration::cpp::null_arith::update_set_expression_keeps_null") {
     auto config = test_create_config("/tmp/test_null_arith/upd");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -137,7 +133,6 @@ TEST_CASE("integration::cpp::null_arith::update_set_expression_keeps_null") {
 TEST_CASE("integration::cpp::null_arith::aggregate_arithmetic_propagates_null") {
     auto config = test_create_config("/tmp/test_null_arith/agg");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -158,7 +153,6 @@ TEST_CASE("integration::cpp::null_arith::aggregate_arithmetic_propagates_null") 
 TEST_CASE("integration::cpp::null_arith::literal_null_folds_to_null") {
     auto config = test_create_config("/tmp/test_null_arith/fold");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();

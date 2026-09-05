@@ -38,7 +38,6 @@ namespace {
 TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_every_leaf", "[.][indexflush]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_flush/scope");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

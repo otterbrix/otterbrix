@@ -10,7 +10,6 @@ using namespace components::cursor;
 TEST_CASE("integration::cpp::parser_extension_demo") {
     auto config = test_create_config("/tmp/test_demo_extension");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -48,9 +47,7 @@ TEST_CASE("integration::cpp::parser_extension_is_per_instance") {
     auto config_b = test_create_config("/tmp/test_demo_extension_b");
     test_clear_directory(config_a);
     test_clear_directory(config_b);
-    config_a.disk.on = false;
     config_a.wal.on = false;
-    config_b.disk.on = false;
     config_b.wal.on = false;
     test_spaces space_a(config_a);
     test_spaces space_b(config_b);

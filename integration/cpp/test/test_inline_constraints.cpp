@@ -31,7 +31,6 @@ namespace {
         explicit env_t(const std::string& dir)
             : config(test_create_config("/tmp/otterbrix/integration/test_inline_constraints/" + dir)) {
             test_clear_directory(config);
-            config.disk.on = true;
             config.wal.on = false;
             config.log.level = log_t::level::off;
         }

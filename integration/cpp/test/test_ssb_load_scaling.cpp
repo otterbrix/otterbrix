@@ -122,7 +122,6 @@ namespace {
 
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = wal_on;
         config.log.level = log_t::level::off;
         test_spaces space(config);
@@ -222,7 +221,6 @@ namespace {
 
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = wal_on;
         // The auto-checkpoint threshold is left at its production default on purpose: the defect this
         // guards against — the counter holding the WHOLE WAL directory size instead of the bytes written
@@ -345,7 +343,6 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not
 
     auto config = test_create_config("/tmp/otterbrix/integration/test_ssb/explicit_checkpoint");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
     // Small enough that a slice of rows crosses it several times over.

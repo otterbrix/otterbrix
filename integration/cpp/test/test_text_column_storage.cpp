@@ -50,7 +50,6 @@ namespace {
         measurement_t out;
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = true;
         config.log.level = log_t::level::off;
         test_spaces space(config);

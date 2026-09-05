@@ -48,7 +48,6 @@ namespace {
 TEST_CASE("integration::cpp::table_function::generate_series") {
     auto config = test_create_config("/tmp/test_table_function");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -96,7 +95,6 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
 TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
     auto config = test_create_config("/tmp/test_table_function_lateral");
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

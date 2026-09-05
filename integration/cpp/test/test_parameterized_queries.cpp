@@ -58,7 +58,6 @@ namespace {
     test_spaces make_space(const std::string& subdir) {
         auto config = test_create_config("/tmp/test_parameterized_queries/" + subdir);
         test_clear_directory(config);
-        config.disk.on = false;
         config.wal.on = false;
         return test_spaces(config);
     }

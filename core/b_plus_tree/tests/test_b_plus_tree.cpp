@@ -6,14 +6,27 @@
 #include <core/pmr.hpp>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <random>
+#include <string>
 #include <thread>
-
-#if defined(__linux__)
 #include <unistd.h>
-#endif
 
 namespace {
+    // Every test below used to name its scratch directory with a bare relative path, so the
+    // tree files landed in whatever directory ctest happened to launch the binary from --
+    // which is how `btree_emptied/` and seven `segment_tree_*/` directories accumulated in
+    // the repository root. Root them under the system temp directory instead, keyed by pid so
+    // two concurrent runs cannot collide. The per-test remove/create dance is unchanged.
+    // create_directory() below is a bare mkdir(2), so the base has to exist first.
+    std::filesystem::path scratch_dir(const char* name) {
+        const auto base = std::filesystem::temp_directory_path() /
+                          ("otterbrix_b_plus_tree_" + std::to_string(::getpid()));
+        std::error_code ec;
+        std::filesystem::create_directories(base, ec);
+        return base / name;
+    }
+
     template<typename T>
     T read_unaligned(const void* ptr) {
         T val;
@@ -77,7 +90,7 @@ std::string gen_random(size_t len, std::size_t seed) {
 }
 
 TEST_CASE("core::b_plus_tree::block_t") {
-    path_t testing_directory = "block_test";
+    path_t testing_directory = scratch_dir("block_test");
     auto resource = core::pmr::otterbrix_resource();
 
     INFO("initialization");
@@ -394,7 +407,7 @@ TEST_CASE("core::b_plus_tree::block_t") {
 
 TEST_CASE("core::b_plus_tree::segment_tree") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_test";
+    path_t testing_directory = scratch_dir("segment_tree_test");
 
     INFO("initialization");
     {
@@ -880,7 +893,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
 // tests therefore ignore the counters and walk the actual items back off the disk.
 TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_split_persistence";
+    path_t testing_directory = scratch_dir("segment_tree_split_persistence");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -967,7 +980,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
 
 TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_balance_persistence";
+    path_t testing_directory = scratch_dir("segment_tree_balance_persistence");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1075,7 +1088,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") 
 // where they were, and the next load read it from an address nothing was ever written to.
 TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_close_gaps";
+    path_t testing_directory = scratch_dir("segment_tree_close_gaps");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1160,7 +1173,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
 // block. Every other site in the file loads first; this one was missed.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_the_range") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_remove_index_lazy";
+    path_t testing_directory = scratch_dir("segment_tree_remove_index_lazy");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1230,7 +1243,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_
 // b_plus_tree.cpp's `assert(root_->unique_entry_count() != 0)`.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_remove_unique_count";
+    path_t testing_directory = scratch_dir("segment_tree_remove_unique_count");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1313,7 +1326,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once
 // onto disk — it also makes the files non-reproducible run to run.
 TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_uninitialised";
+    path_t testing_directory = scratch_dir("segment_tree_uninitialised");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1414,7 +1427,7 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
 // fsynced every leaf of every index.
 TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_load_clears_dirty";
+    path_t testing_directory = scratch_dir("segment_tree_load_clears_dirty");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1490,7 +1503,7 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
 // listening).
 TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "segment_tree_io_failure";
+    path_t testing_directory = scratch_dir("segment_tree_io_failure");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1534,7 +1547,7 @@ TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
 // restarting brings every deleted key back, pointing at row ids that no longer exist.
 TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "btree_emptied";
+    path_t testing_directory = scratch_dir("btree_emptied");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -1580,7 +1593,7 @@ TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
 
 TEST_CASE("core::b_plus_tree::b+tree") {
     auto resource = core::pmr::otterbrix_resource();
-    path_t testing_directory = "b+tree_test";
+    path_t testing_directory = scratch_dir("b+tree_test");
 
     INFO("initialization");
     {

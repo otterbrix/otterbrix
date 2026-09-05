@@ -15,7 +15,6 @@
 TEST_CASE("integration::cpp::test_index_key_binding::key_lookup_is_per_chunk_not_per_row") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_key_binding/per_chunk");
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

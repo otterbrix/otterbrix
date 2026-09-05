@@ -131,6 +131,20 @@ namespace components::index {
         // resolved to this oid exactly once, at plan time.
         catalog::oid_t oid() const noexcept;
 
+        // Can this index answer an ORDERED probe -- lower_bound / upper_bound, and with
+        // them every predicate except eq? Asked OF the index rather than guessed from its
+        // type, for the same reason index_disk_t::has_txn_log() is asked: the answer is a
+        // property of the implementation, and a caller that guesses gets it wrong the day
+        // a new one appears.
+        //
+        // It exists because the two hashed implementations used to answer the question
+        // with `throw "not supported"` -- a string literal, catchable only as
+        // `catch (const char*)`, thrown from inside an actor coroutine whose
+        // unhandled_exception() is empty, so the statement reported success over zero
+        // rows. They now fail loudly instead, and this is how a caller keeps away from
+        // them: manager_index_t consults it before dispatching any read.
+        [[nodiscard]] bool supports_ordered_probe() const noexcept;
+
         bool is_disk() const noexcept;
         const actor_zeta::address_t& disk_agent() const noexcept;
         const actor_zeta::address_t& disk_manager() const noexcept;
@@ -242,6 +256,12 @@ namespace components::index {
         virtual void clean_memory_to_new_elements_impl(std::size_t count) = 0;
 
     private:
+        // Private customization point (NVI): every index states its own answer and the
+        // compiler enforces that it does -- there is no default to inherit, because a
+        // default `true` would put an unordered index back on the path that crashes and a
+        // default `false` would silently strip range predicates off an ordered one.
+        [[nodiscard]] virtual bool supports_ordered_probe_impl() const noexcept = 0;
+
         std::pmr::memory_resource* resource_;
         index_type type_;
         catalog::oid_t oid_;

@@ -54,6 +54,10 @@ namespace components::index {
             const_iterator iterator_;
         };
 
+        // A hash bucket has no ordering: lower_bound_impl / upper_bound_impl below are
+        // unreachable-and-terminal, and this is what keeps callers away from them.
+        [[nodiscard]] bool supports_ordered_probe_impl() const noexcept final { return false; }
+
         auto insert_impl(value_t, index_value_t, core::date::timezone_offset_t local_timezone) -> void final;
         auto remove_impl(value_t, core::date::timezone_offset_t local_timezone) -> void final;
         range find_impl(const value_t&, core::date::timezone_offset_t local_timezone) const final;

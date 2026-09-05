@@ -34,6 +34,9 @@ namespace components::index {
             const_iterator iterator_;
         };
 
+        // An ordered b-tree: every predicate is answerable, so both bounds are real.
+        [[nodiscard]] bool supports_ordered_probe_impl() const noexcept final { return true; }
+
         auto insert_impl(value_t, index_value_t value, core::date::timezone_offset_t local_timezone) -> void final;
         auto remove_impl(value_t key, core::date::timezone_offset_t local_timezone) -> void final;
         range find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const final;

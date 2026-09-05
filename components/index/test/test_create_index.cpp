@@ -15,6 +15,9 @@ public:
         : index_t(resource, components::logical_plan::index_type::single, oid, keys) {}
 
 private:
+    // The fake stands in for an ordered index (index_type::single) and hands back real
+    // ranges from both bounds, so it answers yes.
+    [[nodiscard]] bool supports_ordered_probe_impl() const noexcept override { return true; }
     void insert_impl(value_t, index_value_t, core::date::timezone_offset_t) override {}
     void remove_impl(value_t, core::date::timezone_offset_t) override {}
     range find_impl(const value_t&, core::date::timezone_offset_t) const override {

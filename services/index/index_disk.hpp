@@ -2,8 +2,10 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <components/expressions/forward.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -19,19 +21,68 @@ namespace services::index {
         using path_t = std::filesystem::path;
         using result = std::pmr::vector<size_t>;
 
-        explicit index_disk_t(uint64_t flush_threshold = default_flush_threshold_)
-            : flush_threshold_(flush_threshold) {}
+        index_disk_t(std::pmr::memory_resource* resource, uint64_t flush_threshold)
+            : resource_(resource)
+            , flush_threshold_(flush_threshold) {
+            assert(resource != nullptr);
+        }
         virtual ~index_disk_t() = default;
+
+        // The resource every answer this backend produces is built on. Held here rather
+        // than in each backend because the by-value read shorthands below live here too,
+        // and a result built anywhere else is a result built on the process default.
+        [[nodiscard]] std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
         virtual void insert(const value_t& key, size_t value) = 0;
         virtual void remove(value_t key) = 0;
         virtual void remove(const value_t& key, size_t row_id) = 0;
+
+        // READS. Every answer is COMPLETE -- an index that reports a subset is a wrong
+        // answer, not a fast one -- and every answer comes back in ASCENDING key order.
+        //
+        // find() is equality and every backend answers it. scan_range() is the ORDERED
+        // contract and only an ordered backend answers it; a hashed backend has no
+        // ordering to scan and says so LOUDLY rather than returning an empty range,
+        // because an empty answer from a registered engine is indistinguishable from
+        // "no row carries this key".
+        //
+        // lower_bound / upper_bound are shorthands for two of scan_range's six
+        // predicates, and their names are HISTORICAL: they are not the STL iterator
+        // positions. lower_bound(k) is the open ray BELOW k (key < k, i.e. lt) and
+        // upper_bound(k) the open ray ABOVE it (key > k, i.e. gt). The inclusive halves
+        // -- key <= k and key >= k, which SQL's <= and >= need and which no caller could
+        // ask this facade for at all before -- are compare_type::lte and ::gte.
         virtual void find(const value_t& value, result& res) const = 0;
-        virtual result find(const value_t& value) const = 0;
-        virtual void lower_bound(const value_t& value, result& res) const = 0;
-        virtual result lower_bound(const value_t& value) const = 0;
-        virtual void upper_bound(const value_t& value, result& res) const = 0;
-        virtual result upper_bound(const value_t& value) const = 0;
+        virtual void scan_range(components::expressions::compare_type compare, const value_t& value, result& res) const = 0;
+
+        void lower_bound(const value_t& value, result& res) const {
+            scan_range(components::expressions::compare_type::lt, value, res);
+        }
+        void upper_bound(const value_t& value, result& res) const {
+            scan_range(components::expressions::compare_type::gt, value, res);
+        }
+
+        // By-value shorthands. NOT virtual, and that is the fix rather than a style
+        // choice: each backend used to return its own default-constructed
+        // std::pmr::vector here, which is std::pmr::get_default_resource() by
+        // consequence -- and insert()/remove() reach these internally, so the process
+        // default resource sat on the WRITE path. One implementation, on resource_.
+        [[nodiscard]] result find(const value_t& value) const {
+            result res(resource_);
+            find(value, res);
+            return res;
+        }
+        [[nodiscard]] result lower_bound(const value_t& value) const {
+            result res(resource_);
+            lower_bound(value, res);
+            return res;
+        }
+        [[nodiscard]] result upper_bound(const value_t& value) const {
+            result res(resource_);
+            upper_bound(value, res);
+            return res;
+        }
+
         virtual void drop() = 0;
         // Wipe all stored index data IN PLACE, keeping the backing live and
         // writable: subsequent insert/remove (incl. the direct, non-txn-log
@@ -95,8 +146,6 @@ namespace services::index {
         virtual void set_bulk_mode(bool enabled) = 0;
 
     protected:
-        static constexpr uint64_t default_flush_threshold_{1000};
-
         bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }
         void mark_operation_dirty() noexcept {
             dirty_ = true;
@@ -109,6 +158,7 @@ namespace services::index {
         }
 
     private:
+        std::pmr::memory_resource* resource_;
         uint64_t flush_threshold_;
         bool dirty_{false};
         uint64_t ops_since_flush_{0};

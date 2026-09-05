@@ -1509,26 +1509,34 @@ namespace services::index {
             co_return std::pmr::vector<int64_t>(resource_);
         }
 
+        // An index with no ordering can answer equality and nothing else. The planner
+        // enforces that upstream (can_use_index refuses a range predicate unless a
+        // NON-hashed index also covers the key), so a range arriving here is a routing
+        // bug — and one that used to end in `not supported` raised as a C-string from
+        // inside an actor coroutine, where the exception is swallowed and the statement
+        // reports success over zero rows.
+        //
+        // Asked OF the index rather than guessed from its type, and asked for EVERY
+        // index rather than only the disk-backed ones: the in-memory hashed index has
+        // exactly the same hole, and the guard that used to sit inside the disk-hash leg
+        // below could not see it.
+        if (compare != components::expressions::compare_type::eq && !index->supports_ordered_probe()) {
+            co_return core::error_t{
+                core::error_code_t::index_not_exists,
+                std::pmr::string{"index search: this index has no ordering and cannot answer a range predicate",
+                                 resource_}};
+        }
+
         // Disk-backed HASHED index: the committed rows live in the agent and are read by
-        // message. Everything else still answers from its in-memory structure — the
-        // ordered b+tree facade and the rewiring of index_type::single onto it are C2a
-        // and C2b, and routing range predicates through this leg before those exist
-        // would change lt/lte/gt/gte/ne semantics, not just their transport.
+        // message. Everything else still answers from its in-memory structure. The
+        // ordered b+tree backend now speaks the whole predicate set honestly
+        // (btree_index_disk_t::scan_range — C2a), but ROUTING index_type::single onto it
+        // is C2b: today that index is still constructed as an in-memory
+        // single_field_index_t, whose own storage holds the answer.
         const bool read_through_agent =
             index->is_disk() && index->type() == components::logical_plan::index_type::hashed;
         if (!read_through_agent) {
             co_return index->search(compare, value, start_time, txn_id, session_tz);
-        }
-
-        // A hash index has no ordering, so only equality can reach it. The planner
-        // enforces that (can_use_index refuses a range predicate unless a NON-hashed
-        // index also covers the key), so a range arriving here is a routing bug. It used
-        // to `throw "not supported"` inside an actor coroutine, where the exception is
-        // swallowed and the statement reports success over zero rows.
-        if (compare != components::expressions::compare_type::eq) {
-            co_return core::error_t{
-                core::error_code_t::index_not_exists,
-                std::pmr::string{"index search: a hashed index cannot answer a range predicate", resource_}};
         }
 
         // Remember the index's OWN oid before the await. The address is enough to send,

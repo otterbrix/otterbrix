@@ -157,6 +157,8 @@ namespace components::index {
 
     catalog::oid_t index_t::oid() const noexcept { return oid_; }
 
+    bool index_t::supports_ordered_probe() const noexcept { return supports_ordered_probe_impl(); }
+
     bool index_t::is_disk() const noexcept { return disk_agent_ != actor_zeta::address_t::empty_address(); }
 
     const actor_zeta::address_t& index_t::disk_agent() const noexcept { return disk_agent_; }

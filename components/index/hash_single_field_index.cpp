@@ -51,14 +51,28 @@ namespace components::index {
         return std::make_pair(iterator(new impl_t(range.first)), iterator(new impl_t(range.second)));
     }
 
+    // Unreachable by contract, and terminal rather than quiet. A hash bucket has no
+    // ordering, so nothing but eq can be asked of this index: supports_ordered_probe()
+    // answers false, manager_index_t refuses a range predicate on it before any read is
+    // dispatched, and the planner refuses one earlier still (can_use_index picks a hashed
+    // index only for an equality).
+    //
+    // What stood here raised the STRING LITERAL "not supported" as an exception, so a
+    // caller could only have caught it as `catch (const char*)` -- and it was raised from
+    // inside an actor coroutine whose unhandled_exception() is empty, so the exception was
+    // swallowed and the statement reported success over zero rows. An empty range would be
+    // the same wrong answer with the crash removed, which is why it is not the
+    // replacement. Same shape as bitcask_index_disk_t::scan_range one level down.
     index_t::range hash_single_field_index_t::lower_bound_impl(const value_t&,
                                                                core::date::timezone_offset_t /*local_timezone*/) const {
-        throw "not supported"; // not supported
+        assert(false && "hash_single_field_index_t::lower_bound_impl: a hash index has no ordering");
+        std::abort();
     }
 
     index_t::range hash_single_field_index_t::upper_bound_impl(const value_t&,
                                                                core::date::timezone_offset_t /*local_timezone*/) const {
-        throw "not supported"; // not supported
+        assert(false && "hash_single_field_index_t::upper_bound_impl: a hash index has no ordering");
+        std::abort();
     }
 
     index_t::iterator hash_single_field_index_t::cbegin_impl() const {

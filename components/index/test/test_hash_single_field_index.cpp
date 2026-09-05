@@ -300,11 +300,27 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
     REQUIRE(eq_rows.front() == 4242);
 }
 
+// Same subject as before -- a hashed index cannot answer an ordered probe -- pinned at the
+// point a caller can actually consult, because the answer is no longer an exception.
+//
+// It used to be `REQUIRE_THROWS(index->lower_bound(...))`, and what was thrown was the
+// STRING LITERAL "not supported": catchable only as `catch (const char*)`, and raised from
+// inside an actor coroutine whose unhandled_exception() is empty, so on the real path it
+// was swallowed and the statement reported success over zero rows. Both bound impls are
+// now unreachable-and-terminal, so the testable contract is the capability itself:
+// supports_ordered_probe() is what manager_index_t consults before dispatching a read, and
+// it is what keeps a range predicate away from those impls.
 TEST_CASE("disk_single_field_index:lower_upper_bound_not_supported") {
     auto resource = core::pmr::otterbrix_resource();
-    auto index = make_hash_index(&resource, "hash_count_disk_bounds", hash_index_mode::on_disk);
-    components::types::logical_value_t key(&resource, int64_t(1));
 
-    REQUIRE_THROWS(index->lower_bound(key, {}));
-    REQUIRE_THROWS(index->upper_bound(key, {}));
+    auto on_disk = make_hash_index(&resource, "hash_count_disk_bounds", hash_index_mode::on_disk);
+    REQUIRE_FALSE(on_disk->supports_ordered_probe());
+
+    auto in_memory = make_hash_index(&resource, "hash_count_ram_bounds", hash_index_mode::in_memory);
+    REQUIRE_FALSE(in_memory->supports_ordered_probe());
+
+    // The counter-example: an ordered index over the same key says yes, so the predicate
+    // distinguishes implementations rather than answering false for everything.
+    single_field_index_t ordered(&resource, test_index_oid, keys_base_storage_t{key(&resource, "count")});
+    REQUIRE(ordered.supports_ordered_probe());
 }

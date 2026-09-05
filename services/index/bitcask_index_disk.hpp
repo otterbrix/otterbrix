@@ -60,11 +60,18 @@ namespace services::index {
         void remove(value_t key) override;
         void remove(const value_t& key, size_t row_id) override;
         void find(const value_t& value, result& res) const override;
-        result find(const value_t& value) const override;
-        void lower_bound(const value_t& value, result& res) const override;
-        result lower_bound(const value_t& value) const override;
-        void upper_bound(const value_t& value, result& res) const override;
-        result upper_bound(const value_t& value) const override;
+        // A hashed store has no ordering, so it answers NONE of the ordered contract --
+        // lt / lte / gt / gte / ne, and eq too, which belongs to find(). It fails loudly
+        // instead of returning an empty range: an empty range here is indistinguishable
+        // from "no row carries this key", which is a wrong answer dressed as a fast one.
+        // The guard that keeps callers away is upstream, in manager_index_t, which refuses
+        // a range predicate on an index with no ordering before any read is dispatched.
+        void scan_range(components::expressions::compare_type compare,
+                        const value_t& value,
+                        result& res) const override;
+        // The by-value shorthands are non-virtual base members; without this they would be
+        // hidden by the find() override above.
+        using index_disk_t::find;
 
         void drop() override;
         void clear() override;
@@ -168,7 +175,6 @@ namespace services::index {
         std::filesystem::path path_;
         std::filesystem::path hash_index_file_path_;
         std::filesystem::path active_data_file_path_;
-        std::pmr::memory_resource* resource_;
         mutable core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
@@ -189,7 +195,7 @@ namespace services::index {
         std::unique_ptr<bitcask_task_executor_t> task_executor_;
         // WAL-replay committed transaction ids — the recover gate (M1.1) applies
         // a txn-log frame only when committed_txn_ids_.count(header.txn_id) > 0.
-        // Allocated on resource_ (the resource the class stores). Empty for a
+        // Allocated on resource() (the resource index_disk_t stores). Empty for a
         // fresh, runtime-created instance (no txn-log to gate).
         std::pmr::set<std::uint64_t> committed_txn_ids_;
         // Set by load_from_disk when a segment's CRC check fails. The

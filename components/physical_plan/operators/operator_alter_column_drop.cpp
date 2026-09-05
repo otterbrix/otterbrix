@@ -45,22 +45,33 @@ namespace components::operators {
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid = catalog::well_known_oid::pg_constraint_table;
 
-        // Keyed single-row read of the live pg_attribute row. attoid_ was
-        // pre-stamped by enrich_logical_plan; INVALID means "column not found",
-        // so no-op.
-        if (attoid_ == catalog::INVALID_OID) {
+        // Keyed read of the table's live pg_attribute rows, then match the column BY NAME.
+        //
+        // This used to key on attoid_ alone and no-op when it was INVALID_OID, on the stated
+        // premise that enrich_logical_plan had pre-stamped it. Nothing ever did:
+        // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so attoid_
+        // was INVALID on every execution and ALTER TABLE DROP COLUMN returned success having
+        // written nothing at all — no tombstone, no dependent scrub, no storage release. The
+        // sibling defect is pinned by the note in
+        // integration/cpp/test/test_multi_database_isolation.cpp (RENAME COLUMN, same cause).
+        // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table's own
+        // comment always said this operator does — "looks up the attoid by (table_oid,
+        // column_name) at execution time" — so this makes the code agree with its contract
+        // rather than inventing a new one. attoid_ stays a CROSS-CHECK: when a caller does
+        // stamp it, the row must be that row.
+        if (column_name_.empty()) {
             mark_executed();
             co_return;
         }
 
         std::pmr::vector<std::uint64_t> pa_keys(resource_);
-        pa_keys.emplace_back(catalog::pg_attribute_col::attoid);
+        pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, attoid_),
+                                           components::operators::make_key_chunk(resource_, table_oid_),
                                            std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
@@ -85,7 +96,18 @@ namespace components::operators {
                     continue;
                 if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue; // already dropped
-                attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (chunk.is_null(2, i))
+                    continue;
+                // get_value<string_view> (NOT chunk.value(), whose logical_value_t is a
+                // temporary the view would outlive) — this one points into the chunk's own
+                // string buffer, which is alive for the whole comparison below.
+                const auto attname_cell = chunk.get_value<std::string_view>(2, i);
+                if (attname_cell != column_name_)
+                    continue;
+                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
+                    continue; // a stamped identity must match the row it names
+                attoid = row_attoid;
                 atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
                                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                 attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
@@ -258,15 +280,43 @@ namespace components::operators {
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
         // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same
-        // attoid as the live row — identity-preserving tombstone).
+        // attoid as the live row — identity-preserving tombstone) — AND, B3c1, name the
+        // physical column the commit has to release once that tombstone is committed.
+        //
+        // ORDER, and why the release is NOT sent from here. The storage-side drop is a
+        // rebuild: it forgets the column and destroys the object that knows which blocks it
+        // sat on, so it cannot be undone. The tombstone above is not durable yet — it is a
+        // pg_attribute row carrying insert_id == this txn_id, which an explicit ROLLBACK
+        // reverts (storage_revert_appends) and a crash before the commit marker discards.
+        // Dropping the column here would therefore let the physical drop become durable (the
+        // next checkpoint of THIS table writes a root without the column) while the tombstone
+        // never does — catalog says the column exists, storage no longer has it. So this
+        // operator only MARKS the drop, exactly as operator_dynamic_cascade_delete_t only
+        // MARKS a dropped table, and operator_commit_transaction_t performs it after the WAL
+        // commit marker and the publish barrier, in the same block that physically tears down
+        // a committed DROP TABLE.
+        //
+        // (Adding one more cross-actor await here would have been safe in itself: this is an
+        // operator, driven by executor_t::execute_pipeline inside the executor actor's own
+        // coroutine, not an actor mailbox handler. The standing proof is the chain already
+        // above: pg_attribute read, pg_depend read, dependent scrub, live-row delete,
+        // tombstone append — five sequential cross-actor awaits in one body, in production
+        // today. The one-await-per-handler rule bites on methods dispatched from a behavior()
+        // switch, and this method appears in none. Ordering, not the await rule, is what moves
+        // the release to commit time.)
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
             attoid,
-            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at});
+            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
+            table_oid_,
+            column_name_});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,
         // which clears matching pg_computed_column rows. This branch handles
-        // regular (relkind='r') tables only.
+        // regular (relkind='r') tables only — which is also why the physical release marked
+        // above is safe to arm unconditionally here: the relkind='g' storage, whose
+        // mid-pipeline drop_column once broke the re-INSERT path (see the note at the end of
+        // operator_computed_field_unregister.cpp), never reaches this operator.
 
         mark_executed();
     }

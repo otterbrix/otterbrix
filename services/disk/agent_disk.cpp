@@ -473,6 +473,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::compact_relkind_g_storage_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_storage_column_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::drop_storage_column_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::mark_storage_dropped_many_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::mark_storage_dropped_many_inner, msg);
                 break;
@@ -2733,6 +2737,49 @@ namespace services::disk {
             }
         }
         co_return dropped;
+    }
+
+    // B3c1 — ALTER TABLE DROP COLUMN's physical half on this agent's own slice.
+    //
+    // The body is deliberately the compact leg's inner loop minus its two VACUUM-shaped
+    // parts: the subtractive "everything not in live_attnames" enumeration (the ALTER names
+    // its column, and re-deriving a live set here would turn any gap in that derivation into
+    // a physical drop of a SURVIVING column) and the IN_MEMORY gate. The gate is not copied
+    // rather than merely relaxed: it is correct where it stands, because VACUUM exists to
+    // reclaim and attaches to no round that can commit a reclaim, whereas here the drop IS
+    // the DDL fact and B3c's split — rebuild now, blocks released by the checkpoint that can
+    // commit their release — is the intended shape, not a deferral of something owed.
+    //
+    // WHEN this runs is the safety argument, and it is not local: operator_commit_transaction
+    // drives it only AFTER the txn's WAL commit marker and the ProcArray publish barrier, so
+    // the pg_attribute tombstone is already both durable and visible. A rebuild is not
+    // undoable, so it must never precede a tombstone that a ROLLBACK or a lost commit can
+    // still take back.
+    agent_disk_t::unique_future<core::result_wrapper_t<bool>>
+    agent_disk_t::drop_storage_column_inner(components::catalog::oid_t table_oid, std::string attname) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            // Not owned here, or a record-only marker whose storage was never materialized.
+            // The caller's tombstone is already committed, so this cannot be reported as a
+            // quiet 0: nothing else re-derives the drop, and the blocks would stay named by a
+            // root nobody ever revisits.
+            std::pmr::string msg{"agent_disk::drop_storage_column: no materialized storage for table oid ",
+                                 resource()};
+            msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+        }
+        // Same primitive the compact leg calls: rebuild the table without the column and
+        // recreate the adapter (which holds a data_table_t& the rebuild invalidates). On a
+        // DISK-backed storage the rebuild also NAMES the outgoing column's blocks into
+        // table_storage_t::pending_released_blocks_; the checkpoint round drains them (B3c).
+        const bool dropped = it->second->drop_column(attname, resource());
+        trace(log_,
+              "agent_disk[{}]::drop_storage_column_inner: oid={} column='{}' {}",
+              pool_idx_,
+              static_cast<unsigned>(table_oid),
+              attname,
+              dropped ? "dropped" : "absent from the storage schema — nothing physical to release");
+        co_return core::result_wrapper_t<bool>(dropped);
     }
 
     // Runtime DROP path, canonical per-oid mark: read otbx_path + derive the .wal_id

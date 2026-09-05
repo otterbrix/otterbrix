@@ -42,6 +42,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_update.cpp
         test_wal_pool.cpp
         test_persistence.cpp
+        test_alter_drop_column_reclaim.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp

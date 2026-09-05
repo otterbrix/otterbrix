@@ -147,4 +147,38 @@ namespace services::disk {
         co_return 0;
     }
 
+    // B3c1 — ALTER TABLE DROP COLUMN's physical half. Thin router, the same shape as every
+    // other DDL leg: pool_idx_for_oid -> otterbrix::send -> enqueue if needed -> await. The
+    // work itself runs intra-agent (drop_storage_column_inner) on that agent's own slice; the
+    // manager never borrows a storage entry across the actor boundary.
+    //
+    // Not folded into compact_relkind_g_storage: that leg is SUBTRACTIVE (live set in, the
+    // complement dropped) and gated to IN_MEMORY because it rides VACUUM. This one is
+    // additive and ungated on purpose — see the contract note in disk_contract.hpp.
+    manager_disk_t::unique_future<core::result_wrapper_t<bool>>
+    manager_disk_t::drop_storage_column(session_id_t /*session*/,
+                                        components::catalog::oid_t table_oid,
+                                        std::string attname) {
+        if (!agents_.empty()) {
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[idx];
+            if (agent != nullptr) {
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                      &agent_disk_t::drop_storage_column_inner,
+                                                                      table_oid,
+                                                                      std::move(attname));
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                co_return co_await std::move(fut);
+            }
+        }
+        // No agent to route to at all. The caller is a COMMITTED ALTER whose tombstone is
+        // already durable, so answering "done" here would be exactly the silent degradation
+        // rule 6 forbids: the column would be hidden forever and its space never named again.
+        std::pmr::string msg{"manager_disk::drop_storage_column: no disk agent owns table oid ", resource()};
+        msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+    }
+
 } // namespace services::disk

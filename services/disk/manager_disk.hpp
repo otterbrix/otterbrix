@@ -639,11 +639,30 @@ namespace services::disk {
         // operator_vacuum_t after pg_computed_column GC: columns whose
         // attrefcount<=0 rows have been deleted are physically dead and can be
         // reclaimed. Returns the number of columns physically dropped (0 if storage
-        // is DISK-mode, missing, or already compact). DISK-backed storages would
-        // need segment rewrites + checkpoint coordination.
+        // is missing or already compact).
+        //
+        // Still 0 for a DISK-backed storage, and since B3c that is no longer a limit of the
+        // primitive (table_storage_t::drop_column rebuilds in both modes and hands the blocks
+        // to the checkpoint that can commit their release) but a property of THIS caller:
+        // it rides VACUUM, whose whole purpose is to reclaim, and VACUUM attaches to no
+        // checkpoint round. ALTER TABLE DROP COLUMN wants the opposite answer and therefore
+        // has its own leg — see drop_storage_column below.
         unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
                                                                components::catalog::oid_t table_oid,
                                                                std::set<std::string> live_attnames);
+
+        // B3c1 — ALTER TABLE DROP COLUMN's physical half: release the ONE column `attname`
+        // from the storage of `table_oid`. Thin router to the owning agent; see the contract
+        // in disk_contract.hpp for why this is a sibling of compact_relkind_g_storage rather
+        // than a flag on it, and for the three-way answer (true / false / error).
+        //
+        // ORDERING, and it is the whole safety argument: this is driven by
+        // operator_commit_transaction_t AFTER the txn's WAL commit marker and the ProcArray
+        // publish barrier, in the same place the commit-time physical DROP TABLE runs. The
+        // pg_attribute tombstone is the durable record of the drop; the physical release must
+        // never be able to outlive a tombstone that a ROLLBACK or a crashed txn takes away.
+        unique_future<core::result_wrapper_t<bool>>
+        drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
 
         // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
         // tables maintained via operator_computed_field_register_t.
@@ -899,6 +918,7 @@ namespace services::disk {
                                                        &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::read_chunks_by_keys,
                                                        &manager_disk_t::compact_relkind_g_storage,
+                                                       &manager_disk_t::drop_storage_column,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,

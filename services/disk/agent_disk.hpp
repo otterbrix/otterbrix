@@ -564,6 +564,19 @@ namespace services::disk {
         unique_future<std::uint64_t> compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                                      std::set<std::string> live_attnames);
 
+        // B3c1 — drop_storage_column_inner: release the ONE column `attname` from this
+        //   agent's own slice for `table_oid`, via the same entry->drop_column primitive the
+        //   compact leg above calls. UNGATED by storage mode, and that is the point: B3c made
+        //   table_storage_t::drop_column mode-agnostic, and unlike VACUUM this caller is a
+        //   committed ALTER, for which "the rebuild now, the block release at the next
+        //   checkpoint" is the design rather than a shortfall.
+        //   true  = the column was in the schema and is gone;
+        //   false = the storage exists but never carried it (ALTER ADD COLUMN never touches
+        //           storage), so there is nothing physical to release;
+        //   error = no materialized storage for the oid here — see disk_contract.hpp.
+        unique_future<core::result_wrapper_t<bool>> drop_storage_column_inner(components::catalog::oid_t table_oid,
+                                                                             std::string attname);
+
         // mark_storage_dropped_many_inner — batched DROP-mark: one message per agent
         //   carries that agent's whole oid slice (manager partitioned by pool_idx_for_oid)
         //   plus the shared dropped_at_commit_id. Loops the canonical per-oid mark body
@@ -618,6 +631,7 @@ namespace services::disk {
                                                             &agent_disk_t::delete_pg_catalog_rows_inner,
                                                             &agent_disk_t::update_pg_attribute_commit_id_field_inner,
                                                             &agent_disk_t::compact_relkind_g_storage_inner,
+                                                            &agent_disk_t::drop_storage_column_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
                                                             &agent_disk_t::create_storage_inner,
                                                             &agent_disk_t::create_storage_with_columns_inner,

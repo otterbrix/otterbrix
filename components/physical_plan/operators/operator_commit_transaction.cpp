@@ -146,6 +146,17 @@ namespace components::operators {
         // update_pg_attribute_commit_id_fields emits a physical_update per marker
         // paired with the matching physical_insert, so replay materializes them
         // together.
+        //
+        // B3c1: a dropped_at marker carries a second, later piece of the same unfinished
+        // business — the physical column release. Copy those out HERE, before the move below
+        // empties swap_backfills, and perform them far down, after the publish barrier.
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> column_releases{resource_};
+        for (const auto& b : swap_backfills) {
+            if (b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at &&
+                !b.release_attname.empty() && b.release_table_oid != components::catalog::INVALID_OID) {
+                column_releases.push_back(b);
+            }
+        }
         if (!swap_backfills.empty() && commit_id_ > 0 && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
             // Log the marker count before the move empties the vector.
@@ -376,6 +387,47 @@ namespace components::operators {
                                                  ctx->session,
                                                  std::move(drop_oids));
                 co_await std::move(df);
+            }
+        }
+
+        // Commit-time physical COLUMN drop (B3c1) — the DROP TABLE block above, one level
+        // down. operator_alter_column_drop_t only MARKED the drop: it wrote the pg_attribute
+        // tombstone and named the column here, because the storage-side drop is a rebuild
+        // that destroys the object knowing the column's blocks and therefore cannot be
+        // undone. It is legal exactly once the tombstone can no longer be taken back — after
+        // the WAL commit marker and the publish barrier above — which is the same instant the
+        // block above uses for a committed DROP TABLE, and for the same reason.
+        //
+        // What a crash leaves, at each window: before the marker, replay drops the txn and
+        // the column is untouched; between the marker and here, the tombstone is durable and
+        // the column is still physically present — B3c's SAFE, resumable state (the catalog
+        // hides it, the space leaks until something re-derives the drop); after the drop but
+        // before the table's next checkpoint, still that same state, because the rebuild only
+        // NAMES the blocks in memory and the durable root is unchanged; after that checkpoint,
+        // both halves are durable. No window has the physical drop durable without the
+        // tombstone, which is the one ordering that could lose a column.
+        //
+        // Rule 6: the reply is checked. A committed tombstone plus a storage that reports it
+        // cannot drop the column is not a success — nothing re-derives this drop later.
+        if (commit_id_ > 0 && !column_releases.empty() &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            for (const auto& release : column_releases) {
+                auto [_rc, rcf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::drop_storage_column,
+                                                   ctx->session,
+                                                   release.release_table_oid,
+                                                   release.release_attname);
+                auto released = co_await std::move(rcf);
+                if (released.has_error()) {
+                    set_error(released.error());
+                    co_return;
+                }
+                trace(log_,
+                      "operator_commit_transaction: released column '{}' of oid {} — {} (commit_id {})",
+                      release.release_attname,
+                      static_cast<unsigned>(release.release_table_oid),
+                      released.value() ? "storage rebuilt without it" : "storage never carried it",
+                      commit_id_);
             }
         }
 

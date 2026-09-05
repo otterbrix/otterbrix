@@ -177,6 +177,32 @@ namespace services::disk {
                                                                            components::catalog::oid_t table_oid,
                                                                            std::set<std::string> live_attnames);
 
+        // B3c1 — physical release of ONE named column, the ALTER TABLE DROP COLUMN leg.
+        //
+        // A SIBLING of compact_relkind_g_storage, not a mode on it, and the asymmetry is the
+        // reason. That leg's contract is SUBTRACTIVE: it is handed the live set and drops the
+        // complement, which is right for VACUUM (which has just recomputed that set) and wrong
+        // here — the ALTER knows exactly one name, and deriving a whole live set to express it
+        // would make every gap in that derivation a physical drop of a SURVIVING column. This
+        // leg is additive: the only column it can ever touch is the one it is handed. The
+        // second reason is the gate: VACUUM's leg refuses DISK-backed tables because VACUUM
+        // exists to reclaim and rides no round that can commit a reclaim, whereas here the
+        // drop IS the DDL fact and deferring the release to the next checkpoint is the design
+        // (B3c), so the two callers want opposite answers from the same `if`. The third is
+        // this error channel: compact_relkind_g_storage answers with a count, in which "no
+        // such storage" and "nothing to drop" are the same 0.
+        //
+        //   value true  — the column was in the live storage schema and was removed;
+        //   value false — the storage exists but never carried that column. ALTER TABLE ADD
+        //                 COLUMN writes pg_attribute only (resolve_table rebuilds the schema
+        //                 from it on every lookup), so an add-then-drop in the same process
+        //                 has nothing physical to release. Not a failure;
+        //   error       — the oid names no materialized storage on its owning agent. For a
+        //                 table being ALTERed that is a broken invariant, and rule 6 forbids
+        //                 reporting the statement a success over it.
+        actor_zeta::unique_future<core::result_wrapper_t<bool>>
+        drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
+
         // Storage management
         actor_zeta::unique_future<void> create_storage(session_id_t session,
                                                        components::catalog::oid_t table_oid,
@@ -362,6 +388,7 @@ namespace services::disk {
                                                             &disk_contract::read_chunks_by_key,
                                                             &disk_contract::read_chunks_by_keys,
                                                             &disk_contract::compact_relkind_g_storage,
+                                                            &disk_contract::drop_storage_column,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,
                                                             &disk_contract::storage_dropped_committed,

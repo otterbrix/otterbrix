@@ -2083,8 +2083,28 @@ namespace services::dispatcher {
                                              resource});
                     }
                     if (table_schema.empty()) {
-                        // Schemaless table (no columns defined) or computing table with no
-                        // columns yet — accept any INSERT without column count validation.
+                        // A computing table with no columns yet accepts any INSERT: the shape
+                        // IS the schema, and operator_computed_field_register_t registers the
+                        // attoids at execute time.
+                        //
+                        // A REGULAR table with no columns does not, and the distinction used to
+                        // be untestable: the only way a relkind='r' table reaches an empty
+                        // schema is by dropping its last column, and ALTER TABLE DROP COLUMN
+                        // was a silent no-op (node_alter_column_t::set_attoid had no callers),
+                        // so the state never occurred. With the DROP wired up it does, and
+                        // test_persistence::zero_column_regular_table_stays_regular — the B1b
+                        // guard that a zero-column regular table must NOT come back computed —
+                        // starts failing on its in-session leg: relkind still says 'r', but an
+                        // empty column list here silently granted it dynamic-schema semantics.
+                        // The restart leg already refused (rehydrate skips a 0-column oid, so
+                        // there is no storage to append to); this makes the live session agree.
+                        if (!is_computed) {
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"insert_node: table '" + target_relname_ins +
+                                                     "' has no columns; INSERT needs at least one column",
+                                                 resource});
+                        }
                     } else if (is_computed && is_simple_chunk()) {
                         // Computing table with simple-typed INSERT: skip the static-shape
                         // checks. operator_computed_field_register registers new attoids

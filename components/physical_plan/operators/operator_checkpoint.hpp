@@ -12,14 +12,19 @@ namespace components::operators {
     //      so the checkpoint marker pins a known recovery boundary.
     //   3. checkpoint_all on disk — copy + fsync per-table data, then 2nd fsync barrier
     //      so the W-TORN per-table prev/current wal-id snapshot is durable.
-    //   4. truncate_before on wal (if checkpoint_wal_id > 0) — drop old WAL segments.
-    //   5. Index rebuild (if index_address present) — checkpoint_inner compact()s
-    //      each table, renumbering row ids; the in-memory index engines hold
-    //      positional refs into the pre-compact layout. For every all_indexed_oids
-    //      table: storage_total_rows -> streaming fetch-next drained to completion ->
-    //      repopulate_table (clears on-disk index backing + in-memory engine, then
-    //      re-inserts at post-compact ids). total==0 still repopulates to wipe
-    //      stale entries. MUST follow checkpoint_all (step 3).
+    //   4. Index rebuild (if index_address present) — checkpoint_inner compact()s
+    //      each table, renumbering row ids; every index of every table it touched stores
+    //      the PRE-compact ids. services::index::repopulate_indexes_after_compaction is
+    //      the shared driver, and it is DURABLE when it returns (both agent families end
+    //      commit_inserts with force_flush).
+    //   5. truncate_before on wal (if checkpoint_wal_id > 0) — drop old WAL segments.
+    //
+    // STEPS 4 AND 5 ARE IN THIS ORDER ON PURPOSE, and they used to be the other way round.
+    // The truncation is the one step of the round that destroys something, so it goes last:
+    // a rebuild that refuses must be able to end the round without the journal having
+    // already been trimmed behind an index that still names pre-compact rows. This is the
+    // order manager_wal_replicate_t::run_auto_checkpoint has always had — its rebuild is
+    // step (c2), its truncate step (d) — and the two orchestrations of one round now agree.
     //
     // WAL recovery semantics: identical to the legacy dispatcher.cpp checkpoint_t case.
     // The checkpoint_all return value is min(prev_checkpoint_wal_id_) across tables;

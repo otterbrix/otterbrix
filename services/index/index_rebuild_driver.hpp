@@ -40,6 +40,31 @@ namespace services::index {
     // chunk.row_ids. A table with no rows still goes through: the clear is what removes the
     // stale entries, and repopulate_table expects the empty feed.
     //
+    // WHERE THE CALL GOES IN THE ROUND, which is the half a shared function cannot enforce
+    // for its callers and therefore the half they diverged on twice.
+    //
+    //     compaction (agent_disk_t::checkpoint_inner)  ->  THIS CALL  ->  WAL truncation
+    //
+    // AFTER the compaction, because that is what renumbers the rows this re-stages.
+    // BEFORE the truncation, because the truncation is the round's only destructive step and
+    // this call is the round's last chance to fail recoverably. Between the compact
+    // committing its .otbx header and this driver's force_flush landing, the durable state is
+    // a post-compact table under pre-compact indexes; whatever ends the round inside that
+    // window — an error returned from here, or a kill -9 — must not ALSO have destroyed
+    // journal segments. operator_checkpoint_t ran the truncation FIRST until
+    // test_checkpoint_rebuild_before_truncate pinned the order;
+    // manager_wal_replicate_t::run_auto_checkpoint has always had it right, at step (c2)
+    // ahead of step (d).
+    //
+    // WHAT THE ORDER DOES NOT BUY, so nobody reads more into it than it says: it does not
+    // shorten the window. A crash after the compaction is durable and before this driver's
+    // flush lands leaves indexes naming pre-compact rows whether the journal was trimmed or
+    // not, and NOTHING repairs that on the next start — base_spaces rebuilds no index at
+    // startup (manager_index.hpp records the removal of the pass that used to look like it
+    // did) and WAL replay maintains none either. Closing that window needs a durable
+    // "these oids were renumbered and not yet rebuilt" fact that bootstrap can act on; it
+    // is not something a call order can express.
+    //
     // DRAINED-OR-RELEASED, never abandoned: a live fetch-next cursor gates compact() on its
     // oid, so a leaked one would wedge the very table the next round has to reclaim. The
     // error exit closes the cursor before returning.

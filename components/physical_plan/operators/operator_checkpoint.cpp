@@ -40,8 +40,8 @@ namespace components::operators {
         // the CHECKPOINT stopped failing and started SUCCEEDING -- clear()'s recursive
         // remove_directory erases the injected fault together with the tree, so the rebuild's
         // flush then lands on a clean path and the round reports success over a device the
-        // index could not write a moment earlier. Step 4 truncates the WAL, so that success is
-        // not harmless.
+        // index could not write a moment earlier. The last step truncates the WAL, so that
+        // success is not harmless.
         //
         // Replacing it with a probe that reports the same health WITHOUT writing bytes that
         // are about to be unlinked needs a new door on index_agent_contract, which is not this
@@ -50,9 +50,9 @@ namespace components::operators {
             auto [_fi, fif] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::flush_all_indexes,
                                                ctx->session);
-            // THE STATEMENT IS THE CHANNEL. Step 4 below truncates the WAL, so an index that
-            // cannot reach the device must stop the round here rather than be logged inside
-            // the agent and forgotten.
+            // THE STATEMENT IS THE CHANNEL. The last step below truncates the WAL, so an index
+            // that cannot reach the device must stop the round here rather than be logged
+            // inside the agent and forgotten.
             if (auto flush_error = co_await std::move(fif); flush_error.contains_error()) {
                 set_error(flush_error);
                 mark_failed();
@@ -93,36 +93,37 @@ namespace components::operators {
             checkpoint_wal_id = co_await std::move(cpf);
         }
 
-        if (checkpoint_wal_id > services::wal::id_t{0} && ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto [_wt, wtf] = actor_zeta::send(ctx->wal_address,
-                                               &services::wal::manager_wal_replicate_t::truncate_before,
-                                               ctx->session,
-                                               checkpoint_wal_id);
-            // THE STATEMENT IS THE CHANNEL, same as the index flush in step 1. A truncate that
-            // refused means a segment could not be read — the WAL is not in the state this
-            // CHECKPOINT reports, so say so instead of returning success over it.
-            if (auto truncate_error = co_await std::move(wtf); truncate_error.contains_error()) {
-                set_error(truncate_error);
-                mark_failed();
-                co_return;
-            }
-        }
-
-        // Index rebuild. This MUST run AFTER checkpoint_all: checkpoint_inner
-        // compact()s each table's on-disk storage, which renumbers row ids
-        // (0-based, gap-free post-compact). The index stores those PHYSICAL ids, so
-        // leaving it as-is would make every post-checkpoint index_scan name a row that
-        // moved or vanished. repopulate_table clears the on-disk index backing AND the
-        // agents' stores before re-inserting, so both btree duplicate-growth and
-        // disk_hash wrong-row drift are wiped in one pass. Sequential per-oid is
-        // fine: checkpoint is a cold, exclusive operation.
+        // Index rebuild. It MUST run AFTER checkpoint_all and BEFORE the truncate below, and
+        // the two halves of that sandwich are owed to different facts.
         //
-        // THE LOOP ITSELF NOW LIVES IN services::index::repopulate_indexes_after_compaction,
-        // and moving it there is the point rather than tidiness. compact() is reached from
-        // two orchestrations — this operator and manager_wal_replicate_t's auto-checkpoint —
-        // and only this one had the rebuild written out longhand, so every auto-checkpoint
-        // renumbered indexed tables and left their indexes naming pre-compact rows. One
-        // shared driver is what stops a third caller from repeating that.
+        // AFTER checkpoint_all, because checkpoint_inner compact()s each table's on-disk
+        // storage, which renumbers row ids (0-based, gap-free post-compact). The index stores
+        // those PHYSICAL ids, so rebuilding earlier would re-stage the ids that are about to
+        // be replaced. repopulate_table clears the on-disk index backing AND the agents'
+        // stores before re-inserting, so both btree duplicate-growth and disk_hash wrong-row
+        // drift are wiped in one pass. Sequential per-oid is fine: checkpoint is a cold,
+        // exclusive operation.
+        //
+        // BEFORE truncate_before, because THE TRUNCATION IS THIS ROUND'S POINT OF NO RETURN
+        // and the rebuild is the round's last chance to fail recoverably. Between the compact
+        // committing its header and the rebuild's force_flush landing (btree and bitcask both
+        // end commit_inserts with one), the durable state is a post-compact table under
+        // pre-compact indexes — permanently, because nothing repairs it later: base_spaces
+        // rebuilds no index at startup (the pass that did was removed as a proven no-op) and
+        // WAL replay maintains none either. Whatever ends the round inside that window —
+        // a refused truncate returning through the branch below, or a kill -9 — must not
+        // ALSO have destroyed journal segments. Ordering it this way is what makes the
+        // refusal path safe; it does not shorten the window itself (see the note on
+        // repopulate_indexes_after_compaction).
+        //
+        // THE LOOP ITSELF LIVES IN services::index::repopulate_indexes_after_compaction, and
+        // it being there is the point rather than tidiness. compact() is reached from three
+        // orchestrations — this operator, manager_wal_replicate_t's auto-checkpoint and
+        // operator_vacuum_t — and only this one once had the rebuild written out longhand, so
+        // every auto-checkpoint renumbered indexed tables and left their indexes naming
+        // pre-compact rows. One shared driver is what stops a fourth caller from repeating
+        // that; the ORDER around it is stated on the driver, because that is the half a
+        // shared function cannot enforce for its callers and the half these two diverged on.
         {
             auto rebuild_error =
                 co_await services::index::repopulate_indexes_after_compaction(resource_,
@@ -134,8 +135,24 @@ namespace components::operators {
             if (rebuild_error.contains_error()) {
                 // A producer defect in the rebuild feed (scan chunks without physical
                 // row_ids) or a refused scan: fail the CHECKPOINT statement loudly rather
-                // than leave behind an index that lies.
+                // than leave behind an index that lies — and leave the journal alone, since
+                // the step that would have trimmed it is below this return.
                 set_error(rebuild_error);
+                mark_failed();
+                co_return;
+            }
+        }
+
+        if (checkpoint_wal_id > services::wal::id_t{0} && ctx->wal_address != actor_zeta::address_t::empty_address()) {
+            auto [_wt, wtf] = actor_zeta::send(ctx->wal_address,
+                                               &services::wal::manager_wal_replicate_t::truncate_before,
+                                               ctx->session,
+                                               checkpoint_wal_id);
+            // THE STATEMENT IS THE CHANNEL, same as the index flush in step 1. A truncate that
+            // refused means a segment could not be read — the WAL is not in the state this
+            // CHECKPOINT reports, so say so instead of returning success over it.
+            if (auto truncate_error = co_await std::move(wtf); truncate_error.contains_error()) {
+                set_error(truncate_error);
                 mark_failed();
                 co_return;
             }

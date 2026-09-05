@@ -707,6 +707,13 @@ namespace services::wal {
         //      statement's rebuild, which is why every auto-checkpoint left the indexes
         //      behind. It now calls the SAME driver the operator does.
         //
+        //      AND IT SITS AHEAD OF THE TRUNCATE AT (d) ON PURPOSE. The truncation is the
+        //      only step of the round that destroys anything, so a rebuild that refuses must
+        //      be able to end the round with the journal still intact. The statement operator
+        //      ran the truncation first and lost exactly that, until the order was pinned by
+        //      test_checkpoint_rebuild_before_truncate; the rule now lives on the driver's
+        //      own declaration so a third orchestration inherits it with the call.
+        //
         //      The snapshot is committed_rows_snapshot(): this is not a statement and owns
         //      no transaction, and an index is supposed to hold every committed row (the
         //      TABLE decides what a reader may see, so the index answers a superset and

@@ -588,8 +588,12 @@ namespace services::disk {
     manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
                                             uint64_t commit_id,
                                             std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Fanout: ranges may mix catalog and user OIDs; the agent inner handler is
-        // idempotent for not-owned OIDs, so over-routing is safe.
+        // Fanout: ranges may mix catalog and user OIDs; each is partitioned to its OWNING
+        // agent by pool_idx_for_oid below, so nothing here is over-routed. (A comment here
+        // used to call the agent's skip "idempotent for not-owned OIDs" — with the exact
+        // partitioning that reading is dead: an oid the routed agent has no storage for
+        // means the OWNER has no storage, and the agent now reports it as a flip that DID
+        // NOT HAPPEN. See report_publish_revert_miss in agent_disk.cpp.)
         if (!agents_.empty()) {
             // emplace_back() yields vector(alloc): libc++ uses-allocator construction
             // appends per_agent's allocator as a trailing arg to the inner vector's ctor.

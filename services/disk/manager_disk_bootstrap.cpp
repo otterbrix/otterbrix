@@ -238,9 +238,11 @@ namespace services::disk {
             // ONE shared post-condition over BOTH legs. create_storage_disk_sync returns void
             // and swallows construction_failed() (agent_disk.cpp:151-160, reachable with a
             // device that refuses the very first write); bootstrap_disk_inner_sync collapses
-            // three outcomes into one bool (agent_disk.cpp:130-142); and load_storage_disk_sync
-            // ignores transfer_to_agent's result (manager_disk_io.cpp:447). All three end the
-            // same way — no storage for this oid — and this is the one place that can see it.
+            // three outcomes into one bool (agent_disk.cpp:130-142). (load_storage_disk_sync
+            // used to ignore transfer_to_agent's result too; it RETURNS it now, and the load
+            // leg above refuses on it directly — the post-condition still stands behind it as
+            // the one check that also covers the create leg.) Every failure ends the same
+            // way — no storage for this oid — and this is the one place that can see it.
             if (agents_.empty() || agents_[0] == nullptr || !agents_[0]->has_storage_sync(tbl_oid)) {
                 // A REFUSAL MUST BE RETRYABLE, so it may not leave behind the one thing that
                 // would block the retry: the zero-byte file a create leaves when its very first
@@ -1560,11 +1562,17 @@ namespace services::disk {
             // pg_index carries exactly [indexrelid, indrelid, indkey, indisvalid,
             // indtype]. Any other shape is catalog corruption — refuse to guess
             // which backend owns each index directory (rule 6: loud, no fallback).
+            // REFUSE THE START, NOT THE PROCESS: this runs pre-scheduler on the
+            // bootstrap thread (base_spaces), where std::runtime_error is the same
+            // catchable startup refusal bootstrap_one already throws twice. It used
+            // to std::abort() — a SIGABRT driven purely by bytes read from disk,
+            // uncatchable by the embedder and unretryable once the row is repaired.
             error(log,
                   "manager_disk_t::scan_alive_pg_index_sync: pg_index has {} columns, expected 5 "
-                  "(indtype missing?) — catalog is corrupt, aborting",
+                  "(indtype missing?) — catalog is corrupt, refusing to start",
                   idx_table.column_count());
-            std::abort();
+            throw std::runtime_error("pg_index has " + std::to_string(idx_table.column_count()) +
+                                     " columns, expected 5 — catalog is corrupt, refusing to start");
         }
         if (idx_table.calculate_size() == 0) {
             return result;
@@ -1608,25 +1616,37 @@ namespace services::disk {
                     // directory — reading bitcask files through a B+tree (or vice
                     // versa) silently corrupts them, so fail LOUDLY instead.
                     if (chunk.is_null(4, i)) {
+                        // Same start-refusal contract as the column-count check above:
+                        // loud, catchable, retryable once the row is deleted or repaired.
                         error(log,
                               "manager_disk_t::scan_alive_pg_index_sync: pg_index row "
-                              "(indexrelid={}, indrelid={}) has NULL indtype — catalog is corrupt, aborting",
+                              "(indexrelid={}, indrelid={}) has NULL indtype — catalog is corrupt, refusing to start",
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid));
-                        std::abort();
+                        throw std::runtime_error("pg_index row (indexrelid=" +
+                                                 std::to_string(static_cast<unsigned>(row.oid)) +
+                                                 ") has NULL indtype — catalog is corrupt, refusing to start");
                     }
                     const auto indtype_v = chunk.get_value<std::string_view>(4, i);
                     row.type = indtype_v.size() == 1
                                    ? components::logical_plan::index_type_from_indtype_code(indtype_v.front())
                                    : components::logical_plan::index_type::no_valid;
                     if (row.type == components::logical_plan::index_type::no_valid) {
+                        // Same start-refusal contract as the two checks above. The refusal
+                        // to GUESS the owning backend stands: reading bitcask files through
+                        // a B+tree (or vice versa) silently corrupts them.
                         error(log,
                               "manager_disk_t::scan_alive_pg_index_sync: pg_index row "
-                              "(indexrelid={}, indrelid={}) has unknown indtype '{}' — catalog is corrupt, aborting",
+                              "(indexrelid={}, indrelid={}) has unknown indtype '{}' — catalog is corrupt, "
+                              "refusing to start",
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid),
                               std::string(indtype_v.data(), indtype_v.size()));
-                        std::abort();
+                        throw std::runtime_error("pg_index row (indexrelid=" +
+                                                 std::to_string(static_cast<unsigned>(row.oid)) +
+                                                 ") has unknown indtype '" +
+                                                 std::string(indtype_v.data(), indtype_v.size()) +
+                                                 "' — catalog is corrupt, refusing to start");
                     }
                     std::pmr::string raw_indkey{resource_};
                     if (!chunk.is_null(2, i)) {
@@ -1842,16 +1862,33 @@ namespace services::disk {
     std::string manager_disk_t::read_setting_sync(std::string_view name) {
         // agents_[0] (catalog agent) owns pg_settings. Pre-scheduler-start,
         // single-threaded.
+        //
+        // AN EMPTY STRING MEANS EXACTLY "NO ROW WITH THAT NAME". It used to also mean
+        // "pg_settings is not loaded" and "pg_settings has the wrong shape", so a stored
+        // setting silently reverted to the caller's built-in default whenever the read
+        // could not be performed. Those two states cannot legitimately occur after
+        // bootstrap_system_tables_sync (which seeds pg_settings FIRST and refuses the
+        // start when any system table does not come up), so reaching them here is a
+        // sequencing bug or catalog corruption — refused with the same pre-scheduler
+        // std::runtime_error the bootstrap refusals use, never folded into "absent".
+        // A manager with no agents at all (disk-less construction) has no stored
+        // settings by construction; its empty answer is the honest one and stays.
         const auto settings_oid = catalog::well_known_oid::pg_settings_table;
         if (agents_.empty() || agents_[0] == nullptr) {
             return {};
         }
         const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(settings_oid);
         if (entry == nullptr) {
-            return {};
+            throw std::runtime_error("read_setting_sync: pg_settings is not loaded — called before "
+                                     "bootstrap_system_tables_sync, refusing to answer 'setting absent'");
         }
         auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
-        if (table.column_count() < 2 || table.calculate_size() == 0) {
+        if (table.column_count() < 2) {
+            throw std::runtime_error("read_setting_sync: pg_settings has " + std::to_string(table.column_count()) +
+                                     " columns, expected at least 2 — catalog is corrupt, refusing to answer "
+                                     "'setting absent'");
+        }
+        if (table.calculate_size() == 0) {
             return {};
         }
         core::pmr::otterbrix_resource scan_resource;

@@ -19,6 +19,7 @@
 #include <services/wal/record.hpp>
 #include <services/wal/wal_reader.hpp>
 
+#include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
 #include <filesystem>
@@ -542,5 +543,288 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
     }
     // (b) no WAL record was emitted — WAL manager was never wired.
     REQUIRE(pg_catalog_physical_count(dir) == 0);
+    cleanup_dir(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Wave-disk cases: the PHYSICAL_ADD_COLUMN journal leg on the append and update
+// paths, and the backfill's replay leg.
+// ---------------------------------------------------------------------------
+
+namespace {
+    // Count the PHYSICAL_ADD_COLUMN records the journal holds for one table.
+    std::size_t add_column_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
+        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        configuration::config_wal c;
+        c.path = dir;
+        c.on = true;
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        std::size_t n = 0;
+        for (auto& r : records_result.value()) {
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_ADD_COLUMN && r.table_oid == target_oid)
+                ++n;
+        }
+        return n;
+    }
+
+    // Build a one-chunk batch over BIGINT columns col_names, all rows valued base+i.
+    std::pmr::vector<components::vector::data_chunk_t> bigint_batch(std::pmr::memory_resource* resource,
+                                                                    const std::vector<std::string>& col_names,
+                                                                    uint64_t rows,
+                                                                    std::int64_t base) {
+        std::pmr::vector<components::types::complex_logical_type> types(resource);
+        for (const auto& name : col_names) {
+            components::types::complex_logical_type t{components::types::logical_type::BIGINT};
+            t.set_alias(name);
+            types.push_back(std::move(t));
+        }
+        components::vector::data_chunk_t chunk(resource, types, rows);
+        chunk.set_cardinality(rows);
+        for (uint64_t i = 0; i < rows; ++i) {
+            for (uint64_t cidx = 0; cidx < col_names.size(); ++cidx) {
+                chunk.set_value(cidx, i, static_cast<std::int64_t>(base + static_cast<std::int64_t>(i)));
+            }
+        }
+        std::pmr::vector<components::vector::data_chunk_t> batch(resource);
+        batch.emplace_back(std::move(chunk));
+        return batch;
+    }
+
+    components::execution_context_t txn_exec_ctx(uint64_t txn_id, components::catalog::oid_t table_oid) {
+        components::table::transaction_data td(txn_id, 1);
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        return components::execution_context_t{session_id_t{}, td, {}, table_oid};
+    }
+} // namespace
+
+// #34 — THE ADD-COLUMN JOURNAL RECORD IS AWAITED, NOT FIRE-AND-FORGET. Schema growth on the
+// append path sends its PHYSICAL_ADD_COLUMN record ahead of the PHYSICAL_INSERT to the same
+// FIFO WAL worker; the send used to DROP the future, so the record's outcome was never read.
+// It is kept and DRAINED now, after the insert await — a completed future by then (same FIFO
+// worker, send order), so the drain never suspends and the handler keeps its single
+// suspension point. This case pins the drained path end-to-end on the happy side: a growth
+// append with WAL wired must succeed, materialise the row, AND land exactly one
+// PHYSICAL_ADD_COLUMN record in the journal, wal-id-ordered AHEAD of the PHYSICAL_INSERT it
+// enabled. A hang in the drain (the lost-wakeup the ordering guards against) or a mis-read
+// of the future fails here. The pure "add-column write refused while the insert write
+// succeeds" isolation is NOT stageable at this layer — wal_page_writer coalesces both small
+// records into one buffered page and one file write, so any file-level fault that reaches
+// the add-column write reaches the insert write too, and the insert's already-awaited
+// refusal covers the append on either leg; the drain's value is that it no longer LEAKS the
+// add-column outcome, proven structurally + by this happy-path guard.
+TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_ahead_of_the_insert") {
+    auto dir = wal_cat_dir() + "/addcol_journaled";
+    cleanup_dir(dir);
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    {
+        fixture fx(dir);
+        auto ns_oid = test_create_namespace(fx, "ns_addcol");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_addcol", cols);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  cols,
+                  /*is_computed=*/false);
+
+        // A first, healthy append (no growth): one row of just column 'a'.
+        {
+            auto r = fx.invoke(&manager_disk_t::storage_append,
+                               txn_exec_ctx(88, table_oid),
+                               table_oid,
+                               bigint_batch(&fx.resource, {"a"}, 1, 1));
+            REQUIRE_FALSE(r.has_error());
+            REQUIRE(r.value().second == 1);
+        }
+
+        // A second append that CARRIES a new alias 'b' at a wider width — stage 1b grows the
+        // schema, emits the PHYSICAL_ADD_COLUMN record (now drained), then the PHYSICAL_INSERT.
+        {
+            auto r = fx.invoke(&manager_disk_t::storage_append,
+                               txn_exec_ctx(88, table_oid),
+                               table_oid,
+                               bigint_batch(&fx.resource, {"a", "b"}, 1, 2));
+            INFO("the drained add-column path must not hang and must not fail the growth append");
+            REQUIRE_FALSE(r.has_error());
+            REQUIRE(r.value().second == 1);
+        }
+
+        // Commit txn 88 so read_committed_records keeps the physical records.
+        {
+            auto [_c, cf] = actor_zeta::otterbrix::send(fx.wal->address(),
+                                                        &services::wal::manager_wal_replicate_t::commit_txn,
+                                                        session_id_t{},
+                                                        std::uint64_t{88},
+                                                        services::wal::wal_sync_mode::NORMAL,
+                                                        catalog::well_known_oid::main_database,
+                                                        std::uint64_t{1000});
+            for (int i = 0; i < 400000 && !cf.is_ready(); ++i) {
+                fx.scheduler->run(1);
+                std::this_thread::yield();
+            }
+            REQUIRE(cf.is_ready());
+            REQUIRE_FALSE(std::move(cf).take_ready().has_error());
+        }
+
+        auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+        REQUIRE_FALSE(total.has_error());
+        REQUIRE(total.value() == 2);
+    }
+
+    INFO("exactly one PHYSICAL_ADD_COLUMN record, and it precedes its PHYSICAL_INSERT in wal order");
+    REQUIRE(add_column_records_for(dir, table_oid) == 1);
+    // Ordering: the first physical record for this table that is an ADD_COLUMN must come
+    // before the INSERT it enabled (read_committed_records returns wal-id ascending).
+    {
+        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        configuration::config_wal c;
+        c.path = dir;
+        c.on = true;
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        int add_col_idx = -1;
+        int growth_insert_idx = -1;
+        int seq = 0;
+        int inserts_seen = 0;
+        for (auto& r : records_result.value()) {
+            if (r.table_oid != table_oid || !r.is_physical()) {
+                continue;
+            }
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_ADD_COLUMN && add_col_idx < 0) {
+                add_col_idx = seq;
+            }
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
+                ++inserts_seen;
+                // The growth INSERT is the SECOND insert for this table (the first append
+                // carried no growth).
+                if (inserts_seen == 2) {
+                    growth_insert_idx = seq;
+                }
+            }
+            ++seq;
+        }
+        REQUIRE(add_col_idx >= 0);
+        REQUIRE(growth_insert_idx >= 0);
+        REQUIRE(add_col_idx < growth_insert_idx);
+    }
+    cleanup_dir(dir);
+}
+
+// #319 — THE BACKFILL'S REPLAY LEG, PINNED WITHOUT THE DESTRUCTOR CHECKPOINT. The
+// added_at_commit_id stamp is patched in memory and journalled as a PHYSICAL_UPDATE; after
+// a kill with NO checkpoint the journal is the stamp's ONLY carrier. The restart test in
+// integration absorbs the stamp through the teardown checkpoint, so the record's content
+// and the disk-side replay leg (direct_update_sync) went unpinned — corrupting either
+// failed nothing. This fixture never checkpoints: phase B replays the journal through the
+// same direct_* methods base_spaces replay uses and the stamp must come back.
+TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_through_the_journal_alone") {
+    auto dir = wal_cat_dir() + "/backfill_replay";
+    cleanup_dir(dir);
+    constexpr auto pg_attr = catalog::well_known_oid::pg_attribute_table;
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    catalog::oid_t attoid_a = catalog::INVALID_OID;
+
+    auto read_added_at = [&](fixture& fx, catalog::oid_t attoid) -> std::int64_t {
+        std::pmr::vector<std::uint64_t> keys{&fx.resource};
+        keys.emplace_back(catalog::pg_attribute_col::attoid);
+        std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
+        vals.emplace_back(&fx.resource, attoid);
+        auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), std::move(vals));
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.is_null(catalog::pg_attribute_col::added_at_commit_id, i))
+                    continue;
+                return chunk.get_value<std::int64_t>(catalog::pg_attribute_col::added_at_commit_id, i);
+            }
+        }
+        return -1;
+    };
+
+    // Phase A — live: create a table (its column's pg_attribute row is journalled), stamp
+    // added_at via the backfill (journalled as PHYSICAL_UPDATE), then KILL: the fixture
+    // teardown checkpoints nothing.
+    {
+        fixture fx(dir);
+        auto ns_oid = test_create_namespace(fx, "ns_backfill");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_backfill", cols);
+
+        // Find the attoid the create minted for column 'a'.
+        {
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_attribute_col::attrelid);
+            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
+            vals.emplace_back(&fx.resource, table_oid);
+            auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), std::move(vals));
+            for (auto& chunk : batches) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (chunk.is_null(catalog::pg_attribute_col::attoid, i))
+                        continue;
+                    attoid_a = static_cast<catalog::oid_t>(
+                        chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, i));
+                }
+            }
+            REQUIRE(attoid_a != catalog::INVALID_OID);
+        }
+
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills(&fx.resource);
+        components::pg_attribute_commit_id_backfill_t b;
+        b.attoid = attoid_a;
+        b.kind = components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
+        backfills.push_back(std::move(b));
+        auto stamp_err = fx.invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
+                                   auto_ctx(),
+                                   std::move(backfills),
+                                   std::uint64_t{4242});
+        REQUIRE_FALSE(stamp_err.contains_error());
+        REQUIRE(read_added_at(fx, attoid_a) == 4242);
+    }
+
+    // Read the journal BEFORE any new engine touches the directory.
+    core::pmr::otterbrix_resource reader_resource;
+    configuration::config_wal wal_c;
+    wal_c.path = dir;
+    wal_c.on = true;
+    auto reader_log = initialization_logger("python", "/tmp/docker_logs/");
+    services::wal::wal_reader_t reader(&reader_resource, wal_c, reader_log);
+    auto records_result = reader.read_committed_records(services::wal::id_t{0});
+    REQUIRE_FALSE(records_result.has_error());
+    auto& records = records_result.value();
+
+    // Phase B — restart after the kill: bootstrap re-seeds, then the journal's pg_attribute
+    // records are applied through the SAME direct replay methods base_spaces uses
+    // (direct_append_sync per chunk for PHYSICAL_INSERT, direct_update_sync for
+    // PHYSICAL_UPDATE). The stamp must come back from the journal alone.
+    {
+        fixture fx2(dir, /*wire_wal=*/false);
+        std::size_t updates_applied = 0;
+        for (auto& r : records) {
+            if (!r.is_physical() || r.table_oid != pg_attr)
+                continue;
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
+                for (auto& chunk : r.physical_data) {
+                    auto append_r = fx2.disk->direct_append_sync(pg_attr, chunk);
+                    REQUIRE_FALSE(append_r.has_error());
+                }
+            } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
+                REQUIRE_FALSE(r.physical_data.empty());
+                auto upd_err = fx2.disk->direct_update_sync(pg_attr, r.physical_row_ids, r.physical_data.front());
+                REQUIRE_FALSE(upd_err.contains_error());
+                ++updates_applied;
+            }
+        }
+        INFO("the journal must hold the backfill's PHYSICAL_UPDATE record");
+        REQUIRE(updates_applied >= 1);
+        INFO("after replay the stamp is back — the journal alone carried it across the kill");
+        REQUIRE(read_added_at(fx2, attoid_a) == 4242);
+    }
     cleanup_dir(dir);
 }

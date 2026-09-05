@@ -1523,3 +1523,61 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
 
     cleanup_refusal_dir();
 }
+
+// THE pg_index SCAN USED TO KILL THE PROCESS OVER BYTES IT READ FROM DISK. Three legs of
+// scan_alive_pg_index_sync called std::abort() on a row it could not classify: a pg_index
+// with the wrong column count, a NULL indtype, an unknown indtype code. Corrupt catalog
+// bytes must refuse the START — the same std::runtime_error the two bootstrap_one refusals
+// in this file family throw, catchable by the embedder, retryable once the row is repaired
+// — never SIGABRT, which takes the process regardless of who embeds it and leaves no seam
+// to repair through. The refusal to GUESS the owning backend stands unchanged: reading
+// bitcask files through a B+tree corrupts them, so the scan still does not proceed.
+TEST_CASE("services::disk::open::an_unknown_indtype_refuses_the_start_instead_of_killing_the_process") {
+    cleanup_refusal_dir();
+    auto base = std::filesystem::path(refusal_dir());
+    std::filesystem::create_directories(base);
+
+    open_fixture fx(base);
+    fx.manager->bootstrap_system_tables_sync();
+
+    // A pg_index row whose indtype code no backend owns. Written through the normal
+    // catalog-append door (no hand-laid files): the builder passes the char through.
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+    auto bad_row = catalog::build_pg_index_row(&fx.resource, oids[0], oids[1], "1", true, 'z');
+    disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                           disk_test_helpers::auto_ctx(),
+                                           catalog::well_known_oid::pg_index_table,
+                                           std::move(bad_row)));
+
+    INFO("an unknown indtype is a start refusal, not a SIGABRT");
+    REQUIRE_THROWS_AS(fx.manager->scan_alive_pg_index_sync(), std::runtime_error);
+
+    // NOT BRICKED: the refusal leaves the row deletable, and with the row gone the same
+    // scan succeeds — the retry-with-the-cause-removed contract every case here holds.
+    fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
+              disk_test_helpers::auto_ctx(),
+              catalog::well_known_oid::pg_index_table,
+              std::int64_t{0},
+              oids[0]);
+    REQUIRE_NOTHROW(fx.manager->scan_alive_pg_index_sync());
+}
+
+TEST_CASE("services::disk::open::a_null_indtype_refuses_the_start_instead_of_killing_the_process") {
+    cleanup_refusal_dir();
+    auto base = std::filesystem::path(refusal_dir());
+    std::filesystem::create_directories(base);
+
+    open_fixture fx(base);
+    fx.manager->bootstrap_system_tables_sync();
+
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+    auto bad_row = catalog::build_pg_index_row(&fx.resource, oids[0], oids[1], "1", true, 'b');
+    bad_row.data[4].validity().set_invalid(0); // NULL indtype: the column is NOT nullable
+    disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                           disk_test_helpers::auto_ctx(),
+                                           catalog::well_known_oid::pg_index_table,
+                                           std::move(bad_row)));
+
+    INFO("a NULL indtype is a start refusal, not a SIGABRT");
+    REQUIRE_THROWS_AS(fx.manager->scan_alive_pg_index_sync(), std::runtime_error);
+}

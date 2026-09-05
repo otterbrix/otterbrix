@@ -38,6 +38,22 @@ namespace services::disk {
     // is quadratic in the rows already written.
     uint64_t table_checkpoints() noexcept;
     void reset_table_checkpoints() noexcept;
+
+    // Test-observable count of publish/revert legs (storage_publish_commits_inner,
+    // storage_publish_deletes_inner, storage_revert_deletes_inner,
+    // storage_revert_appends_inner) that found NO storage on the OWNING agent for an oid
+    // they were routed. Each miss is also an error log line — the manager routes ranges
+    // to the owner with pool_idx_for_oid BEFORE forwarding, so a miss never means
+    // "somebody else's oid"; it means a visibility flip / unwind that DID NOT HAPPEN.
+    uint64_t publish_revert_misses() noexcept;
+    void reset_publish_revert_misses() noexcept;
+
+    // Test-observable checkpoint-round tallies (per entry, across all agents): entries
+    // DEFERRED by a round (degraded storage / open cursor / MVCC gate / failed
+    // checkpoint) and entries whose rewrite COMMITTED. reset together.
+    uint64_t checkpoint_entries_deferred() noexcept;
+    uint64_t checkpoint_entries_rewritten() noexcept;
+    void reset_checkpoint_entry_tallies() noexcept;
 #endif
 
     using path_t = std::filesystem::path;
@@ -100,6 +116,15 @@ namespace services::disk {
     // table is a file, so there is nothing left to suppress on.
     struct checkpoint_result_t {
         wal::id_t min_prev_checkpoint_wal_id;
+        // #304 — the round's per-entry tallies, so the caller can tell "everything was
+        // checkpointed" from "everything was deferred" (both return a floor; only the
+        // tallies say which). deferred = degraded storage / open cursor / MVCC gate /
+        // failed checkpoint (entry keeps its old root and pins the floor); rewritten =
+        // a new root committed; advanced = B6 unchanged entries that advanced their
+        // wal-id chain without a rewrite.
+        uint64_t deferred{0};
+        uint64_t rewritten{0};
+        uint64_t advanced{0};
     };
 
     /// Agent role / storages_ partition. agent 0 = CATALOG (pg_* tables + oid_gen_ +
@@ -269,8 +294,9 @@ namespace services::disk {
                              std::unique_ptr<components::vector::data_chunk_t> data);
 
         // storage_publish_commits_inner — MVCC visibility flip. Iterates
-        //   `ranges` and calls commit_append per range against owned twins;
-        //   ranges whose table_oid isn't owned are skipped.
+        //   `ranges` and calls commit_append per range against owned twins. A range
+        //   whose oid this OWNING agent has no storage for is a flip that did not
+        //   happen: it reports loudly (see report_publish_revert_miss in the .cpp).
         unique_future<void>
         storage_publish_commits_inner(uint64_t commit_id,
                                       std::pmr::vector<components::pg_catalog_append_range_t> ranges);
@@ -289,7 +315,9 @@ namespace services::disk {
                                                          std::pmr::vector<components::catalog::oid_t> tables);
 
         // Abort-path + completion handlers (revert / update / delete / fetch).
-        // Not-owned OIDs no-op (or return null for fetch).
+        // A missing storage on the routed OWNER is loud on every one of them: the
+        // update/delete/fetch legs refuse through their wrappers, the void publish/
+        // revert legs report per-oid (report_publish_revert_miss).
 
         // storage_revert_appends_inner — batched abort. Reverse-iterates ranges to
         //   unwind in append-order opposite.

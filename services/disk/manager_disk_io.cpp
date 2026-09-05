@@ -61,11 +61,38 @@ namespace services::disk {
             agent_futures.emplace_back(std::move(fut));
         }
 
-        // Aggregate: min over min_prev_checkpoint_wal_id.
+        // Aggregate: min over min_prev_checkpoint_wal_id, plus the #304 round tallies —
+        // the return type stays wal::id_t (the WAL round's contract), so the tallies'
+        // channel to the operator is the log line below: without it a round that
+        // deferred EVERYTHING and a round that checkpointed everything answered with
+        // the same shape, and the auto-round could not see that its floor was pinned.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
+        uint64_t deferred = 0;
+        uint64_t rewritten = 0;
+        uint64_t advanced = 0;
         for (auto& f : agent_futures) {
             auto agent_result = co_await std::move(f);
             min_prev_id = std::min(min_prev_id, agent_result.min_prev_checkpoint_wal_id);
+            deferred += agent_result.deferred;
+            rewritten += agent_result.rewritten;
+            advanced += agent_result.advanced;
+        }
+
+        if (deferred > 0 && rewritten == 0) {
+            // The state observed as "boundaries 31/55/55/135, one truncation deleting
+            // nothing": every dirty entry sat behind a gate (usually the MVCC compact
+            // gate under sustained writes), its unchanged prev pinned the floor, and the
+            // round honestly truncated nothing. Structurally safe — the pinned floor is
+            // exactly what keeps the deferred tables' replay records alive — but it must
+            // not be silent, or the WAL grows round after round with every health line
+            // reporting success.
+            warn(log_,
+                 "manager_disk_t::checkpoint_all , session : {} , the round rewrote NOTHING and deferred {} "
+                 "entr{} ({} unchanged advanced) — the WAL floor cannot move past the deferred tables this round",
+                 session.data(),
+                 deferred,
+                 deferred == 1 ? "y" : "ies",
+                 advanced);
         }
 
         if (!agents_.empty()) {
@@ -94,7 +121,11 @@ namespace services::disk {
             // table can still be owed its replay records for that reason.)
             const bool wal_floor_reported = (min_prev_id != std::numeric_limits<wal::id_t>::max());
 
-            trace(log_, "manager_disk_t::checkpoint_all complete");
+            trace(log_,
+                  "manager_disk_t::checkpoint_all complete , rewritten : {} , advanced : {} , deferred : {}",
+                  rewritten,
+                  advanced,
+                  deferred);
             if (!wal_floor_reported) {
                 co_return wal::id_t{0};
             }

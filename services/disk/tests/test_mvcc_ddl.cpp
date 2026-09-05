@@ -627,3 +627,73 @@ TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     REQUIRE(deleted.value().size() == 1);
     CHECK(deleted.value()[0] == 1);
 }
+
+// resolve_namespace used to scan on the DEFAULT snapshot (transaction_data{}), not the
+// caller's ctx.txn — the same blindness the row-delete path had. A namespace created inside
+// an open transaction was invisible to ITS OWN resolve, so any verdict built on "found ==
+// false" (name collision checks, follow-up DDL in the same txn) read a lie. The scan now
+// carries ctx.txn: a txn sees its own uncommitted row (this case), other sessions still do
+// not (case 2 above), and a zero-txn ctx still sees exactly the committed state.
+TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row") {
+    fixture fx;
+    auto uncommitted = TRANSACTION_ID_START + 1;
+    {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        const components::catalog::oid_t ns_oid = oids[0];
+        auto writes =
+            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_own_txn"), ns_oid);
+        for (auto& w : writes)
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   fx.txn_ctx(uncommitted),
+                                                   w.table_oid,
+                                                   std::move(w.row)));
+        // Intentionally no MVCC swap (no storage_publish_commits call).
+    }
+    INFO("the creating transaction must see its own pg_namespace row");
+    auto own = fx.invoke(&manager_disk_t::resolve_namespace,
+                         fx.txn_ctx(uncommitted),
+                         std::string("ns_own_txn"),
+                         std::uint64_t{0});
+    REQUIRE_FALSE(own.has_error());
+    REQUIRE(own.value().found);
+
+    INFO("other sessions still do not (case 2's half must keep holding)");
+    auto other =
+        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"), std::uint64_t{0});
+    REQUIRE_FALSE(other.has_error());
+    REQUIRE_FALSE(other.value().found);
+}
+
+// list_namespaces: same snapshot fix as resolve_namespace above, on the enumeration leg.
+TEST_CASE("services::disk::mvcc::list_namespaces_sees_its_own_uncommitted_row") {
+    fixture fx;
+    auto uncommitted = TRANSACTION_ID_START + 1;
+    {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        const components::catalog::oid_t ns_oid = oids[0];
+        auto writes =
+            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_own_list"), ns_oid);
+        for (auto& w : writes)
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   fx.txn_ctx(uncommitted),
+                                                   w.table_oid,
+                                                   std::move(w.row)));
+    }
+    auto contains = [](const std::pmr::vector<std::string>& names, const char* wanted) {
+        for (const auto& n : names) {
+            if (n == wanted)
+                return true;
+        }
+        return false;
+    };
+
+    INFO("the creating transaction must see its own namespace in the enumeration");
+    auto own = fx.invoke(&manager_disk_t::list_namespaces, fx.txn_ctx(uncommitted));
+    REQUIRE_FALSE(own.has_error());
+    REQUIRE(contains(own.value(), "ns_own_list"));
+
+    INFO("other sessions still do not");
+    auto other = fx.invoke(&manager_disk_t::list_namespaces, fx.auto_ctx());
+    REQUIRE_FALSE(other.has_error());
+    REQUIRE_FALSE(contains(other.value(), "ns_own_list"));
+}

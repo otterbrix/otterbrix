@@ -54,13 +54,21 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
+    // ctx.txn, NOT the default snapshot — the same fix resolve_function_by_name and
+    // find_cast_oid below already carry. On transaction_data{} this scan saw only committed
+    // rows, so a namespace created inside an open transaction was invisible to ITS OWN
+    // resolve and one dropped in it still answered found=true; any verdict built on the
+    // negative ("no such namespace" collision checks, follow-up DDL in the txn) read a lie.
+    // A zero-txn ctx carries transaction_data{0,...}, which sees exactly the committed
+    // state — the behaviour every existing caller had.
     manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-    manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
+    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
         auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
                                              std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1});
+                                             std::vector<std::size_t>{0, 1},
+                                             ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<resolve_namespace_result_t>();
         }
@@ -161,12 +169,16 @@ namespace services::disk {
         co_return components::catalog::INVALID_OID;
     }
 
+    // ctx.txn, for the reason on resolve_namespace above: the enumeration must show a txn
+    // its own uncommitted namespaces and hide the ones it dropped, or the next verdict
+    // built on this list lies the same way the resolve did.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
-    manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
+    manager_disk_t::list_namespaces(execution_context_t ctx) {
         std::pmr::vector<std::string> out(resource());
         auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
                                              std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1});
+                                             std::vector<std::size_t>{0, 1},
+                                             ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<std::pmr::vector<std::string>>();
         }

@@ -730,3 +730,140 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     delete scheduler;
     std::filesystem::remove_all(cfg.path);
 }
+
+// 24. NOT NULL enforcement (stage 2b of storage_append_inner) is a REFUSAL, not a
+//     zero-length append. It used to co_return (0,0) with a trace line — the exact value an
+//     EMPTY batch legitimately produces — so the manager's per-chunk loop read it as
+//     "continue" and the statement reported success with the rows silently dropped. The
+//     refusal sits ABOVE the WAL write and the materialization, so nothing lands anywhere:
+//     the honest answer is an error, same family as cases 17-22.
+TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty_append") {
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    using components::vector::data_chunk_t;
+
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_notnull");
+
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
+    cols.emplace_back("b", complex_logical_type{logical_type::BIGINT});
+    cols[1].set_not_null(true);
+    auto table_oid = test_create_table(fx, ns_oid, "t_notnull", cols);
+    fx.invoke(&manager_disk_t::create_storage_disk,
+              session_id_t{},
+              table_oid,
+              catalog::well_known_oid::main_database,
+              cols,
+              /*is_computed=*/false);
+
+    auto two_col_chunk = [&](bool null_in_b) {
+        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        complex_logical_type ta{logical_type::BIGINT};
+        ta.set_alias("a");
+        types.push_back(std::move(ta));
+        complex_logical_type tb{logical_type::BIGINT};
+        tb.set_alias("b");
+        types.push_back(std::move(tb));
+        data_chunk_t chunk(&fx.resource, types, 2);
+        chunk.set_cardinality(2);
+        for (uint64_t i = 0; i < 2; ++i) {
+            chunk.set_value(0, i, static_cast<std::int64_t>(i + 1));
+            chunk.set_value(1, i, static_cast<std::int64_t>(i + 10));
+        }
+        if (null_in_b) {
+            chunk.data[1].validity().set_invalid(1); // row 1 of column b
+        }
+        std::pmr::vector<data_chunk_t> batch(&fx.resource);
+        batch.emplace_back(std::move(chunk));
+        return batch;
+    };
+
+    components::execution_context_t append_ctx{session_id_t{},
+                                               components::table::transaction_data{0, 0},
+                                               {},
+                                               table_oid};
+
+    INFO("a NULL in a NOT NULL column is a refusal, not a (0,0) success");
+    {
+        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, two_col_chunk(true));
+        REQUIRE(r.has_error());
+    }
+
+    INFO("nothing was materialized by the refused append");
+    {
+        auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+        REQUIRE_FALSE(total.has_error());
+        REQUIRE(total.value() == 0);
+    }
+
+    INFO("the channel is not over-broad: a valid batch still appends");
+    {
+        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, two_col_chunk(false));
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value().second == 2);
+    }
+}
+
+// 25. #48 — a publish/revert leg that finds NO storage on the OWNING agent is a flip that
+//     did not happen, and it says so. The manager partitions every range/oid to its owner
+//     with pool_idx_for_oid before forwarding, so a miss never means "somebody else's oid";
+//     the four inner handlers used to skip it with ZERO noise (and a manager comment called
+//     that "idempotent for not-owned OIDs"). The handlers stay unique_future<void> — their
+//     callers can only log — so the channel is an error line per miss plus this DEV tally.
+TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says_so") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_miss");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto table_oid = test_create_table(fx, ns_oid, "t_miss", cols);
+    fx.invoke(&manager_disk_t::create_storage_disk,
+              session_id_t{},
+              table_oid,
+              catalog::well_known_oid::main_database,
+              cols,
+              /*is_computed=*/false);
+    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+
+    services::disk::reset_publish_revert_misses();
+
+    INFO("publish_commits for an oid with no storage anywhere is a miss");
+    {
+        std::vector<components::pg_catalog_append_range_t> ranges;
+        ranges.push_back(components::pg_catalog_append_range_t{nowhere, 0, 3});
+        fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{2000}, std::move(ranges));
+        REQUIRE(services::disk::publish_revert_misses() == 1);
+    }
+
+    INFO("publish_deletes for it is a miss");
+    {
+        std::set<catalog::oid_t> tables{nowhere};
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{2000}, std::move(tables));
+        REQUIRE(services::disk::publish_revert_misses() == 2);
+    }
+
+    INFO("revert_deletes for it is a miss");
+    {
+        std::vector<catalog::oid_t> tables{nowhere};
+        fx.invoke(&manager_disk_t::storage_revert_deletes, txn_ctx(), std::move(tables));
+        REQUIRE(services::disk::publish_revert_misses() == 3);
+    }
+
+    INFO("revert_appends for it is a miss");
+    {
+        std::vector<components::pg_catalog_append_range_t> ranges;
+        ranges.push_back(components::pg_catalog_append_range_t{nowhere, 0, 3});
+        fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges));
+        REQUIRE(services::disk::publish_revert_misses() == 4);
+    }
+
+    INFO("an oid WITH storage is no miss on any leg, and a zero-count range stays a no-op");
+    {
+        std::vector<components::pg_catalog_append_range_t> ranges;
+        ranges.push_back(components::pg_catalog_append_range_t{table_oid, 0, 0});
+        fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{2000}, std::move(ranges));
+        std::set<catalog::oid_t> tables{table_oid};
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{2000}, std::move(tables));
+        REQUIRE(services::disk::publish_revert_misses() == 4);
+    }
+}

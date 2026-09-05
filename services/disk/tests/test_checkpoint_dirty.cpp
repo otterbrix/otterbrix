@@ -343,3 +343,66 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
     std::filesystem::remove_all(dir);
 }
 
+
+// #304 — A ROUND THAT DEFERS EVERYTHING IS VISIBLE. checkpoint_all's return type is the
+// WAL floor alone (the round's contract), and a floor comes back whether the entries were
+// rewritten or every one of them was deferred by the MVCC compact gate — so the auto-round
+// could not tell "all checkpointed" from "all deferred" and the pinned floor was invisible.
+// checkpoint_result_t now carries per-round tallies; the agents' DEV counters below are the
+// test-readable mirror, and checkpoint_all warns when a round rewrites nothing while
+// deferring entries (the state observed live as truncation boundaries 31/55/55/135 with a
+// truncation that deleted nothing).
+TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_counted") {
+    const auto root = std::filesystem::path(dirty_dir() + "_deferred");
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    {
+        fresh_disk fd(root);
+        fd.manager->bootstrap_system_tables_sync();
+        auto ns_oid = test_create_namespace(fd, "ns_defer");
+        auto table_oid = make_table(fd, ns_oid, "t_defer", 8);
+
+        // Stamp rows above a LOW watermark: append under txn 88 (a commit-range id in
+        // this fixture's bypass convention), then checkpoint with watermark 5. The MVCC
+        // gate must defer the entry — its stamps sit above the watermark — and the same
+        // holds for the pg_* tables whose rows the creates above published at 1000.
+        {
+            std::pmr::vector<components::types::complex_logical_type> types(&fd.resource);
+            components::types::complex_logical_type t{components::types::logical_type::BIGINT};
+            t.set_alias("value");
+            types.push_back(std::move(t));
+            components::vector::data_chunk_t chunk(&fd.resource, types, 1);
+            chunk.set_cardinality(1);
+            chunk.set_value(0, 0, static_cast<std::int64_t>(4242));
+            std::pmr::vector<components::vector::data_chunk_t> batch(&fd.resource);
+            batch.emplace_back(std::move(chunk));
+            components::table::transaction_data td(88, 1);
+            td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+            components::execution_context_t append_ctx{session_id_t{}, td, {}, table_oid};
+            auto r = fd.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            REQUIRE_FALSE(r.has_error());
+        }
+
+        services::disk::reset_checkpoint_entry_tallies();
+        {
+            auto floor1 = fd.invoke(&manager_disk_t::checkpoint_all,
+                                    session_id_t{},
+                                    services::wal::id_t{10},
+                                    std::uint64_t{5});
+            REQUIRE(floor1 <= services::wal::id_t{10});
+        }
+        INFO("a low watermark must defer the stamped entries, and the deferral must be counted");
+        REQUIRE(services::disk::checkpoint_entries_deferred() >= 1);
+
+        // A round everything can pass: watermark above every stamp. The deferred entries
+        // from round 1 are now rewritten and counted as such.
+        services::disk::reset_checkpoint_entry_tallies();
+        {
+            auto floor2 = fd.checkpoint_round(services::wal::id_t{20});
+            REQUIRE(floor2 <= services::wal::id_t{20});
+        }
+        REQUIRE(services::disk::checkpoint_entries_rewritten() >= 1);
+        REQUIRE(services::disk::checkpoint_entries_deferred() == 0);
+    }
+    std::filesystem::remove_all(root);
+}

@@ -649,7 +649,21 @@ namespace services::disk {
     // processing (see ctor).
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        inbox_.push(msg.release());
+        // boost::lockfree::queue::push refuses when it cannot allocate a node (the
+        // freelist grows on the heap, so only under real memory exhaustion). It used to
+        // be called unchecked with a hardcoded `success` returned: the raw pointer leaked
+        // AND the message was silently lost while the sender was told it was delivered —
+        // its future then never completed and the caller hung with no error anywhere.
+        // Reclaiming the pointer destroys the message's promise, which completes the
+        // sender's future as abandoned — a readable failure instead of a silent hang.
+        auto* raw = msg.release();
+        if (!inbox_.push(raw)) {
+            actor_zeta::mailbox::message_ptr reclaimed{raw};
+            error(log_,
+                  "manager_disk_t::enqueue_impl: inbox push refused (allocation failure) — the message is "
+                  "dropped and its future completes as abandoned");
+            return {false, actor_zeta::detail::enqueue_result::queue_closed};
+        }
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }

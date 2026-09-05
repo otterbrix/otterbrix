@@ -890,7 +890,11 @@ namespace services::disk {
         std::uint64_t max_persisted_commit_id_sync() const;
 
         // Read the value of a named setting from pg_settings. Returns the most recently
-        // appended value for the given name, or empty string if not found.
+        // appended value for the given name, or empty string ONLY when no row with that
+        // name exists. An unloaded or malformed pg_settings throws the pre-scheduler
+        // std::runtime_error startup refusal instead of masquerading as "setting absent"
+        // (bootstrap_system_tables_sync seeds pg_settings first, so those states are
+        // sequencing bugs or corruption, never a legitimate empty).
         // Synchronous — called at startup before actor schedulers start.
         std::string read_setting_sync(std::string_view name);
 
@@ -1442,8 +1446,13 @@ namespace services::disk {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        auto enqueue_status = enqueue_impl(std::move(msg));
-        static_cast<void>(enqueue_status);
+        // The status is read, not (void)-discarded (rule 14). A refused enqueue already
+        // destroyed the message in the .cpp overload (logged there), so `future` is
+        // completed as abandoned and returning it hands the caller a readable failure
+        // instead of a silent hang; a successful enqueue returns the same future live.
+        if (enqueue_impl(std::move(msg)).second != actor_zeta::detail::enqueue_result::success) {
+            assert(future.is_ready() && "a refused enqueue must complete the future as abandoned");
+        }
 
         return std::move(future);
     }

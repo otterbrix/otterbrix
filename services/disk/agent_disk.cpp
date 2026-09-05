@@ -16,10 +16,25 @@ namespace services::disk {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_table_checkpoints{0};
+        std::atomic<uint64_t> g_publish_revert_misses{0};
+        std::atomic<uint64_t> g_checkpoint_entries_deferred{0};
+        std::atomic<uint64_t> g_checkpoint_entries_rewritten{0};
     } // namespace
 
     uint64_t table_checkpoints() noexcept { return g_table_checkpoints.load(std::memory_order_relaxed); }
     void reset_table_checkpoints() noexcept { g_table_checkpoints.store(0, std::memory_order_relaxed); }
+    uint64_t publish_revert_misses() noexcept { return g_publish_revert_misses.load(std::memory_order_relaxed); }
+    void reset_publish_revert_misses() noexcept { g_publish_revert_misses.store(0, std::memory_order_relaxed); }
+    uint64_t checkpoint_entries_deferred() noexcept {
+        return g_checkpoint_entries_deferred.load(std::memory_order_relaxed);
+    }
+    uint64_t checkpoint_entries_rewritten() noexcept {
+        return g_checkpoint_entries_rewritten.load(std::memory_order_relaxed);
+    }
+    void reset_checkpoint_entry_tallies() noexcept {
+        g_checkpoint_entries_deferred.store(0, std::memory_order_relaxed);
+        g_checkpoint_entries_rewritten.store(0, std::memory_order_relaxed);
+    }
 #endif
 
     using namespace core::filesystem;
@@ -623,10 +638,17 @@ namespace services::disk {
                     wal_added_columns.push_back(col);
                 }
                 // add_column rebuilt the storage adapter; refresh our local
-                // storage_t* to point at the new adapter.
+                // storage_t* to point at the new adapter. A null adapter after the
+                // rebuild is a broken entry, not an empty append — it used to answer
+                // (0,0), the same success-shaped pair the NOT NULL leg below used to
+                // leak through.
                 s = entry->storage.get();
                 if (!s) {
-                    co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    std::pmr::string what{"storage_append: the adapter rebuild after schema growth left no "
+                                          "storage for table oid ",
+                                          resource()};
+                    what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+                    co_return core::error_t{core::error_code_t::io_error, std::move(what)};
                 }
             }
         }
@@ -675,17 +697,24 @@ namespace services::disk {
             data->data = std::move(expanded_data);
         }
 
-        // 2b. NOT NULL enforcement
+        // 2b. NOT NULL enforcement — a REFUSAL, not a zero-length append. This used to
+        //     co_return (0,0) with a trace line: the exact value an EMPTY batch
+        //     legitimately produces, which the manager's per-chunk loop reads as
+        //     "continue" — so the statement reported success while the rows were
+        //     silently dropped. The check sits ABOVE the WAL write and the
+        //     materialization, so nothing has landed anywhere: the honest answer is an
+        //     error, the same channel the missing-storage refusals above use.
         if (!table_columns.empty()) {
             for (size_t col = 0; col < table_columns.size() && col < data->column_count(); col++) {
                 if (table_columns[col].is_not_null()) {
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (!data->data[col].validity().row_is_valid(row)) {
-                            trace(log_,
-                                  "agent_disk[{}]::storage_append_inner: NOT NULL violation on column '{}'",
-                                  pool_idx_,
-                                  table_columns[col].name());
-                            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                            std::pmr::string what{"storage_append: NOT NULL violation on column '", resource()};
+                            what.append(table_columns[col].name().c_str());
+                            what.append("' of table oid ");
+                            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+                            what.append("; nothing was appended");
+                            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
                         }
                     }
                 }
@@ -720,25 +749,28 @@ namespace services::disk {
             //       (alias-tagged types); replay rebuilds the column defs and
             //       re-applies add_column ahead of the PHYSICAL_INSERT.
             //
-            //       Issued fire-and-forget (the future is intentionally dropped): we
-            //       MUST NOT co_await it here. This handler already co_awaits the
+            //       Sent BEFORE the first await, but its future is KEPT, not dropped: we
+            //       MUST NOT co_await it at this point. This handler co_awaits the
             //       PHYSICAL_INSERT future below; a SECOND sequential cross-actor
-            //       co_await on the same agent coroutine triggers the cooperative_actor
-            //       lost-wakeup (the await re-suspends after the first resume, the
-            //       producer's flag-based readiness never unblocks the parked mailbox,
-            //       and resume_impl returns early on the blocked-check before reaching
-            //       the awaited-continuation drain — see docs/actor-zeta-lost-wakeup.md,
-            //       "the coroutine re-suspended after resume on the next co_await").
-            //       That hung the engine on the first schema-growth INSERT.
+            //       co_await that SUSPENDS on the same agent coroutine triggers the
+            //       cooperative_actor lost-wakeup (the await re-suspends after the first
+            //       resume, the producer's flag-based readiness never unblocks the parked
+            //       mailbox, and resume_impl returns early on the blocked-check before
+            //       reaching the awaited-continuation drain — see
+            //       docs/actor-zeta-lost-wakeup.md). That hung the engine on the first
+            //       schema-growth INSERT.
             //
-            //       Durability + ordering are preserved without the await: both records
-            //       target the SAME single WAL worker, whose mailbox is FIFO, and the
-            //       manager allocates wal_id synchronously in send order, so the
-            //       ADD_COLUMN record (lower wal_id) is durably written ahead of its
-            //       dependent PHYSICAL_INSERT (higher wal_id). When the INSERT future
-            //       below resolves, the worker has necessarily already processed the
-            //       earlier ADD_COLUMN message. Replay applies records in ascending
-            //       wal_id order, so the column re-add precedes the row replay.
+            //       The DRAIN happens after the insert await instead (see 5a-iii): both
+            //       records target the SAME single WAL worker, whose mailbox is FIFO, and
+            //       the manager allocates wal_id synchronously in send order — so by the
+            //       time the INSERT future resolves, the worker has necessarily already
+            //       COMPLETED this future. Awaiting a completed future never suspends
+            //       (unique_future::awaiter::await_ready fast path), so the drain cannot
+            //       re-trigger the lost-wakeup — and unlike the fire-and-forget this
+            //       replaces, the record's REFUSAL is finally read. Replay applies
+            //       records in ascending wal_id order, so the column re-add precedes the
+            //       row replay.
+            unique_future<core::result_wrapper_t<wal::id_t>> add_column_future;
             if (!wal_added_columns.empty()) {
                 std::pmr::vector<components::types::complex_logical_type> col_types(resource());
                 col_types.reserve(wal_added_columns.size());
@@ -749,14 +781,15 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                [[maybe_unused]] auto _sc = actor_zeta::send(manager_wal_addr_,
-                                                             &wal::manager_wal_replicate_t::write_physical_add_column,
-                                                             ctx.session,
-                                                             table_oid,
-                                                             std::move(schema_chunk),
-                                                             static_cast<std::uint64_t>(wal_added_columns.size()),
-                                                             txn.transaction_id,
-                                                             db_oid);
+                auto [_sc, scf] = actor_zeta::send(manager_wal_addr_,
+                                                   &wal::manager_wal_replicate_t::write_physical_add_column,
+                                                   ctx.session,
+                                                   table_oid,
+                                                   std::move(schema_chunk),
+                                                   static_cast<std::uint64_t>(wal_added_columns.size()),
+                                                   txn.transaction_id,
+                                                   db_oid);
+                add_column_future = std::move(scf);
             }
 
             // 5a-ii. PHYSICAL_INSERT carrying the FINAL preprocessed chunk + the
@@ -764,9 +797,10 @@ namespace services::disk {
             //        ignores physical_row_start for placement) but CREATE INDEX
             //        backfill-from-WAL uses start_row as the row-id base, so it must
             //        equal the materialized start_row — which it does (computed above
-            //        and materialized below in the same atomic handler). This is the
-            //        ONE co_await of this handler (see 5a-i): awaiting it also confirms
-            //        the FIFO-earlier ADD_COLUMN record was durably written.
+            //        and materialized below in the same atomic handler). This is the ONE
+            //        co_await of this handler that can SUSPEND (see 5a-i/5a-iii): when it
+            //        resolves, the FIFO-earlier ADD_COLUMN record has been processed too,
+            //        and its already-completed future is drained suspension-free below.
             components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
             data->copy(wal_chunk, 0);
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
@@ -801,14 +835,45 @@ namespace services::disk {
                       pool_idx_,
                       static_cast<unsigned>(table_oid));
             }
+
+            // 5a-iii. Drain the ADD_COLUMN future (see 5a-i). The insert future above has
+            //         resolved, and both records went to the SAME FIFO WAL worker in send
+            //         order, so this future is already completed — the co_await takes the
+            //         await_ready fast path and cannot suspend, which is what keeps this
+            //         handler at ONE suspension despite two awaits. A refused schema record
+            //         refuses the append: nothing is materialized yet, the txn aborts, and
+            //         replay filters the (uncommitted) PHYSICAL_INSERT that outran it — the
+            //         journal never carries rows without the column they live in. This
+            //         used to be fire-and-forget, so the refusal was never read and the
+            //         rows were reported appended over a journal missing their schema.
+            if (add_column_future.valid()) {
+                auto add_column_result = co_await std::move(add_column_future);
+                if (add_column_result.has_error()) {
+                    error(log_,
+                          "agent_disk[{}]::storage_append_inner: the PHYSICAL_ADD_COLUMN did not reach the "
+                          "journal for oid={}, the rows are NOT appended: {}",
+                          pool_idx_,
+                          static_cast<unsigned>(table_oid),
+                          add_column_result.error().what);
+                    co_return add_column_result.convert_error<std::pair<uint64_t, uint64_t>>();
+                }
+                if (add_column_result.value() == wal::id_t{}) {
+                    trace(log_,
+                          "agent_disk[{}]::storage_append_inner: physical_add_column WAL returned zero id for "
+                          "oid={}",
+                          pool_idx_,
+                          static_cast<unsigned>(table_oid));
+                }
+            }
         }
 
         // 5b. Materialize — the canonical write. Lands at total_rows() == start_row.
         //     The txn path can surface a write_conflict (concurrent DDL re-rooted the
         //     table) or out_of_memory (row-group/segment alloc) as a value; this is a plain
         //     synchronous local call (no co_await), so reading the wrapper adds NO second
-        //     cross-actor await — the single co_await above (PHYSICAL_INSERT) stays this
-        //     handler's only one (a second sequential cross-actor await would risk a
+        //     cross-actor suspension — the PHYSICAL_INSERT co_await above stays this
+        //     handler's only suspension point (5a-iii's drain awaits a completed future
+        //     and cannot suspend; a second SUSPENDING cross-actor await would risk a
         //     lost-wakeup hang). The WAL record was already written; on a materialize failure
         //     the txn aborts and storage_revert_appends unwinds it.
         //
@@ -835,21 +900,53 @@ namespace services::disk {
         co_return std::make_pair(materialized_start, actual_count);
     }
 
+    namespace {
+        // #48 — A MISS ON A PUBLISH/REVERT LEG IS A FLIP THAT DID NOT HAPPEN, AND IT SAYS SO.
+        // The manager partitions every range/oid with pool_idx_for_oid BEFORE forwarding, so
+        // the agent this message reached IS the owner — the old "not in this agent's slice,
+        // skip" reading (and the manager comment calling the skip "idempotent for not-owned
+        // OIDs") described a routing that no longer exists. What an absent entry means is
+        // that the OWNER has no storage for the oid, while the caller holds ranges/marks
+        // that reference it: on the commit leg the rows stay invisible forever, on the
+        // abort legs the unwind never lands. Both orderings that could have made this legal
+        // are ruled out at the call sites: operator_commit_transaction publishes at STEP 6
+        // and drops storage afterwards; operator_abort_transaction and the executor's
+        // failed-statement revert both unwind BEFORE any teardown. The handlers stay
+        // unique_future<void> (their callers can only log), so LOUD here is an error line
+        // per miss plus the DEV_MODE tally tests read.
+        void report_publish_revert_miss(log_t& log,
+                                        std::size_t pool_idx,
+                                        const char* leg,
+                                        components::catalog::oid_t table_oid) {
+            error(log,
+                  "agent_disk[{}]::{}: this owning agent has NO storage for oid={} — the MVCC flip/unwind "
+                  "for it DID NOT HAPPEN",
+                  pool_idx,
+                  leg,
+                  static_cast<unsigned>(table_oid));
+#ifdef DEV_MODE
+            g_publish_revert_misses.fetch_add(1, std::memory_order_relaxed);
+#endif
+        }
+    } // namespace
+
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_publish_commits_inner(uint64_t commit_id,
                                                 std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
-        // MVCC visibility flip. Ranges not in this agent's slice are skipped — the
-        // owning agent gets its own slice from the manager's partitioning send.
+        // MVCC visibility flip. An empty range is a legitimate no-op; an oid the owner has
+        // no storage for is a miss and reports (see report_publish_revert_miss).
         for (const auto& r : ranges) {
             if (r.count == 0) {
                 continue;
             }
             auto it = storages_.find(r.table_oid);
             if (it == storages_.end()) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_publish_commits_inner", r.table_oid);
                 continue;
             }
             auto& entry = it->second;
             if (entry == nullptr || entry->storage == nullptr) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_publish_commits_inner", r.table_oid);
                 continue;
             }
             entry->storage->commit_append(commit_id, r.start_row, r.count);
@@ -873,10 +970,12 @@ namespace services::disk {
         for (const auto& tbl_oid : tables) {
             auto it = storages_.find(tbl_oid);
             if (it == storages_.end()) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_publish_deletes_inner", tbl_oid);
                 continue;
             }
             auto& entry = it->second;
             if (entry == nullptr || entry->storage == nullptr) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_publish_deletes_inner", tbl_oid);
                 continue;
             }
             entry->storage->commit_all_deletes(txn_id, commit_id);
@@ -898,10 +997,12 @@ namespace services::disk {
         for (const auto& tbl_oid : tables) {
             auto it = storages_.find(tbl_oid);
             if (it == storages_.end()) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
                 continue;
             }
             auto& entry = it->second;
             if (entry == nullptr || entry->storage == nullptr) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
                 continue;
             }
             entry->storage->revert_all_deletes(txn_id);
@@ -918,10 +1019,12 @@ namespace services::disk {
             }
             auto slice_it = storages_.find(it->table_oid);
             if (slice_it == storages_.end()) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
                 continue;
             }
             auto& entry = slice_it->second;
             if (entry == nullptr || entry->storage == nullptr) {
+                report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
                 continue;
             }
             entry->storage->revert_append(it->start_row, it->count);
@@ -2087,6 +2190,10 @@ namespace services::disk {
         g_table_checkpoints.fetch_add(1, std::memory_order_relaxed);
 #endif
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
+        // #304 — per-entry tallies for the round (see checkpoint_result_t).
+        uint64_t deferred = 0;
+        uint64_t rewritten = 0;
+        uint64_t advanced = 0;
         for (auto& [tbl_oid, entry] : storages_) {
             if (entry == nullptr) {
                 continue;
@@ -2112,6 +2219,7 @@ namespace services::disk {
                      pool_idx_,
                      static_cast<unsigned>(tbl_oid));
                 min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                ++deferred;
                 continue;
             }
 
@@ -2129,6 +2237,7 @@ namespace services::disk {
                       pool_idx_,
                       static_cast<unsigned>(tbl_oid));
                 min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                ++deferred;
                 continue;
             }
 
@@ -2163,6 +2272,7 @@ namespace services::disk {
                       pool_idx_,
                       static_cast<unsigned>(tbl_oid));
                 entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
+                ++advanced;
             } else {
                 // Failed-round gate: the previous checkpoint attempt on this entry failed. Retry
                 // the checkpoint below — a transient error must be able to recover — but do NOT
@@ -2197,6 +2307,7 @@ namespace services::disk {
                           static_cast<unsigned>(tbl_oid),
                           compact_watermark);
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                    ++deferred;
                     continue;
                 }
 
@@ -2225,8 +2336,10 @@ namespace services::disk {
                          pool_idx_,
                          static_cast<unsigned>(tbl_oid));
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                    ++deferred;
                     continue;
                 }
+                ++rewritten;
             }
 
             const auto& otbx_path = entry->otbx_path;
@@ -2254,7 +2367,11 @@ namespace services::disk {
 
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
         }
-        co_return checkpoint_result_t{min_prev_id};
+#ifdef DEV_MODE
+        g_checkpoint_entries_deferred.fetch_add(deferred, std::memory_order_relaxed);
+        g_checkpoint_entries_rewritten.fetch_add(rewritten, std::memory_order_relaxed);
+#endif
+        co_return checkpoint_result_t{min_prev_id, deferred, rewritten, advanced};
     }
 
     agent_disk_t::unique_future<uint64_t> agent_disk_t::vacuum_inner(session_id_t /*session*/,

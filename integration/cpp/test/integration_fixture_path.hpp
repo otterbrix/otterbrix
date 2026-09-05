@@ -1,8 +1,12 @@
 #pragma once
 
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <signal.h>
 #include <unistd.h>
 
 // THE FIXTURE ROOT OF THIS DIRECTORY, QUALIFIED BY PROCESS ID ON PURPOSE.
@@ -33,9 +37,48 @@
 // helper for THIS directory -- deliberately per-directory, not shared, so the directories
 // stay independently editable. The helpers are file-scope free functions, matching the
 // neighbouring test_create_config / test_clear_directory in test_config.hpp.
+namespace integration_fixture_detail {
+
+    // A pid-qualified root buys isolation and costs a directory per run, which nothing was
+    // reclaiming: 872 of them (and, once, a full 926 GiB disk) accumulated before this was
+    // added. Reclaimed from BOTH ends because neither end alone is enough -- the sweep
+    // handles the runs this process cannot clean up after (a crash test, an abort, a kill,
+    // all routine here), and the exit hook handles the common case without waiting for a
+    // later run to notice.
+    inline void reclaim_dead_roots(const std::filesystem::path& shared, const std::filesystem::path& mine) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it{shared, ec}, end; !ec && it != end; it.increment(ec)) {
+            const auto& entry = it->path();
+            if (entry == mine || entry.filename().string().rfind("otterbrix_integration_", 0) != 0) {
+                continue;
+            }
+            const auto suffix = entry.filename().string().substr(std::strlen("otterbrix_integration_"));
+            char* parsed = nullptr;
+            const long owner = std::strtol(suffix.c_str(), &parsed, 10);
+            // Anything but a whole number is not ours to judge; a live owner keeps its root.
+            if (parsed == nullptr || *parsed != '\0' || owner <= 0 || ::kill(static_cast<::pid_t>(owner), 0) == 0) {
+                continue;
+            }
+            std::error_code drop;
+            std::filesystem::remove_all(entry, drop);
+        }
+    }
+
+} // namespace integration_fixture_detail
+
 inline const std::filesystem::path& integration_fixture_root() {
-    static const std::filesystem::path root =
-        std::filesystem::path{"/tmp"} / ("otterbrix_integration_" + std::to_string(static_cast<long>(::getpid())));
+    static const std::filesystem::path root = [] {
+        const std::filesystem::path shared{"/tmp"};
+        std::filesystem::path mine =
+            shared / ("otterbrix_integration_" + std::to_string(static_cast<long>(::getpid())));
+        integration_fixture_detail::reclaim_dead_roots(shared, mine);
+        static const std::filesystem::path atexit_copy = mine;
+        std::atexit([] {
+            std::error_code ec;
+            std::filesystem::remove_all(atexit_copy, ec);
+        });
+        return mine;
+    }();
     return root;
 }
 

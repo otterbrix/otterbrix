@@ -16,6 +16,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_retention_guard.cpp
         test_wal_truncate_header_race.cpp
         test_wal_replay_classification.cpp
+        test_wal_txn_id_reuse.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

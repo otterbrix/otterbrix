@@ -1091,8 +1091,17 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        // No preprocessing here: the manager body already aligned `data` with the entry's
-        // canonical schema. The wrapper carries any write_conflict / out_of_memory as a value.
+        // No preprocessing here — and NOT because someone upstream already did it. The line
+        // that stood here said "the manager body already aligned `data` with the entry's
+        // canonical schema"; manager_disk_t::storage_update (manager_disk_storage.cpp) is a
+        // pure router and touches no schema. The alignment happens one level DOWN, inside the
+        // call below: table_storage_adapter_t::update runs trim_unmaterialized_payload
+        // (components/storage/table_storage_adapter.hpp), which drops the trailing catalog-only
+        // columns when they are all NULL and REFUSES with unimplemented_yet when one carries a
+        // value — the ЗАПИСЬ #220 contract, because materializing a new column is the append
+        // path's stage-1b job (it owns the PHYSICAL_ADD_COLUMN record that keeps replay in
+        // schema-then-rows order) and this handler has no such stage.
+        // The wrapper carries that refusal, and any write_conflict / out_of_memory, as a value.
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -1647,6 +1656,31 @@ namespace services::disk {
         }
         components::vector::data_chunk_t norm_keys(resource, stored_key_types, nkeys);
         norm_keys.set_cardinality(nkeys);
+        // A KEY CELL WITH NO EXACT IMAGE IN THE STORED COLUMN'S DOMAIN IS A MISS, NOT A
+        // REFUSAL AND NOT A DIFFERENT PROBE (ЗАПИСЬ #358 + the fraction case found beside it).
+        // The stored column physically cannot hold such a value, so NO row can be equal to
+        // it: the evaluable answer is an empty bucket — the same answer a NULL key cell
+        // already gets. This is not the arity guard's situation and must not be confused with
+        // it: there the request CANNOT BE EVALUATED and an empty bucket would be a lie; here
+        // it is evaluated and the answer is genuinely "nothing".
+        //
+        // Two ways a cell leaves the domain, and BOTH used to be wrong:
+        //   * OUT OF RANGE. cast_vector range-checks per element (batch 2), so INT64 70000 ->
+        //     INT16 no longer truncates to 4464 and false-matches — but the whole call then
+        //     answered conversion_failure, which aborts the statement AND the in-domain keys
+        //     batched with it. On the parent side (operator_fk_cascade) that failed a DELETE
+        //     whose parent key provably has no children.
+        //   * NOT EXACTLY REPRESENTABLE. The range check covers MAGNITUDE only:
+        //     cast_value_fits answers true for floating -> integral whenever the magnitude
+        //     fits, and the cast then truncates the fraction. DOUBLE 1.5 against a BIGINT key
+        //     column normalized to 1 and hashed equal to a stored 1 — the same false FK match
+        //     by the other door. The verify below cannot catch it: it compares the ALREADY
+        //     normalized key, so both sides read 1.
+        // The one rule that covers both: normalize a cell only if it round-trips EXACTLY
+        // through the stored type. Per row, because the two outcomes differ per row and a
+        // vector-wide cast can only speak for the whole column. Only the cross-physical-type
+        // columns pay for it (an FK column normally shares the referenced column's type).
+        std::pmr::vector<std::uint8_t> domain_miss(nkeys, std::uint8_t{0}, resource);
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
             auto& src = keys.data[j];
             if (src.get_vector_type() != components::vector::vector_type::FLAT) {
@@ -1654,27 +1688,63 @@ namespace services::disk {
             }
             if (src.type().to_physical_type() == stored_key_types[j].to_physical_type()) {
                 components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
-            } else {
-                // cast_vector range-checks every element now. Before, an out-of-range key
-                // TRUNCATED silently (INT64 70000 -> INT16 4464) and could hash equal to an
-                // unrelated stored key -- a false FK match. A key that cannot be represented
-                // in the stored column's type surfaces as a loud refusal instead.
-                auto casted =
-                    components::vector::vector_ops::cast_vector(resource, src, stored_key_types[j], nkeys);
-                if (casted.has_error()) {
-                    return casted.error();
+                continue;
+            }
+            // SETTLE THE TYPE PAIR ONCE, BEFORE ANY ROW IS JUDGED. cast_vector reports
+            // "string casts are not supported" and "physical type is not castable" through
+            // the SAME conversion_failure code as an out-of-range VALUE, so the per-row
+            // handling below cannot tell an unevaluable pair from a domain miss on the error
+            // alone — and collapsing the first into an empty bucket would be the arity guard's
+            // catastrophe: ON DELETE CASCADE / RESTRICT read an empty bucket as "this parent
+            // has no children" and let the parent go while its children stay behind.
+            // The probe is a single ALL-NULL row: the numeric callback examines no value for
+            // an invalid row, so a refusal here can only be about the TYPES.
+            {
+                components::vector::vector_t null_probe(resource, src.type(), 1);
+                null_probe.set_null(0, true);
+                auto probe = components::vector::vector_ops::cast_vector(resource, null_probe,
+                                                                          stored_key_types[j], 1);
+                if (probe.has_error()) {
+                    return probe.error();
                 }
-                norm_keys.data[j] = std::move(casted.value());
+            }
+            components::vector::vector_t one_src(resource, src.type(), 1);
+            for (std::uint64_t i = 0; i < nkeys; ++i) {
+                if (src.is_null(i)) {
+                    norm_keys.data[j].set_null(i, true);
+                    continue;
+                }
+                components::vector::vector_ops::copy(src, one_src, i + 1, i, 0);
+                auto fwd = components::vector::vector_ops::cast_vector(resource, one_src, stored_key_types[j], 1);
+                if (fwd.has_error()) {
+                    domain_miss[i] = 1;
+                    norm_keys.data[j].set_null(i, true);
+                    continue;
+                }
+                // THE ROUND TRIP IS THE TEST. Casting back into the key's own type and
+                // comparing with the original is what separates "the stored column can hold
+                // this exact value" from "the cast produced some other value that happens to
+                // fit" — the fraction case answers the first cast without an error.
+                auto back = components::vector::vector_ops::cast_vector(resource, fwd.value(), src.type(), 1);
+                if (back.has_error() || !components::vector::cells_equal(back.value(), 0, one_src, 0)) {
+                    domain_miss[i] = 1;
+                    norm_keys.data[j].set_null(i, true);
+                    continue;
+                }
+                components::vector::vector_ops::copy(fwd.value(), norm_keys.data[j], 1, 0, i);
             }
         }
 
-        // Typed hash index: tuple-hash -> input key indices. Skip any input tuple with a NULL
-        // key cell (a NULL foreign key references nothing — matches the callers' MATCH null-
-        // skip), so it never matches a scanned row. Nullness is read from the ORIGINAL keys
-        // chunk because that chunk is the semantic source of the tuples — cast_vector DOES
-        // carry validity row-by-row (both its string and numeric legs), so either side of
-        // the copy/cast fork above would answer the same; the original is simply the one
-        // that exists on both forks.
+        // Typed hash index: tuple-hash -> input key indices. Two kinds of input tuple are
+        // left OUT of the index, and both then answer with an empty bucket:
+        //   * a tuple with a NULL key cell — a NULL foreign key references nothing, matching
+        //     the callers' MATCH null-skip;
+        //   * a tuple carrying a domain miss — a cell with no exact image in the stored key
+        //     column's type (see the normalization above).
+        // Nullness is read from the ORIGINAL keys chunk because that chunk is the semantic
+        // source of the tuples; the normalized chunk agrees on it (validity travels per row
+        // through both the copy and the cast leg) and additionally carries the domain misses,
+        // which domain_miss names separately so the two facts stay distinguishable.
         components::vector::vector_t key_hash_vec(resource, components::types::logical_type::UBIGINT, nkeys);
         std::vector<std::uint64_t> norm_col_ids(key_col_indices.size());
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
@@ -1684,6 +1754,9 @@ namespace services::disk {
         const auto* key_hashes = key_hash_vec.data<std::uint64_t>();
         std::pmr::unordered_map<std::uint64_t, std::pmr::vector<std::uint64_t>> key_index{resource};
         for (std::uint64_t i = 0; i < nkeys; ++i) {
+            if (domain_miss[i] != 0) {
+                continue;
+            }
             bool any_null = false;
             for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
                 if (keys.data[j].is_null(i)) {

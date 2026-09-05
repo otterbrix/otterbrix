@@ -1,8 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +31,79 @@
 namespace services::wal {
 
     using session_id_t = components::session::session_id_t;
+
+    // THE ONE COMMITTED-RECORD FILTER of the journal, shared by BOTH replay readers —
+    // wal_worker_t::load (the CREATE INDEX backfill catchup) and
+    // wal_reader_t::read_database_segments (the bootstrap replay). It lives here for the
+    // same reason parse_database_dir_name lives in base.hpp: two copies of one rule drifted
+    // apart once already, and the two walks must never disagree about what "committed"
+    // means.
+    //
+    // THE RULE IS ORDERED BY wal_id, AND THE ORDERING IS THE WHOLE OF IT. A physical
+    // record at wal id r belongs to a committed transaction only when a COMMIT marker for
+    // the SAME txn id sits at a STRICTLY GREATER wal id. Membership in an unordered set of
+    // committed txn ids — what both filters used to test — is not enough, because TXN IDS
+    // ARE REUSED ACROSS RESTARTS: transaction_manager_t::next_transaction_id_ is a plain
+    // {TRANSACTION_ID_START} member that is never seeded from the surviving journal, unlike
+    // the commit clock (restore_commit_clock). Wal ids are the opposite — recover_from_disk
+    // re-derives the allocator from the segment files, so they keep growing across restarts.
+    // So the unordered test let a COMMIT marker written by the PREVIOUS process vouch for
+    // physical records the NEXT one wrote under the recycled id and never committed:
+    //
+    //   session 1:  wal 1 PHYSICAL_INSERT(txn T)   wal 2 COMMIT(txn T)
+    //   -- restart, no checkpoint --
+    //   session 2:  wal 3 PHYSICAL_INSERT(txn T)   <crash before COMMIT>
+    //   replay:     committed = {T}  ->  wal 3 applied AS COMMITTED
+    //
+    // The commit marker of a transaction is always written after its physical records
+    // (WAL-first: the append handler awaits the PHYSICAL_* future, and only the later
+    // commit pipeline sends commit_txn), so "strictly greater" never rejects a genuine one.
+    //
+    // Records with transaction_id == 0 are system records and are always kept; COMMIT
+    // markers are kept as they always were (a valid marker vouched for itself before).
+    // Invalid records are dropped. committed_out, when non-null, receives the union of the
+    // committed txn ids — see wal_reader_t::read_committed_records for its consumer.
+    [[nodiscard]] inline std::vector<record_t> filter_committed_records(std::vector<record_t>&& records,
+                                                                        std::set<std::uint64_t>* committed_out) {
+        // txn id -> the wal ids of its COMMIT markers, ascending.
+        std::map<std::uint64_t, std::vector<id_t>> commits_by_txn;
+        for (const auto& r : records) {
+            if (r.is_commit_marker() && r.is_valid()) {
+                commits_by_txn[r.transaction_id].push_back(r.id);
+            }
+        }
+        for (auto& entry : commits_by_txn) {
+            std::sort(entry.second.begin(), entry.second.end());
+        }
+        if (committed_out != nullptr) {
+            for (const auto& entry : commits_by_txn) {
+                committed_out->insert(entry.first);
+            }
+        }
+
+        std::vector<record_t> result;
+        result.reserve(records.size());
+        for (auto& r : records) {
+            if (!r.is_valid()) {
+                continue;
+            }
+            if (r.transaction_id == 0 || r.is_commit_marker()) {
+                result.push_back(std::move(r));
+                continue;
+            }
+            const auto it = commits_by_txn.find(r.transaction_id);
+            if (it == commits_by_txn.end()) {
+                continue;
+            }
+            // A marker at or below this record's own wal id belongs to an EARLIER
+            // incarnation of the id and says nothing about this record.
+            if (std::upper_bound(it->second.begin(), it->second.end(), r.id) == it->second.end()) {
+                continue;
+            }
+            result.push_back(std::move(r));
+        }
+        return result;
+    }
 
     class wal_worker_t final : public actor_zeta::actor::basic_actor<wal_worker_t> {
     public:

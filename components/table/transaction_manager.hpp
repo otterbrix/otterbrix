@@ -129,6 +129,29 @@ namespace components::table {
         uint64_t visible_to_all_locked() const;
 
         std::pmr::memory_resource* resource_;
+        // NOT SEEDED FROM THE JOURNAL, UNLIKE THE COMMIT CLOCK ABOVE — and the asymmetry is
+        // deliberate enough to be worth naming, because it is not obvious and it has already
+        // cost one durability bug (ЗАПИСЬ #363).
+        //
+        // A pending txn id is a WITHIN-PROCESS name: row_version_manager reads it only as
+        // "id >= TRANSACTION_ID_START ⇒ somebody's uncommitted write", never as an ordering,
+        // and no reopened row carries one (replay stamps transaction_data{0,0}; a loaded row
+        // group starts with null version_info). So every process restarting the counter at
+        // TRANSACTION_ID_START is sound IN MEMORY. restore_commit_clock exists because
+        // COMMIT ids are the opposite: they are stamped into pg_attribute and compared
+        // across restarts.
+        //
+        // The one place a pending txn id DOES cross a restart is the journal, where the same
+        // id is handed out again to a different transaction. A seeding entry point IS
+        // constructible — the max txn id over the replayed records, the way base_spaces
+        // already derives the commit-id frontier from the replayed COMMIT markers — but it
+        // does not exist, and it would live in the bootstrap, not here. What carries the
+        // burden today is the place the ids are actually compared: the replay filter pairs a
+        // physical record with a COMMIT marker at a STRICTLY GREATER wal id
+        // (services::wal::filter_committed_records, services/wal/wal.hpp), which recycling
+        // cannot forge because wal ids are re-derived from the segment files and keep growing.
+        // If a seeding entry point is ever added here, that filter is what it must agree with,
+        // and the filter stays needed regardless: it also fixes journals already on disk.
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;

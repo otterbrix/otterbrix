@@ -596,25 +596,12 @@ namespace services::wal {
             }
         }
 
-        // Pass 2: collect committed transaction IDs.
-        std::set<uint64_t> committed_txns;
-        for (const auto& r : all_records) {
-            if (r.is_commit_marker() && r.is_valid()) {
-                committed_txns.insert(r.transaction_id);
-            }
-        }
-
-        // Pass 3: filter -- keep records belonging to committed transactions.
-        std::vector<record_t> result;
-        result.reserve(all_records.size());
-        for (auto& r : all_records) {
-            if (!r.is_valid()) {
-                continue;
-            }
-            if (r.transaction_id == 0 || committed_txns.count(r.transaction_id) > 0) {
-                result.push_back(std::move(r));
-            }
-        }
+        // Pass 2: keep records belonging to committed transactions — the SHARED,
+        // wal-id-ordered filter (filter_committed_records, wal.hpp), the same one the
+        // bootstrap replay applies. It used to be an open-coded unordered set membership
+        // test here, and a second copy of it in wal_reader.cpp; both handed the CREATE INDEX
+        // backfill records of a recycled txn id that never committed in THIS incarnation.
+        std::vector<record_t> result = filter_committed_records(std::move(all_records), nullptr);
 
         // Sort by wal_id ascending.
         std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });

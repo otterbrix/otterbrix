@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <set>
 
+// filter_committed_records — the ONE committed-record filter, shared with wal_worker_t::load.
+#include <services/wal/wal.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
 namespace services::wal {
@@ -19,7 +21,8 @@ namespace services::wal {
     //
     // 1. Scan config_.path for database subdirectories.
     // 2. For each, read all segment files via wal_page_reader_t.
-    // 3. 2-pass filter: collect committed txn_ids, keep matching physical records.
+    // 3. filter_committed_records: keep a physical record only when a COMMIT marker for
+    //    its txn id sits at a STRICTLY GREATER wal id (txn ids are recycled across restarts).
     // 4. Merge all databases, sort by wal_id ascending.
     // -----------------------------------------------------------------------
 
@@ -76,8 +79,8 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // read_database_segments
     //
-    // Find segment files in the database directory, read all records,
-    // apply the 2-pass committed-transaction filter.
+    // Find segment files in the database directory, read all records, apply the shared
+    // wal-id-ordered committed-transaction filter (filter_committed_records, wal.hpp).
     // -----------------------------------------------------------------------
 
     core::result_wrapper_t<std::vector<record_t>>
@@ -166,37 +169,14 @@ namespace services::wal {
             }
         }
 
-        // Pass 1: collect committed transaction IDs from COMMIT records.
-        std::set<uint64_t> committed_txns;
-        for (const auto& r : all_records) {
-            if (r.is_commit_marker() && r.is_valid()) {
-                committed_txns.insert(r.transaction_id);
-            }
-        }
-
-        // Export this database's committed txn ids into the caller's union set.
-        // The filter below is unchanged (still keyed on the local committed_txns)
-        // so the returned records stay byte-identical.
-        if (committed_out != nullptr) {
-            committed_out->insert(committed_txns.begin(), committed_txns.end());
-        }
-
-        // Pass 2: keep only records belonging to committed transactions.
-        std::vector<record_t> result;
-        result.reserve(all_records.size());
-
-        for (auto& r : all_records) {
-            if (!r.is_valid()) {
-                continue;
-            }
-            // Records with txn_id==0 are "system" records (always included).
-            // Physical and commit records are included if their txn is committed.
-            if (r.transaction_id == 0 || committed_txns.count(r.transaction_id) > 0) {
-                result.push_back(std::move(r));
-            }
-        }
-
-        return std::move(result);
+        // Keep only records belonging to committed transactions, and export this
+        // database's committed txn ids into the caller's union set. Both are done by the
+        // SHARED filter (filter_committed_records, wal.hpp) that wal_worker_t::load also
+        // applies — this used to be a second, independently written copy of the rule, and
+        // both copies tested membership in an unordered set of committed txn ids. Txn ids
+        // are recycled across restarts, so that test promoted uncommitted records of the
+        // CURRENT incarnation on the strength of a COMMIT marker from a PREVIOUS one.
+        return filter_committed_records(std::move(all_records), committed_out);
     }
 
 } // namespace services::wal

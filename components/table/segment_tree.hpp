@@ -122,12 +122,22 @@ namespace components::table {
             }
             return nodes_.back().node.get();
         }
+        // Returns nullptr when no segment brackets `row_number`. This used to go through
+        // segment_index(), whose miss THREW std::runtime_error — the only failure channel of
+        // every column point read. In production that throw unwinds across the disk agent's
+        // mailbox into a coroutine whose unhandled_exception() is empty: the statement HUNG
+        // instead of failing (rules 2/9). Every caller now reports the miss on its own error
+        // channel (scan_error / fetch_error / result_wrapper_t).
         T* get_segment(int64_t row_number) {
             auto l = lock();
             return get_segment(l, row_number);
         }
         T* get_segment(std::unique_lock<std::mutex>& l, int64_t row_number) {
-            return nodes_[segment_index(l, row_number)].node.get();
+            uint64_t index;
+            if (!try_segment_index(l, row_number, index)) {
+                return nullptr;
+            }
+            return nodes_[index].node.get();
         }
 
         void append_segment_internal(std::unique_lock<std::mutex>&, std::unique_ptr<T> segment) {
@@ -200,14 +210,6 @@ namespace components::table {
                 return;
             }
             nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start) + 1, nodes_.end());
-        }
-
-        uint64_t segment_index(std::unique_lock<std::mutex>& l, int64_t row_number) {
-            uint64_t segment_index;
-            if (try_segment_index(l, row_number, segment_index)) {
-                return segment_index;
-            }
-            throw std::runtime_error("Could not find node in column segment tree");
         }
 
         bool try_segment_index(std::unique_lock<std::mutex>& l, int64_t row_number, uint64_t& result) {

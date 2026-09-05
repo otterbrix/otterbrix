@@ -96,7 +96,24 @@ namespace components::table {
         }
         column_definitions_.emplace_back(new_column);
 
-        this->row_groups_ = parent.row_groups_->add_column(new_column);
+        auto extended = parent.row_groups_->add_column(new_column);
+        if (extended.has_error()) {
+            // A constructor cannot return, so the backfill refusal LATCHES (the same shape as
+            // column_segment_t::has_construction_error) and the object is left in the safest
+            // states available:
+            //   * the PARENT stays root — the DDL did not happen, its own writes keep working;
+            //   * the new column is dropped from the definitions again, so no scan can ever
+            //     name a column the shared collection does not carry;
+            //   * this table shares the parent's collection as a READ-ONLY view: reads stay
+            //     correct, and is_root_ == false makes every write refuse loudly
+            //     (write_conflict) instead of appending into the parent's rows.
+            construction_error_ = extended.error();
+            column_definitions_.pop_back();
+            this->row_groups_ = parent.row_groups_;
+            is_root_ = false;
+            return;
+        }
+        this->row_groups_ = std::move(extended.value());
 
         parent.is_root_ = false;
     }
@@ -586,9 +603,10 @@ namespace components::table {
         mark_modified();
     }
 
-    void data_table_t::revert_append(int64_t row_start, uint64_t count) {
-        row_groups_->revert_append(row_start, count);
+    core::result_wrapper_t<bool> data_table_t::revert_append(int64_t row_start, uint64_t count) {
+        auto reverted = row_groups_->revert_append(row_start, count);
         mark_modified();
+        return reverted;
     }
 
     void data_table_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {

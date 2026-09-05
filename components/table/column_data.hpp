@@ -147,7 +147,10 @@ namespace components::table {
         // receives it in that space and keeps rows [start_, start_row). Nested columns
         // convert to their child's coordinates THEMSELVES: LIST/ARRAY children share the
         // parent's start_ but are addressed in ELEMENTS from the row group base.
-        virtual void revert_append(int64_t start_row);
+        // Returns out_of_memory / data_corruption when a rollback read or pin fails; a
+        // revert that cannot complete must be REPORTED, not asserted away — a half-reverted
+        // column desyncs its offsets from its data on the next append (rule 6).
+        [[nodiscard]] virtual core::result_wrapper_t<bool> revert_append(int64_t start_row);
 
         // `error` carries an out_of_memory error_t when a pin fails during the predicate check;
         // on error the bool return is meaningless and the scan loop stops.

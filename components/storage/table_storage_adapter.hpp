@@ -1,6 +1,7 @@
 #pragma once
 
 #include "storage.hpp"
+#include <cstdio>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/table_state.hpp>
@@ -386,7 +387,22 @@ namespace components::storage {
             table_.commit_append(commit_id, row_start, count);
         }
 
-        void revert_append(int64_t row_start, uint64_t count) override { table_.revert_append(row_start, count); }
+        void revert_append(int64_t row_start, uint64_t count) override {
+            // data_table_t::revert_append reports the first column-truncation refusal
+            // (out_of_memory / data_corruption). This virtual's contract is void, so the
+            // refusal cannot travel further up — but it must not be swallowed either
+            // (rule 6; and result_wrapper_t is [[nodiscard]] at the CLASS, so a bare call
+            // is a -Werror break in every TU that includes this header).
+            auto reverted = table_.revert_append(row_start, count);
+            if (reverted.has_error()) {
+                std::fprintf(stderr,
+                             "components::storage::table_storage_adapter_t::revert_append: rollback of rows "
+                             "[%lld, +%llu) could not complete: %s\n",
+                             static_cast<long long>(row_start),
+                             static_cast<unsigned long long>(count),
+                             reverted.error().what.c_str());
+            }
+        }
 
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id) override {
             table_.commit_all_deletes(txn_id, commit_id);

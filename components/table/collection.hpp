@@ -58,6 +58,10 @@ namespace components::table {
                      int64_t row_start,
                      uint64_t total_rows = 0,
                      uint64_t row_group_size = vector::DEFAULT_VECTOR_CAPACITY);
+        // Out-of-line: destroying the unique_ptr member instantiates the segment tree's
+        // (and thus row_group_t's) destructor, which must happen where row_group.hpp is
+        // included — not in every TU that merely sees this header.
+        ~collection_t();
 
         uint64_t total_rows() const;
         uint64_t committed_row_count() const;
@@ -110,7 +114,9 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
-        void revert_append(int64_t row_start, uint64_t count);
+        // Best-effort across row groups (see row_group_t::revert_append); the first
+        // refusal is reported after every group had its chance to truncate.
+        core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
         void cleanup_append(int64_t start, uint64_t count);
@@ -141,7 +147,10 @@ namespace components::table {
         // The ALTER successors. Each builds a WHOLE new collection whose row groups SHARE this
         // collection's column objects and row-version managers (see row_group_t::add_column /
         // remove_column), so the parent stays readable while the successor is installed.
-        boost::intrusive_ptr<collection_t> add_column(column_definition_t& new_column);
+        // Returns out_of_memory when a row group's backfill fails; no successor is built
+        // on that path (see row_group_t::add_column).
+        [[nodiscard]] core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
+        add_column(column_definition_t& new_column);
         boost::intrusive_ptr<collection_t> remove_column(uint64_t col_idx);
         // TODO: type casting
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
@@ -176,7 +185,9 @@ namespace components::table {
         std::atomic<uint64_t> total_rows_;
         std::pmr::vector<types::complex_logical_type> types_;
         int64_t row_start_;
-        std::shared_ptr<row_group_segment_tree_t> row_groups_;
+        // EXCLUSIVE ownership (a shared_ptr stood here on a member nothing ever shared —
+        // every consumer takes .get() or operator->).
+        std::unique_ptr<row_group_segment_tree_t> row_groups_;
         uint64_t allocation_size_;
     };
 

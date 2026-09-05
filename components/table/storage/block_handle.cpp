@@ -207,7 +207,17 @@ namespace components::table::storage {
             }
             buffer_ = std::move(block);
         } else {
-            return buffer_handle_t{};
+            // UNLOADED, no scratch copy, block_id >= MAXIMUM_BLOCK: a managed in-memory block
+            // whose bytes exist NOWHERE. can_unload() refuses to unload such blocks, so this
+            // is unreachable through the eviction path — but answering it with an EMPTY
+            // buffer_handle_t and no error made standard_buffer_manager_t::pin dereference a
+            // null buffer (get_buffer()->allocation_size()). The block has no bytes to give
+            // back; that is data loss already done, and it must be SAID (rule 6).
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string{"block_handle_t::load: an in-memory block has no buffer, no spill copy and no "
+                                 "disk form — its bytes are unrecoverable",
+                                 block_manager.buffer_manager.resource()});
         }
         state_ = block_state::LOADED;
         readers_ = 1;
@@ -220,8 +230,20 @@ namespace components::table::storage {
         }
         assert(!unswizzled_);
         // Either the bytes are already on disk, or they were just written to the pool's scratch
-        // file. Dropping a buffer that is in neither state loses rows.
-        assert(can_unload() || has_temp_copy());
+        // file. Dropping a buffer that is in neither state loses rows — and under NDEBUG the
+        // assert that used to guard this dropped it anyway. Freeing rows to reclaim memory is
+        // the unrecoverable direction (a leak is recoverable, lost rows are not), so the unload
+        // is REFUSED: the buffer stays resident and charged, the caller gets nothing to take.
+        // Every current caller already tolerates nullptr (unload() resets it; the eviction pass
+        // reaches here only after guaranteeing a spill copy), so a refusal is a loud no-op,
+        // reported because a caller that trips it has broken the spill-before-evict contract.
+        if (!can_unload() && !has_temp_copy()) {
+            std::fprintf(stderr,
+                         "components::table::storage::block_handle_t::unload_and_take_block: refusing to drop "
+                         "block %llu — its bytes are neither on disk nor spilled; the buffer stays resident\n",
+                         static_cast<unsigned long long>(block_id_));
+            return nullptr;
+        }
 
         memory_charge_.resize(0);
         state_ = block_state::UNLOADED;

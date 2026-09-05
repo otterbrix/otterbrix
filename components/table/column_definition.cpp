@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "column_definition.hpp"
 #include "table_state.hpp"
 
@@ -89,11 +90,19 @@ namespace components::table {
 
     void column_definition_t::set_attoid(std::uint32_t v) {
         // attoid is immutable after first assignment — programmer-error precondition.
-        // Hot DDL/resolve path: drop the throw, assert in debug, no-op in release if
-        // someone tries to reassign with a different value.
+        // Hot DDL/resolve path: no throw (rules 2/9). A re-stamp with a DIFFERENT value means
+        // two identity sources disagree about this column; the old release build swallowed
+        // that silently (neither applied nor reported). It is still refused — the first stamp
+        // stays authoritative — but the disagreement is now SAID (rule 6: loud, not fatal).
         assert((attoid_ == 0 || attoid_ == v) &&
                "column_definition_t::set_attoid: attoid is immutable after assignment");
         if (attoid_ != 0 && attoid_ != v) {
+            std::fprintf(stderr,
+                         "components::table::column_definition_t::set_attoid: refusing to re-stamp column "
+                         "'%s' attoid %u with %u — two identity sources disagree\n",
+                         name_.c_str(),
+                         static_cast<unsigned>(attoid_),
+                         static_cast<unsigned>(v));
             return;
         }
         attoid_ = v;

@@ -24,12 +24,21 @@ namespace components::table {
                      storage::block_manager_t& block_manager,
                      std::vector<column_definition_t> column_definitions,
                      std::string name = "temp");
+        // ALTER ADD COLUMN successor. A failed backfill (out_of_memory) cannot be returned
+        // from a constructor, so it LATCHES: has_construction_error() answers true, the
+        // parent stays root (the DDL did not happen), and this object degrades to a
+        // read-only view of the parent WITHOUT the new column whose writes all refuse.
+        // The DDL site must read the latch before installing the successor.
         data_table_t(data_table_t& parent, column_definition_t& new_column);
         data_table_t(data_table_t& parent, uint64_t removed_column);
         data_table_t(data_table_t& parent,
                      uint64_t changed_idx,
                      const types::complex_logical_type& target_type,
                      const std::vector<storage_index_t>& bound_columns);
+
+        // ALTER-constructor failure latch — see the ADD COLUMN constructor above.
+        bool has_construction_error() const noexcept { return construction_error_.contains_error(); }
+        const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> copy_types() const;
         const std::vector<column_definition_t>& columns() const;
@@ -107,7 +116,11 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
-        void revert_append(int64_t row_start, uint64_t count);
+        // Rollback of an appended range. Returns the first refusal from the column
+        // truncation walk (out_of_memory / data_corruption). result_wrapper_t is
+        // [[nodiscard]] at the CLASS level, so every caller must consume the answer — the
+        // storage adapter's void override reports it (it has no channel of its own).
+        core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
 
@@ -260,6 +273,8 @@ namespace components::table {
                                          int64_t end_row);
 
         std::pmr::memory_resource* resource_;
+        // See the ADD COLUMN constructor: the only writer; no_error() everywhere else.
+        core::error_t construction_error_{core::error_t::no_error()};
         std::vector<column_definition_t> column_definitions_;
         // NO LOCK HERE — deliberate, and provable:
         //

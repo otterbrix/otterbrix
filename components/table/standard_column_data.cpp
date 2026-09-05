@@ -108,9 +108,12 @@ namespace components::table {
         return validity.append_data(state.child_appends[0], uvf, count);
     }
 
-    void standard_column_data_t::revert_append(int64_t start_row) {
-        column_data_t::revert_append(start_row);
-        validity.revert_append(start_row);
+    core::result_wrapper_t<bool> standard_column_data_t::revert_append(int64_t start_row) {
+        auto own = column_data_t::revert_append(start_row);
+        if (own.has_error()) {
+            return own;
+        }
+        return validity.revert_append(start_row);
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
@@ -156,7 +159,12 @@ namespace components::table {
                                                                        uint64_t update_count,
                                                                        uint64_t depth) {
         if (depth >= column_path.size()) {
-            return column_data_t::update(column_path[0], update_vector, row_ids, update_count);
+            // The FULL update — this class's own override — never the base leg directly: the
+            // base updates only the data column, and a value written over a backfilled-NULL
+            // row without its validity bit stays invisible. Dormant until
+            // collection_t::update_column started routing paths here (entry #16); the ALTER
+            // extension test read NULL where it wrote a value.
+            return update(column_path[0], update_vector, row_ids, update_count);
         } else {
             return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
         }

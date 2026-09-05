@@ -112,6 +112,11 @@ namespace components::table {
         if (has_updates()) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
         }
+        if (!state.current) {
+            // A seek that missed every segment (scan_error already set); scan_vector refuses
+            // before touching the null segment either way.
+            return scan_vector_type::SCAN_FLAT_VECTOR;
+        }
         uint64_t remaining_in_segment =
             static_cast<uint64_t>(state.current->start) + state.current->count - static_cast<uint64_t>(state.row_index);
         if (remaining_in_segment < scan_count) {
@@ -131,6 +136,15 @@ namespace components::table {
     void column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         state.current = data_.get_segment(row_idx);
         state.row_index = row_idx;
+        if (!state.current) {
+            // The seek names a row outside every segment. Reported on scan_error (which the
+            // scan loops and scan_vector below read), never thrown (rules 2/9).
+            state.initialized = false;
+            state.scan_error = core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("column scan: the seek row names no segment of this column", resource_));
+            return;
+        }
         state.internal_index = state.current->start;
         state.initialized = false;
         state.scan_state.reset();
@@ -399,14 +413,25 @@ namespace components::table {
         return true;
     }
 
-    void column_data_t::revert_append(int64_t start_row) {
+    core::result_wrapper_t<bool> column_data_t::revert_append(int64_t start_row) {
         auto l = data_.lock();
         auto last_segment = data_.last_segment(l);
+        if (!last_segment) {
+            return true; // no segments -> nothing was appended -> nothing to revert
+        }
         if (start_row >= last_segment->start + static_cast<int64_t>(last_segment->count)) {
             assert(start_row == last_segment->start + static_cast<int64_t>(last_segment->count));
-            return;
+            return true;
         }
-        uint64_t segment_index = data_.segment_index(l, start_row);
+        uint64_t segment_index;
+        if (!data_.try_segment_index(l, start_row, segment_index)) {
+            // The revert point names a row this column's tree does not bracket: the caller's
+            // bookkeeping and the column disagree, and truncating "somewhere nearby" would
+            // manufacture the very desync revert exists to undo.
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("column revert: no segment brackets the revert row", resource_));
+        }
         auto segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
         auto& transient = *segment;
 
@@ -414,7 +439,7 @@ namespace components::table {
 
         count_ = static_cast<uint64_t>(start_row - start_);
         segment->next = nullptr;
-        transient.revert_append(static_cast<uint64_t>(start_row));
+        return transient.revert_append(static_cast<uint64_t>(start_row));
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
@@ -423,6 +448,14 @@ namespace components::table {
         state.row_index = start_ + (row_id - start_) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
                                                                             vector::DEFAULT_VECTOR_CAPACITY);
         state.current = data_.get_segment(state.row_index);
+        if (!state.current) {
+            // get_segment no longer throws on a miss (rules 2/9); the refusal rides the scan
+            // state's channel, which every caller of fetch() already reads.
+            state.scan_error = core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("column fetch: the row id names no segment of this column", resource_));
+            return 0;
+        }
         state.internal_index = state.current->start;
         return scan_vector(state, result, vector::DEFAULT_VECTOR_CAPACITY, scan_vector_type::SCAN_FLAT_VECTOR);
     }
@@ -430,6 +463,14 @@ namespace components::table {
     void
     column_data_t::fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
         auto segment = data_.get_segment(row_id);
+        if (!segment) {
+            // Same contract as fetch() above: a miss is reported on the fetch state, and the
+            // row_group gather / adapter fetch legs already read fetch_error.
+            state.fetch_error = core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("column fetch: the row id names no segment of this column", resource_));
+            return;
+        }
 
         segment->fetch_row(state, row_id, result, result_idx);
 
@@ -488,6 +529,13 @@ namespace components::table {
             column_info.segment_start = segment->start;
             column_info.segment_count = segment->count;
             column_info.has_updates = has_updates();
+            // The three fields below were never assigned (indeterminate bytes reached the
+            // report). A transient block's 64-bit id does not fit the uint32 field and names
+            // nothing durable anyway, so only a disk-backed segment reports its id.
+            const bool disk_backed = segment->block && segment->block->is_reloadable();
+            column_info.segment_type = disk_backed ? "PERSISTENT" : "TRANSIENT";
+            column_info.block_id = disk_backed ? static_cast<uint32_t>(segment->block_id()) : 0;
+            column_info.block_offset = segment->block_offset();
             auto segment_state = segment->segment_state();
             if (segment_state) {
                 column_info.segment_info = segment_state->segment_info();
@@ -784,7 +832,17 @@ namespace components::table {
         }
         state.previous_states.clear();
         if (!state.initialized) {
-            assert(state.current);
+            if (!state.current) {
+                // A failed initialize_scan_with_offset leaves current null with scan_error
+                // set; scanning through it would dereference nothing. Keep the original
+                // refusal (first error wins) and stop.
+                if (!state.has_error()) {
+                    state.scan_error = core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string("column scan: no current segment to scan", resource_));
+                }
+                return 0;
+            }
             state.current->initialize_scan(state);
             // initialize_scan records a pin OOM in state.scan_error. Bail with nothing scanned;
             // row_group_t aggregates scan_error and the scan loops stop.
@@ -998,19 +1056,25 @@ namespace components::table {
             }
             data_.append_segment(l, std::move(segment));
         }
-        if (persistent_data.count != 0) {
-            // v1 checkpoints persist the node's own entry count (authoritative for nested
-            // nodes, identical to the segment sum for flat ones).
-            count_ = persistent_data.count;
-        } else if (!persistent_data.data_pointers.empty()) {
-            // A zero persisted count with segments present: derive it from the segment sum
-            // (which is then also zero for a checkpointed empty column's empty segment).
+        // The persisted count is AUTHORITATIVE (v1 checkpoints always write it; for nested
+        // nodes it is not even derivable from the segment sum). A zero count against segments
+        // that claim rows is two on-disk numbers disagreeing about the same fact — that used
+        // to be silently reconciled by adopting the segment sum, which resurrects rows the
+        // writer said do not exist. Loud data_corruption instead, same class as the
+        // segment_size check above (rule 6).
+        if (persistent_data.count == 0) {
             uint64_t total = 0;
             for (const auto& dp : persistent_data.data_pointers) {
                 total += dp.tuple_count;
             }
-            count_ = total;
+            if (total != 0) {
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string("column load: the persisted row count is zero but the segments carry rows",
+                                     resource_));
+            }
         }
+        count_ = persistent_data.count;
         if (persistent_data.statistics.has_stats()) {
             statistics_ = persistent_data.statistics;
         }

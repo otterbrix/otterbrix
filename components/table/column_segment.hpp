@@ -129,7 +129,9 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<uint64_t>
         append(column_append_state& state, vector::unified_vector_format& data, uint64_t offset, uint64_t count);
         [[nodiscard]] core::result_wrapper_t<uint64_t> finalize_append(column_append_state& state);
-        void revert_append(uint64_t start_row);
+        // Returns out_of_memory when the dictionary/bitmap rollback pin fails: skipping the
+        // rollback silently leaves the reverted payload spliced onto the next appended value.
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t start_row);
 
         uint64_t block_id() { return block_id_; }
 

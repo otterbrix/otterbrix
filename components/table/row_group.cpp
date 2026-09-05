@@ -181,10 +181,11 @@ namespace components::table {
         return true;
     }
 
-    std::unique_ptr<row_group_t> row_group_t::add_column(collection_t* new_collection,
-                                                         column_definition_t& new_column,
-                                                         const std::optional<types::logical_value_t>& default_value,
-                                                         vector::vector_t& result) {
+    core::result_wrapper_t<std::unique_ptr<row_group_t>>
+    row_group_t::add_column(collection_t* new_collection,
+                            column_definition_t& new_column,
+                            const std::optional<types::logical_value_t>& default_value,
+                            vector::vector_t& result) {
         auto added_column = column_data_t::create_column(collection_->resource(),
                                                          block_manager(),
                                                          get_column_count(),
@@ -197,22 +198,24 @@ namespace components::table {
                 default_value.has_value() ? *default_value
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
-            // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The append
-            // chain reports out_of_memory; this constructor-style caller cannot return a
-            // result_wrapper_t, so assert and stop the backfill on exhaustion. (A graceful DDL abort
-            // would require the data_table ADD COLUMN constructors to be converted to return errors.)
+            // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The
+            // append chain reports out_of_memory; that answer now RIDES this function's own
+            // channel. The asserts that used to stand here vanished under NDEBUG and the loop
+            // then broke silently: the successor shipped with a new column SHORTER than count,
+            // and every scan of it read past the column's end (rule 6).
             auto init = added_column->initialize_append(state);
-            assert(!init.has_error() && "row_group::add_column: initialize_append OOM");
-            for (uint64_t i = 0; i < rows_to_write && !init.has_error(); i += vector::DEFAULT_VECTOR_CAPACITY) {
+            if (init.has_error()) {
+                return init.convert_error<std::unique_ptr<row_group_t>>();
+            }
+            for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
                 result.reference(fill_value);
                 if (!default_value.has_value()) {
                     result.set_null(true);
                 }
                 auto appended = added_column->append(state, result, rows_in_this_vector);
-                assert(!appended.has_error() && "row_group::add_column: append OOM");
                 if (appended.has_error()) {
-                    break;
+                    return appended.convert_error<std::unique_ptr<row_group_t>>();
                 }
             }
         }
@@ -227,7 +230,7 @@ namespace components::table {
         row_group->columns_ = columns();
         row_group->columns_.push_back(adopt_column(std::move(added_column)));
 
-        return row_group;
+        return std::move(row_group);
     }
 
     std::unique_ptr<row_group_t> row_group_t::remove_column(collection_t* new_collection, uint64_t removed_column) {
@@ -622,7 +625,19 @@ namespace components::table {
                 data[result_idx] = row_id;
             } else {
                 auto& col_data = get_column(column);
-                col_data.fetch_row(state, row_id, result_vector, result_idx);
+                // Per-column child state (not the ONE shared `state`): a struct column's
+                // validity used to live in state.child(0) for EVERY struct-typed top-level
+                // column, so two of them aliased each other's children — harmless only
+                // because handles are keyed by block id and the flag/error are homogeneous,
+                // but an aliasing invariant nobody stated. child() re-stamps
+                // result_outlives_pins on hand-out and absorb_error lifts the refusal into
+                // the state the callers of THIS function actually read; the first failing
+                // column aborts the row, as in the struct's own field walk.
+                auto& column_state = state.child(col_idx);
+                col_data.fetch_row(column_state, row_id, result_vector, result_idx);
+                if (state.absorb_error(column_state)) {
+                    return;
+                }
             }
         }
     }
@@ -659,7 +674,7 @@ namespace components::table {
         }
     }
 
-    void row_group_t::revert_append(uint64_t row_group_start) {
+    core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start) {
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->revert_append(row_group_start);
@@ -670,12 +685,25 @@ namespace components::table {
         // Without this the column segments and their count_ keep the reverted rows: a later scan
         // sized by the row group's (reduced) count then over-reads the stale column tail and writes
         // past the result vector (heap-buffer-overflow in fetch_row).
+        //
+        // Best-effort across columns: each column's truncation is independent, so one refusal
+        // must not leave the remaining columns un-truncated (that is the over-read above).
+        // The FIRST refusal is kept and reported after the walk; the count still shrinks —
+        // a stale tail beyond the reduced count is invisible, which is the safe direction.
+        core::error_t first_error = core::error_t::no_error();
         for (uint64_t c = 0; c < get_column_count(); c++) {
-            get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
+            auto reverted = get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
+            if (reverted.has_error() && !first_error.contains_error()) {
+                first_error = reverted.error();
+            }
         }
         if (row_group_start < this->count.load()) {
             this->count = row_group_start;
         }
+        if (first_error.contains_error()) {
+            return first_error;
+        }
+        return true;
     }
 
     core::result_wrapper_t<bool> row_group_t::initialize_append(row_group_append_state& append_state) {
@@ -735,15 +763,31 @@ namespace components::table {
 
     core::result_wrapper_t<bool> row_group_t::update_column(vector::data_chunk_t& updates,
                                                             vector::vector_t& row_ids,
-                                                            const std::vector<uint64_t>& column_path) {
+                                                            const std::vector<uint64_t>& column_path,
+                                                            uint64_t offset,
+                                                            uint64_t count) {
         assert(updates.column_count() == 1);
         auto ids = row_ids.data<int64_t>();
 
+        // The path arrives from the caller's plan/journal, so an impossible ordinal is a loud
+        // refusal on the channel this function already returns, not an assert that vanishes
+        // under NDEBUG and indexes columns_ out of range (rules 2/6).
+        if (column_path.empty() || column_path[0] >= columns_.size()) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("row group update: the column path names no column of this row group",
+                                 collection_->resource()));
+        }
         auto primary_column_idx = column_path[0];
-        assert(primary_column_idx != std::numeric_limits<uint64_t>::max());
-        assert(primary_column_idx < columns_.size());
         auto& col_data = get_column(primary_column_idx);
-        return col_data.update_column(column_path, updates.data[0], ids, updates.size(), 1);
+        // Same slicing contract as update() above: [offset, offset + count) of the caller's
+        // chunk/ids is this row group's share of the statement.
+        if (offset > 0) {
+            vector::vector_t sliced_vector(updates.data[0], offset, count);
+            sliced_vector.flatten(count);
+            return col_data.update_column(column_path, sliced_vector, ids + offset, count, 1);
+        }
+        return col_data.update_column(column_path, updates.data[0], ids, count, 1);
     }
 
     uint64_t row_group_t::committed_row_count() {
@@ -761,13 +805,6 @@ namespace components::table {
             return false;
         }
         return vi->has_version_above(watermark, count);
-    }
-
-    bool row_group_t::has_unloaded_deletes() const {
-        if (deletes_pointers_.empty()) {
-            return false;
-        }
-        return !deletes_is_loaded_;
     }
 
     void row_group_t::get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result) {
@@ -947,23 +984,13 @@ namespace components::table {
     }
 
     row_version_manager_t* row_group_t::version_info() {
-        if (!has_unloaded_deletes()) {
-            return version_info_;
-        }
-        // UNREACHABLE, and left as found rather than converted or removed: deletes_pointers_ is
-        // declared but never populated anywhere in the tree, so has_unloaded_deletes() is
-        // constantly false and everything below is dead. It is a stub for a delete-info load from
-        // disk that does not exist — the repeated check is the residue of a double-checked lock,
-        // and the body would DISCARD this row group's version state rather than load anything,
-        // which is exactly the silent degradation rule 6 forbids. Reviving deletes_pointers_ means
-        // writing this branch, not un-commenting it (and note deletes_is_loaded_ is left
-        // uninitialised by the constructor, which only goes unnoticed because the first check
-        // short-circuits on the empty vector).
-        if (!has_unloaded_deletes()) {
-            return version_info_;
-        }
-        set_version_info(nullptr);
-        deletes_is_loaded_ = true;
+        // The unreachable "unloaded deletes" branch that used to sit here — a stub for a
+        // delete-info disk load that does not exist, whose body would have DISCARDED this row
+        // group's version state (set_version_info(nullptr)) instead of loading anything — is
+        // GONE, together with the never-populated deletes_pointers_ / never-initialised
+        // deletes_is_loaded_ pair that armed it. Reviving on-disk delete info means writing a
+        // real load here, not resurrecting a branch whose only observable behaviour was the
+        // silent degradation rule 6 forbids.
         return version_info_;
     }
 
@@ -983,8 +1010,9 @@ namespace components::table {
         // existing manager would release the owner on the first line — dropping what may be the
         // last reference and destroying the object — while version_info_ still named it, so a
         // reader on the lock-free path could pick up a dangling pointer. Should such a caller
-        // ever be added, the atomic must be stored first. (The one clearing call in the tree,
-        // set_version_info(nullptr) in version_info(), is unreachable — see the note there.)
+        // ever be added, the atomic must be stored first. (No clearing caller exists in the
+        // tree: the one that used to — version_info()'s unreachable unloaded-deletes stub —
+        // was removed together with its arming fields.)
         owned_version_info_ = std::move(version);
         version_info_ = owned_version_info_.get();
     }

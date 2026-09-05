@@ -254,7 +254,11 @@ namespace components::table {
 
         std::vector<uint64_t> additional_blocks() const override { return on_disk_blocks; }
 
-        std::shared_ptr<storage::block_handle_t> handle(storage::block_manager_t& manager, uint64_t block_id);
+        // NOTE: a `handle(manager, block_id)` used to sit here that REGISTERED an arbitrary
+        // block id on a lookup miss and handed back a handle for it — the exact behaviour
+        // registered_handle()'s contract below forbids. It had no callers left (the read path
+        // goes through resolve_overflow_block -> registered_handle) and is deleted rather
+        // than kept as a loaded gun.
 
         // Registers a persisted overflow block so a marker naming it resolves. Returns FALSE
         // when the id was already registered -- and that is a corruption report, not a
@@ -284,18 +288,22 @@ namespace components::table {
         std::unordered_map<uint64_t, std::shared_ptr<storage::block_handle_t>> handles_;
     };
 
+    // Every member carries an initializer: three of these fields (block_id, block_offset,
+    // segment_type) used to be left unassigned by column_data_t::get_column_segment_info,
+    // and an aggregate without initializers shipped indeterminate bytes to whoever read the
+    // report ("uninitialised value went to the reader" class).
     struct column_segment_info {
-        uint64_t row_group_index;
-        uint64_t column_id;
+        uint64_t row_group_index{0};
+        uint64_t column_id{0};
         std::string column_path;
-        uint64_t segment_idx;
+        uint64_t segment_idx{0};
         std::string segment_type;
-        int64_t segment_start;
-        uint64_t segment_count;
-        bool has_updates;
-        uint32_t block_id;
+        int64_t segment_start{0};
+        uint64_t segment_count{0};
+        bool has_updates{false};
+        uint32_t block_id{0};
         std::vector<uint64_t> additional_blocks;
-        uint64_t block_offset;
+        uint64_t block_offset{0};
         std::string segment_info;
     };
 

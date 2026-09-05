@@ -28,7 +28,7 @@ namespace components::table {
         , types_(std::move(types))
         , row_start_(row_start)
         , allocation_size_(0) {
-        row_groups_ = std::make_shared<row_group_segment_tree_t>(*this);
+        row_groups_ = std::make_unique<row_group_segment_tree_t>(*this);
     }
 
     uint64_t collection_t::total_rows() const { return total_rows_.load(); }
@@ -72,6 +72,8 @@ namespace components::table {
         append_row_group(l, start_row);
         return row_groups_->last_segment(l);
     }
+
+    collection_t::~collection_t() = default;
 
     row_group_t* collection_t::row_group(int64_t index) { return row_groups_->segment_at(index); }
 
@@ -343,7 +345,8 @@ namespace components::table {
         }
     }
 
-    void collection_t::revert_append(int64_t row_start, uint64_t count) {
+    core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
+        core::error_t first_error = core::error_t::no_error();
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
             if (rg_end <= row_start)
@@ -351,13 +354,20 @@ namespace components::table {
             if (rg.start >= row_start + static_cast<int64_t>(count))
                 break;
             auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
-            rg.revert_append(local_start);
+            auto reverted = rg.revert_append(local_start);
+            if (reverted.has_error() && !first_error.contains_error()) {
+                first_error = reverted.error();
+            }
         }
         if (total_rows_.load() >= count) {
             total_rows_ -= count;
         } else {
             total_rows_ = 0;
         }
+        if (first_error.contains_error()) {
+            return first_error;
+        }
+        return true;
     }
 
     void collection_t::merge_storage(collection_t& data) {
@@ -382,6 +392,19 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[start]);
+            if (!row_group) {
+                // get_segment no longer throws on a miss. This walk has NO error channel (the
+                // return is the deleted-row count read by the caller's reply), so the refusal
+                // is reported and the walk stops: deleting "some nearby rows" instead is worse
+                // than deleting fewer, and the short count is visible to the caller (rule 6).
+                std::fprintf(stderr,
+                             "components::table::collection_t::delete_rows: row id %lld names no row group; "
+                             "stopping after %llu of %llu deletions\n",
+                             static_cast<long long>(ids[start]),
+                             static_cast<unsigned long long>(delete_count),
+                             static_cast<unsigned long long>(count));
+                return delete_count;
+            }
             for (pos++; pos < count; pos++) {
                 assert(ids[pos] >= 0);
                 if (ids[pos] < row_group->start) {
@@ -402,6 +425,13 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[pos]);
+            if (!row_group) {
+                // get_segment no longer throws on a miss; the refusal rides the channel this
+                // function already returns (rules 2/9).
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("table update: a row id names no row group of this table", resource_));
+            }
             int64_t base_id = row_group->start +
                               (ids[pos] - row_group->start) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
                                                                                    vector::DEFAULT_VECTOR_CAPACITY);
@@ -431,6 +461,11 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(row_ids.data<int64_t>()[pos]);
+            if (!row_group) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("table update: a row id names no row group of this table", resource_));
+            }
             int64_t base_id = row_group->start + (row_ids.data<int64_t>()[pos] - row_group->start) /
                                                      static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
                                                                           vector::DEFAULT_VECTOR_CAPACITY);
@@ -445,7 +480,13 @@ namespace components::table {
                     break;
                 }
             }
-            auto updated = row_group->update(updates, row_ids.data<int64_t>(), start, pos - start, column_path);
+            // THE PATH GOES TO update_column, NOT update. row_group_t::update reads its last
+            // argument as a list of TOP-LEVEL column ordinals — one per updates column — so a
+            // column_path of depth 2 made it treat the child ordinal as a second table column
+            // and index updates.data[1] of a one-column chunk. row_group_t::update_column is
+            // the entry that walks the path INTO the column (depth 1 below the root ordinal);
+            // it had no caller at all before this line.
+            auto updated = row_group->update_column(updates, row_ids, column_path, start, pos - start);
             if (updated.has_error()) {
                 return updated;
             }
@@ -473,7 +514,8 @@ namespace components::table {
         }
     }
 
-    boost::intrusive_ptr<collection_t> collection_t::add_column(column_definition_t& new_column) {
+    core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
+    collection_t::add_column(column_definition_t& new_column) {
         auto new_types = types_;
         new_types.push_back(new_column.type());
         // Plain `new`, never the pmr resource: the reference count lives inside the collection, so
@@ -491,8 +533,13 @@ namespace components::table {
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group =
                 current_row_group.add_column(result.get(), new_column, new_column.default_value_opt(), default_vector);
+            if (new_row_group.has_error()) {
+                // The partially-built successor dies with `result`; the parent was never
+                // touched, so the refusal leaves the table exactly as it was.
+                return new_row_group.convert_error<boost::intrusive_ptr<collection_t>>();
+            }
 
-            result->row_groups_->append_segment(std::move(new_row_group));
+            result->row_groups_->append_segment(std::move(new_row_group.value()));
         }
         return result;
     }

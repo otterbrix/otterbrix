@@ -163,8 +163,11 @@ namespace components::table {
         return true;
     }
 
-    void array_column_data_t::revert_append(int64_t start_row) {
-        validity.revert_append(start_row);
+    core::result_wrapper_t<bool> array_column_data_t::revert_append(int64_t start_row) {
+        auto v = validity.revert_append(start_row);
+        if (v.has_error()) {
+            return v;
+        }
         // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). The child
         // column shares this column's start_ but is addressed in ELEMENTS from the row
         // group base (see initialize_scan_with_offset), so its absolute truncation row is
@@ -172,9 +175,13 @@ namespace components::table {
         // only in row group 0 (start_ == 0); for any later group it pointed far past the
         // child's end and the stale child tail survived the revert.
         auto size = array_size();
-        child_column->revert_append(start_ + (start_row - start_) * static_cast<int64_t>(size));
+        auto child = child_column->revert_append(start_ + (start_row - start_) * static_cast<int64_t>(size));
+        if (child.has_error()) {
+            return child;
+        }
 
         count_ = static_cast<uint64_t>(start_row - start_);
+        return true;
     }
 
     uint64_t array_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
@@ -204,36 +211,44 @@ namespace components::table {
                                                              vector::vector_t& update_vector,
                                                              int64_t* row_ids,
                                                              uint64_t update_count) {
-        size_t arr_size = array_size();
-        size_t remaining_count = arr_size * update_count;
+        const int64_t arr_size = static_cast<int64_t>(array_size());
+        const uint64_t total = static_cast<uint64_t>(arr_size) * update_count;
         std::pmr::vector<int64_t> sub_column_ids(resource_);
-        sub_column_ids.reserve(remaining_count);
+        sub_column_ids.reserve(total);
 
+        // Element-space ids, REBASED the way every read leg addresses them (fetch_row,
+        // revert_append): element row = start_ + (row - start_) * array_size + i. The
+        // un-rebased `row * array_size + i` coincided only in row group 0 (start_ == 0);
+        // for any later group the overlay landed on rows the reads never visit.
         for (auto it = row_ids; it != row_ids + update_count; ++it) {
-            for (int64_t i = 0; i < static_cast<int64_t>(arr_size); i++) {
-                sub_column_ids.emplace_back(*it * static_cast<int64_t>(arr_size) + i);
+            for (int64_t i = 0; i < arr_size; i++) {
+                sub_column_ids.emplace_back(start_ + (*it - start_) * arr_size + i);
             }
         }
 
-        int64_t* remaining_sub_column_ids = sub_column_ids.data();
-        uint64_t remaining_column_index = column_index;
-        while (remaining_count > 0) {
-            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                auto child = child_column->update(remaining_column_index,
-                                                  update_vector.entry(),
-                                                  remaining_sub_column_ids,
-                                                  vector::DEFAULT_VECTOR_CAPACITY);
-                if (child.has_error()) {
-                    return child;
-                }
-                remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
-                remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
-                remaining_column_index++;
-            } else {
-                return child_column->update(remaining_column_index,
-                                            update_vector.entry(),
-                                            remaining_sub_column_ids,
-                                            remaining_count);
+        // One child update per element run that stays inside ONE update window, with the
+        // element vector SLICED to the same run: update_segment_t::update addresses its update
+        // vector by POSITION WITHIN THE CALL, so handing it the whole element vector while the
+        // ids came from a later window made it read the wrong slice (that mismatch is what the
+        // deleted `+ vector_index * DEFAULT_VECTOR_CAPACITY` hack in initialize_update_data
+        // compensated for, correctly ONLY when the ids were dense from element zero). Chunking
+        // blindly by 1024 ids had the same alignment assumption; the runs below split on real
+        // window boundaries instead.
+        auto& child_vector = update_vector.entry();
+        const int64_t child_start = child_column->start();
+        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
+        uint64_t pos = 0;
+        while (pos < total) {
+            const uint64_t run_start = pos;
+            const int64_t window = (sub_column_ids[pos] - child_start) / cap;
+            for (pos++; pos < total && (sub_column_ids[pos] - child_start) / cap == window; pos++) {
+            }
+            const uint64_t run = pos - run_start;
+            vector::vector_t window_slice(child_vector, run_start, run);
+            window_slice.flatten(run);
+            auto child = child_column->update(column_index, window_slice, sub_column_ids.data() + run_start, run);
+            if (child.has_error()) {
+                return child;
             }
         }
         return true;
@@ -244,47 +259,42 @@ namespace components::table {
                                                                     int64_t* row_ids,
                                                                     uint64_t update_count,
                                                                     uint64_t depth) {
-        size_t arr_size = array_size();
-        size_t remaining_count = arr_size * update_count;
+        const int64_t arr_size = static_cast<int64_t>(array_size());
+        const uint64_t total = static_cast<uint64_t>(arr_size) * update_count;
         std::pmr::vector<int64_t> sub_column_ids(resource_);
-        sub_column_ids.reserve(remaining_count);
+        sub_column_ids.reserve(total);
 
+        // Same rebase as update() above.
         for (auto it = row_ids; it != row_ids + update_count; ++it) {
-            for (int64_t i = 0; i < static_cast<int64_t>(arr_size); i++) {
-                sub_column_ids.emplace_back(*it * static_cast<int64_t>(arr_size) + i);
+            for (int64_t i = 0; i < arr_size; i++) {
+                sub_column_ids.emplace_back(start_ + (*it - start_) * arr_size + i);
             }
         }
 
-        int64_t* remaining_sub_column_ids = sub_column_ids.data();
-        while (remaining_count > 0) {
-            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                auto child = child_column->update_column(column_path,
-                                                         update_vector.entry(),
-                                                         remaining_sub_column_ids,
-                                                         vector::DEFAULT_VECTOR_CAPACITY,
-                                                         depth);
-                if (child.has_error()) {
-                    return child;
-                }
-                remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
-                remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
-            } else {
-                auto child = child_column->update_column(column_path,
-                                                         update_vector.entry(),
-                                                         remaining_sub_column_ids,
-                                                         remaining_count,
-                                                         depth);
-                if (child.has_error()) {
-                    return child;
-                }
-                break;
+        // Same window-run walk as update() above — and ONLY the walk: the whole-range call
+        // that used to follow the loop here applied the entire update a SECOND time.
+        auto& child_vector = update_vector.entry();
+        const int64_t child_start = child_column->start();
+        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
+        uint64_t pos = 0;
+        while (pos < total) {
+            const uint64_t run_start = pos;
+            const int64_t window = (sub_column_ids[pos] - child_start) / cap;
+            for (pos++; pos < total && (sub_column_ids[pos] - child_start) / cap == window; pos++) {
+            }
+            const uint64_t run = pos - run_start;
+            vector::vector_t window_slice(child_vector, run_start, run);
+            window_slice.flatten(run);
+            auto child = child_column->update_column(column_path,
+                                                     window_slice,
+                                                     sub_column_ids.data() + run_start,
+                                                     run,
+                                                     depth);
+            if (child.has_error()) {
+                return child;
             }
         }
-        return child_column->update_column(column_path,
-                                           update_vector.entry(),
-                                           sub_column_ids.data(),
-                                           update_count * arr_size,
-                                           depth);
+        return true;
     }
 
     void array_column_data_t::fetch_row(column_fetch_state& state,

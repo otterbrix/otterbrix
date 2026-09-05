@@ -314,6 +314,7 @@ TEST_CASE("components::table::data_table") {
         }
         if (L.smallint != absent) {
             logical_value_t value = result.data[L.smallint].value(local);
+            CAPTURE(idx, local, L.smallint, result.size());
             REQUIRE(value.type().type() == logical_type::SMALLINT);
             REQUIRE(value.value<int16_t>() == static_cast<int16_t>(idx));
         }

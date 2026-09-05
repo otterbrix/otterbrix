@@ -114,11 +114,11 @@ namespace components::table {
 
     // Reports a pin refusal reached from a read path that has no error channel of its own.
     //
-    // Rule 6 asks for LOUD, not FATAL, and not silent. The two legs of update_segment_t that
-    // DO own a channel forward the refusal as a value (update() returns
-    // result_wrapper_t<bool>, check_for_conflicts returns error_t). The rest --
+    // Rule 6 asks for LOUD, not FATAL, and not silent. The one leg of update_segment_t that
+    // DOES own a channel forwards the refusal as a value (update() returns
+    // result_wrapper_t<bool>). The rest --
     // update_info_t::update_for_transaction, fetch_updates, fetch_committed,
-    // fetch_committed_range, fetch_row, has_uncommitted_updates, row_is_updated -- return void
+    // fetch_committed_range, fetch_row -- return void
     // or bool, and their callers are in components/table/column_data.cpp
     // (updates_->fetch_committed / fetch_updates at :884/:886, updates_->fetch_row at :894,
     // updates_->fetch_committed_range at :182/:211), which is where a channel would have to
@@ -191,7 +191,6 @@ namespace components::table {
             }
         }
 
-        types::logical_value_t value(uint64_t index);
         bool has_prev() const;
         bool has_next() const;
         static uint64_t allocation_size(uint64_t type_size);
@@ -204,7 +203,6 @@ namespace components::table {
         explicit update_segment_t(column_data_t& column);
 
         bool has_updates() const;
-        bool has_uncommitted_updates(uint64_t vector_index);
         bool has_updates(uint64_t vector_index);
         bool has_updates(int64_t start_row_idx, int64_t end_row_idx);
 
@@ -221,7 +219,6 @@ namespace components::table {
                                                           uint64_t count,
                                                           vector::vector_t& base_data);
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
-        bool row_is_updated(int64_t row_id);
 
         core::string_buffer_t& heap() noexcept;
 
@@ -684,7 +681,14 @@ namespace components::table {
         auto tuple_data = update_info.data<T>();
 
         for (uint64_t i = 0; i < update_info.N; i++) {
-            auto idx = indexing.get_index(i) + base_info.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+            // The update vector holds exactly the caller's `count` values, addressed by the
+            // indexing vector ALONE. The `+ base_info.vector_index * DEFAULT_VECTOR_CAPACITY`
+            // that used to be added here confused row space with vector space: for any row in
+            // vector 1+ of a column it read `count + 1024`-ish elements into a `count`-element
+            // buffer, and the ROOT node -- the values every later read merges over the base --
+            // was initialized from heap garbage. The sibling validity leg
+            // (initialize_update_validity) never added the offset; this leg now matches it.
+            auto idx = indexing.get_index(i);
             tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
         }
 

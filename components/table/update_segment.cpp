@@ -51,44 +51,11 @@ namespace components::table {
         return pos;
     }
 
-    // Returns a write_conflict error_t when an MVCC write-write conflict is detected;
-    // no_error() otherwise.
-    static core::error_t check_for_conflicts(undo_buffer_pointer_t next_ptr,
-                                             int64_t* ids,
-                                             const vector::indexing_vector_t& indexing,
-                                             uint64_t count,
-                                             int64_t offset,
-                                             std::pmr::memory_resource* resource) {
-        while (next_ptr.is_set()) {
-            auto pinned = next_ptr.pin();
-            if (pinned.has_error()) {
-                // A conflict scan that cannot read a node cannot say there is no conflict.
-                return core::error_on(resource, pinned.error());
-            }
-            auto& info = pinned.value().update_info();
-            uint64_t i = 0, j = 0;
-            auto tuples = info.tuples();
-            while (true) {
-                auto id = ids[indexing.get_index(i)] - offset;
-                if (id == tuples[j]) {
-                    return core::error_t(core::error_code_t::write_conflict,
-                                         std::pmr::string{"Conflict on update!", resource});
-                } else if (id < tuples[j]) {
-                    i++;
-                    if (i == count) {
-                        break;
-                    }
-                } else {
-                    j++;
-                    if (j == info.N) {
-                        break;
-                    }
-                }
-            }
-            next_ptr = info.next;
-        }
-        return core::error_t::no_error();
-    }
+    // NOTE ON WRITE-WRITE CONFLICTS: a check_for_conflicts() used to stand here and walk
+    // base_info.next. That chain was NEVER BUILT (see the note inside update()), so the walk
+    // visited zero nodes and the check could not fire — it is deleted as the dead half of the
+    // same fiction, not as a behaviour change. Real update-vs-update conflict detection needs
+    // a real per-transaction chain first.
 
     update_info_t* create_empty_update_info(uint64_t type_size, uint64_t, std::unique_ptr<std::byte[]>& data) {
         data = std::make_unique<std::byte[]>(update_info_t::allocation_size(type_size));
@@ -136,9 +103,9 @@ namespace components::table {
 
     // A default-constructed reference names no node, and undo_buffer_pointer_t() is exactly
     // that. This used to read `return {*entry, position};`, which forms a reference to *nullptr
-    // for such a reference -- reached today from update_segment_t::update, whose `node_ref` is
-    // never assigned and whose next_info.prev line is not guarded by is_set() the way the
-    // base_info.next line below it is.
+    // for such a reference. (The historical caller — update()'s never-assigned `node_ref` —
+    // is gone; the guard stays because the contract "an unset reference has no pointer" is
+    // this type's own, not that caller's.)
     undo_buffer_pointer_t undo_buffer_reference::buffer_pointer() {
         if (!entry) {
             return undo_buffer_pointer_t();
@@ -158,8 +125,8 @@ namespace components::table {
     // while the block is still block_state::LOADED, and the reload branch below it reports
     // out_of_memory, data_corruption and io_error.
     //
-    // So the refusal is returned. Callers that own an error channel forward it
-    // (update_segment_t::update, check_for_conflicts); the read paths that do not report it and
+    // So the refusal is returned. The one caller that owns an error channel forwards it
+    // (update_segment_t::update); the read paths that do not report it and
     // stop -- see report_unreachable_update_node above for where the missing channel starts.
     core::result_wrapper_t<undo_buffer_reference> undo_buffer_pointer_t::pin() const {
         // These two stay asserts, and the distinction is the whole point of the change above:
@@ -242,22 +209,6 @@ namespace components::table {
         return reinterpret_cast<std::byte*>(this) + sizeof(update_info_t) + sizeof(uint32_t) * max;
     }
 
-    types::logical_value_t update_info_t::value(uint64_t index) {
-        auto& type = segment->column_data_->type();
-
-        auto tuple_data = values();
-        switch (type.type()) {
-            case types::logical_type::VALIDITY:
-                return types::logical_value_t(segment->column_data_->resource(),
-                                              reinterpret_cast<bool*>(tuple_data)[index]);
-            case types::logical_type::INTEGER:
-                return types::logical_value_t(segment->column_data_->resource(),
-                                              reinterpret_cast<int32_t*>(tuple_data)[index]);
-            default:
-                throw std::logic_error("Unimplemented type for update_info_t::value");
-        }
-    }
-
     bool update_info_t::has_prev() const { return prev.entry; }
 
     bool update_info_t::has_next() const { return next.entry; }
@@ -274,25 +225,6 @@ namespace components::table {
         , column_data_(&data) {}
 
     bool update_segment_t::has_updates() const { return root_.get() != nullptr; }
-
-    bool update_segment_t::has_uncommitted_updates(uint64_t vector_index) {
-        auto entry = update_node(vector_index);
-        if (!entry.is_set()) {
-            return false;
-        }
-        auto pin = entry.pin();
-        if (pin.has_error()) {
-            report_unreachable_update_node("update_segment_t::has_uncommitted_updates", pin.error());
-            // Cannot read the chain, so cannot claim it is clean: the honest answer to
-            // "does this vector carry uncommitted updates" is yes, treat it as dirty.
-            return true;
-        }
-        auto& info = pin.value().update_info();
-        if (info.has_next()) {
-            return true;
-        }
-        return false;
-    }
 
     bool update_segment_t::has_updates(uint64_t vector_index) { return update_node(vector_index).is_set(); }
 
@@ -409,38 +341,32 @@ namespace components::table {
             }
             auto& base_info = root_pin.value().update_info();
 
-            undo_buffer_reference node_ref;
-            auto conflict = check_for_conflicts(base_info.next,
-                                                ids,
-                                                indexing,
-                                                count,
-                                                static_cast<int64_t>(vector_offset),
-                                                column_data_->resource());
-            if (conflict.contains_error()) {
-                return conflict; // write_conflict
-            }
+            // WHAT THIS LEG REALLY IS, said plainly: an IN-PLACE merge into the vector's one
+            // root node. The per-transaction undo machinery that used to be sketched here was
+            // FICTION — it built the "transaction node" into a function-local heap buffer and
+            // linked it through an `undo_buffer_reference node_ref` that was default-constructed
+            // and NEVER assigned, so every link it wrote was the null pointer: base_info.next
+            // stayed unset forever, next_info.prev was CLEARED through a branch that could not
+            // even be entered (node->next copies the always-unset base_info.next), and the node
+            // itself died with the frame. Nothing ever walked a chain, so check_for_conflicts
+            // iterated zero nodes and no write-write conflict could fire. The pretence is
+            // excised rather than kept: updates in this tree publish into the root node
+            // immediately and rollback of updates is UNIMPLEMENTED — a caller that needs it
+            // must build a real per-transaction chain, not un-comment this one.
+            //
+            // merge_update still needs a scratch update_info_t: phase 1 of
+            // merge_update_loop_internal composes the superseded values into its arrays before
+            // phase 2 rewrites base_info. The scratch is named for what it is and dropped.
+            std::unique_ptr<std::byte[]> undo_scratch_data;
+            update_info_t* undo_scratch = create_empty_update_info(type_size_, count, undo_scratch_data);
+            undo_scratch->segment = this;
+            undo_scratch->vector_index = vector_index;
+            undo_scratch->N = 0;
+            undo_scratch->column_index = column_index;
+            undo_scratch->next = undo_buffer_pointer_t();
+            undo_scratch->prev = undo_buffer_pointer_t();
 
-            std::unique_ptr<std::byte[]> update_info_data;
-            update_info_t* node;
-            node = create_empty_update_info(type_size_, count, update_info_data);
-            node->segment = this;
-            node->vector_index = vector_index;
-            node->N = 0;
-            node->column_index = column_index;
-
-            node->next = base_info.next;
-            if (node->next.is_set()) {
-                auto next_pin = node->next.pin();
-                if (next_pin.has_error()) {
-                    return next_pin.convert_error<bool>();
-                }
-                auto& next_info = next_pin.value().update_info();
-                next_info.prev = node_ref.buffer_pointer();
-            }
-            node->prev = root_pointer;
-            base_info.next = node_ref.is_set() ? node_ref.buffer_pointer() : undo_buffer_pointer_t();
-
-            merge_update(base_info, base_data, *node, update, ids, count, indexing);
+            merge_update(base_info, base_data, *undo_scratch, update, ids, count, indexing);
         } else {
             uint64_t alloc_size = update_info_t::allocation_size(type_size_);
             auto allocated = root_->buffer_allocator.allocate(alloc_size);
@@ -454,19 +380,19 @@ namespace components::table {
 
             initialize_update_info(update_info, ids, indexing, count, vector_index, vector_offset);
 
-            std::unique_ptr<std::byte[]> update_info_data;
-            undo_buffer_reference node_ref;
-            update_info_t* transaction_node = create_empty_update_info(type_size_, count, update_info_data);
+            // Same excision as the merge leg above: the "transaction node" here was a
+            // function-local scratch whose links were all null (node_ref never assigned).
+            // initialize_update still wants it — its second half writes the superseded base
+            // values into the scratch's arrays — so it stays as a named scratch and dies here.
+            std::unique_ptr<std::byte[]> undo_scratch_data;
+            update_info_t* undo_scratch = create_empty_update_info(type_size_, count, undo_scratch_data);
 
-            initialize_update_info(*transaction_node, ids, indexing, count, vector_index, vector_offset);
+            initialize_update_info(*undo_scratch, ids, indexing, count, vector_index, vector_offset);
 
-            initialize_update(*transaction_node, base_data, update_info, update, indexing);
+            initialize_update(*undo_scratch, base_data, update_info, update, indexing);
 
-            update_info.next = node_ref.is_set() ? node_ref.buffer_pointer() : undo_buffer_pointer_t();
+            update_info.next = undo_buffer_pointer_t();
             update_info.prev = undo_buffer_pointer_t();
-            transaction_node->next = undo_buffer_pointer_t();
-            transaction_node->prev = handle.buffer_pointer();
-            transaction_node->column_index = column_index;
 
             root_->info[vector_index] = handle.buffer_pointer();
         }
@@ -487,31 +413,6 @@ namespace components::table {
             return;
         }
         fetch_row(pin.value().update_info(), row_in_vector, result, result_idx);
-    }
-
-    bool update_segment_t::row_is_updated(int64_t row_id) {
-        uint64_t vector_index = static_cast<uint64_t>(row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
-        auto entry = update_node(vector_index);
-        if (!entry.is_set()) {
-            return false;
-        }
-        uint64_t row_in_vector =
-            static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-        auto pin = entry.pin();
-        if (pin.has_error()) {
-            report_unreachable_update_node("update_segment_t::row_is_updated", pin.error());
-            return false;
-        }
-        auto& info = pin.value().update_info();
-        bool found = false;
-        update_info_t::update_for_transaction(info, [&](update_info_t* current) {
-            auto tuples = current->tuples();
-            auto it = std::lower_bound(tuples, tuples + current->N, static_cast<uint32_t>(row_in_vector));
-            if (it != tuples + current->N && *it == static_cast<uint32_t>(row_in_vector)) {
-                found = true;
-            }
-        });
-        return found;
     }
 
     core::string_buffer_t& update_segment_t::heap() noexcept { return heap_; }

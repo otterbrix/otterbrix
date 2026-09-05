@@ -34,7 +34,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
         [[nodiscard]] core::result_wrapper_t<bool>
         append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count) override;
-        void revert_append(int64_t start_row) override;
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(int64_t start_row) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;

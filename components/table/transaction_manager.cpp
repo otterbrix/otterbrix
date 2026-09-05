@@ -135,10 +135,32 @@ namespace components::table {
 
     uint64_t transaction_manager_t::lowest_active_start_time() const {
         std::lock_guard guard(lock_);
-        if (active_start_times_.empty()) {
-            return current_timestamp_.load();
+        uint64_t lowest = active_start_times_.empty() ? current_timestamp_.load() : *active_start_times_.begin();
+        // THE VACUUM GATE MUST HONOUR THE PROCARRAY, NOT JUST THE START TIMES. This value
+        // feeds cleanup_versions -> chunk_info::cleanup, which COLLAPSES every version slot
+        // whose stamps are <= the value into "visible to all". Two commit-id populations sit
+        // BELOW the lowest active start time and are still not visible to everybody:
+        //   * committed-but-unpublished ids: commit() has already erased the txn from
+        //     active_/active_start_times_, but until publish() every snapshot taken NOW
+        //     carries the id in in_flight_snapshot and must not see its rows. Collapsing
+        //     the slot publishes the commit by the act of forgetting it.
+        //   * ids a LIVE snapshot still rejects: an id that was in flight when a reader
+        //     began stays in that reader's in_flight_snapshot even after publish() removes
+        //     it from the global set, so the reader's floor must be honoured per txn.
+        // Both clamps mirror visible_to_all_locked(); the start-time floor above stays the
+        // base so this name keeps its start-time-space contract (and its tests). Ids start
+        // at 1, so the -1 cannot underflow. Same lock, no new ordering edge (rule 12).
+        if (!in_flight_commits_.empty()) {
+            lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
         }
-        return *active_start_times_.begin();
+        for (const auto& [key, txn] : active_) {
+            const auto data = txn->data();
+            if (!data.in_flight_snapshot.empty()) {
+                // in_flight_snapshot is sorted ascending (copied from a std::set).
+                lowest = std::min(lowest, data.in_flight_snapshot.front() - 1);
+            }
+        }
+        return lowest;
     }
 
     bool transaction_manager_t::has_active_transactions() const {

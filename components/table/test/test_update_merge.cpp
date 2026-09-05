@@ -279,3 +279,32 @@ TEST_CASE("components::table::update_merge::an_unset_undo_reference_has_no_buffe
     undo_buffer_pointer_t nowhere;
     CHECK_FALSE(nowhere.is_set());
 }
+
+// =====================================================================================
+// ЗАПИСЬ #124 (волна table), смежная строка: первый update строки во ВТОРОМ векторе
+// колонки. initialize_update_data индексирует вектор обновления как
+// indexing.get_index(i) + vector_index * DEFAULT_VECTOR_CAPACITY — для vector_index > 0
+// это чтение ЗА границей count-элементного вектора: в корневой узел ложится мусор.
+// (Валидная нога рядом, initialize_update_validity, смещения не добавляет.)
+// RED до фикса: read_row(1500) возвращает не 906, а кучевой мусор.
+// =====================================================================================
+TEST_CASE("components::table::update_merge::the_first_update_of_a_second_vector_stores_the_updates_values") {
+    update_merge_env env("second_vector");
+    auto column = make_filled_column(env, 1024);
+    {
+        // Дорастить колонку до 2048 строк вторым append'ом (вектор capacity == 1024).
+        vector_t v(&env.resource, logical_type::UINTEGER, 1024);
+        for (uint64_t i = 0; i < 1024; i++) {
+            v.set_value(i, static_cast<uint32_t>(1024 + i));
+        }
+        column_append_state state;
+        REQUIRE_FALSE(column->initialize_append(state).has_error());
+        REQUIRE_FALSE(column->append(state, v, 1024).has_error());
+    }
+
+    update_one(env, *column, 1500, 906);
+
+    CHECK(read_row(env, *column, 1500) == 906);
+    CHECK(read_row(env, *column, 1499) == 1499);
+    CHECK(read_row(env, *column, 1501) == 1501);
+}

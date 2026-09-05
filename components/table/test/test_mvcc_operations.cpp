@@ -149,7 +149,7 @@ TEST_CASE("components::table::mvcc::append_revert_invisible") {
     append_rows_txn(*table, env, 0, 10, txn.data());
 
     mgr.abort(session);
-    table->revert_append(0, 10);
+    REQUIRE_FALSE(table->revert_append(0, 10).has_error());
 
     auto count = scan_count(*table, env);
     REQUIRE(count == 0);
@@ -500,7 +500,7 @@ TEST_CASE("components::table::mvcc::txn_sees_own_writes") {
     REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0);
 
     mgr.abort(s1);
-    table->revert_append(0, 5);
+    REQUIRE_FALSE(table->revert_append(0, 5).has_error());
     mgr.abort(s2);
 }
 
@@ -756,7 +756,7 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
 
     // Revert the tail: keep rows [0,40), drop the last 60. Both the row-group count AND every
     // column segment must truncate to 40.
-    table->revert_append(40, 60);
+    REQUIRE_FALSE(table->revert_append(40, 60).has_error());
     REQUIRE(table->row_group()->total_rows() == 40);
 
     {
@@ -844,7 +844,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     REQUIRE(appended_start == 1);
 
     // Failed-statement revert: physical append revert + delete un-stamp.
-    table->revert_append(appended_start, 1);
+    REQUIRE_FALSE(table->revert_append(appended_start, 1).has_error());
     table->revert_all_deletes(txn_id);
 
     // Reader: later txn.
@@ -1156,7 +1156,7 @@ TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
     REQUIRE(table->row_group()->total_rows() == 1064);
 
     // Failed-statement revert of the last 20 rows: keep [0, 1044).
-    table->revert_append(1044, 20);
+    REQUIRE_FALSE(table->revert_append(1044, 20).has_error());
     REQUIRE(table->row_group()->total_rows() == 1044);
 
     // Survivors intact — content, not just counts.
@@ -1183,7 +1183,7 @@ TEST_CASE("components::table::mvcc::revert_append_array_child_row_group_1") {
     append_array_rows(*table, env, 1024, 40, 0);
     REQUIRE(table->row_group()->total_rows() == 1064);
 
-    table->revert_append(1044, 20);
+    REQUIRE_FALSE(table->revert_append(1044, 20).has_error());
     REQUIRE(table->row_group()->total_rows() == 1044);
 
     verify_array_rows(*table, env, 1044, 1044, 0);
@@ -1602,4 +1602,67 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     auto& after = mgr.begin_transaction(s_after);
     REQUIRE(scan_values_txn(*table, env, after.data()) == expected);
     mgr.abort(s_after);
+}
+
+// =====================================================================================
+// ЗАПИСЬ #6 (волна table) — канал VACUUM не задет починкой пришпиленности: сборка версий
+// едет на lowest_active_start_time, который ИГНОРИРУЕТ множество коммитов в полёте.
+// Коммит без publish() уже покинул active_ (и active_start_times_), так что при живом
+// читателе lowest оказывается ВЫШЕ его commit_id, и cleanup сворачивает слот версий в
+// «видимо всем» — читатель, чей снапшот несёт этот id в in-flight, внезапно видит
+// неопубликованные строки.
+// RED до фикса: второй scan_count_txn возвращает 1024 вместо 0.
+// =====================================================================================
+TEST_CASE("components::table::mvcc::cleanup_must_not_publish_an_in_flight_commit") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    // Писатель: ПОЛНЫЙ вектор (cleanup_append сворачивает только целые вектора),
+    // commit БЕЗ publish — id остаётся в полёте.
+    auto sw = components::session::session_id_t::generate_uid();
+    auto& wtxn = mgr.begin_transaction(sw);
+    append_rows_txn(*table, env, 0, 1024, wtxn.data());
+    auto commit_id = mgr.commit(sw);
+    table->commit_append(commit_id, 0, 1024);
+
+    // Читатель начинает в окне до publish: его снапшот несёт commit_id в in-flight.
+    auto sr = components::session::session_id_t::generate_uid();
+    auto& rtxn = mgr.begin_transaction(sr);
+    REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
+
+    table->cleanup_versions(mgr.lowest_active_start_time());
+
+    // Тот же снапшот обязан ПО-ПРЕЖНЕМУ не видеть неопубликованный коммит.
+    REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
+
+    mgr.publish(commit_id);
+    mgr.abort(sr);
+}
+
+// Вторая нога того же разрыва: id опубликован ПОСЛЕ старта читателя. Глобальное множество
+// в полёте уже пусто, но снапшот читателя всё ещё несёт этот id в СВОЁМ in-flight — гейт
+// обязан учитывать и per-txn половину.
+TEST_CASE("components::table::mvcc::cleanup_honours_a_readers_in_flight_snapshot") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    auto sw = components::session::session_id_t::generate_uid();
+    auto& wtxn = mgr.begin_transaction(sw);
+    append_rows_txn(*table, env, 0, 1024, wtxn.data());
+    auto commit_id = mgr.commit(sw);
+    table->commit_append(commit_id, 0, 1024);
+
+    auto sr = components::session::session_id_t::generate_uid();
+    auto& rtxn = mgr.begin_transaction(sr);
+    REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
+
+    // Публикация ПОСЛЕ старта читателя: из глобального in-flight id ушёл, из снапшота — нет.
+    mgr.publish(commit_id);
+
+    table->cleanup_versions(mgr.lowest_active_start_time());
+
+    REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
+    mgr.abort(sr);
 }

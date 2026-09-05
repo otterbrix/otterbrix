@@ -856,7 +856,7 @@ TEST_CASE("disk_backed_scan: multi-row-group revert leaves surviving row intact"
     REQUIRE(table->row_group()->total_rows() == 1 + kBigAppend);
 
     // Revert the WHOLE large append (row 1 onward), exactly like the DML abort does.
-    table->revert_append(1, kBigAppend);
+    REQUIRE_FALSE(table->revert_append(1, kBigAppend).has_error());
     REQUIRE(table->row_group()->total_rows() == 1);
 
     // The surviving row 0 must still hold its original value, byte-for-byte.

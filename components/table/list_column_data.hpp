@@ -36,7 +36,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
         [[nodiscard]] core::result_wrapper_t<bool>
         append(column_append_state& state, vector::vector_t& vector, uint64_t count) override;
-        void revert_append(int64_t start_row) override;
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(int64_t start_row) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;
@@ -71,7 +71,11 @@ namespace components::table {
         checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                             persistent_column_data_t& persistent) override;
 
-        uint64_t fetch_list_offset(int64_t row_idx);
+        // The cumulative child offset stored for `row_idx`. Returns invalid_parameter when
+        // the row names no offsets segment and forwards the fetch state's pin/read refusal:
+        // this used to be a bare uint64_t that DROPPED the local fetch state's fetch_error,
+        // so a failed pin answered with a GARBAGE list offset (rule 6).
+        [[nodiscard]] core::result_wrapper_t<uint64_t> fetch_list_offset(int64_t row_idx);
         // The per-element row ids an in-place LIST update has to write, or a refusal when the
         // new cell's length differs from the stored one — in-place cannot move a row's
         // neighbours aside. Both callers (update / update_column) already return

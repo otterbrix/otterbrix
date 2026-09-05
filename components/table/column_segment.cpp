@@ -1370,7 +1370,19 @@ namespace components::table {
                                 uint64_t result_offset,
                                 scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            //assert(result_offset == 0);
+            // The entire-vector leg REPLACES the result wholesale, so a non-zero result_offset
+            // would be silently dropped — rows already written at [0, result_offset) overwritten.
+            // Unreachable today (get_vector_scan_type only answers ENTIRE_VECTOR for non-flat
+            // results, which no offset-writing caller produces), but the commented-out assert
+            // that stood guard here vanished under NDEBUG; the refusal now rides scan_error.
+            if (result_offset != 0) {
+                state.scan_error =
+                    core::error_t(core::error_code_t::invalid_parameter,
+                                  std::pmr::string("column scan: an entire-vector scan cannot honour a result "
+                                                   "offset",
+                                                   block->block_manager.buffer_manager.resource()));
+                return;
+            }
             scan(state, scan_count, result);
         } else {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
@@ -1630,7 +1642,7 @@ namespace components::table {
         }
     }
 
-    void column_segment_t::revert_append(uint64_t start_row) {
+    core::result_wrapper_t<bool> column_segment_t::revert_append(uint64_t start_row) {
         // A BIT (validity) segment stores appended rows as validity bits, so reverting must reset the
         // bits in [start_row, end) back to valid before the tail is reused on re-append. A STRING
         // segment stores per-row offsets as the CUMULATIVE dictionary size (scan derives each length
@@ -1642,10 +1654,14 @@ namespace components::table {
         if (type.to_physical_type() == types::physical_type::STRING) {
             uint64_t new_count = start_row - static_cast<uint64_t>(start);
             auto& buffer_manager = block->block_manager.buffer_manager;
-            // Resident managed block (already pinned on the append path); pin cannot OOM here.
+            // A resident managed block normally cannot fail to pin, but "normally" is not a
+            // channel: skipping the dictionary rollback splices the reverted payload onto the
+            // next appended string. The refusal now rides the revert_append chain (rule 6).
             auto pinned = buffer_manager.pin(block);
-            assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
-            if (!pinned.has_error()) {
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>();
+            }
+            {
                 auto& handle = pinned.value();
                 auto dict = impl::dictionary(*this, handle);
                 auto offsets = reinterpret_cast<int32_t*>(handle.ptr() + block_offset() + impl::DICTIONARY_HEADER_SIZE);
@@ -1660,10 +1676,13 @@ namespace components::table {
             uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
             auto& buffer_manager = block->block_manager.buffer_manager;
-            // Resident managed block (already pinned on the append path); pin cannot OOM here.
+            // Same contract as the STRING leg above: a skipped bitmap reset resurrects the
+            // reverted rows' NULL bits on re-append, so the pin refusal is returned, not assumed away.
             auto pinned = buffer_manager.pin(block);
-            assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
-            if (!pinned.has_error()) {
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>();
+            }
+            {
                 auto& handle = pinned.value();
                 // The bitmap starts at the SEGMENT's offset inside the block, not at the block
                 // base: a write-through/checkpoint-packed validity segment shares its block with
@@ -1689,6 +1708,7 @@ namespace components::table {
             }
         }
         count = start_row - static_cast<uint64_t>(start);
+        return true;
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
@@ -1785,7 +1805,9 @@ namespace components::table {
                 impl::fixed_size_scan_partial<int32_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::INT64:
-                impl::fixed_size_scan_partial<ino64_t>(*this, state, scan_count, result, result_offset);
+                // int64_t, NOT POSIX ino64_t: the inode type rode in on a transitive
+                // <sys/types.h> include and only matched by accident of both being 8 bytes.
+                impl::fixed_size_scan_partial<int64_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::UINT8:
                 impl::fixed_size_scan_partial<uint8_t>(*this, state, scan_count, result, result_offset);

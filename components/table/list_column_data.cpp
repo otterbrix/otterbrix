@@ -35,11 +35,20 @@ namespace components::table {
         child_column->initialize_scan(state.child_states[1]);
     }
 
-    uint64_t list_column_data_t::fetch_list_offset(int64_t row_idx) {
+    core::result_wrapper_t<uint64_t> list_column_data_t::fetch_list_offset(int64_t row_idx) {
         auto segment = data_.get_segment(row_idx);
+        if (!segment) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("list column: the row id names no offsets segment", resource_));
+        }
         column_fetch_state fetch_state;
         vector::vector_t result(resource_, type_, 1);
         segment->fetch_row(fetch_state, row_idx, result, 0U);
+        if (fetch_state.fetch_error.contains_error()) {
+            // A failed pin used to fall through to the read below and answer garbage.
+            return fetch_state.fetch_error;
+        }
 
         return result.data<uint64_t>()[0];
     }
@@ -54,7 +63,15 @@ namespace components::table {
         assert(state.child_states.size() == 2);
         validity.initialize_scan_with_offset(state.child_states[0], row_idx);
 
-        auto child_offset = row_idx == start_ ? 0 : fetch_list_offset(row_idx - 1);
+        uint64_t child_offset = 0;
+        if (row_idx != start_) {
+            auto fetched = fetch_list_offset(row_idx - 1);
+            if (fetched.has_error()) {
+                state.scan_error = fetched.error();
+                return;
+            }
+            child_offset = fetched.value();
+        }
         assert(child_offset <= child_column->max_entry());
         if (child_offset < child_column->max_entry()) {
             child_column->initialize_scan_with_offset(state.child_states[1],
@@ -260,9 +277,15 @@ namespace components::table {
         return validity.append_data(state.child_appends[0], uvf, count);
     }
 
-    void list_column_data_t::revert_append(int64_t start_row) {
-        column_data_t::revert_append(start_row);
-        validity.revert_append(start_row);
+    core::result_wrapper_t<bool> list_column_data_t::revert_append(int64_t start_row) {
+        auto own = column_data_t::revert_append(start_row);
+        if (own.has_error()) {
+            return own;
+        }
+        auto v = validity.revert_append(start_row);
+        if (v.has_error()) {
+            return v;
+        }
         // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). The stored
         // offsets are cumulative ELEMENT counts within this row group (append seeds them
         // from child_column->max_entry()), and the child column shares this column's
@@ -271,8 +294,17 @@ namespace components::table {
         // The old guard compared the RELATIVE surviving count against the ABSOLUTE start_,
         // so for any row group with start_ > 0 (and for a full revert in group 0) the
         // child was never truncated and the next append's offsets desynced from its data.
-        const uint64_t child_offset = start_row > start_ ? fetch_list_offset(start_row - 1) : 0;
-        child_column->revert_append(start_ + static_cast<int64_t>(child_offset));
+        uint64_t child_offset = 0;
+        if (start_row > start_) {
+            auto fetched = fetch_list_offset(start_row - 1);
+            if (fetched.has_error()) {
+                // Truncating the child to a GUESSED offset is the desync this function
+                // exists to prevent; report instead (rule 6).
+                return fetched.convert_error<bool>();
+            }
+            child_offset = fetched.value();
+        }
+        return child_column->revert_append(start_ + static_cast<int64_t>(child_offset));
     }
 
     uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
@@ -313,8 +345,19 @@ namespace components::table {
         uint64_t total = 0;
         for (uint64_t r = 0; r < update_count; ++r) {
             const auto row_id = row_ids[r];
-            const auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
-            const auto stored_length = fetch_list_offset(row_id) - start_offset;
+            uint64_t start_offset = 0;
+            if (row_id != start_) {
+                auto so = fetch_list_offset(row_id - 1);
+                if (so.has_error()) {
+                    return so.convert_error<std::pmr::vector<int64_t>>();
+                }
+                start_offset = so.value();
+            }
+            auto eo = fetch_list_offset(row_id);
+            if (eo.has_error()) {
+                return eo.convert_error<std::pmr::vector<int64_t>>();
+            }
+            const auto stored_length = eo.value() - start_offset;
             const auto new_length = update_validity.row_is_valid(r) ? update_entries[r].length : 0;
             if (new_length != stored_length) {
                 // In-place update writes each element over the element the row already owns, so
@@ -340,7 +383,14 @@ namespace components::table {
         uint64_t k = 0;
         for (uint64_t r = 0; r < update_count; ++r) {
             const auto row_id = row_ids[r];
-            const auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
+            uint64_t start_offset = 0;
+            if (row_id != start_) {
+                auto so = fetch_list_offset(row_id - 1);
+                if (so.has_error()) {
+                    return so.convert_error<std::pmr::vector<int64_t>>();
+                }
+                start_offset = so.value();
+            }
             const auto length = update_entries[r].length;
             for (uint64_t j = 0; j < length; ++j) {
                 child_update_out.set_value(k, update_child.value(update_entries[r].offset + j));
@@ -360,18 +410,26 @@ namespace components::table {
         }
         vector::vector_t child_update(resource_, type_.child_type());
         VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
-        uint64_t remaining_count = child_ids.size();
-        int64_t* remaining_child_ids = child_ids.data();
-        uint64_t remaining_column_index = column_index;
-        while (remaining_count > 0) {
-            const auto batch = std::min<uint64_t>(remaining_count, vector::DEFAULT_VECTOR_CAPACITY);
-            auto child = child_column->update(remaining_column_index, child_update, remaining_child_ids, batch);
+        // One child update per element run inside ONE update window, with the gathered element
+        // vector SLICED to the run: update_segment_t::update addresses its update vector by
+        // position within the call, so passing the WHOLE gathered vector with ids from a later
+        // window read the wrong slice (see array_column_data_t::update for the shared story).
+        const uint64_t total = child_ids.size();
+        const int64_t child_start = child_column->start();
+        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
+        uint64_t pos = 0;
+        while (pos < total) {
+            const uint64_t run_start = pos;
+            const int64_t window = (child_ids[pos] - child_start) / cap;
+            for (pos++; pos < total && (child_ids[pos] - child_start) / cap == window; pos++) {
+            }
+            const uint64_t run = pos - run_start;
+            vector::vector_t window_slice(child_update, run_start, run);
+            window_slice.flatten(run);
+            auto child = child_column->update(column_index, window_slice, child_ids.data() + run_start, run);
             if (child.has_error()) {
                 return child;
             }
-            remaining_child_ids += batch;
-            remaining_count -= batch;
-            remaining_column_index++;
         }
         return true;
     }
@@ -386,16 +444,24 @@ namespace components::table {
         }
         vector::vector_t child_update(resource_, type_.child_type());
         VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
-        uint64_t remaining_count = child_ids.size();
-        int64_t* remaining_child_ids = child_ids.data();
-        while (remaining_count > 0) {
-            const auto batch = std::min<uint64_t>(remaining_count, vector::DEFAULT_VECTOR_CAPACITY);
-            auto child = child_column->update_column(column_path, child_update, remaining_child_ids, batch, depth);
+        // Same window-run walk as update() above.
+        const uint64_t total = child_ids.size();
+        const int64_t child_start = child_column->start();
+        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
+        uint64_t pos = 0;
+        while (pos < total) {
+            const uint64_t run_start = pos;
+            const int64_t window = (child_ids[pos] - child_start) / cap;
+            for (pos++; pos < total && (child_ids[pos] - child_start) / cap == window; pos++) {
+            }
+            const uint64_t run = pos - run_start;
+            vector::vector_t window_slice(child_update, run_start, run);
+            window_slice.flatten(run);
+            auto child =
+                child_column->update_column(column_path, window_slice, child_ids.data() + run_start, run, depth);
             if (child.has_error()) {
                 return child;
             }
-            remaining_child_ids += batch;
-            remaining_count -= batch;
         }
         return true;
     }
@@ -404,8 +470,21 @@ namespace components::table {
                                        int64_t row_id,
                                        vector::vector_t& result,
                                        uint64_t result_idx) {
-        auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
-        auto end_offset = fetch_list_offset(row_id);
+        uint64_t start_offset = 0;
+        if (row_id != start_) {
+            auto so = fetch_list_offset(row_id - 1);
+            if (so.has_error()) {
+                state.fetch_error = so.error();
+                return;
+            }
+            start_offset = so.value();
+        }
+        auto eo = fetch_list_offset(row_id);
+        if (eo.has_error()) {
+            state.fetch_error = eo.error();
+            return;
+        }
+        auto end_offset = eo.value();
         // state.child(0), not a default-constructed state: the validity bitmap's pin OOM used to
         // land in a child nobody read (see column_fetch_state::child).
         auto& validity_state = state.child(0);

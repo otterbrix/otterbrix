@@ -195,15 +195,22 @@ namespace components::table {
         return true;
     }
 
-    void struct_column_data_t::revert_append(int64_t start_row) {
+    core::result_wrapper_t<bool> struct_column_data_t::revert_append(int64_t start_row) {
         // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). Struct
         // children are row-aligned with the parent and share its start_, so — unlike the
         // LIST/ARRAY element-space children — the absolute row passes through unchanged.
-        validity.revert_append(start_row);
+        auto v = validity.revert_append(start_row);
+        if (v.has_error()) {
+            return v;
+        }
         for (auto& sub_column : sub_columns) {
-            sub_column->revert_append(start_row);
+            auto sub = sub_column->revert_append(start_row);
+            if (sub.has_error()) {
+                return sub;
+            }
         }
         count_ = static_cast<uint64_t>(start_row - start_);
+        return true;
     }
 
     uint64_t struct_column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {

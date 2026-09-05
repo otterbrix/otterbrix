@@ -108,17 +108,6 @@ namespace components::table {
         }
     }
 
-    std::shared_ptr<storage::block_handle_t>
-    uncompressed_string_segment_state::handle(storage::block_manager_t& manager, uint64_t block_id) {
-        auto entry = handles_.find(block_id);
-        if (entry != handles_.end()) {
-            return entry->second;
-        }
-        auto result = manager.register_block(block_id);
-        handles_.insert(std::make_pair(block_id, result));
-        return result;
-    }
-
     bool uncompressed_string_segment_state::register_block(storage::block_manager_t& manager, uint64_t block_id) {
         if (handles_.find(block_id) != handles_.end()) {
             // Already registered: the persisted list named the same block twice. The writer

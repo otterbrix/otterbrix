@@ -80,7 +80,11 @@ namespace components::table {
         // TODO: type casting
         // std::unique_ptr<row_group_t> alter_type(collection_t* collection, const types::complex_logical_type &target_type, uint64_t changed_idx,
         // collection_scan_state &scan_state, vector::data_chunk_t &scan_chunk);
-        std::unique_ptr<row_group_t> add_column(collection_t* collection,
+        // Returns out_of_memory when the backfill of the new column cannot allocate or
+        // append: the successor row group is NOT built on that path — the old assert-and-
+        // break shipped a successor whose new column was SHORTER than count, and every scan
+        // of it read past the column's end (rule 6, and the assert vanished under NDEBUG).
+        [[nodiscard]] core::result_wrapper_t<std::unique_ptr<row_group_t>> add_column(collection_t* collection,
                                                 column_definition_t& new_column,
                                                 const std::optional<types::logical_value_t>& default_value,
                                                 vector::vector_t& intermediate);
@@ -120,7 +124,11 @@ namespace components::table {
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
-        void revert_append(uint64_t row_group_start);
+        // Best-effort truncation of EVERY column plus the shrunk count, then the FIRST
+        // column refusal (out_of_memory / data_corruption) is reported. The count shrinks
+        // even on a refusal: a stale column tail beyond the reduced count is invisible,
+        // while an untruncated count over a truncated column over-reads (the safe side).
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start);
 
         uint64_t delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count);
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
@@ -145,9 +153,15 @@ namespace components::table {
                                                           uint64_t offset,
                                                           uint64_t count,
                                                           const std::vector<uint64_t>& column_ids);
+        // Sub-column (column-path) update of rows [offset, offset + count) of `row_ids`,
+        // mirroring update()'s slicing. column_path[0] is this row group's own column
+        // ordinal; the walk below it starts at depth 1 (0 = validity, k = field k of a
+        // struct). Returns write_conflict / out_of_memory / invalid_parameter.
         [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::data_chunk_t& updates,
                                                                  vector::vector_t& row_ids,
-                                                                 const std::vector<uint64_t>& column_path);
+                                                                 const std::vector<uint64_t>& column_path,
+                                                                 uint64_t offset,
+                                                                 uint64_t count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 
@@ -243,13 +257,9 @@ namespace components::table {
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);
 
-        bool has_unloaded_deletes() const;
-
         // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
         std::vector<storage::meta_block_pointer_t> column_pointers_;
         std::unique_ptr<std::atomic<bool>[]> is_loaded_;
-        std::vector<storage::meta_block_pointer_t> deletes_pointers_;
-        std::atomic<bool> deletes_is_loaded_;
         uint64_t allocation_size_;
     };
 } // namespace components::table

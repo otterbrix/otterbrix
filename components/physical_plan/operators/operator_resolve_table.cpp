@@ -340,7 +340,16 @@ namespace components::operators {
                                                    &services::disk::manager_disk_t::storage_types,
                                                    ctx->session,
                                                    table_oid);
-                auto storage_types = co_await std::move(stf);
+                auto storage_types_r = co_await std::move(stf);
+                if (storage_types_r.has_error()) {
+                    // Every column below is bound to a physical slot BY NAME against this
+                    // list. A refused read used to arrive as an EMPTY list, which binds
+                    // nothing and leaves every chunk_position at -1 — a resolved schema
+                    // that describes no storage at all, published as this table's shape.
+                    set_error(storage_types_r.error());
+                    co_return;
+                }
+                auto& storage_types = storage_types_r.value();
                 // Map each resolved variant to its physical storage column by
                 // (name, type): with multi-type fields several storage columns share
                 // a name, so the type disambiguates. `claimed` prevents two variants

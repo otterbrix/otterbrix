@@ -241,7 +241,7 @@ TEST_CASE("services::disk::vacuum::repeated_vacuum_does_not_grow_the_file", "[it
 
     // The table is still readable afterwards — loud is not fatal, and a vacuum that reclaims
     // nothing must at least leave the data alone.
-    auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+    auto total = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
     CHECK(total == VACUUM_ROWS);
 }
 
@@ -359,14 +359,15 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
 
     // Loud is not fatal, and the rollback must not have taken anything the live tree depends on:
     // the table still answers with all of its rows after five failed checkpoints.
-    auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+    auto total = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
     CHECK(total == VACUUM_ROWS + 2);
 
     // A TRANSIENT failure recovers: with the fault disarmed the next round commits, and it does so
     // without growing the file -- the blocks the failed rounds gave back are what it spends.
     fx.checkpoint(services::wal::id_t{100});
     CHECK(file_size_of(path) <= after_more_failures);
-    auto total_after_recovery = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+    auto total_after_recovery =
+        disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
     CHECK(total_after_recovery == VACUUM_ROWS + 2);
 
     // NOTE for a later round of work: this table has no dead rows, so compact() has nothing to

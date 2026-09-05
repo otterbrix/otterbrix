@@ -643,8 +643,10 @@ namespace services::disk {
         // row while losing the file). pg_class persists unconditionally, so on
         // reopen a CREATE TABLE IF NOT EXISTS sees the table "exists" and skips
         // storage creation, and resolve_table returns the schema, yet the disk
-        // agent owns no storage at that oid — so storage_append no-ops (returns
-        // 0,0) and scans see nothing. Recreates each missing storage from its
+        // agent owns no storage at that oid — so storage_append REFUSES and every scan
+        // refuses with it. They used to answer (0,0) and an empty result instead, which is
+        // exactly why this walk had to be written: the state was reachable AND silent, so
+        // nothing above the storage layer could notice it. Recreates each missing storage from its
         // pg_attribute column definitions so the catalog and the storage layer
         // agree. Pre-scheduler-start, single-threaded (same window as
         // load_user_table_storages_sync). Skips relkinds without pg_attribute
@@ -1093,10 +1095,13 @@ namespace services::disk {
         unique_future<void> drop_storage_many(session_id_t session,
                                               std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Storage queries
-        unique_future<std::pmr::vector<components::types::complex_logical_type>>
+        // Storage queries. Both wrap: an empty type list and a zero row count are real
+        // answers about a real table AND were the answer for an oid no agent owns. See the
+        // contract note on disk_contract::storage_types.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
-        unique_future<uint64_t> storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<core::result_wrapper_t<uint64_t>> storage_total_rows(session_id_t session,
+                                                                           components::catalog::oid_t table_oid);
 
         // Storage data operations.
         // Streaming fetch-next scan source (STEP 3 / phase B). Transparent router:
@@ -1129,10 +1134,13 @@ namespace services::disk {
                        components::operators::pushed_aggregate_spec_t spec);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         // The wrapper forwards the owning agent's buffer-pool OOM / data_corruption
-        // unchanged; callers read has_error() before .value().
+        // unchanged, and its routing refusal (an oid no agent has a storage for); callers
+        // read has_error() before .value().
         // `txn` + `visibility` ride this same message (C4b) and neither has a default: under
         // SNAPSHOT rows invisible to `txn` are dropped, so the reply is SHORTER than the
         // request and is paired with it through each chunk's row_ids, never by position.
+        // `limit` is the POST-VISIBILITY row cap (-1 == uncapped) the index scan pushes down,
+        // the counterpart of storage_fetch_next_batch's post-filter matched-row cap.
         // See the contract note on disk_contract::storage_fetch.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch(session_id_t session,
@@ -1141,11 +1149,13 @@ namespace services::disk {
                       uint64_t count,
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
-                      components::table::fetch_visibility_t visibility);
+                      components::table::fetch_visibility_t visibility,
+                      int64_t limit);
         // Appends every chunk in order. Appends within one txn are contiguous, so the
         // result is the single coalesced range [range_start, range_start + total_count).
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
-        // table-layer append chain reaches operator_insert as a value.
+        // table-layer append chain — and the routing refusal, which a zero-length range
+        // could not be told apart from — reaches operator_insert as a value.
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
@@ -1155,7 +1165,8 @@ namespace services::disk {
         // (the two vectors are positionally aligned and must have equal length). Returns
         // the coalesced new-row range [range_start, range_start + total_count).
         // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
-        // table-layer MVCC update reaches operator_update / fk_cascade as a value.
+        // table-layer MVCC update — and the routing refusal — reaches operator_update /
+        // fk_cascade as a value.
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,

@@ -170,7 +170,17 @@ namespace components::operators {
                                                    &services::disk::manager_disk_t::storage_total_rows,
                                                    ctx->session,
                                                    tbl.table_oid);
-                total = co_await std::move(trf);
+                auto total_r = co_await std::move(trf);
+                if (total_r.has_error()) {
+                    // `tbl` came out of a pg_class scan of relkind 'r'/'g', so it names a
+                    // table that must have a storage. A count that could not be read is a
+                    // broken storage layer, not an empty table — and it is handed straight
+                    // to repopulate_table as the size of the index to rebuild.
+                    set_error(total_r.error());
+                    mark_failed();
+                    co_return;
+                }
+                total = total_r.value();
             }
 
             // total==0 (table emptied by compact) still repopulates: the clear

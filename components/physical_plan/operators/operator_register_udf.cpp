@@ -1,5 +1,7 @@
 #include "operator_register_udf.hpp"
 
+#include "single_oid_round.hpp"
+
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
@@ -93,7 +95,28 @@ namespace components::operators {
             }
         }
 
-        // 3. Mirror into the global default registry so validate_logical_plan
+        // 3. Mint the pg_proc identity. THIS RUNS BEFORE THE REGISTRY MIRROR BELOW, and the
+        //    order is the point: the mirror is this operator's first MUTATION, and a refusal
+        //    discovered after it would leave the default registry answering for a function
+        //    the catalog never got a row for. A round that delivered nothing used to be
+        //    consumed anyway — allocate() answers INVALID_OID — and the pg_proc row went out
+        //    stamped with 0, so CREATE FUNCTION reported success over a durable function with
+        //    no identity, which is what pg_depend and every later lookup key on.
+        catalog::oid_t fn_oid = catalog::INVALID_OID;
+        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::allocate_oids_batch,
+                                               std::size_t{1});
+            auto allocated = co_await std::move(oaf);
+            if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", fn_oid);
+                ec_oid.contains_error()) {
+                set_error(std::move(ec_oid));
+                mark_failed();
+                co_return;
+            }
+        }
+
+        // 4. Mirror into the global default registry so validate_logical_plan
         //    lookups (which probe get_default()) see the UDF. MUST reuse the
         //    LOCAL uid (uids.front()): otherwise the global counter (which keeps
         //    growing across tests) and the per-executor counters diverge, so a
@@ -111,7 +134,7 @@ namespace components::operators {
             }
         }
 
-        // 4. Persist to pg_proc, attached to the first existing user namespace;
+        // 5. Persist to pg_proc, attached to the first existing user namespace;
         //    if none exists, the row lives in pg_catalog.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
@@ -169,12 +192,6 @@ namespace components::operators {
                 prorettype = catalog::encode_prorettype(outs);
             }
 
-            auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::allocate_oids_batch,
-                                               std::size_t{1});
-            catalog::oid_batch_t fn_batch;
-            fn_batch.oids = co_await std::move(oaf);
-            const catalog::oid_t fn_oid = fn_batch.allocate();
             auto fn_writes = catalog::build_create_function_writes(resource_,
                                                                    func_name,
                                                                    target_ns,

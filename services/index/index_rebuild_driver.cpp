@@ -56,7 +56,15 @@ namespace services::index {
                                                    &services::disk::manager_disk_t::storage_total_rows,
                                                    session,
                                                    table_oid);
-                total = co_await std::move(trf);
+                auto total_r = co_await std::move(trf);
+                if (total_r.has_error()) {
+                    // The same refusal the scan below would hit, one round-trip earlier: an
+                    // INDEXED oid names a table that must have a storage. Reported the way
+                    // this loop reports every other failure — stop, do not average it into a
+                    // rebuild sized by a count nobody read.
+                    co_return total_r.error();
+                }
+                total = total_r.value();
             }
 
             // total==0 (table emptied by compact) still repopulates: the clear step inside

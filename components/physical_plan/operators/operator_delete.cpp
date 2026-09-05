@@ -581,7 +581,16 @@ namespace components::operators {
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
                                              table_oid_);
-            auto types = co_await std::move(tf);
+            auto types_r = co_await std::move(tf);
+            if (types_r.has_error()) {
+                // affected_rows_ > 0 here, so rows WERE deleted; the count still has to be
+                // shipped in chunks shaped by the table's schema, and an empty type list
+                // would ship it as 0-column chunks.
+                set_error(types_r.error());
+                mark_failed();
+                co_return;
+            }
+            auto types = std::move(types_r.value());
             // The result carries only the affected-row count as cardinality (no row data),
             // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the table's types.
             set_output(make_operator_data(resource_,

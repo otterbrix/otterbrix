@@ -72,22 +72,28 @@ namespace components::operators {
         row_ids_vec_ = std::move(matched.value());
 
         // The whole matched set is the fetch window. The read-cap (offset+limit head cap) is
-        // deliberately NOT applied here any more (C4b): the index answer is a SUPERSET —
-        // manager_index says so — and since C4b the fetch DROPS the rows this transaction may
-        // not see, so cutting the id list to `limit` before the fetch can cut away the very
-        // ids whose rows survive it and return fewer rows than the LIMIT asked for. The cap
-        // now rides BELOW that filter, in source_next, over the rows actually produced —
-        // the same order full_scan uses, where the agent counts POST-filter matched rows.
+        // deliberately NOT applied here (C4b): the index answer is a SUPERSET — manager_index
+        // says so — and the fetch DROPS the rows this transaction may not see, so cutting the
+        // id list to `limit` before the fetch can cut away the very ids whose rows survive it
+        // and return fewer rows than the LIMIT asked for. The cap rides BELOW that filter, and
+        // it now rides ALL THE WAY DOWN: it is the `limit` argument of the storage_fetch below,
+        // spent by the agent on rows it has actually produced. That is the same shape full_scan
+        // uses — its cap travels on storage_fetch_next_batch as a post-filter matched-row count
+        // — and it is why this window is not truncated here: the operator would still have
+        // fetched every matched row before dropping the surplus.
         // SELECT OFFSET is applied by operator_limit above, so the seek starts at 0.
         pos_ = 0;
         end_ = row_ids_vec_.size();
         co_return core::error_t::no_error();
     }
 
-    // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent windows the
-    // request into ≤ DEFAULT_VECTOR_CAPACITY chunks and stamps each chunk's absolute row_ids (so a
-    // downstream DELETE/UPDATE/index sees the right rows), returning them as a vector that source_next
-    // buffers. An empty window (or an OID this agent does not own) yields an empty vector.
+    // Fetch the matched window [pos_, end_) in ONE storage_fetch, capped at limit_.head_cap()
+    // ROWS. The disk agent windows the request into ≤ DEFAULT_VECTOR_CAPACITY chunks and stamps
+    // each chunk's absolute row_ids (so a downstream DELETE/UPDATE/index sees the right rows),
+    // returning them as a vector that source_next buffers; with a cap it STOPS as soon as it has
+    // produced that many visible rows, so a LIMIT 1 over a million matched ids reads one window
+    // instead of a thousand. An empty window yields an empty vector; an oid with no storage is
+    // a refusal on the wrapper, not an empty vector.
     actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
     index_scan::fetch_matched_window(pipeline::context_t* ctx) {
         const size_t count = (end_ > pos_) ? (end_ - pos_) : 0;
@@ -109,7 +115,11 @@ namespace components::operators {
                                          // superset of ids and the table decides which of them
                                          // this transaction may see.
                                          ctx->txn,
-                                         table::fetch_visibility_t::SNAPSHOT);
+                                         table::fetch_visibility_t::SNAPSHOT,
+                                         // POST-VISIBILITY row cap. -1 == uncapped; otherwise the
+                                         // agent hands back exactly this many visible rows (fewer
+                                         // if the window runs out first) and reads no further.
+                                         limit_.head_cap());
         co_return co_await std::move(ff);
     }
 
@@ -145,7 +155,13 @@ namespace components::operators {
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
                                              table_oid_);
-            guard_types_ = co_await std::move(tf);
+            auto types_result = co_await std::move(tf);
+            if (types_result.has_error()) {
+                set_error(types_result.error());
+                mark_failed();
+                co_return types_result.convert_error<vector::data_chunk_t>();
+            }
+            guard_types_ = std::move(types_result.value());
         }
 
         // FIRST fetch: pull the whole matched window in ONE storage_fetch; the disk batches it into
@@ -166,22 +182,13 @@ namespace components::operators {
             batch_pos_ = 0;
         }
 
-        // Emit the next buffered chunk, capped BELOW the visibility filter. The cap counts
-        // rows the fetch actually produced, so a row the snapshot hid never consumes budget —
-        // which is exactly what applying it to the raw index answer used to do.
-        const int64_t cap = limit_.head_cap();
-        if (cap >= 0 && emitted_rows_ >= static_cast<uint64_t>(cap)) {
-            batch_pos_ = batch_.size();
-        }
+        // Emit the next buffered chunk. NO cap is applied here any more: the agent already
+        // spent it on the rows it produced, below the visibility filter, and batch_ therefore
+        // holds at most limit_.head_cap() rows in total. Re-applying it here would be a second
+        // truncation of an already-truncated answer — harmless but a duplicated rule, and the
+        // duplicate is what would rot if only one of the two were ever changed.
         if (batch_pos_ < batch_.size()) {
             auto chunk = std::move(batch_[batch_pos_++]);
-            if (cap >= 0) {
-                const uint64_t budget = static_cast<uint64_t>(cap) - emitted_rows_;
-                if (chunk.size() > budget) {
-                    chunk.set_cardinality(budget);
-                }
-            }
-            emitted_rows_ += chunk.size();
             emitted_any_ = true;
             co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(chunk));
         }

@@ -91,6 +91,12 @@ namespace services::wal {
             // usable whether or not an earlier page failed.
             if (scan.first_broken_page != 0) {
                 ++scan.verified_pages_after_break;
+                if (scan.first_verified_lsn_after_break == 0) {
+                    scan.first_verified_lsn_after_break = hdr.page_lsn;
+                }
+            }
+            if (scan.first_verified_page_lsn == 0) {
+                scan.first_verified_page_lsn = hdr.page_lsn;
             }
             if (hdr.page_end_lsn > scan.highest_page_end_lsn) {
                 scan.highest_page_end_lsn = hdr.page_end_lsn;

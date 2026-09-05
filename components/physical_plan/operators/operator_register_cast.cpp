@@ -1,5 +1,7 @@
 #include "operator_register_cast.hpp"
 
+#include "single_oid_round.hpp"
+
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -28,9 +30,19 @@ namespace components::operators {
             auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::allocate_oids_batch,
                                                std::size_t{1});
-            catalog::oid_batch_t batch;
-            batch.oids = co_await std::move(oaf);
-            const catalog::oid_t cast_oid = batch.allocate();
+            auto allocated = co_await std::move(oaf);
+            // The identity is minted BEFORE the pg_cast row is built. A round that delivered
+            // nothing used to be consumed anyway: allocate() answers INVALID_OID, and the
+            // pg_cast row went out stamped with it — a durable cast with no identity, reported
+            // as a successful CREATE CAST. find_cast_oid then reads that 0 back as "there is
+            // no such cast", so the row is unreachable AND undeletable.
+            catalog::oid_t cast_oid = catalog::INVALID_OID;
+            if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_cast", cast_oid);
+                ec_oid.contains_error()) {
+                set_error(std::move(ec_oid));
+                mark_failed();
+                co_return;
+            }
 
             auto writes = catalog::build_create_cast_writes(resource_, cast_oid, source_type_oid_, target_type_oid_);
             std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>

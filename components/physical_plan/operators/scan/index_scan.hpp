@@ -36,16 +36,21 @@ namespace components::operators {
         // which this source buffers in batch_ and emits one-chunk-per-call.
         //   The fetch runs under the reader's own snapshot, so a chunk can be SHORTER than its
         // slice of the window: the index answers with a superset of ids and the table decides
-        // which of them this transaction may see. The LIMIT head cap is therefore applied HERE,
-        // to the rows emitted, not to the matched ids — see emitted_rows_.
+        // which of them this transaction may see. The LIMIT head cap therefore travels ON the
+        // fetch message, as storage_fetch's post-visibility `limit`, and never touches the
+        // matched-id list — the same place full_scan puts it (storage_fetch_next_batch's
+        // post-filter matched-row cap), and the reason the agent can stop reading windows
+        // instead of the operator dropping a surplus it already paid to fetch.
         //   The FIRST call's sequential cross-actor co_awaits (index search + storage_types + the one
         // window storage_fetch) live in this NESTED operator coroutine (driven by co_await from
         // execute_pipeline), not in a behavior() handler, so the actor-zeta single-slot awaited
         // continuation is republished+cleared between sequential awaits — no lost-wakeup.
         //   index_scan is built ONLY when create_plan_match_ proves an index exists on a real table
-        // (can_use_index), so table_oid_ is always valid in practice; the INVALID_OID sentinel is a
-        // degenerate shape that source_next drains to an empty guard. role() is therefore
-        // unconditionally source.
+        // (can_use_index), so table_oid_ is always valid — there is no no-table shape here, unlike
+        // full_scan and transfer_scan, which carry an explicit INVALID_OID sentinel because a
+        // no-FROM SELECT lowers onto them. An INVALID_OID reaching this operator is a physgen
+        // defect, and the schema read in source_next now refuses it rather than draining to an
+        // empty guard. role() is unconditionally source.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
@@ -59,7 +64,6 @@ namespace components::operators {
             emitted_any_ = false;
             pos_ = 0;
             end_ = 0;
-            emitted_rows_ = 0;
             row_ids_vec_.clear();
             guard_types_.clear();
             batch_.clear();
@@ -116,11 +120,6 @@ namespace components::operators {
         bool emitted_any_{false};
         size_t pos_{0};
         size_t end_{0};
-        // Rows this source has actually EMITTED. The LIMIT head cap is measured against
-        // this and not against the matched-id count, because the point fetch drops rows
-        // the reader's snapshot may not see (C4b) — a cap taken above that filter would
-        // spend budget on rows nobody receives and return a short result.
-        uint64_t emitted_rows_{0};
         std::pmr::vector<int64_t> row_ids_vec_{resource_};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
         // Buffered fetched batches: the single whole-window storage_fetch returns the disk-batched

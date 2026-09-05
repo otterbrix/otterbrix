@@ -39,6 +39,15 @@ namespace components::catalog {
     // second covers a DDL rewrite that consumes more than compute_oid_demand predicted --
     // the two counts live in different files (planner.cpp's compute_oid_demand vs the
     // rewrite_* functions plus ddl_metadata_builder.cpp) and are kept equal by hand.
+    //
+    // THE FLAG HAS OTHER READERS, AND EVERY CONSUMER MUST BE ONE. Three operators mint a
+    // single identity of their own, outside the planner's round entirely -- pg_proc
+    // (operator_register_udf_t), pg_cast (operator_register_cast_t) and pg_attribute
+    // (operator_alter_column_add_t). They spent allocate() unchecked and wrote the row with
+    // the INVALID_OID it answered, which is the exact damage this class exists to prevent,
+    // only announced as success. They now refuse through the one shared reader in
+    // components/physical_plan/operators/single_oid_round.hpp. A NEW caller of
+    // allocate()/peek() that does not read overrun() reopens this hole.
     struct oid_batch_t {
         // Checked construction. `need` is compute_oid_demand's answer for the node about to
         // be rewritten; `oids` is what the allocation round delivered.

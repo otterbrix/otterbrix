@@ -391,8 +391,8 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         auto ns = fd3.invoke(&manager_disk_t::resolve_namespace, fd3.ctx(), std::string("ns_one"), std::uint64_t{0});
         REQUIRE_FALSE(ns.has_error());
         CHECK(ns.value().found);
-        auto rows =
-            fd3.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, user_table);
+        auto rows = disk_test_helpers::read_ok(
+            fd3.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, user_table));
         CHECK(rows == kRows);
     }
 

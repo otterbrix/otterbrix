@@ -28,12 +28,17 @@ namespace components::operators {
     //      invariant). The dispatcher is responsible for dropping any executor
     //      that returned an error before building the vector — an empty vector
     //      means "no executors / nothing to mirror by uid".
-    //   3. mirror the function into function_registry_t::get_default() so
+    //   3. allocate the ONE OID the pg_proc row will carry, and refuse the
+    //      statement if the round did not deliver it. Ahead of step 4 on
+    //      purpose: step 4 is the operator's first mutation, so a refusal
+    //      found after it would leave the default registry answering for a
+    //      function that never got a catalog row.
+    //   4. mirror the function into function_registry_t::get_default() so
     //      validate_logical_plan lookups (which probe the default registry)
     //      can find it, reusing the agreed LOCAL uid so the global counter and
     //      the per-executor counters never diverge.
-    //   4. allocate one OID + write pg_proc + pg_depend rows so the function
-    //      survives restart (the registry is hydrated from pg_proc at startup).
+    //   5. write pg_proc + pg_depend rows so the function survives restart
+    //      (the registry is hydrated from pg_proc at startup).
     //
     // The function payload is owned here as the canonical function_ptr (unique):
     // the operator deep-copies it via get_copy() for the default-registry mirror

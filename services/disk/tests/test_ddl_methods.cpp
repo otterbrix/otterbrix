@@ -660,7 +660,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
 
     // Verify storage now has 3 columns (post-#96).
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
+        auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
         REQUIRE(types.size() == 3);
     }
 
@@ -704,7 +704,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
 
     // Storage now has 2 columns: a, c.
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
+        auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
         REQUIRE(types.size() == 2);
     }
 
@@ -722,7 +722,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         REQUIRE(dropped == 2);
     }
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
+        auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
         REQUIRE(types.empty());
     }
 
@@ -848,7 +848,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         // relkind='g' tables when the incoming chunk brings columns that aren't in
         // the current data_table_t. Pre-existing rows get NULL-equivalent
         // (zero-initialized) values for the new column.
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
+        auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
         REQUIRE(types.size() == 2);
         REQUIRE(drain_row_count(fx, table_oid) == 2);
     }
@@ -873,7 +873,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     }
 
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
+        auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
         REQUIRE(types.size() == 3);
         REQUIRE(drain_row_count(fx, table_oid) == 3);
     }
@@ -891,8 +891,8 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
 // Batched DROP: drop_storage_many erases N user storages in ONE call. Create N
 // user storages (with one row each so they're observably non-empty),
 // confirm each is present, then send a single drop_storage_many with the N oids
-// and assert all N are gone (has_storage false / storage_total_rows 0 /
-// read_chunks_by_key empty) while a non-targeted storage survives untouched.
+// and assert all N are gone (has_storage false, and every read leg REFUSES) while
+// a non-targeted storage survives untouched.
 TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -946,11 +946,12 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     // Pre-DROP: every target is present and non-empty.
     for (std::size_t i = 0; i < N; ++i) {
         REQUIRE(fx.manager->has_storage(targets[i]));
-        auto rows = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]);
+        auto rows =
+            disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]));
         REQUIRE(rows == 1);
     }
     REQUIRE(fx.manager->has_storage(survivor));
-    REQUIRE(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor) == 1);
+    REQUIRE(disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor)) == 1);
 
     // ONE batched drop for all N targets (survivor NOT in the oid list).
     {
@@ -962,7 +963,14 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     // Post-DROP: all N targets are gone on every observable surface.
     for (std::size_t i = 0; i < N; ++i) {
         REQUIRE_FALSE(fx.manager->has_storage(targets[i]));
-        REQUIRE(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]) == 0);
+        // The ROW COUNT of a dropped storage is a refusal, not 0. It used to answer 0 —
+        // the row count of an EMPTY TABLE — so this assertion could not tell "dropped"
+        // from "still there and emptied", which is the difference the case is named after.
+        {
+            auto rows = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]);
+            REQUIRE(rows.has_error());
+            REQUIRE(rows.error().type == core::error_code_t::missing_table);
+        }
         // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
@@ -970,7 +978,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         vals.emplace_back(&fx.resource, static_cast<std::int64_t>(i + 1));
         // A dropped storage cannot be read at all: the keyed read reports missing_table
         // instead of an empty result. The "data is gone" guarantee this loop checks is
-        // unchanged — has_storage and storage_total_rows above still assert it.
+        // unchanged — has_storage above still asserts it.
         auto dropped_read = fx.invoke(&manager_disk_t::read_chunks_by_key,
                                       fx.ctx(),
                                       targets[i],
@@ -983,7 +991,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
 
     // Survivor untouched: still present, still 1 row, still readable.
     REQUIRE(fx.manager->has_storage(survivor));
-    REQUIRE(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor) == 1);
+    REQUIRE(disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor)) == 1);
     {
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);

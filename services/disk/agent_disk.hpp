@@ -232,7 +232,15 @@ namespace services::disk {
                                                            const components::vector::data_chunk_t& schema_chunk);
 
         // Mutation handlers: these inner bodies are the SOLE owner of each mutation;
-        // manager-side bodies are pure routers. Not-owned OIDs no-op.
+        // manager-side bodies are pure routers.
+        //
+        // A NOT-OWNED OID IS A REFUSAL ON EVERY LEG BELOW, not a no-op. The agent is chosen
+        // by pool_idx_for_oid BEFORE the send, so the agent reading "I do not own this oid"
+        // IS the owner and the branch really means "the owner has no storage" — which is a
+        // mutation that did not happen and a read that never reached data. Each leg used to
+        // answer that with its own natural empty value; every one of those values is also a
+        // correct answer to a real question, so nothing above could tell them apart. Only an
+        // EMPTY REQUEST (no rows asked for, no rows to write) is still a plain success.
         //
         // storage_append_inner — canonical WAL-FIRST append. Owns the FULL
         //   preprocessing pipeline (schema adoption/growth, column expansion,
@@ -242,11 +250,13 @@ namespace services::disk {
         //   (PHYSICAL_ADD_COLUMN for any dynamic schema growth, then PHYSICAL_INSERT
         //   carrying the final start_row + count), and only THEN materializes the
         //   append. User + catalog inserts share ONE write ordering. Returns
-        //   (start_row, count); (0,0) on no-op. Takes the full execution_context
+        //   (start_row, count); (0,0) for an EMPTY chunk, and an error when this agent has
+        //   no storage to append to. Takes the full execution_context
         //   (session/txn/tz/db_oid) because the agent owns the WAL write.
         // Reply wraps the pair so a buffer-pool OOM or write_conflict surfaced by the
         // table-layer append chain travels back to operator_insert as a value (no throw
-        // across the mailbox).
+        // across the mailbox) — and so the routing refusal does not arrive dressed as the
+        // zero-length range an empty batch legitimately produces.
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append_inner(execution_context_t ctx,
                              components::catalog::oid_t table_oid,
@@ -283,7 +293,7 @@ namespace services::disk {
         // storage_update_inner — single-OID UPDATE mutation against the
         //   agent twin. Reply wraps storage_t::update's (updated, appended) pair so a
         //   write_conflict / out_of_memory travels back to operator_update as a value;
-        //   (0, 0) on no-op.
+        //   (0, 0) for an EMPTY chunk, an error when this agent has no storage to update.
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update_inner(components::catalog::oid_t table_oid,
                              components::vector::vector_t row_ids,
@@ -304,26 +314,33 @@ namespace services::disk {
                                   components::table::transaction_data txn);
 
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
-        //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks
-        //   (empty when the agent doesn't own the OID). The wrapper carries the
-        //   buffer-pool OOM / data_corruption the point-fetch surfaced — the first
-        //   window error aborts the batch (a partial answer must not ship).
+        //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks; an
+        //   oid this agent has no storage for is an ERROR, because an empty chunk vector
+        //   is what a fetch whose rows are all invisible to `txn` legitimately returns.
+        //   The wrapper also carries the buffer-pool OOM / data_corruption the point-fetch
+        //   surfaced — the first window error aborts the batch (a partial answer must not ship).
         //   Under fetch_visibility_t::SNAPSHOT the table layer drops every row `txn` may
         //   not see, so a produced chunk can be SHORTER than its window; each chunk's
         //   row_ids are stamped by the producer (collection_t::fetch) with the rows it
         //   actually carries, and this handler no longer re-stamps them from the request.
         //   RAW keeps every row whatever its version stamps say — the CREATE INDEX
         //   backfill reads deleted rows on purpose.
+        //   `limit` (-1 == uncapped) caps the reply at that many rows AFTER the visibility
+        //   drop, and stops the window loop as soon as the budget is spent — the reason it
+        //   lives here and not in the caller: a cap applied to the requested IDS spends
+        //   budget on rows the reader never receives. It is a truncation and nothing more:
+        //   the capped reply is the uncapped reply's prefix.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch_inner(components::catalog::oid_t table_oid,
                             components::vector::vector_t row_ids,
                             uint64_t count,
                             std::vector<size_t> projected_cols,
                             components::table::transaction_data txn,
-                            components::table::fetch_visibility_t visibility);
+                            components::table::fetch_visibility_t visibility,
+                            int64_t limit);
 
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
-        // Not-owned OIDs return an empty/zero sentinel.
+        // Not-owned OIDs refuse; see the note above the mutation handlers.
         //
         // storage_scan_inner — batched + projected scan; the reply wraps a PMR vector of
         //   data_chunk_t batches (≤ DEFAULT_VECTOR_CAPACITY rows each), carrying any
@@ -351,9 +368,13 @@ namespace services::disk {
         //                      position and read exactly one batch.
         //   A produced batch (cardinality>0) replies {batch, cursor_id}. A drained cursor (scan
         //   exhausted / matched-row limit reached) ERASES active_scans_[cursor_id] and replies an
-        //   EMPTY chunk (cardinality 0) + cursor_id. Not-owned oid / record-only marker / unknown
-        //   cursor replies an empty (drained) batch. Buffer-pool OOM / data_corruption ride the
-        //   wrapper as a value (no throw across the mailbox), like scan_local.
+        //   EMPTY chunk (cardinality 0) + cursor_id. An OPEN (cursor_id==0) over a not-owned oid
+        //   / record-only marker REFUSES: the drained sentinel on a FIRST batch reads as "this
+        //   table is empty", a fact about the table asserted by a scan that never started. An
+        //   unknown cursor on ADVANCE still replies drained — the drain path erases the entry
+        //   itself, so not knowing a cursor IS that cursor being finished. Buffer-pool OOM /
+        //   data_corruption ride the wrapper as a value (no throw across the mailbox), like
+        //   scan_local.
         unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_fetch_next_batch_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
@@ -376,7 +397,10 @@ namespace services::disk {
         //   operator_group rebuilt from the POD spec (WHERE rides `filter`, projection
         //   rides `projected_cols`), and replies ALL final aggregated rows in ONE reply — the
         //   result is bounded by #groups, so no cursor exists. A not-owned / record-only oid
-        //   reduces over the EMPTY input (a scalar aggregate still emits its single row).
+        //   REFUSES; it used to reduce over the EMPTY input and emit the scalar aggregate's
+        //   single row, which is a fact about a table ("your COUNT is 0") synthesized from a
+        //   read that reached no storage and identical to what a real empty table produces.
+        //   An empty OWNED slice still folds to that single row — that half is correct.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce_inner(session_id_t session,
                              components::catalog::oid_t table_oid,
@@ -390,9 +414,12 @@ namespace services::disk {
         //   single-pass hash semi-join fk_hash_semijoin: builds ONE typed hash of the
         //   input key set and STREAMS the table exactly once (fetch_next_batch), bucketing
         //   each row_id into every matching key. result[i] == match row_ids for key-tuple i;
-        //   result has one (possibly empty) entry per key. A not-owned OID / unknown column /
-        //   arity mismatch yields a same-length result of empty rows (or empty when keys is
-        //   empty). The whole batch is one mailbox message so name resolution happens once,
+        //   result has one (possibly empty) entry per key, so an empty entry means exactly one
+        //   thing: this key matched nothing. A not-owned OID / unknown column / arity mismatch
+        //   is a core::error_t — this comment used to promise "a same-length result of empty
+        //   rows", which is the affirmative answer "nothing references that key" and is what
+        //   let ON DELETE CASCADE drop a parent whose children stayed; the code stopped doing
+        //   it, the sentence did not. The whole batch is one mailbox message so name resolution happens once,
         //   the scan is O(table_rows + nkeys) (NOT one full scan per key), and it is
         //   serialized against same-oid mutations.
         unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
@@ -436,13 +463,18 @@ namespace services::disk {
                                   std::pmr::vector<std::uint64_t> projected_cols,
                                   components::table::transaction_data txn);
 
-        // storage_types_inner — schema metadata accessor.
-        unique_future<std::pmr::vector<components::types::complex_logical_type>>
+        // storage_types_inner — schema metadata accessor. An oid this agent has no storage
+        //   for is an error: an EMPTY type list is what a storage with no adopted schema
+        //   answers, and operator_resolve_table maps live columns onto that list by name, so
+        //   an empty one silently describes a table with no columns.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
         storage_types_inner(components::catalog::oid_t table_oid);
 
-        // storage_total_rows_inner — row-count metadata accessor. 0 means
-        //   either "not owned" or "empty twin" — both equivalent for callers.
-        unique_future<uint64_t> storage_total_rows_inner(components::catalog::oid_t table_oid);
+        // storage_total_rows_inner — row-count metadata accessor. 0 used to mean either
+        //   "not owned" or "empty twin", and the two are NOT equivalent for callers: one is
+        //   a fact about a table, the other is a read that never happened. 0 now means only
+        //   the first; the second travels the wrapper.
+        unique_future<core::result_wrapper_t<uint64_t>> storage_total_rows_inner(components::catalog::oid_t table_oid);
 
         // Fanout handlers for checkpoint_all / vacuum_all / on_horizon_advanced —
         // each agent iterates its own storages_ slice in parallel.

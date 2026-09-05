@@ -271,8 +271,10 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
 
         // And the rows are still all there — a skip that lost the table would show up here
         // as well as in the restart below.
-        REQUIRE(fd.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0]) == 2 * kRows);
-        REQUIRE(fd.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[1]) == kRows);
+        REQUIRE(disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0])) ==
+                2 * kRows);
+        REQUIRE(disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[1])) ==
+                kRows);
     }
 
     // The skipped files really are complete files, not stale ones: a fresh manager over the
@@ -285,10 +287,12 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
         fd2.manager->restore_oid_generator_sync();
         fd2.manager->load_user_table_storages_sync();
 
-        REQUIRE(fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0]) == 2 * kRows);
+        REQUIRE(disk_test_helpers::read_ok(
+                    fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0])) == 2 * kRows);
         for (std::size_t i = 1; i < tables.size(); i++) {
             INFO("table index " << i << " came back short after a restart");
-            REQUIRE(fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[i]) == kRows);
+            REQUIRE(disk_test_helpers::read_ok(
+                        fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[i])) == kRows);
         }
     }
 

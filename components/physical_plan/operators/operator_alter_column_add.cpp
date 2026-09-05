@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "alter_validators.hpp"
+#include "single_oid_round.hpp"
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
@@ -98,9 +99,20 @@ namespace components::operators {
 
         auto [_oa, oaf] =
             actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, std::size_t{1});
-        catalog::oid_batch_t att_batch;
-        att_batch.oids = co_await std::move(oaf);
-        const catalog::oid_t attoid = att_batch.allocate();
+        auto allocated = co_await std::move(oaf);
+        // Like every validation above, this refusal lands BEFORE the first catalog mutation.
+        // A round that delivered nothing used to be consumed anyway: allocate() answers
+        // INVALID_OID and the pg_attribute row went out with attoid = 0, so ALTER TABLE ADD
+        // COLUMN reported success over a column with no identity — and the identity is what
+        // the RN-oid backfill below hands to the storage that will materialise it, and what
+        // a later DROP COLUMN keys its tombstone on.
+        catalog::oid_t attoid = catalog::INVALID_OID;
+        if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "alter_column_add", attoid);
+            ec_oid.contains_error()) {
+            set_error(std::move(ec_oid));
+            mark_failed();
+            co_return;
+        }
 
         const std::string typspec = catalog::encode_type_spec(column_.type());
         std::string defspec;

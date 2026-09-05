@@ -65,8 +65,13 @@ namespace components::operators {
                                                      &services::disk::manager_disk_t::storage_types,
                                                      ctx->session,
                                                      table_oid_);
-                    auto types = co_await std::move(tf);
-                    cached_types_ = std::move(types);
+                    auto types_result = co_await std::move(tf);
+                    if (types_result.has_error()) {
+                        set_error(types_result.error());
+                        mark_failed();
+                        co_return types_result.convert_error<vector::data_chunk_t>();
+                    }
+                    cached_types_ = std::move(types_result.value());
                     types_cached_ = true;
                 }
                 auto filter_result = transform_predicate(resource_,

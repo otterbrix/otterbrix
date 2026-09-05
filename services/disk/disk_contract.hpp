@@ -163,8 +163,19 @@ namespace services::disk {
         // the owning agent runs the whole GROUP BY over its slice (operator_group
         // rebuilt from the POD spec; WHERE rides `filter`, projection rides
         // `projected_cols`) and replies ALL final aggregated rows in ONE reply — bounded by
-        // #groups, so no cursor exists. A not-owned / record-only oid reduces over the
-        // EMPTY input (a scalar aggregate still emits its single COUNT=0/NULL row).
+        // #groups, so no cursor exists.
+        //
+        // A NOT-OWNED / RECORD-ONLY OID IS A REFUSAL, NOT AN EMPTY FOLD. This clause used to
+        // say the opposite — that such an oid "reduces over the EMPTY input (a scalar
+        // aggregate still emits its single COUNT=0/NULL row)" — and that sentence was the
+        // root of a whole family of silent wrong answers on this contract. The row it
+        // sanctioned is a STATEMENT ABOUT A TABLE ("your COUNT is 0"), bit-identical to the
+        // row a real, really-empty table produces, synthesized from a read that reached no
+        // storage at all. Nothing above the reply can tell the two apart. An EMPTY OWNED
+        // table still folds to that single scalar row — that half is correct and is what the
+        // group's empty-input finalize is for; only "no storage here" leaves through the
+        // error channel.
+        //
         // SINGLE-OWNER INVARIANT: the reply carries FINAL rows, valid only while one agent
         // owns the whole table; sharded slices need partial states + a real coordinator
         // merge (operator_group_merge is the socket).
@@ -250,11 +261,20 @@ namespace services::disk {
         actor_zeta::unique_future<void> drop_storage_many(session_id_t session,
                                                           std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Storage queries
-        actor_zeta::unique_future<std::pmr::vector<components::types::complex_logical_type>>
+        // Storage queries. BOTH wrap their answer for the same reason storage_delete_rows
+        // does: their natural reply value is ALSO what a routing refusal produced.
+        //
+        //   storage_types — an EMPTY type list is a real answer (a storage whose schema has
+        //     not been adopted yet), and it was equally the answer for an oid no agent owns.
+        //     operator_resolve_table maps every live pg_attribute column onto this list BY
+        //     NAME; an empty one leaves every column's chunk_position at -1, i.e. a table
+        //     schema describing nothing, derived from a read that never happened.
+        //   storage_total_rows — 0 is the honest row count of an empty table, and was equally
+        //     the count for an oid no agent owns.
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
-        actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session,
-                                                               components::catalog::oid_t table_oid);
+        actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
+        storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
         // Storage data operations. The read contract has exactly TWO legs and cannot be
         // reduced to one (A1): streaming-by-predicate below, and point-by-row-id
         // (storage_fetch) further down. A row-id SET is not expressible as a scan filter —
@@ -270,6 +290,12 @@ namespace services::disk {
         // the cursor_id; an EMPTY chunk (cardinality 0) is the drained sentinel and the
         // cursor is erased agent-side. Buffer-pool OOM / data_corruption ride the wrapper
         // as a value (no throw across the mailbox).
+        //
+        // AN OPEN OVER AN OID NO AGENT HAS A STORAGE FOR IS A REFUSAL, not a drained
+        // sentinel. The sentinel means "this scan is finished", which for a first batch
+        // reads as "this table is empty" — a fact about the table, asserted by a scan that
+        // never started. ADVANCING an unknown cursor DOES stay drained: the drain path
+        // erases the entry itself, so not knowing a cursor IS that cursor being finished.
         actor_zeta::unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
@@ -288,6 +314,11 @@ namespace services::disk {
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         // The wrapper carries the owning agent's buffer-pool OOM / data_corruption as a
         // value (no throw across the mailbox); callers read has_error() before .value().
+        // It also carries the ROUTING refusal: an oid no agent has a storage for used to
+        // come back as an empty chunk vector, which is exactly what a point fetch whose rows
+        // are all invisible to `txn` legitimately returns. Asking for ZERO rows (count == 0)
+        // stays a success with no chunks, whatever the oid — an empty request has an empty
+        // answer.
         //
         // VISIBILITY RIDES THIS MESSAGE (C4b), as a mode and not as a second protocol leg:
         // only the visibility of the answer differs between the two, not its shape or its
@@ -303,6 +334,20 @@ namespace services::disk {
         //             reads DELETED rows on purpose to recover their old key columns.
         // An empty `txn` is NOT raw: it means "see all COMMITTED rows", so a committed
         // delete still hides the row from it.
+        //
+        // `limit` IS A POST-VISIBILITY CAP ON ROWS, the exact counterpart of
+        // storage_fetch_next_batch's post-filter matched-row cap, and the only place a
+        // LIMIT over an index scan can correctly be applied. The index answers with a
+        // SUPERSET of row ids and this leg DROPS the ones `txn` may not see, so a cap
+        // spent on candidate IDS can spend its whole budget on rows the reader never
+        // receives. Measured against integration/cpp/test/test_index_scan_limit_cap.cpp with
+        // that spelling injected: a LIMIT 7 answered with 0 rows, and the same with the budget
+        // counted per requested id here instead of per produced row. The agent stops gathering as soon
+        // as it has produced `limit` rows the reader can see, so the cap bounds the work
+        // as well as the reply. -1 == uncapped (logical_plan::limit_t::unlimit), and like
+        // `visibility` it has NO DEFAULT: a fetch that does not say how many rows it wants
+        // does not compile. A cap wider than the matched set is not a boundary — it simply
+        // never binds.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         // projected_cols holds storage chunk indices; EMPTY means every column, matching
         // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come
@@ -313,17 +358,24 @@ namespace services::disk {
                       uint64_t count,
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
-                      components::table::fetch_visibility_t visibility);
+                      components::table::fetch_visibility_t visibility,
+                      int64_t limit);
 
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
-        // table-layer append chain reaches operator_insert as a value.
+        // table-layer append chain reaches operator_insert as a value — and, on the same
+        // channel, the routing refusal. A zero-length range is what appending an EMPTY batch
+        // legitimately answers, and it was equally the answer for an oid no agent owns: an
+        // INSERT reporting success over rows that reached no storage. Appending nothing stays
+        // a success; "there is no storage to append to" does not.
         actor_zeta::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
         // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
-        // table-layer MVCC update reaches operator_update / fk_cascade as a value.
+        // table-layer MVCC update reaches operator_update / fk_cascade as a value — and, on
+        // the same channel, the routing refusal, on the same reasoning as storage_append
+        // above. An empty request answers (0, 0) and stays a success.
         actor_zeta::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,

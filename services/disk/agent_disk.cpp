@@ -455,32 +455,38 @@ namespace services::disk {
     }
 
     // Mutation fanout targets. The manager router pre-validates, but the agent
-    // re-checks (not-owned / null no-op) because it owns its slice independently.
+    // re-checks because it owns its slice independently — and the re-check REFUSES rather
+    // than no-ops: this agent was selected by pool_idx_for_oid, so "not owned here" means
+    // the owner has no storage, and a mutation that did not happen must not report the same
+    // (0, 0) an empty request reports.
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     agent_disk_t::storage_append_inner(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
                                        std::unique_ptr<components::vector::data_chunk_t> data) {
         const auto txn = ctx.txn;
+        // Nothing to write is not a refusal: an empty request has an empty answer, and the
+        // whole pipeline below would be a no-op anyway.
+        if (!data || data->size() == 0) {
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        }
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_append_inner: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+            std::pmr::string what{"storage_append: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_append_inner: oid {} has null entry — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+            std::pmr::string what{"storage_append: table oid has an empty entry on its disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto* s = entry->storage.get();
-        if (!s || !data || data->size() == 0) {
-            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        if (s == nullptr) {
+            std::pmr::string what{"storage_append: table oid has no materialized storage: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
 
         // WAL-FIRST append. The whole body (preprocess -> WAL co_await -> materialize)
@@ -860,24 +866,27 @@ namespace services::disk {
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
                                        components::table::transaction_data txn) {
+        // Same split as storage_append_inner: an empty request is a success, a missing
+        // storage is a refusal.
+        if (!data || data->size() == 0) {
+            co_return std::pair<int64_t, uint64_t>{0, 0};
+        }
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_update_inner: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::pair<int64_t, uint64_t>{0, 0};
+            std::pmr::string what{"storage_update: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_update_inner: oid {} has null entry — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::pair<int64_t, uint64_t>{0, 0};
+            std::pmr::string what{"storage_update: table oid has an empty entry on its disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        if (!data || entry->storage == nullptr) {
-            co_return std::pair<int64_t, uint64_t>{0, 0};
+        if (entry->storage == nullptr) {
+            std::pmr::string what{"storage_update: table oid has no materialized storage: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         // No preprocessing here: the manager body already aligned `data` with the entry's
         // canonical schema. The wrapper carries any write_conflict / out_of_memory as a value.
@@ -927,29 +936,45 @@ namespace services::disk {
                                       uint64_t count,
                                       std::vector<size_t> projected_cols,
                                       components::table::transaction_data txn,
-                                      components::table::fetch_visibility_t visibility) {
+                                      components::table::fetch_visibility_t visibility,
+                                      int64_t limit) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
+        // Asking for no rows is not a refusal, whatever the oid — the same split the
+        // delete and append legs make.
+        if (count == 0) {
+            co_return std::move(out);
+        }
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_fetch_inner: oid {} not owned by this agent — empty result",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::move(out);
+            std::pmr::string what{"storage_fetch: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_fetch_inner: oid {} has null entry — empty result",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::move(out);
+            std::pmr::string what{"storage_fetch: table oid has no materialized storage: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto types = entry->storage->types();
         // Fetch in ≤DEFAULT_VECTOR_CAPACITY windows so each produced chunk is born within
         // the capacity bound — no oversized chunk is ever materialized.
+        //
+        // `limit` is spent HERE, on rows the fetch actually produced, and never on the ids it
+        // was handed. Under SNAPSHOT the fetch below drops every row `txn` may not see, so a
+        // window of 1024 ids can yield anything from 0 to 1024 rows; a budget deducted from
+        // the id count would run out on rows the reader never receives and answer a LIMIT
+        // with fewer rows than it asked for. Spending it on produced rows also lets the loop
+        // STOP: once the budget is met, the remaining windows are not read at all, which is
+        // the whole point of pushing the cap down here instead of truncating upstream.
+        const bool capped = limit >= 0;
+        const uint64_t budget = capped ? static_cast<uint64_t>(limit) : 0;
+        uint64_t produced = 0;
         const auto* ids = row_ids.data<int64_t>();
         for (uint64_t offset = 0; offset < count; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
+            if (capped && produced >= budget) {
+                break;
+            }
             const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, count - offset);
             components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
             std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
@@ -968,7 +993,15 @@ namespace services::disk {
             // all. collection_t::fetch stamps the ids of the rows it actually gathered, and
             // the guard below is on that pairing.
             assert(chunk.size() <= n && "storage_fetch_inner: a window produced more rows than it was asked for");
-            out.emplace_back(std::move(chunk));
+            if (capped && produced + chunk.size() > budget) {
+                // Truncation, not selection: set_cardinality keeps the chunk's FIRST rows and
+                // their stamped row_ids, so the capped reply stays a prefix of the uncapped one.
+                chunk.set_cardinality(budget - produced);
+            }
+            produced += chunk.size();
+            if (chunk.size() != 0) {
+                out.emplace_back(std::move(chunk));
+            }
         }
         co_return std::move(out);
     }
@@ -1188,11 +1221,10 @@ namespace services::disk {
             // storage_reduce path — this handler is a raw scan only.)
             auto it = storages_.find(table_oid);
             if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-                trace(log_,
-                      "agent_disk[{}]::storage_fetch_next_batch_inner: oid {} not owned / record-only — drained",
-                      pool_idx_,
-                      static_cast<unsigned>(table_oid));
-                co_return make_drained(0);
+                std::pmr::string what{"storage_fetch_next_batch: no materialized storage to open a scan on: ",
+                                      resource()};
+                what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+                co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
             }
             active_scan_t scan{};
             scan.table_oid = table_oid;
@@ -1311,10 +1343,18 @@ namespace services::disk {
                                        components::table::transaction_data txn,
                                        components::operators::pushed_aggregate_spec_t spec) {
         auto it = storages_.find(table_oid);
-        const bool no_storage = (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            // NOT an empty fold. The scalar aggregate's empty-input finalize would emit a
+            // single COUNT=0 / SUM=NULL row here, indistinguishable from the row a real
+            // empty table produces — a statement about a table, made by a read that reached
+            // no storage. An empty OWNED slice still folds to that row below.
+            std::pmr::string what{"storage_reduce: no materialized storage to reduce over: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+        }
         auto reduced_r = reduce_pushed_aggregate(resource(),
                                                  log_.clone(),
-                                                 no_storage ? nullptr : it->second->storage.get(),
+                                                 it->second->storage.get(),
                                                  session,
                                                  address(),
                                                  filter.get(),
@@ -1837,43 +1877,40 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
+    // Both accessors said "fallback to manager" in their trace lines. There is no manager
+    // fallback and has not been since B4 removed the in-memory store — the manager is a pure
+    // router — so the empty list and the zero they returned were the whole answer, and each
+    // is also what a real storage legitimately answers.
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
     agent_disk_t::storage_types_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_types_inner: oid {} not owned by this agent — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::pmr::vector<components::types::complex_logical_type>{resource()};
+            std::pmr::string what{"storage_types: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_types_inner: oid {} is a DISK record-only marker — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::pmr::vector<components::types::complex_logical_type>{resource()};
+            std::pmr::string what{"storage_types: table oid has no materialized storage: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         co_return entry->storage->types();
     }
 
-    agent_disk_t::unique_future<uint64_t> agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
+    agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_total_rows_inner: oid {} not owned by this agent — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return uint64_t{0};
+            std::pmr::string what{"storage_total_rows: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_total_rows_inner: oid {} is a DISK record-only marker — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return uint64_t{0};
+            std::pmr::string what{"storage_total_rows: table oid has no materialized storage: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         co_return entry->storage->total_rows();
     }

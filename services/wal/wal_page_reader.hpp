@@ -74,6 +74,25 @@ namespace services::wal {
             /// crash-torn tail — replay loses nothing by stopping. Non-zero means committed
             /// transactions sit past the break that replay will not reach.
             size_t verified_pages_after_break{0};
+
+            // THE TWO FIELDS BELOW ANSWER A THIRD QUESTION: NOT "how far did replay get" and
+            // not "where may the allocator resume", but "WHAT DID THE BREAK HIDE" — where
+            // does the next id the segment can still vouch for sit, so a caller can tell an
+            // interval it merely stopped short of from an interval it SKIPPED OVER. Nothing
+            // above reads them; the three existing consumers (recover_from_disk,
+            // wal_reader_t, manager_wal_replicate_t's ctor) keep the exact meanings they had.
+
+            /// page_lsn of the first data page that verifies AFTER first_broken_page; 0 when
+            /// nothing verifies past the break (the ordinary torn tail) or when there is no
+            /// break at all. Non-zero means read_all_records stopped short of ids this same
+            /// segment still holds.
+            id_t first_verified_lsn_after_break{0};
+            /// page_lsn of the FIRST data page of this segment that verifies at all; 0 for an
+            /// unopened, empty, or wholly unverifiable segment. This is what CLOSES a hole
+            /// that opened in an EARLIER segment — a break on a segment's last page hides
+            /// nothing that segment can show, and only the next segment's first id reveals
+            /// the jump.
+            id_t first_verified_page_lsn{0};
         };
 
         /// One pass over every data page. verify_chain() is this scan's chain_intact.

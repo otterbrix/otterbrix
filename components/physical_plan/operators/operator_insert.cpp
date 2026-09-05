@@ -280,7 +280,10 @@ namespace components::operators {
                                                      // self-write rule, not by the positions
                                                      // happening to line up.
                                                      ctx->txn,
-                                                     components::table::fetch_visibility_t::SNAPSHOT);
+                                                     components::table::fetch_visibility_t::SNAPSHOT,
+                                                     // Reads back exactly the rows just
+                                                     // appended — nothing to cap.
+                                                     /*limit=*/int64_t{-1});
                     auto segments_r = co_await std::move(sf);
                     if (segments_r.has_error()) {
                         // A failed re-read (buffer-pool OOM / corrupt overflow block)

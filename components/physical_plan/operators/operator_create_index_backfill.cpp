@@ -114,6 +114,53 @@ namespace components::operators {
             build_start_registered = true;
         }
 
+        // EVERY FAILURE EXIT FROM HERE ON MUST TAKE THE ENGINE BACK OUT OF THE REGISTRY.
+        //
+        // create_index above did TWO things: it wrote the (still indisvalid=false) catalog
+        // row and it REGISTERED A LIVE ENGINE with manager_index_t. Only the first is
+        // undone for us. The registry — not pg_index.indisvalid — is what the planner
+        // consults: get_indexed_keys reports this key, can_use_index says yes, and
+        // create_plan_match replaces full_scan with index_scan. So a half-built engine left
+        // registered does not merely waste memory, it ANSWERS QUERIES.
+        //
+        // The executor does not remove it on this path. All three undo_create_index calls
+        // (executor.cpp:2102, :2140, :2172) sit inside the
+        // `needs_ddl_txn && exec_result.cursor->is_success()` block, i.e. they cover
+        // failures AFTER this operator succeeded — accumulate, commit, inline index-commit.
+        // A failure of the OPERATOR ITSELF lands in the `else if (... is_error())` branch,
+        // which calls revert_failed_txn only: that reverts the catalog appends and the
+        // PENDING index entries and leaves the engine registered AND EMPTY. This
+        // fragment's ctx->created_indexes is not lifted either — execute_sub_plan breaks
+        // out on the error before the lift — so the ABORT fan-out never sees it.
+        //
+        // Releasing the WAL retention guard is folded in rather than repeated: it was
+        // copy-pasted at three exits and MISSING at a fourth (the insert_rows refusal
+        // below), which pinned the checkpoint truncation point for the life of the process.
+        // drop_index tolerates an unknown engine, so the closure is safe wherever it is
+        // called and cannot collide with the executor's own undo on the success paths.
+        //
+        // The memory_resource parameter is not decoration: an argless coroutine lambda has
+        // nothing for the promise to extract its allocator from and aborts at runtime.
+        auto abandon_build = [this, ctx, &build_start_wal_position, &build_start_registered](
+                                 [[maybe_unused]] std::pmr::memory_resource* frame_resource)
+            -> actor_zeta::unique_future<void> {
+            if (build_start_registered) {
+                auto [_u, uf] = actor_zeta::send(ctx->wal_address,
+                                                 &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                                 ctx->session,
+                                                 build_start_wal_position);
+                co_await std::move(uf);
+                build_start_registered = false;
+            }
+            auto [_d, df] = actor_zeta::send(ctx->index_address,
+                                             &services::index::manager_index_t::drop_index,
+                                             ctx->session,
+                                             table_oid_,
+                                             index_oid_);
+            co_await std::move(df);
+            co_return;
+        };
+
         // backfill — STREAM the table in bounded batches and feed each into the
         // index. Reuses the streaming storage_fetch_next_batch cursor primitive
         // (the same fetch-next source the streaming scans use; no new disk method):
@@ -127,8 +174,6 @@ namespace components::operators {
         // republished+cleared between the awaits, so there is no lost wakeup.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
-            uint64_t backfilled_count = 0;
-            bool any_row = false;
             bool scan_ok = true;
             while (true) {
                 auto [_fb, fbf] = actor_zeta::send(ctx->disk_address,
@@ -152,7 +197,6 @@ namespace components::operators {
                 if (sz == 0) {
                     break; // drained: the agent replied an empty batch and erased the cursor
                 }
-                any_row = true;
 #ifdef DEV_MODE
                 g_create_index_backfill_batches.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -192,41 +236,45 @@ namespace components::operators {
                         // A backfill run that did not reach the index leaves the new index
                         // incomplete; the CREATE INDEX must fail rather than publish it.
                         set_error(std::move(index_error));
+                        mark_failed();
+                        co_await abandon_build(resource_);
                         co_return;
                     }
                     run_start += run_len;
                 }
-                backfilled_count += sz;
             }
 
             if (!scan_ok) {
-                // Streaming scan failed: the index was never published and no snapshot
-                // saw it. Release the WAL retention guard before exiting so the next
-                // checkpoint can truncate freely (mirror of the non-convergence exit).
-                if (build_start_registered) {
-                    auto [_u, uf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                                     ctx->session,
-                                                     build_start_wal_position);
-                    co_await std::move(uf);
-                    build_start_registered = false;
-                }
+                // Streaming scan failed: the index was never published and no snapshot saw
+                // it. Take the engine back out and release the WAL retention guard so the
+                // next checkpoint can truncate freely.
+                mark_failed();
+                co_await abandon_build(resource_);
                 co_return;
             }
 
-            if (any_row) {
-                // insert_rows leaves entries PENDING (tagged with this txn_id). For a
-                // CREATE INDEX (DDL) txn the executor does NOT route these appends
-                // through the commit operator — its DDL-commit path CLEARS
-                // exec_result.dml_appends (routing them would re-commit pre-existing
-                // base rows). The index is published instead via the commit_id
-                // back-channel (the executor's inline CREATE INDEX index-commit:
-                // commit_inserts keyed by oid+commit_id, no
-                // row-count). This single coalesced range is recorded for
-                // symmetry/observability only; its count does not gate the commit. Rows
-                // committed during the scan are caught by the catchup loop below.
-                ctx->dml_appends.push_back(components::table::dml_append_range_t{table_oid_, 0, backfilled_count});
-            }
+            // NO BASE-TABLE APPEND RANGE IS RECORDED HERE, AND RECORDING ONE WAS DESTROYING
+            // DATA. dml_append_range_t names PHYSICAL ROWS THIS STATEMENT APPENDED TO THE
+            // TABLE, and this operator appends none: it reads the table and writes to the
+            // INDEX. What used to be pushed was {table_oid_, 0, backfilled_count} — every
+            // row the scan had just READ, described as if this statement had written it.
+            //
+            // On the success path nobody noticed, because the DDL commit clears
+            // exec_result.dml_appends before the commit operator sees it (executor.cpp:2061:
+            // routing them would storage-re-commit already-committed rows) and the index is
+            // published through the commit_id back-channel instead.
+            //
+            // On the FAILURE path the executor folds exec_result.dml_appends into one
+            // storage_revert_appends (executor.cpp:1749) — so a CREATE INDEX that failed
+            // UN-APPENDED THE FIRST backfilled_count ROWS OF THE TABLE ITSELF. A refused WAL
+            // catchup over a 40-row table left the table answering with 0 rows. The range
+            // was described in its own comment as being kept "for symmetry/observability
+            // only"; it gated nothing on success and destroyed rows on failure.
+            //
+            // The pending index entries this loop created are not orphaned by its removal:
+            // every failure exit calls abandon_build, which drops the engine outright, and
+            // the failure exits that happen after this operator succeeds go through the
+            // executor's own undo_create_index (also a drop_index).
         }
 
         // CREATE INDEX bounded-retry WAL catchup. The snapshot scan above may
@@ -252,19 +300,16 @@ namespace components::operators {
                                                 catchup_start_wal);
             auto wal_records_result = co_await std::move(lf);
             if (wal_records_result.has_error()) {
-                // An empty list used to mean both "the catchup has converged" and "a segment
-                // could not be read", so an unreadable segment CONVERGED the loop and the
-                // index was published missing every row that segment described. Release the
-                // retention guard the same way the fetch refusal below does, then fail.
-                if (build_start_registered) {
-                    auto [_u, uf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                                     ctx->session,
-                                                     build_start_wal_position);
-                    co_await std::move(uf);
-                    build_start_registered = false;
-                }
+                // An empty list used to mean both "the catchup has converged" and "the
+                // journal could not answer for the window", so an unreadable segment
+                // CONVERGED the loop and the index was published missing every row that
+                // segment described. load now refuses for a journal that cannot show the
+                // window whole (a break that HIDES ids inside it, not merely one that ends
+                // it), and the refusal has to take the engine with it: a registered engine
+                // whose backfill stopped early is what the planner would answer from.
                 set_error(wal_records_result.error());
+                mark_failed();
+                co_await abandon_build(resource_);
                 co_return;
             }
             auto wal_records = std::move(wal_records_result.value());
@@ -350,7 +395,10 @@ namespace components::operators {
                                                      // and an empty txn means "see everything
                                                      // COMMITTED", which a committed delete hides.
                                                      components::table::transaction_data{},
-                                                     components::table::fetch_visibility_t::RAW);
+                                                     components::table::fetch_visibility_t::RAW,
+                                                     // The backfill needs every named row's old
+                                                     // key columns; capping would drop keys.
+                                                     /*limit=*/int64_t{-1});
                     fetch_futures.push_back(std::move(ff));
                     fetch_slots.push_back(r);
                 }
@@ -463,22 +511,16 @@ namespace components::operators {
             catchup_start_wal = max_wal_id_seen;
         }
         if (!converged) {
-            // Graceful fail: the index was never published and no snapshot saw
-            // it, so it is immediately GC-able. Release the WAL retention guard
-            // before exiting so the next checkpoint can truncate freely.
-            if (build_start_registered) {
-                auto [_u, uf] = actor_zeta::send(ctx->wal_address,
-                                                 &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                                 ctx->session,
-                                                 build_start_wal_position);
-                co_await std::move(uf);
-                build_start_registered = false;
-            }
+            // Graceful fail: the index was never published and no snapshot saw it, so it is
+            // immediately GC-able — but only once the engine is out of the registry, which
+            // abandon_build does along with the retention-guard release.
             set_error(core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"CREATE INDEX failed to converge after MAX_CATCHUP_ITERATIONS "
                                                      "on high-write table. Retry during low-traffic window. "
                                                      "Future: CREATE INDEX CONCURRENTLY (WAL-based).",
                                                      resource_}});
+            mark_failed();
+            co_await abandon_build(resource_);
             co_return;
         }
 
@@ -525,9 +567,12 @@ namespace components::operators {
             auto rng_r = co_await std::move(wf);
             if (rng_r.has_error()) {
                 // This is the row that flips the index to indisvalid. Refused, the index stays
-                // invalid and no reader will use it — reporting success would hide that.
+                // invalid on disk — but the ENGINE is registered and the planner reads the
+                // registry, not the row, so "no reader will use it" only holds once the
+                // engine is gone too.
                 set_error(rng_r.error());
                 mark_failed();
+                co_await abandon_build(resource_);
                 co_return;
             }
             if (rng_r.value().count > 0)

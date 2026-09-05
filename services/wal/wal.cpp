@@ -6,6 +6,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <string>
 
 namespace services::wal {
 
@@ -385,8 +386,48 @@ namespace services::wal {
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
 
+    // Is the interval between what the answer reaches and the next id the journal can still
+    // vouch for NON-EMPTY? `answered_through` is the highest id the reply is known to be
+    // complete up to — it starts at the caller's after_wal_id (everything at or below it was
+    // not asked about) and rises with every record actually handed back. `next_verified_lsn`
+    // is the first id past the damage that some page still vouches for. If the second is
+    // more than one above the first, the ids in between exist, were asked about, and are not
+    // in the reply: a HOLE, not a short answer.
+    //
+    // One condition, one question, applied to every segment the same way — there is no
+    // "tolerated here, refused there". A break that sits entirely BELOW after_wal_id is read
+    // straight through, and that is a deliberate difference from wal_reader_t, not an
+    // oversight: replay asks "what may I apply from the beginning", so any break bounds it,
+    // while the catchup asks about one WINDOW and old damage outside that window hides
+    // nothing from it.
+    static bool hides_requested_id(wal::id_t answered_through, wal::id_t next_verified_lsn) noexcept {
+        return next_verified_lsn > answered_through + 1;
+    }
+
     // -----------------------------------------------------------------------
     // load
+    //
+    // CONTRACT: THE WHOLE WINDOW (after_wal_id, high-water] OR A REFUSAL. Partial success is
+    // not in it.
+    //
+    // This is a THIRD question about a damaged journal, and the tree already answers the
+    // other two differently on purpose:
+    //   * wal_reader_t (replay) asks "what may I APPLY?" — a prefix, stopping at the first
+    //     break, because applying across a hole puts later updates onto row versions that
+    //     were never restored;
+    //   * recover_from_disk (the id allocator) asks "where do I RESUME?" — a high-water mark
+    //     over the FILES, ignoring breaks entirely, because a page past a break still vouches
+    //     for the ids it carries;
+    //   * this asks "is the window WHOLE?" — and its only caller, the CREATE INDEX catchup
+    //     (operator_create_index_backfill.cpp), turns whatever it gets into index entries and
+    //     then declares the index valid. An answer missing a range does not make the catchup
+    //     slower, it makes the published index answer with a SUBSET — silently, and for the
+    //     life of the index. So this question is binary.
+    //
+    // Before this check, load concatenated the STOP-A prefix of segment k with the WHOLE of
+    // segment k+1 and reported success: a range with a hole in it, handed to the one caller
+    // that cannot survive one. It also said nothing in the log, while wal_reader_t logs the
+    // same damage at error level.
     //
     // Two-pass approach:
     //   1. Read all records from all segment files.
@@ -415,9 +456,49 @@ namespace services::wal {
         auto segments = discover_segments();
 
         // Pass 1: read all raw records from all segments.
+        //
+        // discover_segments() returns the files in ascending name order, which is ascending
+        // segment index, which is ascending id — the walk below relies on that and on
+        // nothing else.
         std::vector<record_t> all_records;
+        // The highest id the reply is complete up to. Taken from the records actually HANDED
+        // BACK rather than from a page header: a page's page_end_lsn counts a record that
+        // merely STARTS on it, and a record spanning into a broken page is one read_all_records
+        // never returns. Starting it at after_wal_id folds in "was this id even asked for".
+        wal::id_t answered_through = after_wal_id;
+        // A break drops everything behind it in ITS OWN segment (STOP-A), so it opens a gap
+        // whose far edge is only visible in the NEXT segment. Carried across iterations.
+        bool hole_open = false;
+        wal::id_t hole_low = 0;
         for (const auto& seg_path : segments) {
             wal_page_reader_t reader(this->resource(), seg_path);
+            const auto scan = reader.scan_pages();
+
+            // Close a gap left open by an earlier segment. If this segment's first
+            // still-verifiable id sits more than one above where the answer reached, the ids
+            // in between were skipped rather than cut off.
+            if (hole_open && scan.first_verified_page_lsn != 0) {
+                if (hides_requested_id(hole_low, scan.first_verified_page_lsn)) {
+                    error(log_,
+                          "wal_worker::load , db_oid={} , the answer reaches id {} and segment '{}' resumes at "
+                          "id {} , so the ids in between are on pages no reader can reach , REFUSING rather "
+                          "than answering with a hole — the journal cannot show the window ({}, ...] whole",
+                          static_cast<unsigned>(database_oid_),
+                          hole_low,
+                          seg_path.filename().string(),
+                          scan.first_verified_page_lsn,
+                          after_wal_id);
+                    co_return core::result_wrapper_t<std::vector<record_t>>{core::error_t{
+                        core::error_code_t::io_error,
+                        std::pmr::string{"wal cannot show the requested window whole: the journal skips from id " +
+                                             std::to_string(hole_low) + " to id " +
+                                             std::to_string(scan.first_verified_page_lsn) + " at segment " +
+                                             seg_path.filename().string(),
+                                         this->resource()}}};
+                }
+                hole_open = false;
+            }
+
             auto seg_records = reader.read_all_records(after_wal_id);
             if (seg_records.has_error()) {
                 // An unreadable segment is a HOLE in the id range, not a short tail: the
@@ -431,7 +512,66 @@ namespace services::wal {
                 co_return core::result_wrapper_t<std::vector<record_t>>{seg_records.error()};
             }
             for (auto& r : seg_records.value()) {
+                if (r.id > answered_through) {
+                    answered_through = r.id;
+                }
                 all_records.push_back(std::move(r));
+            }
+
+            if (!scan.chain_intact) {
+                // SAY IT, at the level the damage deserves — the two cases are not the same
+                // event and must not share a log line (same split as wal_reader.cpp:117-134
+                // and recover_from_disk). Until now load logged NOTHING here at all, so a
+                // catchup over a damaged journal was indistinguishable from a clean one.
+                if (scan.verified_pages_after_break > 0) {
+                    error(log_,
+                          "wal_worker::load , db_oid={} , CRC chain broken in segment '{}' at data page {} , {} "
+                          "later page(s) still verify , the catchup cannot reach the committed transactions "
+                          "past the break",
+                          static_cast<unsigned>(database_oid_),
+                          seg_path.filename().string(),
+                          scan.first_broken_page,
+                          scan.verified_pages_after_break);
+                } else {
+                    warn(log_,
+                         "wal_worker::load , db_oid={} , CRC chain broken in segment '{}' at data page {} , "
+                         "nothing verifies after it , the answer ends there and loses no whole page",
+                         static_cast<unsigned>(database_oid_),
+                         seg_path.filename().string(),
+                         scan.first_broken_page);
+                }
+
+                // Damage inside THIS segment that the segment itself can prove hid ids.
+                if (scan.first_verified_lsn_after_break != 0 &&
+                    hides_requested_id(answered_through, scan.first_verified_lsn_after_break)) {
+                    error(log_,
+                          "wal_worker::load , db_oid={} , segment '{}' answers up to id {} and still holds a "
+                          "verifiable id {} past its break at data page {} , REFUSING rather than answering "
+                          "with a hole — the journal cannot show the window ({}, ...] whole",
+                          static_cast<unsigned>(database_oid_),
+                          seg_path.filename().string(),
+                          answered_through,
+                          scan.first_verified_lsn_after_break,
+                          scan.first_broken_page,
+                          after_wal_id);
+                    co_return core::result_wrapper_t<std::vector<record_t>>{core::error_t{
+                        core::error_code_t::io_error,
+                        std::pmr::string{"wal cannot show the requested window whole: segment " +
+                                             seg_path.filename().string() + " is broken at data page " +
+                                             std::to_string(scan.first_broken_page) +
+                                             " and hides the ids between " + std::to_string(answered_through) +
+                                             " and " + std::to_string(scan.first_verified_lsn_after_break),
+                                         this->resource()}}};
+                }
+
+                // Nothing in this segment settles it. A LATER segment may — or may not:
+                // when this is the last segment, the break is the ordinary crash-torn tail,
+                // nothing sits beyond it, and there is nothing to refuse about. That case
+                // deliberately falls out of the loop with the hole still open and is
+                // answered, because banning CREATE INDEX after every crash would be a
+                // failure on a path that cannot be repaired from inside.
+                hole_open = true;
+                hole_low = answered_through;
             }
         }
 

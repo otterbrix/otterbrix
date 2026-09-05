@@ -284,24 +284,31 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     REQUIRE(rows == 1);
 }
 
-// (e) MISSING/RECORD-ONLY SLICE — an ACTIVE spec routed to an agent that does not
-// own a materialized storage for the oid must still run the reduce over the EMPTY
-// input: a scalar aggregate's finalize emits its mandatory single row (SUM = NULL),
-// NOT the raw drained sentinel (the coordinator dropped its operator_group at
-// lowering, so nobody else can synthesize that row).
-TEST_CASE("pushdown_reduce: scalar reduce over a missing slice still emits its one row") {
+// (e) MISSING/RECORD-ONLY SLICE — THE ROOT OF THE FAMILY case 17 in test_error_handling
+// names. This leg used to REDUCE OVER THE EMPTY INPUT and emit the scalar aggregate's
+// mandatory single row (SUM = NULL) for an oid no agent has a storage for, and the contract
+// said so in writing. That row is a FACT ABOUT A TABLE — "your SUM is NULL", "your COUNT is
+// 0" — synthesized from a read that never reached any storage, and it is bit-identical to
+// the row a real, really-empty table produces. Nothing above can tell them apart, so the
+// answer to "how many rows are in that table" was a routing failure wearing the table's
+// clothes.
+//
+// The pairing is the point, and both halves live here: a real table with no visible rows
+// still emits its one scalar row (case (b) above, unchanged), while an oid that names no
+// storage is a REFUSAL. "Empty table" and "no table here" stop sharing a reply.
+TEST_CASE("pushdown_reduce: a reduce over a missing slice is a refusal, not an empty fold") {
     fixture fx;
 
     // NEVER create a storage for this oid.
     const catalog::oid_t missing_oid{catalog::FIRST_USER_OID + 7};
-    auto partials =
-        fx.drive_reduce(missing_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
-
-    uint64_t rows = 0;
-    for (const auto& chunk : partials) {
-        rows += chunk.size();
-    }
-    REQUIRE(rows == 1);
+    auto r = fx.invoke(&manager_disk_t::storage_reduce,
+                       session_id_t{},
+                       missing_oid,
+                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                       std::vector<size_t>{},
+                       open_txn(88),
+                       build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0));
+    REQUIRE(r.has_error());
 }
 
 // (f) RE-DRIVEN PUSHED SCAN — operator_recursive_cte re-drives its subtree once per
@@ -403,4 +410,42 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         REQUIRE_FALSE(merge.finalize(nullptr, fin).contains_error());
         REQUIRE(fin.empty());
     }
+}
+
+// (g) THE ROUTER'S OWN REFUSAL. Case (e) removes the storage; this one removes the AGENT.
+// A manager configured with no disk agents used to answer a reduce with an empty chunk
+// vector, which the coordinator reads as "this GROUP BY produced no groups" — the routing
+// twin of the empty fold (e) is about. Not reachable behind a statement today (an agentless
+// manager owns no storage, so no plan can resolve a table on it); pinned so the refusal
+// exists and is reachable through the contract. Its six siblings are pinned the same way in
+// services/disk/tests/test_error_handling.cpp.
+TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
+    core::pmr::otterbrix_resource resource;
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
+    configuration::config_disk cfg;
+    cfg.path = reduce_dir() + "/no_agents";
+    cfg.agent = 0;
+    std::filesystem::create_directories(cfg.path);
+    {
+        std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
+            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, cfg, log));
+        auto [_, future] = actor_zeta::otterbrix::send(manager->address(),
+                                                       &manager_disk_t::storage_reduce,
+                                                       session_id_t{},
+                                                       catalog::oid_t{catalog::FIRST_USER_OID},
+                                                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                       std::vector<size_t>{},
+                                                       open_txn(88),
+                                                       build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0));
+        for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            scheduler->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(future.is_ready());
+        REQUIRE(std::move(future).take_ready().has_error());
+    }
+    scheduler->stop();
+    delete scheduler;
+    std::filesystem::remove_all(cfg.path);
 }

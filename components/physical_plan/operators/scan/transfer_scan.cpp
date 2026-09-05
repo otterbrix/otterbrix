@@ -132,7 +132,16 @@ namespace components::operators {
                                                      &services::disk::manager_disk_t::storage_types,
                                                      ctx->session,
                                                      table_oid_);
-                    guard_types_ = co_await std::move(tf);
+                    auto types_result = co_await std::move(tf);
+                    if (types_result.has_error()) {
+                        // The guard chunk carries the table's schema to operators above; a
+                        // refused read cannot supply one, and an empty list would pass a
+                        // 0-column chunk off as this table's shape.
+                        set_error(types_result.error());
+                        mark_failed();
+                        co_return types_result.convert_error<vector::data_chunk_t>();
+                    }
+                    guard_types_ = std::move(types_result.value());
                 }
                 co_return make_drain_chunk(guard_types_);
             }

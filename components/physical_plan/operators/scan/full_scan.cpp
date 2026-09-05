@@ -118,11 +118,20 @@ namespace components::operators {
             }
 
             // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
+            // A refusal here is a schema read that never reached a storage; it used to come
+            // back as an empty type list, which would build the filter against a table with
+            // no columns and then shape the 0-row guard chunk with it.
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
                                              table_oid_);
-            guard_types_ = co_await std::move(tf);
+            auto types_result = co_await std::move(tf);
+            if (types_result.has_error()) {
+                set_error(types_result.error());
+                mark_failed();
+                co_return types_result.convert_error<vector::data_chunk_t>();
+            }
+            guard_types_ = std::move(types_result.value());
 
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {

@@ -1711,7 +1711,15 @@ namespace services::collection::executor {
             for (auto oid : inner_hash_join_oids) {
                 auto [_tr, trf] =
                     actor_zeta::send(disk_address_, &services::disk::manager_disk_t::storage_total_rows, session, oid);
-                context_storage.row_counts[oid] = co_await std::move(trf);
+                auto rows_r = co_await std::move(trf);
+                // A HINT, and the only consumer treats a MISSING entry as "no hint" — so a
+                // refused count is simply not recorded. Recording its 0 would be the one
+                // wrong thing to do: 0 is a real count, and the join would orient itself
+                // on a number nobody read. The comment above already says a wrong/absent
+                // count only picks a slower-but-correct plan; absent is the honest half.
+                if (!rows_r.has_error()) {
+                    context_storage.row_counts[oid] = rows_r.value();
+                }
             }
         }
 

@@ -39,6 +39,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_read_through_agent.cpp
         test_index_concurrent_merge.cpp
         test_index_fetch_visibility.cpp
+        test_index_scan_limit_cap.cpp
         test_index_delete_horizon.cpp
         test_index_agent_owns_hash_storage.cpp
         test_index_ordered_read_through_agent.cpp
@@ -74,6 +75,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_sql_features.cpp
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp
+        test_create_index_catchup_refusal.cpp
         test_correctness_bugs.cpp
         test_order_by_expressions.cpp
         test_order_by_nulls.cpp

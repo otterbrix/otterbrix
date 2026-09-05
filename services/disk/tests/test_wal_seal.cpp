@@ -254,7 +254,8 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
         fd2.manager->restore_oid_generator_sync();
         fd2.manager->load_user_table_storages_sync();
 
-        const auto durable_rows = fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+        const auto durable_rows =
+            disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
         REQUIRE(durable_rows == kRowsBeforeSeal);
     }
 

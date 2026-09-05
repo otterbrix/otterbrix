@@ -258,7 +258,10 @@ namespace components::operators {
                                                    // exactly what it sees — including its own earlier writes, and
                                                    // NOT a child row it has already deleted in this same statement.
                                                    ctx->txn,
-                                                   components::table::fetch_visibility_t::SNAPSHOT);
+                                                   components::table::fetch_visibility_t::SNAPSHOT,
+                                                   // Every child row matters: the cascade must
+                                                   // transform all of them, so no cap.
+                                                   /*limit=*/int64_t{-1});
                 auto fetched_r = co_await std::move(ffut); // vector of ≤CAP chunks
                 if (fetched_r.has_error()) {
                     // A failed child-row read must abort the cascade: applying the

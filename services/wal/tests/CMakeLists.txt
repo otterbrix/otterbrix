@@ -11,6 +11,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_torn_write.cpp
         test_wal_write_refusal.cpp
         test_wal_crc_reissue.cpp
+        test_wal_load_hole.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

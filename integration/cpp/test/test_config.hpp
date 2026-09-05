@@ -8,18 +8,60 @@
 #include <components/sql/transformer/utils.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include <catch2/catch_test_macros.hpp>
+
+#include <filesystem>
 #include <sstream>
 #include <string>
+#include <system_error>
 
-inline configuration::config test_create_config(const std::filesystem::path& path = std::filesystem::current_path()) {
+// `path` is REQUIRED. It used to default to std::filesystem::current_path(), which no call
+// site in the tree ever used and which no caller could have wanted: config::create_config
+// puts main_path at exactly the path it is handed (configuration.hpp, `main_path(path)`),
+// and the overwhelmingly common next line is test_clear_directory(config) --
+// remove_all(main_path). The default therefore stood for "delete the working directory",
+// i.e. the build tree the test binary was launched from. Not EVERY fixture clears: a reopen
+// fixture deliberately keeps what the first open wrote (test_declared_key_conkey_loss.cpp
+// builds a second config over the same directory and does not clear it). Those are the
+// minority, and they are exactly the ones for which a current_path() default would have been
+// hardest to notice.
+inline configuration::config test_create_config(const std::filesystem::path& path) {
     return configuration::config::create_config(path);
     // To change log level
     // config.log.level =log_t::level::trace;
 }
 
+// Make `config.main_path` exist and be empty, and REPORT an I/O failure instead of throwing
+// it. The throwing overloads of remove_all / create_directories put a
+// std::filesystem::filesystem_error into the body of whichever case happened to be running,
+// where it reads as a defect in the engine rather than as a fixture that could not be built:
+// "filesystem error: in remove_all: Directory not empty" and "... No such file or directory"
+// were both observed that way, and neither was about the code under test.
+//
+// std::error_code and not core::error_t: this is the filesystem's own non-throwing channel,
+// and a header-only test helper holds no arena to build core::error_t's pmr::string in
+// (rule 14 rules out get_default_resource / new_delete_resource).
+[[nodiscard]] inline std::error_code test_try_clear_directory(const configuration::config& config) {
+    std::error_code ec;
+    std::filesystem::remove_all(config.main_path, ec);
+    if (ec) {
+        return ec;
+    }
+    // create_directories answers "already there" with false and NO error code, which is not
+    // a failure; only `ec` says anything went wrong.
+    std::filesystem::create_directories(config.main_path, ec);
+    return ec;
+}
+
+// The fixture as every case wants it: a clean directory, or a case that stops right here.
+// A test cannot go on without its data directory, so the refusal is fatal to the case -- but
+// it now names the path and the reason instead of arriving as an unhandled exception.
 inline void test_clear_directory(const configuration::config& config) {
-    std::filesystem::remove_all(config.main_path);
-    std::filesystem::create_directories(config.main_path);
+    const std::error_code ec = test_try_clear_directory(config);
+    if (ec) {
+        FAIL("test_clear_directory: could not make '" << config.main_path.string()
+                                                      << "' a clean directory: " << ec.message());
+    }
 }
 
 // Name a DML node's target the way the SQL transformer does. The executor's

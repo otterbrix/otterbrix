@@ -135,7 +135,7 @@ namespace core::filesystem {
 
     bool list_files(virtual_file_system_t& vfs,
                     const path_t& directory,
-                    const std::function<void(const path_t&, bool)>& callback) {
+                    const list_files_callback_t& callback) {
         return list_files(vfs.find_file_system(directory), directory, callback);
     }
 

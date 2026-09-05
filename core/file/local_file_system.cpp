@@ -600,7 +600,7 @@ namespace core::filesystem {
     }
 
     bool
-    list_files(local_file_system_t& lfs, path_t directory, const std::function<void(const path_t&, bool)>& callback) {
+    list_files(local_file_system_t& lfs, path_t directory, const list_files_callback_t& callback) {
         if (!directory_exists(lfs, directory)) {
             return false;
         }
@@ -960,7 +960,7 @@ namespace core::filesystem {
     }
 
     bool
-    list_files(local_file_system_t& lfs, path_t directory, const std::function<void(const path_t&, bool)>& callback) {
+    list_files(local_file_system_t& lfs, path_t directory, const list_files_callback_t& callback) {
         directory /= "*";
 
         auto unicode_path = path_utils::UTF8_to_Unicode(directory.c_str());

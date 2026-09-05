@@ -199,12 +199,21 @@ namespace otterbrix {
         space->dispatcher()->execute_sql(session, "CREATE DATABASE " + name + ";");
     }
 
-    result_t py_connection_t::execute_internal(const std::string& query) {
-        // A closed connection has no space, and `space->dispatcher()` on a null
-        // intrusive_ptr aborts the process. Refuse out loud instead.
+    // A closed connection has no space, and `space->dispatcher()` on a null intrusive_ptr
+    // aborts the process under an assert that NDEBUG removes -- leaving a plain null
+    // dereference in the build that ships. Every road into the engine goes through this
+    // refusal, not just the SQL one: executing a relation lands in `execute` below, and
+    // BUILDING one lands in from_df / from_object and in py_relation_t::live_env -- that
+    // road does not touch this `space` at all, and the relation it produced came out with
+    // no space of its own to free its plan with.
+    void py_connection_t::refuse_if_closed() const {
         if (!space) {
             throw std::runtime_error("the connection is closed");
         }
+    }
+
+    result_t py_connection_t::execute_internal(const std::string& query) {
+        refuse_if_closed();
         // One SQL pipeline, not two. Re-implementing wrapper_dispatcher_t::execute_sql here
         // means re-deriving three things it already gets right: raw_parser's throw is caught,
         // `linitial` is never applied to an unchecked parse list (an empty statement
@@ -216,6 +225,7 @@ namespace otterbrix {
     }
 
     result_t py_connection_t::execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
+        refuse_if_closed();
         auto session = session_id_t();
         auto node = node_in;
         if (optimize) {
@@ -227,6 +237,7 @@ namespace otterbrix {
     }
 
     cursor::cursor_t_ptr py_connection_t::query_relation(const components::logical_plan::node_ptr& rel) {
+        refuse_if_closed();
         auto session = otterbrix::session_id_t();
         return space->dispatcher()->execute_plan(
             session,
@@ -302,18 +313,30 @@ namespace otterbrix {
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_df(const py::object& value) {
+        // BUILDING is a road into the engine too, and it is not the one `execute` guards.
+        // `relation_factory_t::create_df_relation` allocates the node and the schema out of
+        // relation_factory_t's OWN copy of the space -- the copy close() deliberately leaves
+        // alive so the scratch tables can still be dropped -- while the space py_relation_t
+        // keeps to free them with comes from the copy close() nulls. Without this refusal a
+        // closed connection handed back a relation holding live memory and no reference to
+        // its arena, and the interpreter died freeing it at shutdown.
+        refuse_if_closed();
         std::string name = "df_no_idea";
         auto tableref = scan_t::replacement_object(value, name);
 
-        return std::make_unique<py_relation_t>(this, relation_factory_t::create_df_relation(std::move(tableref)));
+        return std::make_unique<py_relation_t>(shared_from_this(),
+                                              relation_factory_t::create_df_relation(std::move(tableref)));
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_object(const py::object& value) {
+        // Same road as from_df above, same refusal.
+        refuse_if_closed();
         std::string name = "object_no_idea";
         auto tableref = scan_t::try_replacement_object(value, name);
         assert(tableref);
 
-        return std::make_unique<py_relation_t>(this, relation_factory_t::create_df_relation(std::move(tableref)));
+        return std::make_unique<py_relation_t>(shared_from_this(),
+                                              relation_factory_t::create_df_relation(std::move(tableref)));
     }
 
 } // namespace otterbrix

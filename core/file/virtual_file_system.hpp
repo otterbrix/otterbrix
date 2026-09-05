@@ -2,7 +2,6 @@
 
 #include "local_file_system.hpp"
 
-#include <functional>
 #include <map>
 #include <unordered_set>
 #include <vector>
@@ -53,9 +52,7 @@ namespace core::filesystem {
     bool directory_exists(virtual_file_system_t&, const path_t& directory);
     bool create_directory(virtual_file_system_t&, const path_t& directory);
     bool remove_directory(virtual_file_system_t&, const path_t& directory);
-    bool list_files(virtual_file_system_t&,
-                    const path_t& directory,
-                    const std::function<void(const path_t&, bool)>& callback);
+    bool list_files(virtual_file_system_t&, const path_t& directory, const list_files_callback_t& callback);
     bool move_files(virtual_file_system_t&, const path_t& source, const path_t& target);
     bool file_exists(virtual_file_system_t&, const path_t& filename);
     bool is_pipe(virtual_file_system_t&, const path_t& filename);

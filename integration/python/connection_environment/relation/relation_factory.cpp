@@ -182,7 +182,54 @@ namespace otterbrix {
     relation_factory_t::relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space)
         : space(space) {}
 
-    relation_factory_t::~relation_factory_t() = default;
+    relation_factory_t::relation_factory_t(const relation_factory_t& other)
+        : space(other.space) {}
+
+    relation_factory_t::~relation_factory_t() {
+        // THE SCRATCH TABLES GO WHEN THE CONNECTION THAT MADE THEM DOES. Each chaining op
+        // materialises into a tmp.t<pid>_<n> table that is PERSISTED with the database, and
+        // nothing else ever removed one: a directory that gets connected to over and over
+        // accumulated a table per operation, for the life of the directory.
+        //
+        // Here and not sooner, because a scratch table is still read for as long as any
+        // relation built on it is alive, and a relation holds its connection alive
+        // (py_relation_t::env) -- so by the time this runs no relation is left to read them.
+        //
+        // A destructor cannot raise and this is housekeeping, not a statement the caller
+        // asked for, so a refusal is LOGGED with the name that stayed behind and the rest of
+        // the list is still taken out. A name that survives is not lost work: it is pid-
+        // qualified, and make_aggregate_node's retry loop steps over a taken name.
+        // This factory's own `space` is what survives close(): py_connection_t::close nulls
+        // py_connection_t::space and expression_factory_t::space and leaves this one, so the
+        // engine that owns the tables is still here to take them back. relation_factory_t::
+        // set_null_space() exists but nothing calls it -- wiring it into close() would stop
+        // the collection below, silently.
+        //
+        // WHAT THIS DOES NOT COVER: a destructor does not run when the process is killed or
+        // crashes, so the scratch tables of a session that died that way stay in `tmp`
+        // forever -- their pid is gone and no later process walks that name sequence again.
+        // Sweeping them would mean deciding which pids are dead, which is a guess this layer
+        // cannot make safely (a recycled pid belongs to a live session), so the sweep belongs
+        // at bootstrap where the whole `tmp` database can be reasoned about, not here.
+        if (!space) {
+            return;
+        }
+        for (const auto& name : scratch_tables_) {
+            auto session = otterbrix::session_id_t();
+            auto cursor = space->dispatcher()->execute_sql(session, "DROP TABLE tmp." + name + ";");
+            if (!cursor) {
+                error(space->get_log(), "relation: dropping the scratch table tmp.{} returned no cursor", name);
+                continue;
+            }
+            if (cursor->is_error()) {
+                const auto& err = cursor->get_error();
+                error(space->get_log(),
+                      "relation: dropping the scratch table tmp.{} failed: {}",
+                      name,
+                      std::string(err.what.begin(), err.what.end()));
+            }
+        }
+    }
 
     void relation_factory_t::set_null_space() { space = nullptr; }
 
@@ -229,6 +276,10 @@ namespace otterbrix {
                 throw std::runtime_error("relation: creating the scratch table tmp." + name + " returned no cursor");
             }
             if (!create->is_error()) {
+                // Recorded only now that the table is really there: a name that was refused
+                // is a name this factory does not own and must not drop (lesson: state is
+                // cleaned up, and taken on, only AFTER the success it stands for).
+                scratch_tables_.push_back(name);
                 break;
             }
             const auto err = create->get_error();

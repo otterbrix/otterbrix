@@ -43,11 +43,16 @@ def test_every_process_opening_one_database_can_build_a_relation(tmp_path):
             capture_output=True,
             text=True,
         )
-        # The MARKER, not the exit status: the module currently dies with SIGSEGV during
-        # interpreter finalisation whenever a relation was built at all (reproducible with
-        # connect + from_df + fetchall and nothing else), which would mask this result.
-        # That teardown crash is a separate defect and is not what this test measures.
         assert "RELATION-OK" in finished.stdout, (
             "run %d against the same database did not build its relation:\n%s"
             % (run, finished.stderr[-4000:])
+        )
+        # The exit status is checked as well now. It used to be unusable here: the module
+        # died with SIGSEGV during interpreter finalisation whenever a relation had been
+        # built at all, which masked this result. That teardown crash was a relation
+        # outliving the arena its plan was allocated from and is fixed --
+        # test_relation_outlives_its_arena.py holds it down.
+        assert finished.returncode == 0, (
+            "run %d did not exit cleanly: returncode=%d\n%s"
+            % (run, finished.returncode, finished.stderr[-4000:])
         )

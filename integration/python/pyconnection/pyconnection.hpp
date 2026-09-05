@@ -94,6 +94,17 @@ namespace otterbrix {
         const boost::intrusive_ptr<otterbrix_t>& space_ptr() const noexcept { return space; }
 
     public:
+        // Throws unless this connection still holds its space. Every method below
+        // dereferences `space`, and after close() there is none.
+        //
+        // Public because py_relation_t has to ask the same question: a relation chains
+        // through this connection, and the roads it takes reach a space that close()
+        // has already dropped -- both `space` here and expression_factory_t's copy.
+        // One refusal, so a closed connection says the same thing whichever door is
+        // knocked on.
+        void refuse_if_closed() const;
+
+    public:
         // Execution surface, formerly connection_environment_t. Every method here
         // routes through space->dispatcher().
         void set_null_connection();

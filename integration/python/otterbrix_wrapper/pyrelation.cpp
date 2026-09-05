@@ -43,12 +43,25 @@ namespace otterbrix {
         }
     } // namespace
 
-    py_relation_t::py_relation_t(py_connection_t* env, built_relation_t rel)
-        : node_(std::move(rel.node))
+    py_relation_t::py_relation_t(std::shared_ptr<py_connection_t> env, built_relation_t rel)
+        : space_(env ? env->space_ptr() : boost::intrusive_ptr<otterbrix_t>{})
+        , node_(std::move(rel.node))
         , schema_(std::move(rel.columns))
-        , env(env) {
+        , env(std::move(env)) {
         if (!node_) {
             throw std::runtime_error("PyRelation created without a relation");
+        }
+        if (!this->env) {
+            throw std::runtime_error("PyRelation created without a connection");
+        }
+        // A relation that carries a plan MUST carry the space that plan is allocated out of:
+        // `node_` and `schema_` are pmr-allocated from the engine's arena and are freed in a
+        // destructor, which can neither check nor refuse. Every road above refuses a closed
+        // connection before it gets here, so this is the invariant they maintain rather than
+        // a second opinion -- and it is what a road added later will hit instead of silently
+        // handing back a relation that frees into a dead resource.
+        if (!space_) {
+            throw std::runtime_error("relation: the connection is closed");
         }
         this->executed = false;
     }
@@ -60,22 +73,37 @@ namespace otterbrix {
             throw std::runtime_error("PyRelation created without a result");
         }
         this->executed = true;
+        // No space_ and no env: this relation has no plan and no arena of its own, and the
+        // result it wraps already holds the space its rows live in.
     }
 
     py_relation_t::~py_relation_t() {
         assert(py::gil_check());
         py::gil_scoped_release gil;
         node_.reset();
+        // schema_ frees into the same arena and is destroyed after this body runs; space_
+        // is destroyed after that again, so both releases still have their resource.
+    }
+
+    py_connection_t& py_relation_t::live_env() {
+        if (!env) {
+            throw std::runtime_error("This relation was created from a result");
+        }
+        env->refuse_if_closed();
+        return *env;
     }
 
     static cursor::cursor_t_ptr
-    PyExecuteRelation(py_connection_t* env, const logical_plan::node_ptr& node, bool optimize = false) {
+    PyExecuteRelation(const std::shared_ptr<py_connection_t>& env,
+                      const logical_plan::node_ptr& node,
+                      bool optimize = false) {
         assert(py::gil_check());
         py::gil_scoped_release release;
         return env->execute(node, optimize);
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::project(const py::args& args) {
+        auto& conn = live_env();
         if (args.size() == 0) {
             return nullptr;
         }
@@ -88,10 +116,11 @@ namespace otterbrix {
             }
             fields.push_back(py_expr->get_expression());
         }
-        return std::make_unique<py_relation_t>(env, env->select_relation({node_, schema_}, std::move(fields)));
+        return std::make_unique<py_relation_t>(env, conn.select_relation({node_, schema_}, std::move(fields)));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::filter(const py::object& condition) {
+        auto& conn = live_env();
         if (py::isinstance<py::str>(condition)) {
             throw std::runtime_error("Implementation Error. Couldn\'t execute string expression");
         }
@@ -102,16 +131,21 @@ namespace otterbrix {
         }
 
         const auto& expr = py_expr->get_expression();
-        return std::make_unique<py_relation_t>(env, env->filter_relation({node_, schema_}, expr));
+        return std::make_unique<py_relation_t>(env, conn.filter_relation({node_, schema_}, expr));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::order(const std::string& arg) {
+        // Before get_expression_factory(): sort_expression() dereferences
+        // expression_factory_t::space, the copy close() nulls, one frame further down.
+        auto& conn = live_env();
         auto* factory = get_expression_factory();
         auto expr = factory->sort_expression(arg);
-        return std::make_unique<py_relation_t>(env, env->sort_relation({node_, schema_}, {expr}));
+        return std::make_unique<py_relation_t>(env, conn.sort_relation({node_, schema_}, {expr}));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::sort(const py::args& args) {
+        // Before get_expression_factory(), for the same reason as order() above.
+        auto& conn = live_env();
         std::vector<expression_wrapper_t> order_nodes;
         order_nodes.reserve(args.size());
 
@@ -129,10 +163,11 @@ namespace otterbrix {
                 order_nodes.push_back(std::move(sorted.value()));
             }
         }
-        return std::make_unique<py_relation_t>(env, env->sort_relation({node_, schema_}, std::move(order_nodes)));
+        return std::make_unique<py_relation_t>(env, conn.sort_relation({node_, schema_}, std::move(order_nodes)));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::group(const py::args& args) {
+        auto& conn = live_env();
         std::vector<expression_wrapper_t> fields;
         fields.reserve(args.size());
 
@@ -145,11 +180,12 @@ namespace otterbrix {
                 fields.push_back(expr);
             }
         }
-        return std::make_unique<py_relation_t>(env, env->group_relation({node_, schema_}, std::move(fields)));
+        return std::make_unique<py_relation_t>(env, conn.group_relation({node_, schema_}, std::move(fields)));
     }
 
     std::unique_ptr<py_relation_t>
     py_relation_t::join(const py_relation_t& other, const py::object& condition, const std::string& type) {
+        auto& conn = live_env();
         auto type_string = string_utils::lower(type);
 
         auto parse_result = parse_join_type(type_string);
@@ -173,11 +209,11 @@ namespace otterbrix {
             const auto& expr = py_expr->get_expression();
             exprs.push_back(expr);
         } else {
-            exprs.push_back(env->true_expression());
+            exprs.push_back(conn.true_expression());
         }
         return std::make_unique<py_relation_t>(
             env,
-            env->join_relation({node_, schema_}, {other.node_, other.schema_}, exprs, dtype));
+            conn.join_relation({node_, schema_}, {other.node_, other.schema_}, exprs, dtype));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::cross(const py_relation_t& other) {
@@ -187,7 +223,8 @@ namespace otterbrix {
     std::unique_ptr<py_relation_t> py_relation_t::limit(int64_t count) {
         if (!node_)
             return nullptr;
-        return std::make_unique<py_relation_t>(env, env->limit_relation({node_, schema_}, count));
+        auto& conn = live_env();
+        return std::make_unique<py_relation_t>(env, conn.limit_relation({node_, schema_}, count));
     }
 
     cursor::cursor_t_ptr py_relation_t::execute_internal(bool /*stream_result*/) {
@@ -209,7 +246,7 @@ namespace otterbrix {
             throw std::runtime_error(query_result->get_error().what.c_str());
         }
         result = std::make_unique<py_result_t>(
-            env,
+            env.get(),
             std::move(query_result),
             std::vector<components::table::column_definition_t>(schema_.begin(), schema_.end()));
     }
@@ -292,7 +329,9 @@ namespace otterbrix {
     }
 
     // Internal functions (not exposed to Python)
-    expression_factory_t* py_relation_t::get_expression_factory() { return static_cast<expression_factory_t*>(env); }
+    expression_factory_t* py_relation_t::get_expression_factory() {
+        return static_cast<expression_factory_t*>(env.get());
+    }
 
     void py_relation_t::assert_relation() {
         if (!node_) {

@@ -159,7 +159,12 @@ namespace components::planner {
         components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
         auto tr = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
         if (tr.has_error()) {
-            out.error = tr.error();
+            // error_on, NOT a bare copy: error_t's copy assignment rebuilds the message with
+            // std::pmr::string's COPY constructor, which does not propagate the allocator, so
+            // the text would land on the process default resource -- the hazard spelled out at
+            // error_t's own assignment operators. Every other refusal in this function already
+            // goes through schema_error(resource, ...); this was the one that did not.
+            out.error = core::error_on(resource, tr.error());
             return out;
         }
         // A body that flattened into several plans (a sub-query in the view) also

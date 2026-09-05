@@ -178,13 +178,6 @@ namespace components::operators {
                 rel = "oid ";
                 rel += std::to_string(table_oid_);
             }
-            // KEEP THE MESSAGE SHORT — under about 120 bytes. A longer error string
-            // built from this operator's resource_ comes back corrupted (doubled, or with
-            // a size that makes reading it throw std::length_error) before the executor
-            // has even copied it into a cursor. That is a separate, pre-existing defect —
-            // reproduced on this branch, NOT fixed here, and unrelated to the cursor-side
-            // lifetime bug that test_cursor_error_lifetime.cpp covers. The pre-existing
-            // FK-blocking refusal further down already sits at that edge.
             std::string msg = "column \"";
             msg += column_name_;
             msg += "\" of relation \"";
@@ -231,18 +224,47 @@ namespace components::operators {
         dependents.reserve(dep_row_count);
         std::pmr::vector<catalog::oid_t> blocking{resource_};
         for (auto& chunk : dep_batches) {
-            if (chunk.column_count() < 2)
-                continue;
-            const bool has_deptype = chunk.column_count() > catalog::pg_depend_col::deptype;
+            // A CHUNK NARROWER THAN pg_depend'S SCHEMA IS A DIFFERENT ANSWER, NOT A
+            // MISS. The read was issued with an empty projection ("all columns"),
+            // so the reply's width is the width of the pg_depend storage itself,
+            // and every row this engine writes carries all 5 columns
+            // (build_pg_depend_row / build_create_constraint_writes). Tolerating a
+            // chunk without the deptype column read every constraint dependency in
+            // it as NON-blocking, so DROP COLUMN proceeded over a foreign key that
+            // references the column — the exact silence the `blocking` gate below
+            // exists to prevent. The threshold is the largest ordinal read below:
+            // deptype (4).
+            if (chunk.column_count() <= catalog::pg_depend_col::deptype) {
+                std::string msg = "alter_column_drop: pg_depend answered with ";
+                msg += std::to_string(chunk.column_count());
+                msg += " column(s), fewer than the ";
+                msg += std::to_string(static_cast<std::size_t>(catalog::pg_depend_col::deptype) + 1);
+                msg += " this build reads — the column's dependencies cannot be classified";
+                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                co_return;
+            }
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
                 const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
-                if (dep_cls != catalog::well_known_oid::pg_constraint_table || !has_deptype ||
-                    chunk.is_null(catalog::pg_depend_col::deptype, i))
+                if (dep_cls != catalog::well_known_oid::pg_constraint_table)
                     continue;
+                // A CONSTRAINT EDGE WHOSE deptype CANNOT BE READ IS A DEPENDENCY OF
+                // UNKNOWN KIND — and one of the kinds is "blocks this drop". Reading
+                // it as non-blocking is the same silence as the missing column above,
+                // one cell at a time; no writer in this engine emits a NULL deptype.
+                if (chunk.is_null(catalog::pg_depend_col::deptype, i)) {
+                    std::string msg = "alter_column_drop: a pg_depend row for constraint oid ";
+                    msg += std::to_string(dep_oid);
+                    msg += " has no readable deptype — whether it blocks dropping column \"";
+                    msg += column_name_;
+                    msg += "\" cannot be determined";
+                    set_error(
+                        core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                    co_return;
+                }
                 const auto deptype_cell = chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
                 if (!deptype_cell.empty() && deptype_cell[0] == 'n')
                     blocking.push_back(dep_oid);

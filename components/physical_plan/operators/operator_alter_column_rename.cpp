@@ -96,8 +96,23 @@ namespace components::operators {
         // RENAME is identity-preserving, so added_at MUST NOT change.
         std::int64_t att_added_at_commit_id = 0;
         for (auto& chunk : attr_batches) {
-            if (chunk.column_count() < 10)
-                continue;
+            // A CHUNK NARROWER THAN THE READS BELOW IS A DIFFERENT ANSWER, NOT A MISS.
+            // The read was issued with an empty projection ("all columns"), so the
+            // reply's width is the width of the pg_attribute storage itself, and every
+            // row this build writes has all 12 columns (build_pg_attribute_row). The
+            // old guard both skipped narrow chunks in silence AND read the
+            // added_at_commit_id slot only when present, "tolerating" its absence as 0
+            // — a pre-MVCC compatibility this engine does not keep. The threshold is
+            // the largest ordinal read below: added_at_commit_id (10).
+            if (chunk.column_count() <= catalog::pg_attribute_col::added_at_commit_id) {
+                std::string msg = "alter_column_rename: pg_attribute answered with ";
+                msg += std::to_string(chunk.column_count());
+                msg += " column(s), fewer than the ";
+                msg += std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::added_at_commit_id) + 1);
+                msg += " this build reads — the column cannot be resolved";
+                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                co_return;
+            }
             bool found = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i))
@@ -125,13 +140,11 @@ namespace components::operators {
                     att_typspec = std::string(chunk.get_value<std::string_view>(8, i));
                 if (!chunk.is_null(9, i))
                     att_defspec = std::string(chunk.get_value<std::string_view>(9, i));
-                // Column 10 = added_at_commit_id. Rows written before the MVCC
-                // commit_id columns landed have only 10 columns; tolerate a missing
-                // slot as 0.
-                if (chunk.column_count() > 10) {
-                    if (!chunk.is_null(10, i))
-                        att_added_at_commit_id = chunk.get_value<std::int64_t>(10, i);
-                }
+                // Column 10 = added_at_commit_id — width guaranteed by the chunk
+                // guard above. A NULL cell is a pre-backfill row (commit_id patched
+                // post-commit); its captured 0 is correct, see the re-append note.
+                if (!chunk.is_null(10, i))
+                    att_added_at_commit_id = chunk.get_value<std::int64_t>(10, i);
                 found = true;
                 break;
             }
@@ -194,7 +207,6 @@ namespace components::operators {
                 rel += std::to_string(table_oid_);
             }
             if (rel_id.relkind == catalog::relkind::computed) {
-                // Short, for the reason spelled out at the DROP sibling's refusal.
                 std::string msg = "RENAME COLUMN \"";
                 msg += old_name_;
                 msg += "\" of \"";

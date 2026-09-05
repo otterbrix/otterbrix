@@ -86,6 +86,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_wide_integer_literal.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_unmaterialized.cpp
+        test_computed_drop_complex_type.cpp
+        test_multiple_primary_keys.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp

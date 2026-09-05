@@ -353,20 +353,43 @@ namespace components::operators {
                 // Map each resolved variant to its physical storage column by
                 // (name, type): with multi-type fields several storage columns share
                 // a name, so the type disambiguates. `claimed` prevents two variants
-                // from binding to the same physical column. Falls back to the first
-                // unclaimed same-name column when types don't compare exactly.
+                // from binding to the same physical column.
+                //
+                // NO first-unclaimed GUESS UNDER AMBIGUITY. When the exact type
+                // matches nothing, two shapes remain and they are opposites:
+                //   * exactly ONE unclaimed storage column carries the name — that
+                //     IS the column, written by the same statement that wrote the
+                //     catalog row; the two sides merely normalised the type
+                //     differently (measured on this branch: a NUMERIC-typed field
+                //     registers the encoded spec while the storage column
+                //     materialises under its own reading of the same value). An
+                //     unambiguous candidate is bound, not refused — refusing it
+                //     made the column unreadable one statement after a successful
+                //     INSERT.
+                //   * SEVERAL unclaimed columns carry the name — the type was the
+                //     only thing that could say which one is meant, and it said
+                //     none. This is where the old code took the FIRST one, i.e. a
+                //     column of a DIFFERENT type chosen by storage order, and every
+                //     read through that binding reinterpreted the stored bytes in
+                //     silence. What the engine cannot disambiguate it must not
+                //     guess.
+                // A name with NO storage column at all keeps chunk_position = -1:
+                // that is the legal not-yet-materialised window, and the readers
+                // answer NULL for it.
                 std::vector<bool> claimed(storage_types.size(), false);
                 for (auto& row : rows) {
                     const types::complex_logical_type row_type =
                         row.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid))
                                                : catalog::decode_type_spec(resource_, row.atttypspec);
-                    std::int32_t name_only = -1;
+                    std::int32_t sole_name_candidate = -1;
+                    std::size_t name_candidates = 0;
                     for (std::size_t i = 0; i < storage_types.size(); ++i) {
                         if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != row.attname) {
                             continue;
                         }
-                        if (name_only < 0) {
-                            name_only = static_cast<std::int32_t>(i);
+                        ++name_candidates;
+                        if (name_candidates == 1) {
+                            sole_name_candidate = static_cast<std::int32_t>(i);
                         }
                         if (storage_types[i].type() == row_type.type()) {
                             row.chunk_position = static_cast<std::int32_t>(i);
@@ -374,9 +397,23 @@ namespace components::operators {
                             break;
                         }
                     }
-                    if (row.chunk_position < 0 && name_only >= 0) {
-                        row.chunk_position = name_only;
-                        claimed[static_cast<std::size_t>(name_only)] = true;
+                    if (row.chunk_position < 0 && name_candidates == 1) {
+                        row.chunk_position = sole_name_candidate;
+                        claimed[static_cast<std::size_t>(sole_name_candidate)] = true;
+                    } else if (row.chunk_position < 0 && name_candidates > 1) {
+                        std::string msg = "table resolution: column \"";
+                        msg += row.attname;
+                        msg += "\" of computed table \"";
+                        msg += entry.relname;
+                        msg += "\" is typed ";
+                        msg += row_type.type_name();
+                        msg += " in pg_computed_column, and none of the ";
+                        msg += std::to_string(name_candidates);
+                        msg += " storage columns of that name holds that type — picking one by storage order "
+                               "would misread its data";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
                 }
             } else if (relkind != catalog::relkind::view) {
@@ -405,21 +442,46 @@ namespace components::operators {
                 auto& pa_batches = pa_batches_r.value();
 
                 for (auto& chunk : pa_batches) {
-                    if (chunk.column_count() < 8) {
-                        continue;
+                    // A CHUNK NARROWER THAN pg_attribute'S SCHEMA IS A DIFFERENT ANSWER,
+                    // NOT A MISS. The read above was issued with an empty projection
+                    // ("all columns"), so the reply's width is the width of the
+                    // pg_attribute storage itself; every row this build writes has all
+                    // 12 columns (build_pg_attribute_row). Tolerating a narrow chunk
+                    // did worse than dropping rows: the reads below stayed inside the
+                    // chunk, but the two MVCC visibility gates were SKIPPED — a column
+                    // added after this snapshot, or dropped before it, was resolved as
+                    // visible, silently. The threshold is the largest ordinal read
+                    // below: dropped_at_commit_id (11). Same refusal, same reason, as
+                    // the narrow-chunk floors in operator_resolve_constraint.
+                    if (chunk.column_count() <= catalog::pg_attribute_col::dropped_at_commit_id) {
+                        std::string msg = "table resolution: pg_attribute answered with ";
+                        msg += std::to_string(chunk.column_count());
+                        msg += " column(s), fewer than the ";
+                        msg +=
+                            std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::dropped_at_commit_id) +
+                                           1);
+                        msg += " this build reads — the columns of table \"";
+                        msg += entry.relname;
+                        msg += "\" cannot be decoded";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         // Drop tombstones (attisdropped=true).
                         if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i)) {
                             continue;
                         }
-                        if (chunk.column_count() > 10 && !chunk.is_null(10, i)) {
+                        // MVCC visibility gates — unconditional now that the width is
+                        // guaranteed above; only a NULL cell (a pre-backfill row, whose
+                        // insert_id already filtered it correctly) is passed through.
+                        if (!chunk.is_null(10, i)) {
                             auto added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(10, i));
                             if (added_at > snapshot_start_time) {
                                 continue; // column added after our snapshot — invisible
                             }
                         }
-                        if (chunk.column_count() > 11 && !chunk.is_null(11, i)) {
+                        if (!chunk.is_null(11, i)) {
                             auto dropped_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(11, i));
                             if (dropped_at != 0 && dropped_at <= snapshot_start_time) {
                                 continue; // column dropped before our snapshot
@@ -441,10 +503,10 @@ namespace components::operators {
                         row.chunk_position = row.attnum > 0 ? row.attnum - 1 : -1;
                         row.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
                         row.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
-                        if (chunk.column_count() > 8 && !chunk.is_null(8, i)) {
+                        if (!chunk.is_null(8, i)) {
                             row.atttypspec.assign(chunk.get_value<std::string_view>(8, i));
                         }
-                        if (chunk.column_count() > 9 && !chunk.is_null(9, i)) {
+                        if (!chunk.is_null(9, i)) {
                             row.attdefspec.assign(chunk.get_value<std::string_view>(9, i));
                         }
                         rows.push_back(std::move(row));

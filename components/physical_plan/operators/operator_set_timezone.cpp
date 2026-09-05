@@ -31,17 +31,34 @@ namespace components::operators {
             }
         }
 
-        // No disk actor wired (test topologies that spawn the dispatcher alone): no
-        // pg_settings to write to, so skip the catalog write.
+        // The pg_settings row is what makes the setting outlive the process; with
+        // no disk actor to write it, SET TIME ZONE has validated a name and
+        // persisted nothing, and the old silent mark_executed() reported that as
+        // done. No production topology wires an executor without the disk actor
+        // (base_spaces spawns it unconditionally), so the refusal costs nothing
+        // where it cannot fire — same convention as the cast operators.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            mark_executed();
+            set_error(core::error_t{
+                core::error_code_t::physical_plan_error,
+                std::pmr::string{"set_timezone: no disk actor is wired — the pg_settings row cannot be "
+                                 "written, so the setting would not survive this process",
+                                 this->resource()}});
+            mark_failed();
             co_return;
         }
 
         const auto* settings_def =
             components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
+        // pg_settings is a well-known compiled-in table; a registry that cannot
+        // name it is not a topology, and "succeed without writing" is the same
+        // silent lie the empty-address branch above stopped telling.
         if (settings_def == nullptr) {
-            mark_executed();
+            set_error(core::error_t{
+                core::error_code_t::physical_plan_error,
+                std::pmr::string{"set_timezone: the pg_settings schema is missing from the system-table "
+                                 "registry — the setting cannot be persisted",
+                                 this->resource()}});
+            mark_failed();
             co_return;
         }
 

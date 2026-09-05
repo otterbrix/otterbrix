@@ -238,6 +238,24 @@ namespace components::operators {
             };
             std::pmr::vector<pending_unique_t> pending_uniques(resource_);
 
+            // ONE PRIMARY KEY PER TABLE. PostgreSQL refuses the second one at
+            // declaration; this engine's declaration legs (enrich for the inline
+            // form, the ALTER rewrite for ADD CONSTRAINT) still accept it, so
+            // pg_constraint can hold two 'p' rows. What used to follow was silent
+            // misenforcement: each row became its own unique group and pk_columns
+            // FLATTENED both key lists into one multi-column "primary key" nobody
+            // declared — the thing enrich merges NOT NULL from and an FK with an
+            // omitted column list binds to. A key that is two keys cannot be
+            // enforced or bound, so the gather refuses and names both. The refusal
+            // is per-statement and repairable: the repair statements register no
+            // constraint gather for the target — ALTER TABLE ... DROP COLUMN of
+            // one key's column (scrubs that key through its 'i' pg_depend edge;
+            // DROP CONSTRAINT itself is still refused as unimplemented upstream)
+            // and DROP TABLE both pass under a doubled key.
+            // Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
+            bool pk_seen = false;
+            std::string first_pk_label;
+
             for (auto& con_chunk : con_batches) {
                 // A CHUNK NARROWER THAN pg_constraint'S SCHEMA IS A DIFFERENT ANSWER, NOT A
                 // MISS. The read above was issued with an EMPTY projection, which
@@ -306,19 +324,55 @@ namespace components::operators {
                     if (contype == 'f') {
                         pending_fk_t pending;
                         catalog::fk_info_t& fk = pending.fk;
+                        // THE IDENTITY AND THE FAR ENDPOINT ARE READ, NOT ASSUMED.
+                        // get_value on a NULL cell answers whatever the buffer holds
+                        // (usually zero), so an unguarded read here minted an FK
+                        // whose constraint_oid — the key every scrub and every
+                        // describe below uses — or whose far table oid was 0: a
+                        // constraint pointing at oid 0 enforces against nothing and
+                        // can never be dropped by the oid-keyed deletes. Both
+                        // columns are NOT NULL in the schema and always written by
+                        // build_create_constraint_writes, so a NULL is a catalog
+                        // nothing in this engine produced — same refusal as the
+                        // unreadable contype above.
+                        if (con_chunk.is_null(catalog::pg_constraint_col::oid, ci)) {
+                            std::string msg = "foreign key constraint row in pg_constraint on table \"";
+                            msg += target_md->name;
+                            msg += "\" has no readable oid — it cannot be identified, enforced or dropped";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
+                        }
                         fk.constraint_oid = static_cast<catalog::oid_t>(
                             con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
                         if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
                             pending.constraint_name.assign(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                         }
+                        const std::uint64_t far_col = (direction == direction_t::outgoing)
+                                                          ? catalog::pg_constraint_col::confrelid
+                                                          : catalog::pg_constraint_col::conrelid;
+                        if (con_chunk.is_null(far_col, ci)) {
+                            std::string msg = "foreign key constraint \"";
+                            msg += pending.constraint_name.empty()
+                                       ? "oid " + std::to_string(fk.constraint_oid)
+                                       : pending.constraint_name;
+                            msg += (direction == direction_t::outgoing)
+                                       ? "\": pg_constraint.confrelid is unreadable — the referenced table "
+                                         "cannot be identified"
+                                       : "\": pg_constraint.conrelid is unreadable — the referencing table "
+                                         "cannot be identified";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
+                        }
                         if (direction == direction_t::outgoing) {
                             fk.child_table_oid = table_oid;
-                            fk.parent_table_oid = static_cast<catalog::oid_t>(
-                                con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::confrelid, ci));
+                            fk.parent_table_oid =
+                                static_cast<catalog::oid_t>(con_chunk.get_value<std::uint32_t>(far_col, ci));
                         } else {
-                            fk.child_table_oid = static_cast<catalog::oid_t>(
-                                con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, ci));
+                            fk.child_table_oid =
+                                static_cast<catalog::oid_t>(con_chunk.get_value<std::uint32_t>(far_col, ci));
                             fk.parent_table_oid = table_oid;
                         }
                         // The three one-char FK code columns. `[0]` was read straight off
@@ -442,11 +496,39 @@ namespace components::operators {
                         pending.attoids = std::move(attoids);
                         pending.conkey_readable = conkey_ok;
                         pending.is_pk = (contype == 'p');
-                        pending.constraint_oid = static_cast<catalog::oid_t>(
-                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                        // The oid names the constraint in refusals; a NULL cell must
+                        // not be read (get_value would answer buffer contents), so it
+                        // stays INVALID and the describe falls back to it honestly.
+                        pending.constraint_oid =
+                            con_chunk.is_null(catalog::pg_constraint_col::oid, ci)
+                                ? catalog::INVALID_OID
+                                : static_cast<catalog::oid_t>(
+                                      con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
                         if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
                             pending.constraint_name.assign(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
+                        }
+                        if (pending.is_pk) {
+                            std::string label = pending.constraint_name.empty()
+                                                    ? "oid " + std::to_string(pending.constraint_oid)
+                                                    : pending.constraint_name;
+                            if (pk_seen) {
+                                // See the pk_seen note above: two 'p' rows are an
+                                // illegal state the declaration legs let through, and
+                                // neither flattening them nor picking one is an answer.
+                                std::string msg = "multiple primary keys for table \"";
+                                msg += target_md->name;
+                                msg += "\" are not allowed — pg_constraint holds \"";
+                                msg += first_pk_label;
+                                msg += "\" and \"";
+                                msg += label;
+                                msg += "\"; drop one of them first";
+                                set_error(core::error_t{core::error_code_t::schema_error,
+                                                        std::pmr::string{std::move(msg), resource_}});
+                                co_return;
+                            }
+                            pk_seen = true;
+                            first_pk_label = std::move(label);
                         }
                         pending_uniques.push_back(std::move(pending));
                     }

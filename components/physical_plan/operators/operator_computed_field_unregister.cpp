@@ -48,15 +48,12 @@ namespace components::operators {
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
 
-        // Routing by attoid (pre-stamped by enrich_logical_plan).
-        // INVALID_OID means the resolver couldn't find a live computed column —
-        // treat as idempotent no-op (matches the prior attname-scan miss).
-        // Group 1: planner creates this operator directly from ALTER's
-        // sub-clause without an enrich pass (planner.cpp:585-598), so
-        // attoid_ is INVALID by default. Fall through to the
-        // pg_computed_column scan below and match by attname instead of
-        // attoid (the pre-existing attoid path remains a fast path for
-        // callers that do stamp it).
+        // Routing: the planner creates this operator directly from ALTER's
+        // sub-clause without an enrich pass (planner.cpp rewrite_alter_table),
+        // so attoid_ is INVALID by construction and the attname match below is
+        // the PRIMARY, sanctioned path — not a fallback. A caller that does
+        // stamp attoid_ narrows the match to that one variant: the stamp is a
+        // cross-check, the way the pg_attribute ALTER siblings treat theirs.
 
         // Scan by relid and filter by attoid in-callback: a keyed (relid, attoid)
         // read won't do because the same column can have multiple version rows
@@ -80,20 +77,58 @@ namespace components::operators {
         }
         auto& batches = batches_r.value();
 
-        // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
-        std::int64_t max_version = -1;
-        catalog::oid_t live_attoid = catalog::INVALID_OID;
-        catalog::oid_t live_atttypid = catalog::INVALID_OID;
-        bool found_live = false;
+        // Pick, PER TYPED VARIANT, the latest matching row, and keep the variants
+        // whose latest row is live (attrefcount > 0). The reader's visibility gate
+        // groups rows by the FULL variant key (attname, atttypid, atttypspec) —
+        // operator_resolve_table — and a computed field can hold several typed
+        // variants at once, so "the field" is that whole set: DROP COLUMN has to
+        // bury EVERY live variant, and each tombstone has to land in the group of
+        // the row it buries, which means carrying that row's atttypspec. A single
+        // tombstone written without it fell into the (name, typid, "") group and
+        // the live (name, typid, spec) variant kept winning its own group — the
+        // dropped column stayed in SELECT * while ALTER TABLE reported success.
+        // Gate: integration/cpp/test/test_computed_drop_complex_type.cpp.
+        struct variant_t {
+            catalog::oid_t attoid{catalog::INVALID_OID};
+            catalog::oid_t atttypid{catalog::INVALID_OID};
+            std::string atttypspec;
+            std::string attname;
+            std::int64_t max_version{-1};
+            std::int64_t latest_refcount{0};
+        };
+        std::pmr::vector<variant_t> variants(resource_);
+        auto variant_slot = [&](catalog::oid_t typid, std::string_view typspec) -> variant_t& {
+            for (auto& v : variants) {
+                if (v.atttypid == typid && v.atttypspec == typspec) {
+                    return v;
+                }
+            }
+            variants.emplace_back();
+            variants.back().atttypid = typid;
+            variants.back().atttypspec.assign(typspec);
+            return variants.back();
+        };
         for (auto& chunk : batches) {
-            if (chunk.column_count() < 7)
-                continue;
+            // A chunk narrower than pg_computed_column's 7-column schema is a
+            // different answer, not a miss: the read was issued with an empty
+            // projection ("all columns"), so the reply's width is the width of the
+            // storage itself, and skipping the chunk silently skips the very rows
+            // this statement was sent to bury. Same refusal, same reason, as the
+            // narrow-chunk floors in operator_resolve_constraint.
+            if (chunk.column_count() < 7) {
+                std::string msg = "computed_field_unregister: pg_computed_column answered with ";
+                msg += std::to_string(chunk.column_count());
+                msg += " column(s), fewer than the 7 this build reads — the field cannot be resolved";
+                set_error(
+                    core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                co_return;
+            }
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(1, i) || chunk.is_null(5, i) || chunk.is_null(6, i))
                     continue;
                 const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                // Match by attoid when enrich stamped it; otherwise fall back to
-                // matching by attname (column_name_).
+                // A stamped attoid narrows the match to its one variant; the
+                // planner route matches by attname (see the routing note above).
                 if (attoid_ != catalog::INVALID_OID) {
                     if (row_attoid != attoid_)
                         continue;
@@ -103,18 +138,30 @@ namespace components::operators {
                     if (chunk.get_value<std::string_view>(2, i) != column_name_)
                         continue;
                 }
+                const auto typid = chunk.is_null(3, i)
+                                       ? catalog::INVALID_OID
+                                       : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                const std::string_view typspec =
+                    chunk.is_null(4, i) ? std::string_view{} : chunk.get_value<std::string_view>(4, i);
+                auto& slot = variant_slot(typid, typspec);
                 const auto v = chunk.get_value<std::int64_t>(5, i);
-                const auto rc = chunk.get_value<std::int64_t>(6, i);
-                if (rc <= 0)
-                    continue;
-                if (v > max_version) {
-                    max_version = v;
-                    live_attoid = row_attoid;
-                    live_atttypid = chunk.is_null(3, i)
-                                        ? catalog::INVALID_OID
-                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
-                    found_live = true;
+                if (v > slot.max_version) {
+                    slot.max_version = v;
+                    slot.attoid = row_attoid;
+                    slot.latest_refcount = chunk.get_value<std::int64_t>(6, i);
+                    if (!chunk.is_null(2, i)) {
+                        slot.attname.assign(chunk.get_value<std::string_view>(2, i));
+                    }
                 }
+            }
+        }
+        // A variant whose LATEST row is already a tombstone stays tombstoned;
+        // only live variants get a new one.
+        bool found_live = false;
+        for (const auto& v : variants) {
+            if (v.latest_refcount > 0) {
+                found_live = true;
+                break;
             }
         }
         if (!found_live) {
@@ -153,13 +200,6 @@ namespace components::operators {
                 rel = "oid ";
                 rel += std::to_string(table_oid_);
             }
-            // KEEP THE MESSAGE SHORT — under about 120 bytes. A longer error string
-            // built from this operator's resource_ comes back corrupted (doubled, or with
-            // a size that makes reading it throw std::length_error) before the executor
-            // has even copied it into a cursor. That is a separate, pre-existing defect —
-            // reproduced on this branch, NOT fixed here, and unrelated to the cursor-side
-            // lifetime bug that test_cursor_error_lifetime.cpp covers. The pre-existing
-            // FK-blocking refusal further down already sits at that edge.
             std::string msg = "column \"";
             msg += column_name_;
             msg += "\" of relation \"";
@@ -170,41 +210,52 @@ namespace components::operators {
             co_return;
         }
 
-        // Tombstone row: version = max+1, refcount = 0, same attoid so any
-        // pg_depend attrefs stay valid; readers drop it via the refcount<=0 gate.
-        auto cc_row = catalog::build_pg_computed_column_row(resource_,
-                                                            table_oid_,
-                                                            live_attoid,
-                                                            column_name_,
-                                                            live_atttypid,
-                                                            max_version + 1,
-                                                            /*attrefcount=*/std::int64_t{0});
-        auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::append_pg_catalog_row,
-                                         exec_ctx,
-                                         pg_computed_column,
-                                         std::move(cc_row));
-        auto rng_r = co_await std::move(wf);
-        if (rng_r.has_error()) {
-            // The tombstone IS the unregistration. Without it the column stays live and
-            // reporting success would hide that from the statement.
-            set_error(rng_r.error());
-            mark_failed();
-            co_return;
-        }
-        if (rng_r.value().count > 0) {
-            ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+        // One tombstone PER LIVE VARIANT: version = that variant's max+1,
+        // refcount = 0, same attoid so any pg_depend attrefs stay valid, and the
+        // variant's OWN (atttypid, atttypspec) so the tombstone lands in the group
+        // the reader will judge — readers drop the variant via the refcount<=0
+        // gate. The attname written is the row's own; column_name_ only backs it
+        // up (they agree on the planner route by construction of the match).
+        for (const auto& v : variants) {
+            if (v.latest_refcount <= 0) {
+                continue;
+            }
+            auto cc_row = catalog::build_pg_computed_column_row(resource_,
+                                                                table_oid_,
+                                                                v.attoid,
+                                                                v.attname.empty() ? column_name_ : v.attname,
+                                                                v.atttypid,
+                                                                v.max_version + 1,
+                                                                /*attrefcount=*/std::int64_t{0},
+                                                                v.atttypspec);
+            auto [_w, wf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::append_pg_catalog_row,
+                                             exec_ctx,
+                                             pg_computed_column,
+                                             std::move(cc_row));
+            auto rng_r = co_await std::move(wf);
+            if (rng_r.has_error()) {
+                // The tombstone IS the unregistration. Without it the variant stays
+                // live and reporting success would hide that from the statement. A
+                // partial set is refused the same way: the statement is one DROP.
+                set_error(rng_r.error());
+                mark_failed();
+                co_return;
+            }
+            if (rng_r.value().count > 0) {
+                ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+            }
         }
 
-        // Note: a previous version of this code added an immediate
-        // compact_relkind_g_storage call here (drop physical columns whose
-        // tombstones were just written), but the subsequent re-INSERT path
-        // (dynamic_schema_re_add_after_drop) crashed row_group::append with
-        // column-count mismatch because storage::drop_column doesn't fully
-        // reset row_group state when called mid-pipeline. Compaction is
-        // therefore deferred to operator_vacuum_t (runs the same logic
-        // asynchronously). For now SELECT * on relkind='g' continues to leak
-        // dropped columns until VACUUM runs.
+        // What these tombstones do and do not do: operator_resolve_table hides a
+        // tombstoned variant from every subsequent read (the refcount<=0 gate on
+        // the max-version row of each variant group), so SELECT * answers without
+        // the column from this statement's commit on. The PHYSICAL storage column
+        // keeps its blocks until operator_vacuum_t compacts them — an earlier
+        // attempt to drop it here, mid-pipeline, crashed the re-INSERT path
+        // (row_group::append column-count mismatch; storage::drop_column does not
+        // fully reset row_group state), which is why compaction is deferred to
+        // VACUUM. Hidden from the reader, still on the platter.
         mark_executed();
     }
 

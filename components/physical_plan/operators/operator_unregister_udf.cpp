@@ -148,8 +148,24 @@ namespace components::operators {
 
         // 3. Drop the matching overload from the default registry — the operator's ONLY
         //    mutation, and last, so it happens with every refusal already known.
-        if (reg) {
-            reg->remove_function_by_signature(function_name_, inputs_);
+        //    `reg` is non-null here: `exists` can only be set inside the `if (reg)`
+        //    pre-check, and !exists already refused above.
+        //
+        //    THE ANSWER IS CHECKED. remove_function_by_signature says whether it
+        //    removed anything, and a `false` here means the overload the pre-check
+        //    matched is no longer in the registry — the registry changed between
+        //    the two looks. The catalog scrub above already ran against the same
+        //    divergence window, so reporting success over an unverified removal
+        //    would paper over exactly the disagreement this ordering exists to
+        //    surface.
+        if (reg && !reg->remove_function_by_signature(function_name_, inputs_)) {
+            set_error(core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"unregister_udf: the registry no longer holds the overload of '" +
+                                                         function_name_ +
+                                                         "' that the pre-check matched — nothing was removed",
+                                                     resource_}});
+            mark_failed();
+            co_return;
         }
 
         success_ = true;

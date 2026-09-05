@@ -8,6 +8,8 @@
 
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
+#include <core/result_wrapper.hpp>
+#include <memory_resource>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 
@@ -20,7 +22,8 @@ namespace services::wal {
     /// running. This is a non-actor utility class.
     class wal_reader_t {
     public:
-        wal_reader_t(const configuration::config_wal& config, log_t& log);
+        /// resource backs the decoded records and every diagnostic below.
+        wal_reader_t(std::pmr::memory_resource* resource, const configuration::config_wal& config, log_t& log);
 
         /// Read all committed records across all databases whose wal_id > after_wal_id.
         ///
@@ -36,16 +39,22 @@ namespace services::wal {
         /// window would otherwise resurrect uncommitted transactions' index
         /// entries. The set is threaded out (not derived in the index layer) so it
         /// stays byte-identical with the filter applied here.
-        std::vector<record_t> read_committed_records(id_t after_wal_id,
-                                                     std::set<std::uint64_t>* committed_out = nullptr);
+        ///
+        /// REFUSES when a segment cannot be OPENED. This used to answer an empty list for
+        /// that case, indistinguishable from "there is nothing to replay", so a startup that
+        /// could not read a segment came up silently missing every committed transaction the
+        /// segment held. See the caller in base_spaces.cpp for why that refusal stops startup.
+        core::result_wrapper_t<std::vector<record_t>>
+        read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out = nullptr);
 
     private:
         /// Read all records from segment files in a single database directory.
         /// committed_out, when non-null, receives this database's committed txn ids.
-        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir,
-                                                     id_t after_wal_id,
-                                                     std::set<std::uint64_t>* committed_out);
+        core::result_wrapper_t<std::vector<record_t>> read_database_segments(const std::filesystem::path& db_dir,
+                                                                             id_t after_wal_id,
+                                                                             std::set<std::uint64_t>* committed_out);
 
+        std::pmr::memory_resource* resource_;
         configuration::config_wal config_;
         log_t log_;
     };

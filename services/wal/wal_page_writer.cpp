@@ -5,14 +5,17 @@
 
 namespace services::wal {
 
-    wal_page_writer_t::wal_page_writer_t(const std::filesystem::path& path,
+    wal_page_writer_t::wal_page_writer_t(std::pmr::memory_resource* resource,
+                                         const std::filesystem::path& path,
                                          const std::string& db_name,
                                          uint32_t seg_index,
-                                         size_t max_seg_sz)
-        : path_(path)
+                                         size_t /*max_seg_sz*/)
+        : resource_(resource)
+        , path_(path)
         , database_name_(db_name)
-        , segment_index_(seg_index) {
-        (void) max_seg_sz;
+        , segment_index_(seg_index)
+        , open_error_(core::error_t::no_error())
+        , last_error_(core::error_t::no_error()) {
         // Ensure parent directory exists.
         auto parent = path_.parent_path();
         if (!parent.empty()) {
@@ -23,6 +26,17 @@ namespace services::wal {
         auto flags = core::filesystem::file_flags::WRITE | core::filesystem::file_flags::READ |
                      core::filesystem::file_flags::FILE_CREATE;
         file_ = core::filesystem::open_file(fs_, path_, flags, core::filesystem::file_lock_type::NO_LOCK);
+#ifdef DEV_MODE
+        if (auto* interposer = dev_wal_file_interposer(); interposer != nullptr) {
+            file_ = interposer->wrap(path_, std::move(file_));
+        }
+#endif
+        if (!file_) {
+            // write_file_header() below used to dereference this null handle. Refuse instead
+            // and let every entry point answer with the reason.
+            open_error_ = io_failure("wal segment could not be opened for writing");
+            return;
+        }
 
         // Check if the file already has content (reopening an existing segment).
         std::error_code ec;
@@ -33,7 +47,10 @@ namespace services::wal {
             file_size_ = (existing_size / PAGE_SIZE) * PAGE_SIZE;
         } else {
             // New segment file -- write the file header (page 0).
-            write_file_header();
+            if (auto header_error = write_file_header(); header_error.contains_error()) {
+                open_error_ = header_error;
+                return;
+            }
         }
 
         // Initialize the first data page.
@@ -41,15 +58,29 @@ namespace services::wal {
     }
 
     wal_page_writer_t::~wal_page_writer_t() {
-        // Flush any pending data on destruction.
+        // Last-resort flush. A destructor has no caller to answer, so the refusal is latched
+        // into last_error_ rather than dropped — and the engine never leans on it: wal_worker_t
+        // flushes explicitly (reading the answer) before rotating or destroying the writer, so
+        // has_data_ is false here on every path that carries durability.
         if (has_data_) {
-            flush_page();
+            last_error_ = flush_page();
         }
     }
 
-    bool wal_page_writer_t::append(const char* data, size_t size, id_t wal_id) {
+    core::error_t wal_page_writer_t::io_failure(const char* what) const {
+        std::pmr::string message{resource_};
+        message.append(what);
+        message.append(": ");
+        message.append(path_.string());
+        return core::error_t(core::error_code_t::io_error, std::move(message));
+    }
+
+    core::error_t wal_page_writer_t::append(const char* data, size_t size, id_t wal_id) {
+        if (open_error_.contains_error()) {
+            return open_error_;
+        }
         if (size == 0) {
-            return true;
+            return core::error_t::no_error();
         }
 
         // Track the first LSN in the current page.
@@ -96,8 +127,8 @@ namespace services::wal {
                 // Do NOT count it in num_records (only complete records counted).
 
                 // Flush the full page.
-                if (!flush_page()) {
-                    return false;
+                if (auto page_error = flush_page(); page_error.contains_error()) {
+                    return page_error;
                 }
 
                 // Start a new page for the continuation.
@@ -112,29 +143,35 @@ namespace services::wal {
             }
         }
 
-        return true;
+        return core::error_t::no_error();
     }
 
-    bool wal_page_writer_t::flush() {
+    core::error_t wal_page_writer_t::flush() {
+        if (open_error_.contains_error()) {
+            return open_error_;
+        }
         if (has_data_) {
             return flush_page();
         }
-        return true;
+        return core::error_t::no_error();
     }
 
-    bool wal_page_writer_t::flush_and_sync() {
-        if (!flush()) {
-            return false;
+    core::error_t wal_page_writer_t::flush_and_sync() {
+        if (auto flush_error = flush(); flush_error.contains_error()) {
+            return flush_error;
         }
-        if (file_) {
-            file_->sync();
+        if (file_ && !file_->sync()) {
+            // THE fsync ANSWER. Dropping it is what let commit_txn under wal_sync_mode::FULL
+            // return a wal_id — i.e. report a durable commit — over a page that never reached
+            // the device.
+            return io_failure("fsync of the wal segment failed");
         }
-        return true;
+        return core::error_t::no_error();
     }
 
     std::filesystem::path wal_page_writer_t::current_segment_path() const { return path_; }
 
-    bool wal_page_writer_t::write_file_header() {
+    core::error_t wal_page_writer_t::write_file_header() {
         // Prepare a full page-sized buffer for the file header.
         alignas(4096) char header_page[PAGE_SIZE];
         std::memset(header_page, 0, PAGE_SIZE);
@@ -149,16 +186,19 @@ namespace services::wal {
         auto written =
             file_->write(static_cast<void*>(header_page), static_cast<uint64_t>(PAGE_SIZE), static_cast<uint64_t>(0));
         if (!written) {
-            return false;
+            return io_failure("wal segment file header could not be written");
         }
 
         file_size_ = PAGE_SIZE;
-        return true;
+        return core::error_t::no_error();
     }
 
-    bool wal_page_writer_t::flush_page() {
+    core::error_t wal_page_writer_t::flush_page() {
         if (!has_data_ && num_records_ == 0 && (page_flags_ & PAGE_PARTIAL_CONT) == 0) {
-            return true; // nothing to flush
+            return core::error_t::no_error(); // nothing to flush
+        }
+        if (!file_) {
+            return open_error_.contains_error() ? open_error_ : io_failure("wal segment is not open for writing");
         }
 
         // Zero out unused portion of the page.
@@ -187,14 +227,14 @@ namespace services::wal {
                                static_cast<uint64_t>(PAGE_SIZE),
                                static_cast<uint64_t>(file_size_));
         if (!ok) {
-            return false;
+            return io_failure("wal page could not be written");
         }
 
         file_size_ += PAGE_SIZE;
 
         // Prepare for the next page.
         start_new_page();
-        return true;
+        return core::error_t::no_error();
     }
 
     void wal_page_writer_t::start_new_page() {

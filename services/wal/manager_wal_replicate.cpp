@@ -52,7 +52,8 @@ namespace services::wal {
         , enabled_(config_.on)
         , manager_disk_(actor_zeta::address_t::empty_address())
         , manager_dispatcher_(actor_zeta::address_t::empty_address())
-        , manager_index_(actor_zeta::address_t::empty_address()) {
+        , manager_index_(actor_zeta::address_t::empty_address())
+        , recovery_error_(core::error_t::no_error()) {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
@@ -80,13 +81,47 @@ namespace services::wal {
                     if (!seg.is_regular_file()) {
                         continue;
                     }
-                    wal_page_reader_t reader(seg.path());
-                    auto records = reader.read_all_records(0);
-                    for (const auto& r : records) {
-                        if (r.is_valid() && r.id > max_recovered_id) {
-                            max_recovered_id = r.id;
-                        }
+                    // SEGMENTS ONLY, by the same prefix wal_worker_t::discover_segments and
+                    // wal_reader_t use. The scan below trusts a verified page header, so an
+                    // unrelated file that happened to checksum-clean would poison the
+                    // allocator; the record decode this replaced could not be poisoned that
+                    // way, so the filter arrives with it.
+                    const auto seg_name = seg.path().filename().string();
+                    if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
+                        continue;
                     }
+
+                    wal_page_reader_t reader(resource_, seg.path());
+                    if (!reader.is_open()) {
+                        // THIS SCAN IS WHAT SETS global_id_. A segment it could not read holds
+                        // ids it will not see, so max_recovered_id lands below them and
+                        // next_wal_id() starts handing the same ids out again — over records
+                        // that are still on disk. Latch the refusal: every write, commit and
+                        // truncate below answers with it rather than issuing an id that
+                        // collides with the journal.
+                        recovery_error_ = reader.open_error();
+                        error(log_,
+                              "manager_wal_replicate: segment '{}' could not be read at startup , the WAL "
+                              "REFUSES every write until it can be: {}",
+                              seg.path().filename().string(),
+                              recovery_error_.what);
+                        break;
+                    }
+
+                    // THE ALLOCATOR BOUND IS A PROPERTY OF THE FILES, NOT OF THE REPLAY. This
+                    // used to decode every record with read_all_records(0), which stops at the
+                    // first broken page (STOP-A) — so ids living in the pages AFTER a
+                    // corruption point were invisible here and next_wal_id() reissued them
+                    // over records that are still on disk. scan_pages() reads every page and
+                    // takes page_end_lsn from the ones whose checksum still vouches for it,
+                    // which also spares startup a full decode of the journal.
+                    const auto scan = reader.scan_pages();
+                    if (scan.highest_page_end_lsn > max_recovered_id) {
+                        max_recovered_id = scan.highest_page_end_lsn;
+                    }
+                }
+                if (recovery_error_.contains_error()) {
+                    break;
                 }
 
                 get_or_create_worker(db_oid);
@@ -351,43 +386,61 @@ namespace services::wal {
     // Contract: load
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<std::vector<record_t>> manager_wal_replicate_t::load(session_id_t session,
-                                                                                                wal::id_t wal_id) {
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<std::vector<record_t>>>
+    manager_wal_replicate_t::load(session_id_t session, wal::id_t wal_id) {
         if (!enabled_) {
-            co_return std::vector<record_t>{};
+            co_return core::result_wrapper_t<std::vector<record_t>>{std::vector<record_t>{}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<std::vector<record_t>>{recovery_error_};
         }
 
         // Collect records from ALL workers, merge-sort by wal_id.
         std::vector<record_t> merged;
+        core::error_t first_refusal = core::error_t::no_error();
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] =
                 actor_zeta::otterbrix::send(worker->address(), &wal_worker_t::load, session, wal_id);
             if (needs_sched) {
                 scheduler_->enqueue(worker.get());
             }
+            // Drain EVERY worker before taking the first refusal: abandoning a future leaves a
+            // reply addressed to a frame that has already finished.
             auto records = co_await std::move(fut);
+            if (records.has_error()) {
+                if (!first_refusal.contains_error()) {
+                    first_refusal = records.error();
+                }
+                continue;
+            }
             merged.insert(merged.end(),
-                          std::make_move_iterator(records.begin()),
-                          std::make_move_iterator(records.end()));
+                          std::make_move_iterator(records.value().begin()),
+                          std::make_move_iterator(records.value().end()));
+        }
+        if (first_refusal.contains_error()) {
+            co_return core::result_wrapper_t<std::vector<record_t>>{std::move(first_refusal)};
         }
 
         std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
-        co_return std::move(merged);
+        co_return core::result_wrapper_t<std::vector<record_t>>{std::move(merged)};
     }
 
     // -----------------------------------------------------------------------
     // Contract: commit_txn
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::commit_txn(session_id_t session,
                                         uint64_t txn_id,
                                         wal_sync_mode sync_mode,
                                         components::catalog::oid_t database_oid,
                                         uint64_t commit_id) {
         if (!enabled_) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -403,6 +456,13 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
+        if (result.has_error()) {
+            // The COMMIT MARKER is not in the journal (or, under FULL, not on the device).
+            // Returning the wal_id here is exactly the durability lie this channel exists to
+            // stop, and the auto-checkpoint below must not run either: it would truncate the
+            // WAL behind a commit that did not land.
+            co_return core::result_wrapper_t<wal::id_t>{result.error()};
+        }
         // Storing the total WAL directory size here instead of the growth since the last
         // checkpoint left the threshold tripped forever once crossed.
         {
@@ -469,7 +529,7 @@ namespace services::wal {
                 }
             });
         trigger_auto_checkpoint();
-        co_return result;
+        co_return core::result_wrapper_t<wal::id_t>{result.value()};
     }
 
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
@@ -504,10 +564,13 @@ namespace services::wal {
     // Contract: truncate_before
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::truncate_before(session_id_t session,
-                                                                                          wal::id_t checkpoint_wal_id) {
+    manager_wal_replicate_t::unique_future<core::error_t>
+    manager_wal_replicate_t::truncate_before(session_id_t session, wal::id_t checkpoint_wal_id) {
         if (!enabled_) {
-            co_return;
+            co_return core::error_t::no_error();
+        }
+        if (recovery_error_.contains_error()) {
+            co_return recovery_error_;
         }
 
         // Clamp to min(active_build_start_positions_) so an in-flight CREATE
@@ -523,7 +586,9 @@ namespace services::wal {
             }
         }
 
-        // Send to ALL workers.
+        // Send to ALL workers. Every future is drained before the first refusal is taken:
+        // abandoning one leaves a reply addressed to a frame that has already finished.
+        core::error_t first_refusal = core::error_t::no_error();
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                                   &wal_worker_t::truncate_before,
@@ -532,9 +597,12 @@ namespace services::wal {
             if (needs_sched) {
                 scheduler_->enqueue(worker.get());
             }
-            co_await std::move(fut);
+            if (auto worker_error = co_await std::move(fut);
+                worker_error.contains_error() && !first_refusal.contains_error()) {
+                first_refusal = worker_error;
+            }
         }
-        co_return;
+        co_return first_refusal;
     }
 
     // -----------------------------------------------------------------------
@@ -669,7 +737,16 @@ namespace services::wal {
         //     coroutine) instead of self-sending another message — the clamp to
         //     active CREATE INDEX build retention runs inside it.
         if (checkpoint_wal_id > wal::id_t{0}) {
-            co_await truncate_before(session, checkpoint_wal_id);
+            // Logged, not propagated, for the same reason (a) and (c2) are: nothing above this
+            // frame is a statement that could carry it. A refused truncate leaves the segments
+            // in place, which is the SAFE side of this operation — the next round retries.
+            if (auto truncate_error = co_await truncate_before(session, checkpoint_wal_id);
+                truncate_error.contains_error()) {
+                error(log_,
+                      "manager_wal_replicate_t::run_auto_checkpoint: the WAL truncate was refused , the "
+                      "segments are left in place: {}",
+                      truncate_error.what);
+            }
         }
 
         // (e) Rebase the byte window on the post-truncate size and release the dedup guard. The
@@ -723,7 +800,7 @@ namespace services::wal {
     // the routing key will move to per-table namespace_oid resolution.
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_insert(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<components::vector::data_chunk_t> chunks,
@@ -731,11 +808,17 @@ namespace services::wal {
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
+        // A zero id from these two legs means "nothing was asked to be written" and stays a
+        // legitimate no-op; the wrapper is what a REFUSAL travels in, so the two can no
+        // longer be confused at a call site.
         if (!enabled_) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
         }
         if (batch_row_count(chunks) == 0) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -753,14 +836,14 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
     // -----------------------------------------------------------------------
     // Contract: write_physical_delete
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_delete(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
@@ -768,7 +851,10 @@ namespace services::wal {
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
         if (!enabled_) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -785,14 +871,14 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
     // -----------------------------------------------------------------------
     // Contract: write_physical_update
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_update(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
@@ -801,10 +887,13 @@ namespace services::wal {
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
         if (!enabled_) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
         }
         if (batch_row_count(new_data) == 0) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -822,14 +911,14 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
     // -----------------------------------------------------------------------
     // Contract: write_physical_add_column
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_add_column(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
@@ -837,7 +926,10 @@ namespace services::wal {
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid) {
         if (!enabled_) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -854,7 +946,7 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
 } // namespace services::wal

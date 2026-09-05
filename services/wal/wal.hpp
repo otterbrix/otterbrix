@@ -16,6 +16,7 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_binary.hpp>
@@ -49,45 +50,57 @@ namespace services::wal {
         // Internal methods (called by manager, NOT wal_contract)
         // -----------------------------------------------------------------------
 
-        unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t after_wal_id);
+        // The wrapper is the difference between "no record past after_wal_id" and "a segment
+        // could not be read": read_all_records used to answer an empty vector for both, and
+        // the CREATE INDEX backfill that consumes this would then build an index missing
+        // every row the unreadable segment described.
+        unique_future<core::result_wrapper_t<std::vector<record_t>>> load(session_id_t session, wal::id_t after_wal_id);
 
         // commit_id is the MVCC version timestamp allocated by
         // transaction_manager_t::commit(); written into the COMMIT record so
         // snapshot-aware replay restores published_horizon_.
-        unique_future<wal::id_t> commit_txn(session_id_t session,
-                                            uint64_t transaction_id,
-                                            wal_sync_mode sync_mode,
-                                            wal::id_t wal_id,
-                                            uint64_t commit_id);
+        unique_future<core::result_wrapper_t<wal::id_t>> commit_txn(session_id_t session,
+                                                                    uint64_t transaction_id,
+                                                                    wal_sync_mode sync_mode,
+                                                                    wal::id_t wal_id,
+                                                                    uint64_t commit_id);
 
-        unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
+        // Refuses rather than deleting when a segment cannot be READ: "unreadable" and
+        // "empty" used to be the same answer here (page_count() == 0), and the unreadable
+        // one was unlinked.
+        unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
 
-        unique_future<wal::id_t> write_physical_insert(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                                       uint64_t row_start,
-                                                       uint64_t row_count,
-                                                       uint64_t txn_id,
-                                                       wal::id_t wal_id);
+        // Every write handler below reports whether the record REACHED the segment. They
+        // used to return the wal_id unconditionally while dropping wal_page_writer_t::append's
+        // answer, so the caller was handed the number of a record that is not in the journal.
+        unique_future<core::result_wrapper_t<wal::id_t>>
+        write_physical_insert(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::pmr::vector<components::vector::data_chunk_t> chunks,
+                              uint64_t row_start,
+                              uint64_t row_count,
+                              uint64_t txn_id,
+                              wal::id_t wal_id);
 
-        unique_future<wal::id_t> write_physical_delete(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::pmr::vector<int64_t> row_ids,
-                                                       uint64_t count,
-                                                       uint64_t txn_id,
-                                                       wal::id_t wal_id);
+        unique_future<core::result_wrapper_t<wal::id_t>> write_physical_delete(session_id_t session,
+                                                                               components::catalog::oid_t table_oid,
+                                                                               std::pmr::vector<int64_t> row_ids,
+                                                                               uint64_t count,
+                                                                               uint64_t txn_id,
+                                                                               wal::id_t wal_id);
 
-        unique_future<wal::id_t> write_physical_update(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::pmr::vector<int64_t> row_ids,
-                                                       std::pmr::vector<components::vector::data_chunk_t> new_chunks,
-                                                       uint64_t count,
-                                                       uint64_t txn_id,
-                                                       wal::id_t wal_id);
+        unique_future<core::result_wrapper_t<wal::id_t>>
+        write_physical_update(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::pmr::vector<int64_t> row_ids,
+                              std::pmr::vector<components::vector::data_chunk_t> new_chunks,
+                              uint64_t count,
+                              uint64_t txn_id,
+                              wal::id_t wal_id);
 
-        unique_future<wal::id_t>
+        unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_add_column(session_id_t session,
                                   components::catalog::oid_t table_oid,
                                   std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
@@ -110,7 +123,14 @@ namespace services::wal {
         // -----------------------------------------------------------------------
 
         /// Discover existing segment files, recover max wal_id and last CRC.
-        void recover_from_disk();
+        ///
+        /// Refuses when a segment cannot be OPENED. That is not a cosmetic report: this scan
+        /// is what sets id_ (and, through the manager, global_id_), so a segment whose records
+        /// are not seen leaves the allocator BELOW ids that already exist on disk, and every
+        /// later write reuses them — breaking both the CRC chain and the page_lsn ordering
+        /// that truncate_before and read_all_records(after_id) compare against. Coming up
+        /// short is recoverable; coming up and overwriting is not.
+        [[nodiscard]] core::error_t recover_from_disk();
 
         /// Build a segment file path for the given segment index.
         std::filesystem::path segment_path(uint32_t seg_index) const;
@@ -122,7 +142,12 @@ namespace services::wal {
         static uint32_t parse_segment_index(const std::filesystem::path& path, const std::string& db_dir_name);
 
         /// Ensure the page writer is ready; rotate if the current segment is full.
-        void ensure_writer();
+        /// Refuses when the segment cannot be opened, or when the flush that precedes a
+        /// rotation did not reach the disk.
+        [[nodiscard]] core::error_t ensure_writer();
+
+        /// Unlink one segment, reporting a failed unlink instead of discarding it.
+        void remove_segment(const std::filesystem::path& seg_path);
 
         // -----------------------------------------------------------------------
         // State
@@ -138,6 +163,11 @@ namespace services::wal {
         uint32_t current_segment_index_{0};
 
         std::unique_ptr<wal_page_writer_t> writer_;
+
+        /// Set when recover_from_disk() could not read a segment. While it is set the worker
+        /// REFUSES every write and every truncate: the id space it would write into overlaps
+        /// records it could not see, and the truncate would unlink files it could not read.
+        core::error_t recovery_error_;
 
         /// Temporary encode buffer, reused across writes to avoid re-allocation.
         buffer_t encode_buf_;

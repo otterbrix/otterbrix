@@ -6,6 +6,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/session/session.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_sync_mode.hpp>
@@ -17,15 +18,21 @@ namespace services::wal {
     struct wal_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-        actor_zeta::unique_future<std::vector<record_t>> load(session_id_t session, id_t wal_id);
+        // Every reply below that used to be a bare id_t or void now carries a refusal,
+        // because each of them is a claim about the journal that could be false: a wal_id for
+        // a record the page writer refused, a durable commit over a failed fsync, a completed
+        // truncate that deleted a segment it could not read, and a record list that is empty
+        // because a segment would not open.
+        actor_zeta::unique_future<core::result_wrapper_t<std::vector<record_t>>> load(session_id_t session,
+                                                                                      id_t wal_id);
 
-        actor_zeta::unique_future<id_t> commit_txn(session_id_t session,
-                                                   uint64_t transaction_id,
-                                                   wal_sync_mode sync_mode,
-                                                   components::catalog::oid_t database_oid,
-                                                   uint64_t commit_id);
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>> commit_txn(session_id_t session,
+                                                                           uint64_t transaction_id,
+                                                                           wal_sync_mode sync_mode,
+                                                                           components::catalog::oid_t database_oid,
+                                                                           uint64_t commit_id);
 
-        actor_zeta::unique_future<void> truncate_before(session_id_t session, id_t checkpoint_wal_id);
+        actor_zeta::unique_future<core::error_t> truncate_before(session_id_t session, id_t checkpoint_wal_id);
 
         actor_zeta::unique_future<id_t> current_wal_id(session_id_t session);
 
@@ -37,22 +44,24 @@ namespace services::wal {
 
         // database_oid selects the target WAL worker: manager_wal_replicate
         // routes via wal_actors_[database_oid].
-        actor_zeta::unique_future<id_t> write_physical_insert(session_id_t session,
-                                                              components::catalog::oid_t table_oid,
-                                                              std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                                              uint64_t row_start,
-                                                              uint64_t row_count,
-                                                              uint64_t txn_id,
-                                                              components::catalog::oid_t database_oid);
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>>
+        write_physical_insert(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::pmr::vector<components::vector::data_chunk_t> chunks,
+                              uint64_t row_start,
+                              uint64_t row_count,
+                              uint64_t txn_id,
+                              components::catalog::oid_t database_oid);
 
-        actor_zeta::unique_future<id_t> write_physical_delete(session_id_t session,
-                                                              components::catalog::oid_t table_oid,
-                                                              std::pmr::vector<int64_t> row_ids,
-                                                              uint64_t count,
-                                                              uint64_t txn_id,
-                                                              components::catalog::oid_t database_oid);
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>>
+        write_physical_delete(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::pmr::vector<int64_t> row_ids,
+                              uint64_t count,
+                              uint64_t txn_id,
+                              components::catalog::oid_t database_oid);
 
-        actor_zeta::unique_future<id_t>
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>>
         write_physical_update(session_id_t session,
                               components::catalog::oid_t table_oid,
                               std::pmr::vector<int64_t> row_ids,
@@ -65,7 +74,7 @@ namespace services::wal {
         // schema_chunk is a 0-row data_chunk whose columns ARE the new columns
         // (alias-tagged types). Written BEFORE the PHYSICAL_INSERT that depends on
         // them so WAL-first replay re-applies the schema before the rows.
-        actor_zeta::unique_future<id_t>
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>>
         write_physical_add_column(session_id_t session,
                                   components::catalog::oid_t table_oid,
                                   std::unique_ptr<components::vector::data_chunk_t> schema_chunk,

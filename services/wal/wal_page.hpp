@@ -5,7 +5,38 @@
 #include <cstring>
 #include <string>
 
+#ifdef DEV_MODE
+#include <core/file/file_handle.hpp>
+#include <filesystem>
+#include <memory>
+#endif
+
 namespace services::wal {
+
+#ifdef DEV_MODE
+    // T3 fault-injection seam for WAL SEGMENT FILES.
+    //
+    // The existing seam (single_file_block_manager_t::dev_set_file_interposer) wraps the
+    // handle of an .otbx database file and covers nothing else; the WAL opens its segments
+    // itself through core::filesystem::open_file, so no test could tell the journal "this
+    // page write fails" or "this segment will not open" — which is exactly the pair of
+    // inputs the four defects in this file family are about. Plain virtual interface, NOT
+    // std::function (rule 14); process-wide, DEV_MODE-only, read once per open by
+    // wal_page_writer_t and wal_page_reader_t.
+    //
+    // Returning nullptr from wrap() MODELS AN UNOPENABLE SEGMENT, and it is faithful rather
+    // than a shortcut: open_file's own failure answer IS nullptr (local_file_system.cpp
+    // returns it whenever open(2) reports -1), so the interposed path and the real one hand
+    // the caller the identical value.
+    struct wal_file_interposer_t {
+        virtual ~wal_file_interposer_t() = default;
+        virtual std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) = 0;
+    };
+
+    void dev_set_wal_file_interposer(wal_file_interposer_t* interposer); // nullptr = off
+    wal_file_interposer_t* dev_wal_file_interposer();
+#endif
 
     static constexpr uint32_t PAGE_SIZE = 4096;
     static constexpr uint32_t PAGE_HEADER_SIZE = 32;

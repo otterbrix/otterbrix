@@ -46,9 +46,17 @@ namespace core::filesystem {
         virtual int64_t write(void* buffer, uint64_t nr_bytes);
         virtual bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
         virtual bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
-        bool seek(uint64_t location);
+        // SEEK AND ITS QUERY ARE VIRTUAL FOR THE SAME REASON THE READS AND WRITES ARE.
+        // They were left non-virtual because the two consumers of the interposer at the time
+        // (the .otbx block manager and the WAL) address their files POSITIONALLY and never
+        // move the descriptor. The bitcask index APPENDS: it seeks to the end when it opens
+        // a segment and asks the position back for every record it writes. On a wrapper that
+        // could not override them, both calls ran the free function against the WRAPPER --
+        // whose fd is the garbage the comment above warns about -- so records went to the
+        // wrong offset and the keydir recorded that offset as fact.
+        virtual bool seek(uint64_t location);
         void reset();
-        uint64_t seek_position();
+        virtual uint64_t seek_position();
         virtual bool sync();
         virtual bool truncate(int64_t new_size);
         virtual bool trim(uint64_t offset_bytes, uint64_t length_bytes);

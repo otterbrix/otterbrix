@@ -9,6 +9,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_worker.cpp
         test_wal_manager.cpp
         test_wal_torn_write.cpp
+        test_wal_write_refusal.cpp
+        test_wal_crc_reissue.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

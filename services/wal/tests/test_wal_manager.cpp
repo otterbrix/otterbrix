@@ -72,6 +72,16 @@ static decltype(auto) await_ready(F& fut) {
     return std::move(fut).take_ready();
 }
 
+// Twin of await_ready for the handlers that answer a core::result_wrapper_t. Every use below
+// expects the journal to have ACCEPTED the work, so a refusal is a test failure here; the tests
+// that want to see a refusal read the wrapper themselves.
+template<typename F>
+static auto await_value(F& fut) {
+    auto result = await_ready(fut);
+    REQUIRE_FALSE(result.has_error());
+    return std::move(result.value());
+}
+
 constexpr auto kMainDb = catalog::well_known_oid::main_database;
 constexpr catalog::oid_t kTestTableOidA = 16500;
 constexpr catalog::oid_t kTestTableOidB = 16501;
@@ -124,7 +134,7 @@ struct test_wal_manager {
 
     // ----- convenience senders -------------------------------------------
 
-    actor_zeta::unique_future<services::wal::id_t>
+    actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>>
     send_insert(catalog::oid_t table_oid, uint64_t txn_id, size_t row_count, uint64_t row_start = 0) {
         auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
         auto chunk = gen_data_chunk(row_count, arena);
@@ -140,9 +150,10 @@ struct test_wal_manager {
         return std::move(fut);
     }
 
-    actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
-                                                               catalog::oid_t database_oid = kMainDb,
-                                                               wal_sync_mode sync_mode = wal_sync_mode::NORMAL) {
+    actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>>
+    send_commit(uint64_t txn_id,
+                catalog::oid_t database_oid = kMainDb,
+                wal_sync_mode sync_mode = wal_sync_mode::NORMAL) {
         auto [ns, fut] = actor_zeta::otterbrix::send(address(),
                                                      &manager_wal_replicate_t::commit_txn,
                                                      session_id_t::generate_uid(),
@@ -153,7 +164,8 @@ struct test_wal_manager {
         return std::move(fut);
     }
 
-    actor_zeta::unique_future<std::vector<record_t>> send_load(services::wal::id_t from_id = 0) {
+    actor_zeta::unique_future<core::result_wrapper_t<std::vector<record_t>>>
+    send_load(services::wal::id_t from_id = 0) {
         auto [ns, fut] = actor_zeta::otterbrix::send(address(),
                                                      &manager_wal_replicate_t::load,
                                                      session_id_t::generate_uid(),
@@ -168,7 +180,7 @@ struct test_wal_manager {
         return std::move(fut);
     }
 
-    actor_zeta::unique_future<void> send_truncate_before(services::wal::id_t checkpoint_id) {
+    actor_zeta::unique_future<core::error_t> send_truncate_before(services::wal::id_t checkpoint_id) {
         auto [ns, fut] = actor_zeta::otterbrix::send(address(),
                                                      &manager_wal_replicate_t::truncate_before,
                                                      session_id_t::generate_uid(),
@@ -203,8 +215,8 @@ TEST_CASE("wal_manager::route_by_database_oid") {
     // must not race the WAL writes.
     auto f1 = env.send_insert(kTestTableOidA, /*txn_id=*/100, /*row_count=*/5);
     auto f2 = env.send_insert(kTestTableOidB, /*txn_id=*/101, /*row_count=*/5);
-    await_ready(f1);
-    await_ready(f2);
+    await_value(f1);
+    await_value(f2);
 
     // main_database is used for everything -> single worker directory.
     bool found_main_db_dir = false;
@@ -227,13 +239,13 @@ TEST_CASE("wal_manager::commit_records_table_oid") {
 
     auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/200, /*row_count=*/8);
     REQUIRE(fut_id.valid());
-    auto wal_id = await_ready(fut_id);
+    auto wal_id = await_value(fut_id);
     REQUIRE(wal_id > 0);
 
     env.send_commit(200);
 
     auto fut_records = env.send_load(0);
-    auto records = await_ready(fut_records);
+    auto records = await_value(fut_records);
     bool found = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 200) {
@@ -259,7 +271,7 @@ TEST_CASE("wal_manager::load_returns_all") {
     env.send_commit(301);
 
     auto fut_records = env.send_load(0);
-    auto records = await_ready(fut_records);
+    auto records = await_value(fut_records);
 
     // We expect at least 4 records: 2 inserts + 2 commits.
     REQUIRE(records.size() >= 4);
@@ -302,12 +314,14 @@ TEST_CASE("wal_manager::truncate_all") {
     env.send_insert(kTestTableOidA, /*txn_id=*/501, /*row_count=*/3);
     env.send_commit(501);
 
-    // Truncate everything up to and including the checkpoint id.
-    env.send_truncate_before(checkpoint_id);
+    // Truncate everything up to and including the checkpoint id. The reply carries a refusal
+    // now (an unreadable segment stops the truncate instead of deleting the file), so read it.
+    auto fut_truncate = env.send_truncate_before(checkpoint_id);
+    REQUIRE_FALSE(await_ready(fut_truncate).contains_error());
 
     // Load from checkpoint -- should only see the second batch.
     auto fut_records = env.send_load(checkpoint_id);
-    auto records = await_ready(fut_records);
+    auto records = await_value(fut_records);
     for (const auto& r : records) {
         // Every record returned should have an id greater than the checkpoint.
         if (r.is_physical()) {
@@ -354,7 +368,7 @@ TEST_CASE("wal_manager::disabled") {
                                                      uint64_t{800},
                                                      kMainDb);
 
-        auto wal_id = await_ready(fut);
+        auto wal_id = await_value(fut);
         REQUIRE(wal_id == 0);
     }
 
@@ -368,7 +382,7 @@ TEST_CASE("wal_manager::disabled") {
                                                      kMainDb,
                                                      uint64_t{0});
 
-        REQUIRE(await_ready(fut) == 0);
+        REQUIRE(await_value(fut) == 0);
     }
 
     // load should return empty.
@@ -378,7 +392,7 @@ TEST_CASE("wal_manager::disabled") {
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
 
-        auto records = await_ready(fut);
+        auto records = await_value(fut);
         REQUIRE(records.empty());
     }
 
@@ -410,7 +424,7 @@ TEST_CASE("wal_manager::sync_addresses") {
     // The manager should still be functional after re-sync.
     auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/900, /*row_count=*/2);
     REQUIRE(fut_id.valid());
-    auto wal_id = await_ready(fut_id);
+    auto wal_id = await_value(fut_id);
     REQUIRE(wal_id > 0);
 }
 
@@ -450,9 +464,9 @@ TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
     // Drive commit traffic. commit_txn updates wal_bytes_since_checkpoint_ to the
     // total WAL directory size, so any committed record trips the 1-byte threshold.
     auto fut_ins = env.send_insert(kTestTableOidA, /*txn_id=*/1000, /*row_count=*/8);
-    REQUIRE(await_ready(fut_ins) > 0);
+    REQUIRE(await_value(fut_ins) > 0);
     auto fut_commit = env.send_commit(1000);
-    REQUIRE(await_ready(fut_commit) > 0);
+    REQUIRE(await_value(fut_commit) > 0);
 
     // (a) commit_txn CONSUMES the threshold inline: it resets the byte counter
     // and fires the self-sent run_auto_checkpoint, so by the time the commit
@@ -475,7 +489,7 @@ TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
     // No disk -> no checkpoint -> truncate_before must not have fired: the
     // previously-committed PHYSICAL_INSERT record is still loadable.
     auto fut_records = env.send_load(0);
-    auto records = await_ready(fut_records);
+    auto records = await_value(fut_records);
     bool found = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 1000) {
@@ -487,7 +501,7 @@ TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
 
     // The manager stays functional after the no-disk auto-checkpoint round-trip.
     auto fut_ins2 = env.send_insert(kTestTableOidB, /*txn_id=*/1001, /*row_count=*/4);
-    REQUIRE(await_ready(fut_ins2) > 0);
+    REQUIRE(await_value(fut_ins2) > 0);
     auto fut_commit2 = env.send_commit(1001);
-    REQUIRE(await_ready(fut_commit2) > 0);
+    REQUIRE(await_value(fut_commit2) > 0);
 }

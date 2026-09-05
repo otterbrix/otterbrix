@@ -6,13 +6,26 @@
 
 namespace services::wal {
 
-    wal_page_reader_t::wal_page_reader_t(const std::filesystem::path& segment_path)
-        : path_(segment_path) {
+    wal_page_reader_t::wal_page_reader_t(std::pmr::memory_resource* resource, const std::filesystem::path& segment_path)
+        : resource_(resource)
+        , path_(segment_path)
+        , open_error_(core::error_t::no_error()) {
         auto flags = core::filesystem::file_flags::READ;
         file_ = core::filesystem::open_file(fs_, path_, flags, core::filesystem::file_lock_type::NO_LOCK);
+#ifdef DEV_MODE
+        if (auto* interposer = dev_wal_file_interposer(); interposer != nullptr) {
+            file_ = interposer->wrap(path_, std::move(file_));
+        }
+#endif
         if (file_) {
             file_size_ = file_->file_size();
+            return;
         }
+        // Keep the reason. Everything downstream reads zero pages from an unopened
+        // segment, and without this the zero is read as "the segment is empty".
+        open_error_ = core::error_t(
+            core::error_code_t::io_error,
+            std::pmr::string{"wal segment could not be opened for reading: " + path_.string(), resource_});
     }
 
     bool wal_page_reader_t::read_page(size_t page_index, char* buf) {
@@ -52,15 +65,43 @@ namespace services::wal {
         return hdr.verify_checksum(page_buf);
     }
 
-    bool wal_page_reader_t::verify_chain() {
-        size_t count = page_count();
-        for (size_t i = 0; i < count; ++i) {
-            if (!verify_page_checksum(i + 1)) { // data pages start at index 1
-                return false;
+    wal_page_reader_t::segment_scan_t wal_page_reader_t::scan_pages() {
+        segment_scan_t scan;
+        if (!is_open()) {
+            return scan;
+        }
+
+        alignas(4096) char page_buf[PAGE_SIZE];
+        const size_t count = page_count();
+        for (size_t pi = 1; pi <= count; ++pi) { // data pages start at index 1
+            wal_page_header_t hdr{};
+            const bool readable = read_page(pi, page_buf);
+            if (readable) {
+                std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);
+            }
+            if (!readable || !hdr.verify_checksum(page_buf)) {
+                scan.chain_intact = false;
+                if (scan.first_broken_page == 0) {
+                    scan.first_broken_page = pi;
+                }
+                continue;
+            }
+
+            // The page vouches for its own header, so page_end_lsn is usable — and it is
+            // usable whether or not an earlier page failed.
+            if (scan.first_broken_page != 0) {
+                ++scan.verified_pages_after_break;
+            }
+            if (hdr.page_end_lsn > scan.highest_page_end_lsn) {
+                scan.highest_page_end_lsn = hdr.page_end_lsn;
             }
         }
-        return true;
+        return scan;
     }
+
+    // The chain answer is one field of the scan above; keeping a second loop here would be a
+    // second place for the two to disagree.
+    bool wal_page_reader_t::verify_chain() { return scan_pages().chain_intact; }
 
     wal_page_position_t wal_page_reader_t::seek_to_lsn(id_t target_lsn) {
         size_t count = page_count();
@@ -97,14 +138,21 @@ namespace services::wal {
         return {result};
     }
 
-    std::vector<record_t> wal_page_reader_t::read_all_records(id_t after_id) {
+    core::result_wrapper_t<std::vector<record_t>> wal_page_reader_t::read_all_records(id_t after_id) {
+        // AN UNREADABLE SEGMENT IS NOT AN EMPTY ONE. Returning {} here is what made every
+        // committed transaction living in this segment disappear from startup replay in
+        // silence; the caller now has to look at the refusal before it looks at the rows.
+        if (!is_open()) {
+            return open_error_;
+        }
+
         std::vector<record_t> records;
         size_t count = page_count();
         if (count == 0) {
-            return records;
+            return std::move(records);
         }
 
-        auto* resource = std::pmr::get_default_resource();
+        auto* resource = resource_;
 
         // Buffer for accumulating spanning records.
         std::vector<char> span_buffer;
@@ -240,7 +288,7 @@ namespace services::wal {
             }
         }
 
-        return records;
+        return std::move(records);
     }
 
 } // namespace services::wal

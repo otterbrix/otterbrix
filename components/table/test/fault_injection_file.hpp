@@ -99,11 +99,24 @@ namespace otterbrix_test {
         }
 
         int64_t write(void* buffer, uint64_t nr_bytes) override {
-            // Sequential writes are not used by the block manager; count and delegate.
+            // The block manager and the WAL both write POSITIONALLY, so this overload used
+            // to only count and delegate. The bitcask index appends SEQUENTIALLY -- its
+            // record writer and its txn-log writer both take this door -- so the same two
+            // knobs answer here. Nothing that used this header before reaches this overload,
+            // so nothing that passed before changes.
+            //
+            // A short count is the refusal, matching what write(2) reports on a full device
+            // and what every caller of the sequential overload compares against.
             if (plan_.crashed) {
                 return -1;
             }
             plan_.writes_seen++;
+            if (plan_.fail_after_writes != 0 && plan_.writes_seen > plan_.fail_after_writes) {
+                return -1;
+            }
+            if (plan_.fail_writes_from != 0 && plan_.writes_seen >= plan_.fail_writes_from) {
+                return -1;
+            }
             return inner_->write(buffer, nr_bytes);
         }
 
@@ -154,6 +167,15 @@ namespace otterbrix_test {
             }
             return inner_->trim(offset_bytes, length_bytes);
         }
+
+        // APPEND-STYLE CALLERS MOVE THE DESCRIPTOR, and the descriptor that matters is the
+        // inner one: the free functions behind these read the handle they are given as a
+        // platform handle, so answering from `this` would read a garbage fd (see the note at
+        // the top of this file). Nothing is injected here -- a seek is not a device
+        // operation a plan knob models -- they exist only to keep the wrapper transparent.
+        bool seek(uint64_t location) override { return inner_->seek(location); }
+
+        uint64_t seek_position() override { return inner_->seek_position(); }
 
         uint64_t file_size() override { return inner_->file_size(); }
 

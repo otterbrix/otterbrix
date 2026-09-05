@@ -151,11 +151,18 @@ namespace components::operators {
             // (outgoing only). conkey carries the local column attoids; column names
             // are resolved below via one batched pg_attribute read keyed on table_oid.
             // Each entry is one constraint's ordered attoid list, preserving order.
-            std::vector<std::vector<catalog::oid_t>> pending_unique_attoids;
-            // Parallel to pending_unique_attoids: true when that group is a PRIMARY KEY
-            // (contype 'p'). PK implies NOT NULL, so the resolved PK column names are
-            // additionally stamped flat via pk_columns for enrich to merge.
-            std::vector<bool> pending_unique_is_pk;
+            // is_pk marks contype 'p': PK implies NOT NULL, so the resolved PK column
+            // names are additionally stamped flat via pk_columns for enrich to merge.
+            // conname is carried for the unresolved-column error below only, exactly as
+            // pending_fk_t carries it — a constraint the resolve refuses has to be
+            // nameable in the message.
+            struct pending_unique_t {
+                std::vector<catalog::oid_t> attoids;
+                bool is_pk{false};
+                std::string constraint_name;
+                catalog::oid_t constraint_oid{catalog::INVALID_OID};
+            };
+            std::pmr::vector<pending_unique_t> pending_uniques(resource_);
 
             for (auto& con_chunk : con_batches) {
                 if (con_chunk.column_count() <= catalog::pg_constraint_col::confupdtype) {
@@ -238,14 +245,21 @@ namespace components::operators {
                     } else if ((contype == 'u' || contype == 'p') && direction == direction_t::outgoing) {
                         // UNIQUE / PRIMARY KEY: the enforced columns live in conkey
                         // (same encoding as an FK's conkey). Names resolved after the loop.
-                        auto attoids = catalog::parse_oid_csv(
-                            con_chunk.value(catalog::pg_constraint_col::conkey, ci).is_null()
-                                ? std::string{}
-                                : std::string(con_chunk.value(catalog::pg_constraint_col::conkey, ci)
-                                                  .value<std::string_view>()));
+                        auto attoids = catalog::parse_oid_csv(std::string(
+                            con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
+                                ? std::string_view{}
+                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)));
                         if (!attoids.empty()) {
-                            pending_unique_attoids.push_back(std::move(attoids));
-                            pending_unique_is_pk.push_back(contype == 'p');
+                            pending_unique_t pending;
+                            pending.attoids = std::move(attoids);
+                            pending.is_pk = (contype == 'p');
+                            pending.constraint_oid = static_cast<catalog::oid_t>(
+                                con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                            if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
+                                pending.constraint_name.assign(
+                                    con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
+                            }
+                            pending_uniques.push_back(std::move(pending));
                         }
                     }
                 }
@@ -533,7 +547,7 @@ namespace components::operators {
             // groups reference the same conrelid == table_oid).
             std::vector<std::vector<std::string>> unique_groups;
             std::vector<std::string> pk_columns;
-            if (!pending_unique_attoids.empty()) {
+            if (!pending_uniques.empty()) {
                 std::pmr::vector<std::uint64_t> attr_keys(resource_);
                 attr_keys.emplace_back(catalog::pg_attribute_col::attrelid);
                 auto [_u, fut_attr_u] = actor_zeta::send(ctx->disk_address,
@@ -550,8 +564,8 @@ namespace components::operators {
                 }
                 auto& attr_batches = attr_batches_r.value();
 
-                for (std::size_t gi = 0; gi < pending_unique_attoids.size(); ++gi) {
-                    const auto& attoids = pending_unique_attoids[gi];
+                for (auto& pending : pending_uniques) {
+                    const auto& attoids = pending.attoids;
                     std::vector<std::string> names;
                     names.reserve(attoids.size());
                     for (const auto& wanted_oid : attoids) {
@@ -561,12 +575,20 @@ namespace components::operators {
                             }
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
+                                // Same tombstone filter as the two FK loops above: DROP
+                                // COLUMN is a SOFT delete that keeps attname AND attoid,
+                                // so without it a key would bind to a column that no
+                                // longer exists and fail one layer down as "keyed read:
+                                // table has no column <name>".
+                                if (attribute_row_is_dropped(attr_chunk, ai)) {
+                                    continue;
+                                }
                                 auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
+                                    attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(
-                                        std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                                        .value<std::string_view>()));
+                                    names.emplace_back(std::string(
+                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
+                                                                               ai)));
                                     found = true;
                                     break;
                                 }
@@ -576,14 +598,35 @@ namespace components::operators {
                             }
                         }
                     }
-                    // Only stamp a group whose every column resolved (a partially
-                    // unresolved group cannot be enforced positionally).
-                    if (names.size() == attoids.size()) {
-                        if (pending_unique_is_pk[gi]) {
-                            pk_columns.insert(pk_columns.end(), names.begin(), names.end());
+                    // LENGTH GUARD — the same one, and for the same reason, as the two FK
+                    // loops above. This used to DROP the group instead: a UNIQUE or
+                    // PRIMARY KEY whose columns could not be resolved simply left the
+                    // constraint set, so the key the user declared stopped existing and
+                    // duplicates went in under it. A key is enforced as an ordered tuple,
+                    // so a group that cannot be resolved has no partial reading either.
+                    // The one route that reached here through plain SQL — a key declared
+                    // on a dynamic-schema (relkind='g') table, whose columns live in
+                    // pg_computed_column and have no pg_attribute row to match — is now
+                    // refused at DDL (executor_t::execute_plan_full), so what is left is
+                    // a catalog written before that gate existed.
+                    if (names.size() != attoids.size()) {
+                        std::string msg = pending.is_pk ? "primary key constraint \"" : "unique constraint \"";
+                        if (pending.constraint_name.empty()) {
+                            msg += "oid ";
+                            msg += std::to_string(pending.constraint_oid);
+                        } else {
+                            msg += pending.constraint_name;
                         }
-                        unique_groups.push_back(std::move(names));
+                        msg += "\": key column list cannot be resolved — a column it is declared on has no "
+                               "live pg_attribute row";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
+                    if (pending.is_pk) {
+                        pk_columns.insert(pk_columns.end(), names.begin(), names.end());
+                    }
+                    unique_groups.push_back(std::move(names));
                 }
             }
 

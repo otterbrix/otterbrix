@@ -52,6 +52,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_omitted_ref_columns.cpp
         test_fk_parent_column_drop.cpp
         test_inline_constraints.cpp
+        test_constraint_unresolvable_target.cpp
         test_text_column_storage.cpp
         test_update.cpp
         test_wal_pool.cpp

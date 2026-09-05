@@ -42,6 +42,37 @@ namespace {
         return "CREATE TYPE nest" + std::to_string(n) + " AS (a nest" + std::to_string(n - 1) + ");";
     }
 
+    // The scaled payload the NUMERIC(38,20) rows below must carry, byte for byte:
+    // 123456789 * 10^20, which is 29 digits and so cannot be held by the int64 storage a
+    // narrower DECIMAL would use.
+    //
+    // The literal itself stays inside int32 ON PURPOSE. The scanner's int32 overflow guard
+    // (process_integer_literal in components/sql/parser/scan.l) sits behind an #ifdef
+    // HAVE_LONG_INT_64 that nothing in this project defines, so an integer literal outside
+    // int32 is silently truncated through the scanner's `int ival` — 9223372036854775807
+    // arrives as -1. That is a separate parser defect; a DECIMAL's SCALE is the route to a
+    // 128-bit payload that does not depend on it.
+    const components::types::int128_t WIDE_SCALED_PAYLOAD = [] {
+        components::types::int128_t v{123456789};
+        for (int i = 0; i < 20; ++i) {
+            v *= 10;
+        }
+        return v;
+    }();
+
+    // One row of w.widest, read through the cursor as raw scaled integers: a truncated high
+    // word or a 64-bit read shows up as a wrong value, not as a wrong scale. `sign` is +1 for
+    // the positive row and -1 for its mirror.
+    void check_wide_row(const components::cursor::cursor_t_ptr& cursor, uint64_t row, int sign) {
+        using components::types::int128_t;
+        INFO("w.widest row " << row);
+        // NUMERIC(38,38), NUMERIC(38,0), NUMERIC(38,20), NUMERIC(19,0) -- in that column order.
+        CHECK(cursor->value(0, row).value<int128_t>() == int128_t{0});
+        CHECK(cursor->value(1, row).value<int128_t>() == int128_t{sign * 2000000000LL});
+        CHECK(cursor->value(2, row).value<int128_t>() == WIDE_SCALED_PAYLOAD * sign);
+        CHECK(cursor->value(3, row).value<int128_t>() == int128_t{sign * 1234567890LL});
+    }
+
 } // namespace
 
 TEST_CASE("integration::cpp::test_type_spec_write_gate::decimal_outside_the_window_is_refused_at_ddl") {
@@ -98,17 +129,38 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
         REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
 
         // The far end of the window must still be ACCEPTED — the gate refuses what the
-        // decoder refuses and nothing beyond it. These two are not carried through the
-        // checkpoint below only because a DECIMAL wider than 18 digits is stored as int128
-        // and components::table::column_segment_t::scan_partial has no int128 arm (it
-        // throws std::logic_error out of the checkpoint's compaction scan) — an unrelated
-        // pre-existing storage gap, not a property of the type window.
-        REQUIRE(exec(d, "CREATE TABLE w.widest (id BIGINT, d38 NUMERIC(38,38), d38z NUMERIC(38,0));")->is_success());
+        // decoder refuses and nothing beyond it. The wide half (width 19..38, stored as a
+        // 128-bit scaled integer) is carried through the SAME checkpoint and restart as the
+        // narrow half: it used to be excluded here because column_segment_t::scan and
+        // ::scan_partial had no int128 arm and threw std::logic_error out of the
+        // checkpoint's compaction scan, which crossed an actor coroutine and killed the
+        // process. Both arms exist now, so there is nothing left to route around.
+        REQUIRE(exec(d,
+                     "CREATE TABLE w.widest (id BIGINT, d38 NUMERIC(38,38), d38z NUMERIC(38,0), "
+                     "d38s NUMERIC(38,20), d19 NUMERIC(19,0));")
+                    ->is_success());
         REQUIRE(exec(d,
                      "CREATE TABLE w.edges (id BIGINT, d1 NUMERIC(1,0), d1s NUMERIC(1,1), d4 NUMERIC(4,4), "
                      "d9 NUMERIC(9,0), d18 NUMERIC(18,18), d18z NUMERIC(18,0));")
                     ->is_success());
         REQUIRE(exec(d, "INSERT INTO w.edges (id, d1, d18z) VALUES (1, 3, 100), (2, 4, 200);")->is_success());
+        // Every wide storage class at once: NUMERIC(38,20) carries a payload no int64 can
+        // hold (the scale multiplies the literal by 10^20), while NUMERIC(38,0) and
+        // NUMERIC(19,0) hold small values whose STORAGE is 128-bit purely because of the
+        // declared width — 19 is the first width past int64.
+        REQUIRE(exec(d,
+                     "INSERT INTO w.widest (id, d38, d38z, d38s, d19) VALUES "
+                     "(1, 0, 2000000000, 123456789, 1234567890), "
+                     "(2, 0, -2000000000, -123456789, -1234567890);")
+                    ->is_success());
+        {
+            auto cur = exec(d, "SELECT d38, d38z, d38s, d19 FROM w.widest ORDER BY id;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->value(2, 0).type().type() == components::types::logical_type::DECIMAL);
+            check_wide_row(cur, 0, 1);
+            check_wide_row(cur, 1, -1);
+        }
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
     }
 
@@ -123,6 +175,21 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
         auto after = exec(d, "SELECT id FROM w.edges;");
         REQUIRE(after->is_success());
         CHECK(after->size() == 3);
+
+        // The 128-bit half, element by element, after the checkpoint that used to abort the
+        // process and the restart that reads the segment back off disk.
+        {
+            auto wide = exec(d, "SELECT d38, d38z, d38s, d19 FROM w.widest ORDER BY id;");
+            REQUIRE(wide->is_success());
+            REQUIRE(wide->size() == 2);
+            REQUIRE(wide->value(2, 0).type().type() == components::types::logical_type::DECIMAL);
+            check_wide_row(wide, 0, 1);
+            check_wide_row(wide, 1, -1);
+        }
+        REQUIRE(exec(d, "INSERT INTO w.widest (id, d38, d38z, d38s, d19) VALUES (3, 0, 1, 1, 1);")->is_success());
+        auto grown = exec(d, "SELECT id FROM w.widest;");
+        REQUIRE(grown->is_success());
+        CHECK(grown->size() == 3);
     }
 }
 

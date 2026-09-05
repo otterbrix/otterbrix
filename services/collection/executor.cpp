@@ -1190,7 +1190,19 @@ namespace services::collection::executor {
                 }
                 if (!error && !id.database().empty()) {
                     auto* cstr = static_cast<node_create_constraint_t*>(plan.sub_queries.back().get());
-                    if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check) {
+                    // Every constraint kind whose enforcement keys on pg_attribute
+                    // attoids. A dynamic-schema (relkind='g') table has NO pg_attribute
+                    // rows at all — its columns live in pg_computed_column, whose attoids
+                    // come from a different sequence — so an attoid written into
+                    // pg_constraint.conkey for such a table can never be matched back to
+                    // a column name. UNIQUE / PRIMARY KEY used to be left out of this
+                    // gate: the DDL was accepted, and operator_resolve_constraint then
+                    // dropped the unresolvable group from the constraint set without a
+                    // word, so a declared key enforced nothing and duplicates went in.
+                    const bool key_kind =
+                        cstr->kind() == constraint_kind::unique || cstr->kind() == constraint_kind::primary_key;
+                    if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check ||
+                        key_kind) {
                         const auto* tbl_local =
                             plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()));
                         const bool local_is_g = tbl_local && tbl_local->relkind == 'g';
@@ -1210,6 +1222,17 @@ namespace services::collection::executor {
                                                   "requires stable column attoids; dynamic-schema columns may evolve. "
                                                   "Convert involved tables to static schema first.",
                                                   resource()}});
+                        } else if (key_kind && local_is_g) {
+                            error = make_cursor(
+                                resource(),
+                                core::error_t{
+                                    core::error_code_t::schema_error,
+                                    std::pmr::string{
+                                        "UNIQUE / PRIMARY KEY constraints are not supported on dynamic-schema "
+                                        "(relkind='g') tables. Key enforcement requires stable column attoids; "
+                                        "dynamic-schema columns live in pg_computed_column and may evolve. "
+                                        "Convert the table to static schema first.",
+                                        resource()}});
                         } else if (cstr->kind() == constraint_kind::check && local_is_g) {
                             error = make_cursor(
                                 resource(),

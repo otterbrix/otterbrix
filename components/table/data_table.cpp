@@ -188,6 +188,22 @@ namespace components::table {
     }
 
     bool data_table_t::compact(uint64_t compact_watermark) {
+        // Compacting a SUPERSEDED ALTER PARENT would free blocks its successor still
+        // references (the ALTER constructors share the parent's column_data_t objects),
+        // returning as silent wrong data after restart. Proven unreachable, twice over:
+        //   * ownership — the parent's sole owner is table_storage_t::table_, and
+        //     table_storage_t::add_column / drop_column destroy the parent in the very
+        //     move-assign that installs the successor, inside one synchronous call on the
+        //     owning agent's mailbox (the bootstrap *_sync twins run before the schedulers
+        //     start). Every production compact site resolves its target through that same
+        //     registry at call time (agent_disk checkpoint_inner / vacuum_inner /
+        //     maybe_cleanup_inner, none of which suspends mid-body), so a superseded
+        //     parent no longer exists by the time any compact can run;
+        //   * instrumentation — a probe on this exact predicate (!is_root_ here) stayed
+        //     silent across the full unit, service and integration suites, ALTER +
+        //     checkpoint/vacuum/commit-fan-out paths included.
+        // The assert is the regression tripwire for that ownership rule, same as append's.
+        assert(is_root_);
         auto total = row_groups_->total_rows();
         if (total == 0) {
             return true;

@@ -108,10 +108,6 @@ namespace components::table {
 
         void merge_storage(collection_t& data);
 
-        void set_as_root() { is_root_ = true; }
-
-        bool is_root() { return is_root_; }
-
         uint64_t column_count() const;
 
         std::vector<column_segment_info> get_column_segment_info();
@@ -172,6 +168,14 @@ namespace components::table {
         //
         // Adding a mutex back would not fix a race; it would hide the ownership rule.
         std::shared_ptr<collection_t> row_groups_;
+        // false = this table was superseded by an ALTER successor (the ALTER constructors
+        // clear the parent's flag). Readers: append_lock / update_column report a
+        // write_conflict, append asserts, compact asserts. In the current lifecycle a
+        // superseded parent is destroyed in the very statement that installs its
+        // successor (table_storage_t::add_column / drop_column move-assign the sole
+        // owning unique_ptr), so these reads can only observe `false` if that
+        // destroy-on-swap ownership rule is ever broken — they are the loud-failure
+        // channel for such a regression, not a live code path.
         std::atomic<bool> is_root_;
         std::string name_;
     };

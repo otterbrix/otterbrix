@@ -77,7 +77,7 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int start, std::pmr
     types.emplace_back(logical_type::DOUBLE, "count_double");
     types.emplace_back(logical_type::BOOLEAN, "count_bool");
     types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "count_array"));
-    auto count_decimal = complex_logical_type::create_decimal(15, 7, "count_decimal");
+    auto count_decimal = complex_logical_type::create_decimal(resource, 15, 7, "count_decimal");
     assert(!count_decimal.has_error() && "generaty: DECIMAL(15,7) is inside the DECIMAL window");
     types.emplace_back(std::move(count_decimal.value()));
 

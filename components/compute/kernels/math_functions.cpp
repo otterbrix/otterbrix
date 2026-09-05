@@ -1,5 +1,7 @@
 #include "../function.hpp"
 
+#include <cassert>
+
 #include <components/vector/vector_operations.hpp>
 
 #include <cmath>
@@ -216,7 +218,12 @@ namespace {
         kernel_signature_t sig(function_type_t::vector,
                                std::move(parameters),
                                {output_type::fixed(complex_logical_type{type})});
-        (void) fn->add_kernel(resource, vector_kernel(std::move(sig), kernel));
+        // BOUND, not (void)-cast: rule 14 bans the cast, and add_kernel is [[nodiscard]] because it
+        // refuses on a full slot table or an arity that does not match the function's
+        // (function.hpp:172-190). Both are compile-time constants at these registration sites, so
+        // the assert states an invariant of this file rather than screening runtime input.
+        [[maybe_unused]] const auto added = fn->add_kernel(resource, vector_kernel(std::move(sig), kernel));
+        assert(!added.contains_error() && "vector kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -233,7 +240,8 @@ namespace {
                                {parameter_type::variable(0, absolute_parameters(resource))},
                                {output_type::same_type_at(0)});
         vector_kernel k(std::move(sig), vector_abs);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "vector kernel must fit the declared slots and arity");
 
         return fn;
     }

@@ -835,7 +835,7 @@ namespace components::table {
         return *get_or_create_version_info_internal();
     }
 
-    std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_ptr() {
+    boost::intrusive_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_ptr() {
         auto vinfo = version_info();
         if (vinfo) {
             return owned_version_info_;
@@ -879,9 +879,14 @@ namespace components::table {
         return vinfo->indexing_vector(txn, vector_idx - base_vector_idx, indexing_vector, max_count);
     }
 
-    std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
+    boost::intrusive_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
         if (!owned_version_info_) {
-            auto new_info = std::make_shared<row_version_manager_t>(start);
+            // Plain `new`, never the pmr resource: the reference count lives inside the manager,
+            // so the counter's `delete` is the matching deallocation. Nothing was lost by giving
+            // up make_shared's single object+control-block allocation — no weak_ptr, aliasing
+            // pointer, custom deleter or shared_from_this was ever taken on a manager, and the
+            // intrusive count is one allocation too, not two.
+            auto new_info = boost::intrusive_ptr<row_version_manager_t>(new row_version_manager_t(start));
             set_version_info(std::move(new_info));
         }
         return owned_version_info_;
@@ -891,6 +896,15 @@ namespace components::table {
         if (!has_unloaded_deletes()) {
             return version_info_;
         }
+        // UNREACHABLE, and left as found rather than converted or removed: deletes_pointers_ is
+        // declared but never populated anywhere in the tree, so has_unloaded_deletes() is
+        // constantly false and everything below is dead. It is a stub for a delete-info load from
+        // disk that does not exist — the repeated check is the residue of a double-checked lock,
+        // and the body would DISCARD this row group's version state rather than load anything,
+        // which is exactly the silent degradation rule 6 forbids. Reviving deletes_pointers_ means
+        // writing this branch, not un-commenting it (and note deletes_is_loaded_ is left
+        // uninitialised by the constructor, which only goes unnoticed because the first check
+        // short-circuits on the empty vector).
         if (!has_unloaded_deletes()) {
             return version_info_;
         }
@@ -899,7 +913,24 @@ namespace components::table {
         return version_info_;
     }
 
-    void row_group_t::set_version_info(std::shared_ptr<row_version_manager_t> version) {
+    void row_group_t::set_version_info(boost::intrusive_ptr<row_version_manager_t> version) {
+        // Own FIRST, publish SECOND — the sole writer of the member pair, and what holds their
+        // invariant (see row_group.hpp).
+        //
+        // Every REACHABLE caller moves this row group from "no manager" to "a manager":
+        // get_or_create_version_info_internal only calls in under `if (!owned_version_info_)`,
+        // and add_column / remove_column call it on a row group they have just constructed, whose
+        // owner is still null and which no other reader can reach yet. So the object is fully
+        // owned and alive before the raw pointer naming it becomes visible, and the seq_cst store
+        // orders the object's construction ahead of the publication for the seq_cst loads on the
+        // read path.
+        //
+        // The order is correct ONLY for that transition. A caller that CLEARED or REPLACED an
+        // existing manager would release the owner on the first line — dropping what may be the
+        // last reference and destroying the object — while version_info_ still named it, so a
+        // reader on the lock-free path could pick up a dangling pointer. Should such a caller
+        // ever be added, the atomic must be stored first. (The one clearing call in the tree,
+        // set_version_info(nullptr) in version_info(), is unreachable — see the note there.)
         owned_version_info_ = std::move(version);
         version_info_ = owned_version_info_.get();
     }
@@ -1049,6 +1080,24 @@ namespace components::table {
         assert(c < columns_.size());
         // A live column is owned by at least one row group, so 0 can only mean "no object".
         return columns_[c] ? columns_[c]->use_count() : 0;
+    }
+
+    const row_version_manager_t* row_group_t::version_manager_identity() const {
+        // The OWNING side. Deliberately does NOT create one on demand: a group that never
+        // appended has no manager, and creating one here would be the gate manufacturing the
+        // object it is meant to observe.
+        return owned_version_info_.get();
+    }
+
+    const row_version_manager_t* row_group_t::version_manager_published() const {
+        // The published side — exactly what the lock-free readers (version_info(),
+        // committed_row_count, has_version_above, move_to_collection) see.
+        return version_info_.load();
+    }
+
+    uint64_t row_group_t::version_manager_owner_count() const {
+        // A live manager is owned by at least one row group, so 0 can only mean "no object".
+        return owned_version_info_ ? static_cast<uint64_t>(owned_version_info_->use_count()) : 0;
     }
 #endif
 

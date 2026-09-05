@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <limits>
 
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/vector/indexing_vector.hpp>
 #include <stdexcept>
 #include <vector>
@@ -225,7 +226,17 @@ namespace components::table {
     // authoritative (row_group_t::indexing_vector, version_delete_state).
     // The single exception is fetch(): it takes a collection-ABSOLUTE row (the
     // disk agent's point-fetch convention) and rebases internally via start_.
-    class row_version_manager_t {
+    //
+    // Ownership: SHARED between a row group and the row groups of that group's ALTER
+    // successors. row_group_t::add_column / remove_column hand the successor
+    // set_version_info(get_or_create_version_info_ptr()), so both groups record deletes
+    // in ONE manager and the last of them to die frees it. The reference count therefore
+    // lives inside the object (boost::intrusive_ref_counter; std::shared_ptr is forbidden
+    // — rule 14). `final` is load-bearing: nothing derives from this class, which is why
+    // the counter needs no virtual destructor, and marking it final keeps that true.
+    // row_group_t allocates the manager with plain `new`, never from the pmr resource, so
+    // the counter's `delete` is the matching deallocation.
+    class row_version_manager_t final : public boost::intrusive_ref_counter<row_version_manager_t> {
     public:
         explicit row_version_manager_t(int64_t start) noexcept;
 
@@ -264,7 +275,10 @@ namespace components::table {
         chunk_vector_info& vector_info(uint64_t vector_idx);
         void fill_vector_info(uint64_t vector_idx);
 
-        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
+        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp). That is
+        // about these MEMBERS — exactly one manager owns them. The manager object itself is
+        // shared between ALTER-related row groups (see the note on the class); every one of them
+        // is still reached from the single actor the data_table_t proof names.
         int64_t start_;
         std::vector<std::unique_ptr<chunk_info>> vector_info_;
         bool has_changes_;

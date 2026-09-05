@@ -46,8 +46,24 @@ namespace components::table {
 
     private:
         collection_t* collection_;
+        // ONE row-version manager, kept in TWO representations, with an invariant between them.
+        //
+        //   version_info_ is a NON-OWNING cache and the lock-free read path — version_info(),
+        //   committed_row_count, has_version_above and move_to_collection all go through it. It
+        //   keeps nothing alive.
+        //
+        //   owned_version_info_ OWNS. The manager is SHARED: add_column / remove_column give the
+        //   ALTER successor's row group a second owning reference to the SAME object, so a table
+        //   and its successor agree about which rows are deleted, and the last of the two row
+        //   groups to die frees it. Shared ownership is carried by the count inside
+        //   row_version_manager_t (see the note on that class), not by a control block.
+        //
+        // INVARIANT: version_info_ is either null or names exactly the object owned_version_info_
+        // owns — never a different one, never a freed one. set_version_info is the SOLE writer of
+        // both; see the note there for the publication order that keeps this true and for the
+        // one transition it is valid for.
         std::atomic<row_version_manager_t*> version_info_ = nullptr;
-        std::shared_ptr<row_version_manager_t> owned_version_info_;
+        boost::intrusive_ptr<row_version_manager_t> owned_version_info_;
         uint64_t current_version_ = 0;
         // SHARED with the row groups of this group's ALTER successors: add_column / remove_column
         // copy this vector into the successor, so both point at the SAME column objects and the
@@ -154,7 +170,7 @@ namespace components::table {
 
         uint64_t row_group_size() const;
         row_version_manager_t& get_or_create_version_info();
-        std::shared_ptr<row_version_manager_t> get_or_create_version_info_ptr();
+        boost::intrusive_ptr<row_version_manager_t> get_or_create_version_info_ptr();
 
         uint64_t calculate_size();
 
@@ -167,6 +183,21 @@ namespace components::table {
         // structural-sharing gate (test_alter_column_sharing.cpp) asserts on these.
         const column_data_t* column_identity(uint64_t c) const;
         uint64_t column_owner_count(uint64_t c) const;
+
+        // Test-observable IDENTITY of this row group's row-version manager, in BOTH of the two
+        // representations the group keeps of it: the object the group OWNS, and the raw pointer
+        // the lock-free read path publishes. add_column / remove_column must hand the successor's
+        // row group the SAME manager, not a fresh one — and a fresh one is invisible to every
+        // scan and count a test could take on a freshly-ALTERed table, because a manager with no
+        // deletes recorded answers "visible" exactly like the shared one does. Only the address
+        // and the owner count tell them apart. The third observer exists because the owner and
+        // the published raw pointer are the invariant this pair has to keep (see
+        // set_version_info): the gate asserts they agree, so a conversion that publishes the
+        // wrong pointer, or forgets to publish, cannot pass.
+        // Gate: test_alter_version_sharing.cpp.
+        const row_version_manager_t* version_manager_identity() const;
+        const row_version_manager_t* version_manager_published() const;
+        uint64_t version_manager_owner_count() const;
 #endif
 
     private:
@@ -174,9 +205,9 @@ namespace components::table {
                                  uint64_t vector_idx,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
-        std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();
+        boost::intrusive_ptr<row_version_manager_t> get_or_create_version_info_internal();
         row_version_manager_t* version_info();
-        void set_version_info(std::shared_ptr<row_version_manager_t> version);
+        void set_version_info(boost::intrusive_ptr<row_version_manager_t> version);
         column_data_t& get_column(uint64_t c);
         column_data_t& get_column(const storage_index_t& c);
         uint64_t get_column_count() const;

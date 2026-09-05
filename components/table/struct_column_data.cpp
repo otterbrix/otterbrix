@@ -188,6 +188,9 @@ namespace components::table {
     }
 
     void struct_column_data_t::revert_append(int64_t start_row) {
+        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). Struct
+        // children are row-aligned with the parent and share its start_, so — unlike the
+        // LIST/ARRAY element-space children — the absolute row passes through unchanged.
         validity.revert_append(start_row);
         for (auto& sub_column : sub_columns) {
             sub_column->revert_append(start_row);

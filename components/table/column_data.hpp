@@ -126,6 +126,11 @@ namespace components::table {
         append(column_append_state& state, vector::vector_t& vector, uint64_t count);
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count);
+        // `start_row` is COLLECTION-ABSOLUTE: the row group's start plus the group-local
+        // revert point (row_group_t::revert_append owns that conversion). Every override
+        // receives it in that space and keeps rows [start_, start_row). Nested columns
+        // convert to their child's coordinates THEMSELVES: LIST/ARRAY children share the
+        // parent's start_ but are addressed in ELEMENTS from the row group base.
         virtual void revert_append(int64_t start_row);
 
         // `error` carries an out_of_memory error_t when a pin fails during the predicate check;

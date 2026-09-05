@@ -246,11 +246,16 @@ namespace components::table {
     void list_column_data_t::revert_append(int64_t start_row) {
         column_data_t::revert_append(start_row);
         validity.revert_append(start_row);
-        auto column_count = static_cast<int64_t>(max_entry());
-        if (column_count > start_) {
-            auto list_offset = fetch_list_offset(column_count - 1);
-            child_column->revert_append(static_cast<int64_t>(list_offset));
-        }
+        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). The stored
+        // offsets are cumulative ELEMENT counts within this row group (append seeds them
+        // from child_column->max_entry()), and the child column shares this column's
+        // start_, so the child's absolute truncation row is start_ + <end offset of the
+        // last surviving entry> — 0 elements survive when the whole group is reverted.
+        // The old guard compared the RELATIVE surviving count against the ABSOLUTE start_,
+        // so for any row group with start_ > 0 (and for a full revert in group 0) the
+        // child was never truncated and the next append's offsets desynced from its data.
+        const uint64_t child_offset = start_row > start_ ? fetch_list_offset(start_row - 1) : 0;
+        child_column->revert_append(start_ + static_cast<int64_t>(child_offset));
     }
 
     uint64_t list_column_data_t::fetch(column_scan_state&, int64_t, vector::vector_t&) {

@@ -986,3 +986,185 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
     table->revert_all_deletes(txn_id);
     REQUIRE(scan_count(*table, env) == 1034);
 }
+
+namespace {
+
+    // Nested-column revert_append coordinate regression (F3 family). Every logical row `r`
+    // seeded with `base` carries fully determined content, so a stale child tail after a
+    // revert is OBSERVABLE as wrong CONTENT, not just a wrong count:
+    //   LIST  column: length r % 3 (empties included), element j = base + r * 100 + j
+    //   ARRAY column: NESTED_ARRAY_SIZE elements,      element j = base + r * 100 + 50 + j
+    constexpr uint64_t NESTED_ARRAY_SIZE = 4;
+
+    uint64_t nested_list_length(uint64_t row) { return row % 3; }
+
+    std::unique_ptr<data_table_t> make_list_table(test_env& env) {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("id", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("l", complex_logical_type::create_list(logical_type::UBIGINT));
+        return std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "list_revert");
+    }
+
+    std::unique_ptr<data_table_t> make_array_table(test_env& env) {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("id", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("a", complex_logical_type::create_array(logical_type::UBIGINT, NESTED_ARRAY_SIZE));
+        return std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "array_revert");
+    }
+
+    void append_list_rows(data_table_t& table, test_env& env, uint64_t row_begin, uint64_t count, uint64_t base) {
+        auto types = table.copy_types();
+        auto chunk = data_chunk_t(&env.resource, types, count);
+        chunk.set_cardinality(count);
+        for (uint64_t i = 0; i < count; i++) {
+            const uint64_t r = row_begin + i;
+            chunk.set_value(0, i, static_cast<int64_t>(r));
+            std::vector<uint64_t> list;
+            list.reserve(nested_list_length(r));
+            for (uint64_t j = 0; j < nested_list_length(r); j++) {
+                list.emplace_back(base + r * 100 + j);
+            }
+            chunk.set_value(1, i, list);
+        }
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, transaction_data{0, 0});
+    }
+
+    void append_array_rows(data_table_t& table, test_env& env, uint64_t row_begin, uint64_t count, uint64_t base) {
+        auto types = table.copy_types();
+        auto chunk = data_chunk_t(&env.resource, types, count);
+        chunk.set_cardinality(count);
+        for (uint64_t i = 0; i < count; i++) {
+            const uint64_t r = row_begin + i;
+            chunk.set_value(0, i, static_cast<int64_t>(r));
+            std::vector<uint64_t> arr;
+            arr.reserve(NESTED_ARRAY_SIZE);
+            for (uint64_t j = 0; j < NESTED_ARRAY_SIZE; j++) {
+                arr.emplace_back(base + r * 100 + 50 + j);
+            }
+            chunk.set_value(1, i, arr);
+        }
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, transaction_data{0, 0});
+    }
+
+    // Full ordered scan; rows below `new_from` must carry base 0 content, rows at or past it
+    // base `new_base` content (new_from == total when nothing was re-appended yet).
+    void verify_list_rows(data_table_t& table, test_env& env, uint64_t total, uint64_t new_from, uint64_t new_base) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        column_ids.emplace_back(1);
+        table_scan_state scan_state(&env.resource);
+        table.initialize_scan(scan_state, column_ids);
+        auto types = table.copy_types();
+        uint64_t row = 0;
+        while (true) {
+            auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+            table.scan(result, scan_state);
+            if (result.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < result.size(); i++, row++) {
+                REQUIRE(result.data[0].value(i).value<int64_t>() == static_cast<int64_t>(row));
+                const uint64_t base = row < new_from ? 0 : new_base;
+                auto lv = result.data[1].value(i);
+                REQUIRE(lv.type().type() == logical_type::LIST);
+                REQUIRE(lv.children().size() == nested_list_length(row));
+                for (uint64_t j = 0; j < nested_list_length(row); j++) {
+                    REQUIRE(lv.children()[j].value<uint64_t>() == base + row * 100 + j);
+                }
+            }
+        }
+        REQUIRE(row == total);
+    }
+
+    void verify_array_rows(data_table_t& table, test_env& env, uint64_t total, uint64_t new_from, uint64_t new_base) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        column_ids.emplace_back(1);
+        table_scan_state scan_state(&env.resource);
+        table.initialize_scan(scan_state, column_ids);
+        auto types = table.copy_types();
+        uint64_t row = 0;
+        while (true) {
+            auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+            table.scan(result, scan_state);
+            if (result.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < result.size(); i++, row++) {
+                REQUIRE(result.data[0].value(i).value<int64_t>() == static_cast<int64_t>(row));
+                const uint64_t base = row < new_from ? 0 : new_base;
+                auto av = result.data[1].value(i);
+                REQUIRE(av.type().type() == logical_type::ARRAY);
+                REQUIRE(av.children().size() == NESTED_ARRAY_SIZE);
+                for (uint64_t j = 0; j < NESTED_ARRAY_SIZE; j++) {
+                    REQUIRE(av.children()[j].value<uint64_t>() == base + row * 100 + 50 + j);
+                }
+            }
+        }
+        REQUIRE(row == total);
+    }
+
+} // anonymous namespace
+
+// F3: row_group_t::revert_append hands every column a COLLECTION-ABSOLUTE row number
+// (this->start + group-local revert point). A LIST column must convert that into its
+// CHILD element space: the stored offsets are cumulative element counts within the row
+// group, and the child column shares the parent's start_. The old code compared the
+// RELATIVE surviving count (max_entry()) against the ABSOLUTE start_, so for any row
+// group with start_ > 0 the child was never truncated; the next append then seeded its
+// offsets past the stale child tail, and rows past the revert boundary read stale
+// elements that belonged to the reverted rows.
+TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
+    test_env env;
+    auto table = make_list_table(env);
+
+    // Fill row group 0 completely, then 40 rows into row group 1 (rows 1024..1063).
+    append_list_rows(*table, env, 0, 1024, 0);
+    append_list_rows(*table, env, 1024, 40, 0);
+    REQUIRE(table->row_group()->total_rows() == 1064);
+
+    // Failed-statement revert of the last 20 rows: keep [0, 1044).
+    table->revert_append(1044, 20);
+    REQUIRE(table->row_group()->total_rows() == 1044);
+
+    // Survivors intact — content, not just counts.
+    verify_list_rows(*table, env, 1044, 1044, 0);
+
+    // Re-append 12 rows with a DISTINCT base so a stale child tail is observable:
+    // without the child truncation, rows [1044, 1056) read the reverted rows' elements.
+    append_list_rows(*table, env, 1044, 12, 1'000'000);
+    REQUIRE(table->row_group()->total_rows() == 1056);
+    verify_list_rows(*table, env, 1056, 1044, 1'000'000);
+}
+
+// F3: same coordinate confusion on the ARRAY leg. The child holds array_size() elements
+// per row and shares the parent's start_, so the child's absolute truncation row is
+// start_ + surviving_rows * array_size. The old code passed start_row * array_size —
+// far past the child's end for any row group with start_ > 0 (Debug builds abort on the
+// exact-boundary assert in column_data_t::revert_append; release builds silently keep
+// the stale child tail, and a re-append lands its elements after it).
+TEST_CASE("components::table::mvcc::revert_append_array_child_row_group_1") {
+    test_env env;
+    auto table = make_array_table(env);
+
+    append_array_rows(*table, env, 0, 1024, 0);
+    append_array_rows(*table, env, 1024, 40, 0);
+    REQUIRE(table->row_group()->total_rows() == 1064);
+
+    table->revert_append(1044, 20);
+    REQUIRE(table->row_group()->total_rows() == 1044);
+
+    verify_array_rows(*table, env, 1044, 1044, 0);
+
+    append_array_rows(*table, env, 1044, 12, 1'000'000);
+    REQUIRE(table->row_group()->total_rows() == 1056);
+    verify_array_rows(*table, env, 1056, 1044, 1'000'000);
+}

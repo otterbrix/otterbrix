@@ -162,8 +162,14 @@ namespace components::table {
 
     void array_column_data_t::revert_append(int64_t start_row) {
         validity.revert_append(start_row);
+        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). The child
+        // column shares this column's start_ but is addressed in ELEMENTS from the row
+        // group base (see initialize_scan_with_offset), so its absolute truncation row is
+        // start_ + surviving_rows * array_size. The old start_row * array_size coincides
+        // only in row group 0 (start_ == 0); for any later group it pointed far past the
+        // child's end and the stale child tail survived the revert.
         auto size = array_size();
-        child_column->revert_append(start_row * static_cast<int64_t>(size));
+        child_column->revert_append(start_ + (start_row - start_) * static_cast<int64_t>(size));
 
         count_ = static_cast<uint64_t>(start_row - start_);
     }

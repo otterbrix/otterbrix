@@ -213,7 +213,10 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         auto writes =
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
         for (auto& w : writes)
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row));
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   uncommitted_ctx,
+                                                   w.table_oid,
+                                                   std::move(w.row)));
         // Intentionally omit storage_publish_commits — simulates crash before commit.
     }
 

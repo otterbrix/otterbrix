@@ -42,6 +42,34 @@ namespace components::table {
     static constexpr uint64_t TRANSACTION_ID_START = uint64_t(4611686018427388000);      // 2^62
     static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1; // 2^64 - 1
 
+    // THE DIRECT-WRITE TRANSACTION ID, and it is a SANCTIONED path rather than a leftover.
+    // It used to be called a "legacy fast path" at the two disk-side sites that branch on it,
+    // and that name is what this constant exists to retire: the next reader who believed it
+    // would delete the branch and take the correctness with it.
+    //
+    // 0 is the identity every write carries that is committed the instant it lands: WAL replay
+    // (transaction_data{0, 0}), bootstrap, and the direct-API write that never opened a
+    // transaction.
+    //
+    // WHAT IT MEANS TO THE VERSION STORE — the contract every branch on this sentinel depends
+    // on: row_group_t::delete_rows routes such a write down its is_txn == false leg, which
+    // stamps deleted[] with an IMMEDIATELY-COMMITTED version id (++current_version_) instead of
+    // a pending transaction id. There is therefore nothing left over for a later publish or
+    // revert to finish — and handing them this id would be worse than pointless:
+    // chunk_vector_info::commit_all_deletes / revert_all_deletes both match on
+    // `deleted[i] == txn_id`, so passing 0 asks them to rewrite every slot that happens to hold
+    // the value 0, which is not a stamp this store ever writes.
+    //
+    // So a publish/revert path that meets this id must SKIP, and the skip is the correct answer
+    // rather than a shortcut. The sentinel is live on the index side for the same reason: the
+    // C5c deferred-delete sweep keys its buckets by transaction id, and bucket 0 is the
+    // direct-write bucket, published with whichever transaction reaches the store first.
+    static constexpr uint64_t DIRECT_WRITE_TXN_ID = 0;
+
+    [[nodiscard]] inline constexpr bool is_direct_write_txn(uint64_t transaction_id) noexcept {
+        return transaction_id == DIRECT_WRITE_TXN_ID;
+    }
+
     // Which rows a point fetch by row_id is allowed to produce. NO DEFAULT VALUE is
     // given to any parameter of this type anywhere: every sender names the mode, so
     // forgetting one is a compile error rather than a silently wrong answer.

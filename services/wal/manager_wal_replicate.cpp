@@ -572,7 +572,20 @@ namespace services::wal {
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
             auto [_fi, fi_fut] =
                 actor_zeta::send(manager_index_, &services::index::manager_index_t::flush_all_indexes, session);
-            co_await std::move(fi_fut);
+            // A refusal is logged rather than propagated, for the same reason the rebuild
+            // refusal below is: nothing above this frame is a statement that could carry it.
+            // But the round STOPS here — the truncate in (d) would otherwise drop the WAL
+            // segments that are the only remaining copy of what the index failed to write.
+            // The guard is released so the next threshold trip retries the whole round.
+            if (auto flush_error = co_await std::move(fi_fut); flush_error.contains_error()) {
+                error(log_,
+                      "manager_wal_replicate_t::run_auto_checkpoint: index flush did not reach the disk, "
+                      "the round is abandoned rather than truncating the WAL behind it: {}",
+                      flush_error.what);
+                rebase_auto_checkpoint_window();
+                auto_checkpoint_in_flight_ = false;
+                co_return;
+            }
         }
 
         // (b) No disk manager => no storage to checkpoint against. This is the

@@ -1752,7 +1752,7 @@ namespace services::index {
         co_return result;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
+    manager_index_t::unique_future<core::error_t> manager_index_t::flush_all_indexes(session_id_t session) {
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
 
         // Await all pending agent operations first: this is the cross-handler
@@ -1770,7 +1770,7 @@ namespace services::index {
         // futures. Each force_flush naturally orders behind any pending
         // insert/remove already queued in that agent's FIFO, and the is_dropped
         // guard now lives inside the agent handler.
-        std::pmr::vector<unique_future<void>> futures(resource_);
+        std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         futures.reserve(bitcask_agents_owned_.size() + btree_agents_owned_.size());
         // Both families. The agent is scheduled through the pointer we already hold rather
         // than through schedule_agent's search, which would only find it again.
@@ -1789,10 +1789,18 @@ namespace services::index {
         };
         flush_all(bitcask_agents_owned_);
         flush_all(btree_agents_owned_);
+        // Every future is drained, and the FIRST refusal is the one reported: the fan-out is
+        // parallel and abandoning the tail would leave replies addressed to a finished frame.
+        // The remaining agents still flush -- a checkpoint that stops half way through is
+        // worse than one that finishes and then refuses.
+        core::error_t first_error = core::error_t::no_error();
         for (auto& f : futures) {
-            co_await std::move(f);
+            auto err = co_await std::move(f);
+            if (err.contains_error() && !first_error.contains_error()) {
+                first_error = std::move(err);
+            }
         }
-        co_return;
+        co_return first_error;
     }
 
     // GC subscriber (see declaration): erases per-oid state for tables whose

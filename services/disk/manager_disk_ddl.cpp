@@ -14,26 +14,34 @@ namespace services::disk {
     // pool_idx_for_oid. Routers mirror storage_append: pool_idx_for_oid → otterbrix::send
     // → if needs_sched enqueue → co_return co_await.
 
-    manager_disk_t::unique_future<components::pg_catalog_append_range_t>
+    // Router to the agent twin. Both routing legs REFUSE rather than answer with an empty
+    // range: a manager with no agents, or an agent slot holding nothing, is a catalog write
+    // that did not happen, and reporting it as "appended 0 rows" is indistinguishable from a
+    // healthy no-op — the reading that let CREATE TABLE report success over a pg_class row it
+    // never wrote. Same rule and same shape as storage_delete_rows' routing legs.
+    manager_disk_t::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
     manager_disk_t::append_pg_catalog_row(execution_context_t ctx,
                                           components::catalog::oid_t table_oid,
                                           components::vector::data_chunk_t row) {
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[idx];
-            if (agent != nullptr) {
-                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::append_pg_catalog_row_inner,
-                                                                      ctx,
-                                                                      table_oid,
-                                                                      std::move(row));
-                if (needs_sched) {
-                    scheduler_disk_->enqueue(agent.get());
-                }
-                co_return co_await std::move(fut);
-            }
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"append_pg_catalog_row: no disk agents", resource()}};
         }
-        co_return components::pg_catalog_append_range_t{table_oid, 0, 0};
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"append_pg_catalog_row: owning disk agent is null", resource()}};
+        }
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::append_pg_catalog_row_inner,
+                                                              ctx,
+                                                              table_oid,
+                                                              std::move(row));
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::delete_pg_catalog_rows(execution_context_t ctx,

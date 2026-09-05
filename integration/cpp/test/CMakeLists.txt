@@ -27,6 +27,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_string_projection.cpp
         test_check_on_update.cpp
         test_index_bootstrap_failure.cpp
+        test_catalog_write_refusal.cpp
+        test_index_flush_refusal.cpp
         test_index_type_persistence.cpp
         test_index_threshold_config.cpp
         test_index_txn_log_routing.cpp

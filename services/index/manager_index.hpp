@@ -397,7 +397,7 @@ namespace services::index {
                                    uint64_t txn_id,
                                    core::date::timezone_offset_t session_tz);
 
-        unique_future<void> flush_all_indexes(session_id_t session);
+        unique_future<core::error_t> flush_all_indexes(session_id_t session);
 
         // Compact gate (see index_contract): returns the subset of the input
         // oids with NO engine in engines_ (safe to compact), input order

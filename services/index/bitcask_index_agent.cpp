@@ -611,19 +611,17 @@ namespace services::index {
         co_return std::move(rows);
     }
 
-    bitcask_index_agent_t::unique_future<void> bitcask_index_agent_t::force_flush(session_id_t session) {
+    bitcask_index_agent_t::unique_future<core::error_t> bitcask_index_agent_t::force_flush(session_id_t session) {
         // A dropped agent has no store -- flushing it would be a use-after-free, so skip.
         trace(log_, "bitcask_index_agent_t::force_flush, session: {}", session.data());
-        if (!is_dropped_) {
-            // Checkpoint path, not a statement: there is no cursor to fail here, so the
-            // result is recorded rather than propagated. The DML paths above DO propagate
-            // it.
-            auto flush_error = store_.force_flush();
-            if (flush_error.type != core::error_code_t::none) {
-                error(log_, "bitcask_index_agent_t::force_flush: {}", flush_error.what);
-            }
+        if (is_dropped_) {
+            co_return core::error_t::no_error();
         }
-        co_return;
+        // Same as the ordered family's twin, and for the same reason: the checkpoint above
+        // this fan-out is the only thing that can act on a flush that did not reach the disk,
+        // and it was being told the flush had happened. force_flush also hands over the
+        // sticky write error the void-returning write paths could not report themselves.
+        co_return store_.force_flush();
     }
 
 } // namespace services::index

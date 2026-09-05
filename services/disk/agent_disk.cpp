@@ -194,33 +194,37 @@ namespace services::disk {
         co_return ok;
     }
 
+    // The ONE refusal the three WAL-replay helpers below share. It is not a routing miss:
+    // manager_disk_t picks the agent with pool_idx_for_oid(table_oid) before forwarding, so
+    // the owner is settled and this agent is it. An absent entry means the owner holds no
+    // storage for the table, and a replay mutation dropped there is a journalled change that
+    // recovery quietly declined to apply.
+    core::error_t agent_disk_t::no_replay_storage_error(const char* who, components::catalog::oid_t table_oid) {
+        std::pmr::string msg{"agent_disk::", resource()};
+        msg += std::pmr::string{who, resource()};
+        msg += std::pmr::string{": no storage on the owning agent for table oid ", resource()};
+        msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+        msg += std::pmr::string{" — the journalled change was NOT replayed", resource()};
+        return core::error_t{core::error_code_t::io_error, std::move(msg)};
+    }
+
     // WAL-replay direct_* helpers (see header). Mutation logic is intentionally
     // minimal: schema-adoption / column-expansion / type-promotion run upstream in
     // the mailbox body, and replay records arrive pre-aligned with the table schema,
     // so a direct delete/update against the entry's storage adapter is correct.
-    void agent_disk_t::direct_delete_sync(components::catalog::oid_t table_oid,
-                                          const std::pmr::vector<int64_t>& row_ids,
-                                          uint64_t count,
-                                          const components::table::transaction_data& txn) {
+    core::error_t agent_disk_t::direct_delete_sync(components::catalog::oid_t table_oid,
+                                                   const std::pmr::vector<int64_t>& row_ids,
+                                                   uint64_t count,
+                                                   const components::table::transaction_data& txn) {
+        if (row_ids.empty()) {
+            // The one legitimate no-op: the record names no rows.
+            return core::error_t::no_error();
+        }
         auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::direct_delete_sync: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            return no_replay_storage_error("direct_delete_sync", table_oid);
         }
         auto& entry = it->second;
-        if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::direct_delete_sync: oid {} has null entry (unreachable post-§8.1.B/C) — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
-        }
-        if (row_ids.empty() || entry->storage == nullptr) {
-            return;
-        }
         components::vector::vector_t ids_vec(
             resource(),
             components::types::complex_logical_type(components::types::logical_type::BIGINT),
@@ -229,30 +233,20 @@ namespace services::disk {
             ids_vec.set_value(i, row_ids[i]);
         }
         entry->storage->delete_rows(ids_vec, count, txn.transaction_id);
+        return core::error_t::no_error();
     }
 
-    void agent_disk_t::direct_update_sync(components::catalog::oid_t table_oid,
-                                          const std::pmr::vector<int64_t>& row_ids,
-                                          components::vector::data_chunk_t& new_data) {
+    core::error_t agent_disk_t::direct_update_sync(components::catalog::oid_t table_oid,
+                                                   const std::pmr::vector<int64_t>& row_ids,
+                                                   components::vector::data_chunk_t& new_data) {
+        if (row_ids.empty()) {
+            return core::error_t::no_error();
+        }
         auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::direct_update_sync: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            return no_replay_storage_error("direct_update_sync", table_oid);
         }
         auto& entry = it->second;
-        if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::direct_update_sync: oid {} has null entry (unreachable post-§8.1.B/C) — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
-        }
-        if (row_ids.empty() || entry->storage == nullptr) {
-            return;
-        }
         const auto count = static_cast<uint64_t>(row_ids.size());
         components::vector::vector_t ids_vec(
             resource(),
@@ -268,22 +262,16 @@ namespace services::disk {
         components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
         new_data.copy(local, 0);
         entry->storage->update(ids_vec, local);
+        return core::error_t::no_error();
     }
 
-    void agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
-                                              const components::vector::data_chunk_t& schema_chunk) {
+    core::error_t agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
+                                                       const components::vector::data_chunk_t& schema_chunk) {
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::direct_add_column_sync: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            return no_replay_storage_error("direct_add_column_sync", table_oid);
         }
         auto& entry = it->second;
-        if (entry->storage == nullptr) {
-            return;
-        }
         auto* s = entry->storage.get();
         // For each schema column, add it unless an equivalent column already exists
         // (idempotent replay). The column type carries its alias = the column name.
@@ -321,9 +309,10 @@ namespace services::disk {
             // add_column rebuilt the adapter; refresh the local pointer.
             s = entry->storage.get();
             if (s == nullptr) {
-                return;
+                return no_replay_storage_error("direct_add_column_sync", table_oid);
             }
         }
+        return core::error_t::no_error();
     }
 
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -783,8 +772,13 @@ namespace services::disk {
     agent_disk_t::storage_publish_deletes_inner(uint64_t txn_id,
                                                 uint64_t commit_id,
                                                 std::pmr::vector<components::catalog::oid_t> tables) {
-        // txn_id==0 means no real transaction (legacy fast path) — short-circuit.
-        if (txn_id == 0) {
+        // A DIRECT WRITE owes no publish. Its deletes were stamped with an
+        // immediately-committed version id when they landed (row_group_t::delete_rows,
+        // is_txn == false), so there is no pending stamp for commit_all_deletes to find —
+        // and asking it to look would tell it to rewrite every slot holding the literal 0.
+        // See components::table::DIRECT_WRITE_TXN_ID for the whole contract; this is NOT
+        // the "legacy fast path" the comment here used to call it, and the branch must stay.
+        if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
         for (const auto& tbl_oid : tables) {
@@ -805,8 +799,11 @@ namespace services::disk {
     agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
         // Abort-path twin of storage_publish_deletes_inner: un-stamp this txn's
         // pending delete marks back to NOT_DELETED_ID instead of committing them.
-        // txn_id==0 means no real transaction (legacy fast path) — short-circuit.
-        if (txn_id == 0) {
+        // Abort-side twin of the same contract: a DIRECT WRITE is irrevocable by
+        // construction — its deletes were committed the instant they landed — so there is
+        // nothing to un-stamp, and revert_all_deletes(0) would match on the literal 0 the
+        // store never writes. See components::table::DIRECT_WRITE_TXN_ID.
+        if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
         for (const auto& tbl_oid : tables) {
@@ -2351,7 +2348,7 @@ namespace services::disk {
     // faithful. (Neither path substitutes DEFAULTs any more: they are expanded above
     // the journal, in operator_insert, and catalog rows are released from that fill —
     // ddl_metadata_builder hands storage a ready-made pg_catalog tuple.)
-    agent_disk_t::unique_future<components::pg_catalog_append_range_t>
+    agent_disk_t::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
     agent_disk_t::append_pg_catalog_row_inner(execution_context_t ctx,
                                               components::catalog::oid_t table_oid,
                                               components::vector::data_chunk_t row) {
@@ -2447,10 +2444,16 @@ namespace services::disk {
                         components::vector::vector_t casted(resource(), target_type, local.size());
                         for (uint64_t r = 0; r < local.size(); r++) {
                             if (src_vec.validity().row_is_valid(r)) {
-                                // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
-                                // non-null, so the cast can not fail.
+                                // THE GUARD ABOVE DOES NOT PROVE THIS CAST SUCCEEDS. It admits
+                                // STRING_LITERAL on either side, and 'abc' -> BIGINT is a refusal, not
+                                // a conversion. The assert that used to stand here claimed otherwise and
+                                // vanished under NDEBUG, leaving .value() to read the value half of an
+                                // ERRORED result — a catalog row built out of an undefined cell.
                                 auto casted_val = src_vec.value(r).cast_as(target_type, ctx.session_tz);
-                                assert(!casted_val.has_error() && "numeric/string column cast can not fail");
+                                if (casted_val.has_error()) {
+                                    co_return casted_val
+                                        .convert_error<components::pg_catalog_append_range_t>();
+                                }
                                 casted.set_value(r, casted_val.value());
                             } else {
                                 casted.validity().set_invalid(r);
@@ -2461,27 +2464,40 @@ namespace services::disk {
                 }
             }
 
-            // The append chain can surface write_conflict / out_of_memory.
-            // append_pg_catalog_row_inner returns a pg_catalog_append_range_t with no error
-            // channel; on a failure leave start_row/count at 0 (no rows materialized) and
-            // log — the caller treats a zero-count range as a no-op append.
+            // The append chain can surface write_conflict / out_of_memory. It is REPORTED
+            // now: this is the DDL write path, and the range it returns carries no way to
+            // tell "wrote nothing" from "wrote nothing because it could not". A CREATE TABLE
+            // whose pg_class row never landed used to return a zero-count range, which the
+            // caller reads as a no-op append, and the statement reported success over a
+            // catalog that does not contain the table it just claimed to create.
             auto append_r = s->append(local, ctx.txn);
             if (append_r.has_error()) {
-                warn(log_,
-                     "agent_disk[{}]::append_pg_catalog_row_inner: materialize failed for oid={} — no rows appended",
-                     pool_idx_,
-                     static_cast<unsigned>(table_oid));
-                co_return components::pg_catalog_append_range_t{table_oid, int64_t{0}, 0};
+                co_return append_r.convert_error<components::pg_catalog_append_range_t>();
             }
             start_row = append_r.value();
-        } else {
+        } else if (row.size() == 0) {
+            // The one legitimate no-op: nothing was asked to be written. Zero rows in,
+            // zero rows out, no storage touched.
             trace(log_,
-                  "agent_disk[{}]::append_pg_catalog_row_inner: oid {} not owned/empty — no storage append",
+                  "agent_disk[{}]::append_pg_catalog_row_inner: empty row for oid={} — nothing to append",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
+        } else {
+            // NOT a routing miss. manager_disk_t::append_pg_catalog_row picks this agent with
+            // pool_idx_for_oid(table_oid), so the owner is decided before the message is sent
+            // and THIS agent is it. What the missing entry means is that the owner has no
+            // storage for the table — never created, never loaded, or dropped — and the row
+            // has nowhere to go. Refusing is the whole point: the silent version of this leg
+            // let DDL report success while the catalog was never written.
+            std::pmr::string msg{"agent_disk::append_pg_catalog_row: no storage on the owning agent for catalog "
+                                 "oid ",
+                                 resource()};
+            msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+            msg += std::pmr::string{" — the row was not written", resource()};
+            co_return core::error_t{core::error_code_t::io_error, std::move(msg)};
         }
 
-        if (ctx.txn.transaction_id == 0 || count == 0) {
+        if (components::table::is_direct_write_txn(ctx.txn.transaction_id) || count == 0) {
             co_return components::pg_catalog_append_range_t{table_oid, static_cast<int64_t>(start_row), 0};
         }
         co_return components::pg_catalog_append_range_t{table_oid, static_cast<int64_t>(start_row), count};
@@ -2534,7 +2550,19 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
             }
         }
-        direct_delete_sync(table_oid, row_ids, static_cast<std::uint64_t>(row_ids.size()), ctx.txn);
+        // The storage was scanned two blocks up to produce `row_ids`, so the refusal
+        // direct_delete_sync now carries cannot be reached from here. READ IT ANYWAY and say
+        // so at error level: "cannot happen" is exactly what the assert this task removed
+        // claimed, and this handler's contract (unique_future<void>) has nowhere else to put
+        // it. Giving delete_pg_catalog_rows a channel of its own is a separate change.
+        if (auto del_err = direct_delete_sync(table_oid, row_ids, static_cast<std::uint64_t>(row_ids.size()), ctx.txn);
+            del_err.contains_error()) {
+            error(log_,
+                  "agent_disk[{}]::delete_pg_catalog_rows_inner: the slice it had just scanned refused the "
+                  "delete: {}",
+                  pool_idx_,
+                  del_err.what);
+        }
         co_return;
     }
 
@@ -2663,7 +2691,15 @@ namespace services::disk {
             }
         }
 
-        direct_update_sync(pg_attr_oid, row_ids, patch);
+        // Same as delete_pg_catalog_rows_inner: the row was READ from this slice a few lines
+        // up, so the refusal is unreachable here — and is still reported rather than dropped.
+        if (auto upd_err = direct_update_sync(pg_attr_oid, row_ids, patch); upd_err.contains_error()) {
+            error(log_,
+                  "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the slice it had just read "
+                  "refused the update: {}",
+                  pool_idx_,
+                  upd_err.what);
+        }
         co_return;
     }
 

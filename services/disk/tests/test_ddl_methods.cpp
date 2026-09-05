@@ -1108,3 +1108,147 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     REQUIRE(rr2.columns[0].attname == "count");
     REQUIRE(rr2.columns[0].atttypid == components::catalog::well_known_oid::int64_type);
 }
+
+// FIN-0 / item 1 — A CATALOG ROW THAT CANNOT BE WRITTEN IS REPORTED, NOT COUNTED AS ZERO.
+//
+// append_pg_catalog_row used to answer with a pg_catalog_append_range_t and nothing else, so
+// its three failures — a refused append, a cast that could not be made, and this one, a
+// catalog oid whose OWNING agent holds no storage — all came back as {oid, 0, 0}. Every
+// caller reads a zero-count range as "nothing was asked to be written" and carries on; that
+// is how a DDL statement could report success over a catalog row that does not exist.
+//
+// The oid below is routed exactly like any other: pool_idx_for_oid names its owner before the
+// message is sent. What is missing is the storage, and that is the distinction the old leg's
+// "not owned by this agent" wording got backwards.
+TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_storage") {
+    fixture fx;
+
+    const auto* def = catalog::find_system_table(catalog::well_known_oid::pg_class_table);
+    REQUIRE(def != nullptr);
+    std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
+    for (const auto& c : def->columns) {
+        types.push_back(c.type());
+    }
+    components::vector::data_chunk_t row(&fx.resource, types, 1);
+    row.set_cardinality(1);
+    row.set_value(0, 0, static_cast<std::uint32_t>(FIRST_USER_OID + 900));
+    row.set_value(1, 0, std::string_view("nowhere"));
+    row.set_value(2, 0, static_cast<std::uint32_t>(FIRST_USER_OID + 1));
+    row.set_value(3, 0, std::string_view("r"));
+    row.set_value(4, 0, std::string_view("d"));
+
+    // A table oid nothing ever created: no agent holds storage for it.
+    const catalog::oid_t nowhere = FIRST_USER_OID + 4242;
+    auto refused = fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.ctx(), nowhere, std::move(row));
+    REQUIRE(refused.has_error());
+    CHECK(refused.error().type == core::error_code_t::io_error);
+
+    // And the ONE legitimate zero: an empty row is nothing to write, and stays a no-op.
+    components::vector::data_chunk_t empty(&fx.resource, types, 1);
+    empty.set_cardinality(0);
+    auto no_op = fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                           fx.ctx(),
+                           catalog::well_known_oid::pg_class_table,
+                           std::move(empty));
+    REQUIRE_FALSE(no_op.has_error());
+    CHECK(no_op.value().count == 0);
+}
+
+// FIN-0 / item 2 — THE CAST ON THE CATALOG APPEND PATH RUNS, AND ITS RESULT IS THE ROW.
+//
+// A GUARD ON THE SUCCESS PATH, and it is a guard rather than a red test on purpose: the
+// branch it protects used to carry `assert(!casted_val.has_error() && "numeric/string column
+// cast can not fail")` followed by .value(). The guard above that assert admits
+// STRING_LITERAL on either side, so it does NOT establish what the assert claimed — and under
+// NDEBUG the assert is gone while .value() still reads the value half of a possibly-errored
+// result. No input reaches a failing cast TODAY (logical_value_t's string->integer leg goes
+// through atoll, which answers 0 for anything rather than refusing), so there is no red input
+// to name; what this case pins is that the cast is on the path and its OUTPUT is what gets
+// stored. Break the cast leg — make it return an error, or drop the result — and this goes
+// red.
+TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_raw_cell") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "nscast");
+
+    const auto* def = catalog::find_system_table(catalog::well_known_oid::pg_class_table);
+    REQUIRE(def != nullptr);
+    std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
+    for (const auto& c : def->columns) {
+        types.push_back(c.type());
+    }
+    // pg_class.oid is UINTEGER in the stored schema; hand the append a STRING_LITERAL cell
+    // instead, which is exactly the (STRING_LITERAL -> numeric) pair the guard admits.
+    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 777;
+    types[0] = components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL};
+    components::vector::data_chunk_t row(&fx.resource, types, 1);
+    row.set_cardinality(1);
+    row.set_value(0, 0, std::string_view(std::to_string(static_cast<unsigned>(probe_oid))));
+    row.set_value(1, 0, std::string_view("cast_probe"));
+    row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+    row.set_value(3, 0, std::string_view("r"));
+    row.set_value(4, 0, std::string_view("d"));
+
+    auto rng = disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                      fx.ctx(),
+                                                      catalog::well_known_oid::pg_class_table,
+                                                      std::move(row)));
+    CHECK(rng.table_oid == catalog::well_known_oid::pg_class_table);
+
+    // The row reads back through the ordinary keyed catalog path, with the oid the cast
+    // produced — not a NULL, not a 0, not the text.
+    auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("cast_probe"));
+    REQUIRE(probe.found);
+    CHECK(probe.oid == probe_oid);
+}
+
+// FIN-0 / item 4 — A REPLAY MUTATION FOR A TABLE WITH NO STORAGE IS REFUSED.
+//
+// These three helpers are the WAL-replay path. Each used to log "oid not owned by this
+// agent — no-op" and return void, and the wording was the tell: manager_disk_t picks the
+// agent with pool_idx_for_oid BEFORE forwarding, so ownership is settled and the agent that
+// logged it IS the owner. What was actually missing was the storage, and a replay mutation
+// dropped there is a journalled change recovery declined to restore — rows the WAL says are
+// deleted staying alive after a restart, with nothing anywhere to notice.
+TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_storage") {
+    fixture fx;
+
+    const catalog::oid_t nowhere = FIRST_USER_OID + 4243;
+    std::pmr::vector<std::int64_t> ids(&fx.resource);
+    ids.push_back(0);
+
+    CHECK(fx.manager->direct_delete_sync(nowhere, ids, 1).type == core::error_code_t::io_error);
+
+    std::pmr::vector<components::types::complex_logical_type> upd_types(&fx.resource);
+    upd_types.push_back(components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    components::vector::data_chunk_t upd(&fx.resource, upd_types, 1);
+    upd.set_cardinality(1);
+    upd.set_value(0, 0, std::int64_t{7});
+    CHECK(fx.manager->direct_update_sync(nowhere, ids, upd).type == core::error_code_t::io_error);
+
+    auto added_type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
+    added_type.set_alias("grown");
+    std::pmr::vector<components::types::complex_logical_type> schema_types(&fx.resource);
+    schema_types.push_back(added_type);
+    components::vector::data_chunk_t schema_chunk(&fx.resource, schema_types, 1);
+    schema_chunk.set_cardinality(0);
+    CHECK(fx.manager->direct_add_column_sync(nowhere, schema_chunk).type == core::error_code_t::io_error);
+
+    // The ONE legitimate no-op survives: a record that names no rows asks for nothing.
+    std::pmr::vector<std::int64_t> no_ids(&fx.resource);
+    CHECK(fx.manager->direct_delete_sync(nowhere, no_ids, 0).type == core::error_code_t::none);
+
+    // And a table that DOES have storage answers no_error through the same door. The
+    // catalog-row helpers write pg_class / pg_attribute only, so the .otbx is created here
+    // explicitly — which is also what the replay path itself does before it applies a record.
+    auto ns_oid = test_create_namespace(fx, "nsreplay");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto table_oid = test_create_table(fx, ns_oid, "replayed", cols);
+    REQUIRE(table_oid >= FIRST_USER_OID);
+    const auto otbx = std::filesystem::path(ddl_dir()) / std::to_string(static_cast<unsigned>(ns_oid)) /
+                      std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+    std::filesystem::create_directories(otbx.parent_path());
+    fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false);
+    REQUIRE(fx.manager->has_storage(table_oid));
+    CHECK(fx.manager->direct_add_column_sync(table_oid, schema_chunk).type == core::error_code_t::none);
+}

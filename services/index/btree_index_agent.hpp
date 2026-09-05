@@ -142,7 +142,7 @@ namespace services::index {
         unique_future<core::error_t> revert_deletes(session_id_t session, uint64_t txn_id);
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
         read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
-        unique_future<void> force_flush(session_id_t session);
+        unique_future<core::error_t> force_flush(session_id_t session);
 
         // Bound to the contract, in the contract's order -- that is what makes
         // msg_id<btree_index_agent_t, &btree_index_agent_t::drop> and

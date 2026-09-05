@@ -138,7 +138,15 @@ namespace components::operators {
                                          exec_ctx,
                                          pg_attr_oid,
                                          std::move(att_row));
-        auto rng = co_await std::move(wf);
+        auto rng_r = co_await std::move(wf);
+        if (rng_r.has_error()) {
+            // The pg_attribute row IS the added column. Refused, ALTER TABLE ADD COLUMN added
+            // nothing and must say so.
+            set_error(rng_r.error());
+            mark_failed();
+            co_return;
+        }
+        auto rng = std::move(rng_r.value());
         if (rng.count > 0) {
             ctx->pg_catalog_appends.push_back(std::move(rng));
             // Backfill added_at_commit_id on this row, keyed by attoid.

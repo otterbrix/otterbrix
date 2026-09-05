@@ -204,21 +204,32 @@ namespace services::disk {
                                                       bool is_computed);
 
         // WAL-replay direct_* helpers: the manager-side direct_*_sync routers forward
-        // here to apply the mutation against the local slice (missing OIDs no-op).
+        // here to apply the mutation against the local slice.
         // Bootstrap-only — base_spaces WAL replay runs synchronously before
         // scheduler.start; post-start mutations use the storage_* mailbox handlers.
-        void direct_delete_sync(components::catalog::oid_t table_oid,
-                                const std::pmr::vector<int64_t>& row_ids,
-                                uint64_t count,
-                                const components::table::transaction_data& txn);
-        void direct_update_sync(components::catalog::oid_t table_oid,
-                                const std::pmr::vector<int64_t>& row_ids,
-                                components::vector::data_chunk_t& new_data);
+        //
+        // A MISSING STORAGE IS A REFUSAL, NOT A NO-OP, and the distinction is the whole
+        // reason these return core::error_t. The manager picks this agent with
+        // pool_idx_for_oid(table_oid) before it forwards, so "not owned by this agent" was
+        // never true of the leg that logged it: the owner is decided by the routing and this
+        // agent IS the owner. What an absent entry means is that the owner has no storage for
+        // the table, and on the REPLAY path a mutation dropped there is a journalled change
+        // that recovery silently declined to restore — rows the WAL says are deleted staying
+        // alive, an update that never lands. The caller cannot re-derive it from anywhere.
+        // The shared refusal the three helpers below build (see the note above them).
+        [[nodiscard]] core::error_t no_replay_storage_error(const char* who, components::catalog::oid_t table_oid);
+        [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
+                                                       const std::pmr::vector<int64_t>& row_ids,
+                                                       uint64_t count,
+                                                       const components::table::transaction_data& txn);
+        [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
+                                                       const std::pmr::vector<int64_t>& row_ids,
+                                                       components::vector::data_chunk_t& new_data);
         // WAL-replay of PHYSICAL_ADD_COLUMN: re-apply the schema columns carried by
         // `schema_chunk` (0-row; column j's alias-tagged type IS new column j) to the
         // local slice ahead of the dependent PHYSICAL_INSERT. Idempotent by column name.
-        void direct_add_column_sync(components::catalog::oid_t table_oid,
-                                    const components::vector::data_chunk_t& schema_chunk);
+        [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
+                                                           const components::vector::data_chunk_t& schema_chunk);
 
         // Mutation handlers: these inner bodies are the SOLE owner of each mutation;
         // manager-side bodies are pure routers. Not-owned OIDs no-op.
@@ -520,9 +531,18 @@ namespace services::disk {
         //
         // append_pg_catalog_row_inner — crash-safe single-row append: WAL physical_insert
         //   first (so a crash before storage update can be replayed), then append on this
-        //   agent's own slice. Returns (table_oid, start_row, count); count is 0 when
-        //   txn.transaction_id == 0 or the append wrote nothing.
-        unique_future<components::pg_catalog_append_range_t>
+        //   agent's own slice. Returns (table_oid, start_row, count) or the reason nothing
+        //   was written; count is 0 when the write was a DIRECT WRITE (nothing to publish)
+        //   or the caller handed in an empty row.
+        //
+        //   THE ERROR CHANNEL IS THE POINT. This is the DDL write path, and the range alone
+        //   cannot tell "wrote nothing" from "could not write": a failed pg_class append used
+        //   to come back as a zero-count range, which every caller reads as a no-op, so
+        //   CREATE TABLE reported success over a catalog that never received the table. The
+        //   three ways it can fail — a cast the guard does not cover, a refused append
+        //   (write_conflict / out_of_memory), and a catalog oid whose owning agent holds no
+        //   storage — all travel this wrapper now.
+        unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row_inner(execution_context_t ctx,
                                     components::catalog::oid_t table_oid,
                                     components::vector::data_chunk_t row);

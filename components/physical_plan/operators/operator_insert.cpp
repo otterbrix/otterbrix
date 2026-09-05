@@ -146,9 +146,16 @@ namespace components::operators {
                                                      exec_ctx,
                                                      table_oid_,
                                                      std::move(row));
-                    auto rng = co_await std::move(cf);
-                    if (rng.count > 0) {
-                        ctx->pg_catalog_appends.push_back(std::move(rng));
+                    auto rng_r = co_await std::move(cf);
+                    if (rng_r.has_error()) {
+                        // A catalog INSERT that could not write its row is a failed statement,
+                        // not an insert of zero rows.
+                        set_error(rng_r.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    if (rng_r.value().count > 0) {
+                        ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
                     }
                 }
             }

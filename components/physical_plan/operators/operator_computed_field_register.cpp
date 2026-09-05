@@ -214,8 +214,8 @@ namespace components::operators {
                                                                 new_version,
                                                                 /*attrefcount=*/std::int64_t{1},
                                                                 atttypspec);
-            std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> append_futures(
-                resource_);
+            std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
+                append_futures(resource_);
             {
                 auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::append_pg_catalog_row,
@@ -269,10 +269,24 @@ namespace components::operators {
                                                    std::move(dep_row));
                 append_futures.push_back(std::move(dcf));
             }
+            // Drain all, first error wins: the pg_computed_column row IS the registration.
+            core::error_t append_error = core::error_t::no_error();
             for (auto& af : append_futures) {
-                if (auto rng = co_await std::move(af); rng.count > 0) {
-                    ctx->pg_catalog_appends.push_back(std::move(rng));
+                auto rng_r = co_await std::move(af);
+                if (rng_r.has_error()) {
+                    if (!append_error.contains_error()) {
+                        append_error = rng_r.error();
+                    }
+                    continue;
                 }
+                if (rng_r.value().count > 0) {
+                    ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+                }
+            }
+            if (append_error.contains_error()) {
+                set_error(std::move(append_error));
+                mark_failed();
+                co_return;
             }
         }
 

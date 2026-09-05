@@ -153,8 +153,8 @@ namespace components::operators {
             // Two-phase: the pg_proc/pg_depend writes are independent (no
             // iteration consumes the previous result), so send all rows first
             // then await in order.
-            std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> fn_write_futures(
-                resource_);
+            std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
+                fn_write_futures(resource_);
             fn_write_futures.reserve(fn_writes.size());
             for (auto& w : fn_writes) {
                 auto [_w, wf] = actor_zeta::send(ctx->disk_address,
@@ -164,10 +164,25 @@ namespace components::operators {
                                                  std::move(w.row));
                 fn_write_futures.push_back(std::move(wf));
             }
+            // Drain every reply, then act: an abandoned future is a reply with nowhere to
+            // land. A pg_proc row that was refused means the function does not exist, so the
+            // statement must not report that it registered one.
+            core::error_t append_error = core::error_t::no_error();
             for (auto& wf : fn_write_futures) {
-                auto rng = co_await std::move(wf);
-                if (rng.count > 0)
-                    ctx->pg_catalog_appends.push_back(std::move(rng));
+                auto rng_r = co_await std::move(wf);
+                if (rng_r.has_error()) {
+                    if (!append_error.contains_error()) {
+                        append_error = rng_r.error();
+                    }
+                    continue;
+                }
+                if (rng_r.value().count > 0)
+                    ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+            }
+            if (append_error.contains_error()) {
+                set_error(std::move(append_error));
+                mark_failed();
+                co_return;
             }
         }
 

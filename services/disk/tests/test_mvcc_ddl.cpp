@@ -121,7 +121,10 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
         auto writes =
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_uncommitted"), ns_oid);
         for (auto& w : writes)
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(uncommitted), w.table_oid, std::move(w.row));
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   fx.txn_ctx(uncommitted),
+                                                   w.table_oid,
+                                                   std::move(w.row)));
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
     // auto_ctx() uses transaction_id=0, so it must NOT see the uncommitted row.
@@ -292,8 +295,8 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
                                                                      batch,
                                                                      catalog::relkind::regular);
         for (auto& w : writes) {
-            auto rng =
-                fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn), w.table_oid, std::move(w.row));
+            auto rng = disk_test_helpers::append_ok(
+                fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn), w.table_oid, std::move(w.row)));
             appends_for_test.push_back(std::move(rng));
         }
         // Do NOT call storage_publish_commits — rows are pending under txn.
@@ -369,7 +372,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
                                                                      components::catalog::well_known_oid::int64_type,
                                                                      std::int64_t{0},
                                                                      std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
+        auto rng = disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row)));
         pending_ranges.push_back(std::move(rng));
         // Intentionally NO storage_publish_commits — row stays uncommitted.
     }
@@ -415,7 +419,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
                                                                      components::catalog::well_known_oid::int64_type,
                                                                      std::int64_t{0},
                                                                      std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
+        auto rng = disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row)));
         pending_ranges.push_back(std::move(rng));
     }
 
@@ -468,7 +473,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
                                                                      std::int64_t{0},
                                                                      std::int64_t{1});
         // Append under txn1 — no commit yet.
-        fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
+        disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row)));
     }
 
     // Resolve from the SAME txn using PRODUCTION semantics: operator_resolve_table issues

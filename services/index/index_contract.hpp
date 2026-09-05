@@ -154,7 +154,10 @@ namespace services::index {
                                    uint64_t txn_id,
                                    core::date::timezone_offset_t session_tz);
 
-        unique_future<void> flush_all_indexes(session_id_t session);
+        // Fans force_flush out to every owned agent and reports the FIRST refusal. An index
+        // whose entries never reached the device must not be presented to the checkpoint above
+        // it as flushed: that checkpoint truncates the WAL.
+        unique_future<core::error_t> flush_all_indexes(session_id_t session);
 
         // Compact gate: returns the subset of the input oids that are safe to
         // compact — those with NO index engine, plus those whose engine holds

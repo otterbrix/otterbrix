@@ -505,9 +505,16 @@ namespace components::operators {
                                              exec_ctx,
                                              pg_idx_oid,
                                              std::move(valid_row));
-            auto rng = co_await std::move(wf);
-            if (rng.count > 0)
-                ctx->pg_catalog_appends.push_back(std::move(rng));
+            auto rng_r = co_await std::move(wf);
+            if (rng_r.has_error()) {
+                // This is the row that flips the index to indisvalid. Refused, the index stays
+                // invalid and no reader will use it — reporting success would hide that.
+                set_error(rng_r.error());
+                mark_failed();
+                co_return;
+            }
+            if (rng_r.value().count > 0)
+                ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
         }
 
         mark_executed();

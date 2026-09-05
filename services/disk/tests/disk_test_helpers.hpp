@@ -31,6 +31,16 @@ namespace disk_test_helpers {
         return std::move(r.value());
     }
 
+    // Unwrap a catalog-row append in a test. append_pg_catalog_row reports "the row could not
+    // be written" through the wrapper; swallowing that would let a test publish a commit range
+    // for a row that was never written, which is precisely the confusion the wrapper exists to
+    // end.
+    inline components::pg_catalog_append_range_t
+    append_ok(core::result_wrapper_t<components::pg_catalog_append_range_t> r) {
+        assert(!r.has_error() && "disk_test_helpers::append_ok: catalog row append failed");
+        return std::move(r.value());
+    }
+
     using namespace services::disk;
     namespace catalog = components::catalog;
     using session_id_t = components::session::session_id_t;
@@ -57,7 +67,7 @@ namespace disk_test_helpers {
                               Writes& writes,
                               std::vector<components::pg_catalog_append_range_t>& appends_out) {
         for (auto& w : writes) {
-            auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row));
+            auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row)));
             appends_out.push_back(std::move(rng));
         }
     }
@@ -158,7 +168,7 @@ namespace disk_test_helpers {
         }
         auto valid_row =
             catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true, catalog::indtype::single);
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row)));
         appends_local.push_back(std::move(rng));
         std::set<catalog::oid_t> deletes_local{pg_index};
         fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{1000}, std::move(appends_local));
@@ -409,7 +419,7 @@ namespace disk_test_helpers {
                                                          type_oid,
                                                          attversion,
                                                          std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -481,7 +491,7 @@ namespace disk_test_helpers {
                                                          type_oid,
                                                          new_version,
                                                          /*attrefcount=*/std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -552,7 +562,7 @@ namespace disk_test_helpers {
                                                          live_atttypid,
                                                          max_version + 1,
                                                          /*attrefcount=*/std::int64_t{0});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -582,7 +592,7 @@ namespace disk_test_helpers {
                                                    false,
                                                    "",
                                                    "");
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_attr, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_attr, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,

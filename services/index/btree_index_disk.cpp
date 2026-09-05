@@ -100,9 +100,9 @@ namespace services::index {
 
     btree_index_disk_t::~btree_index_disk_t() = default;
 
-    void btree_index_disk_t::insert(const value_t& key, size_t value) {
+    core::error_t btree_index_disk_t::insert(const value_t& key, size_t value) {
         if (key_is_absent(key)) {
-            return;
+            return core::error_t::no_error();
         }
         // The dedup probe is written into a result on THIS index's resource. It used to go
         // through the by-value find() virtual, whose default-constructed vector put the
@@ -115,22 +115,23 @@ namespace services::index {
             components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(value));
             db_->append(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
-            flush_if_needed();
+            return flush_if_needed();
         }
+        return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::remove(value_t key) {
+    core::error_t btree_index_disk_t::remove(value_t key) {
         if (key_is_absent(key)) {
-            return;
+            return core::error_t::no_error();
         }
         db_->remove_index(convert(key));
         mark_operation_dirty();
-        flush_if_needed();
+        return flush_if_needed();
     }
 
-    void btree_index_disk_t::remove(const value_t& key, size_t row_id) {
+    core::error_t btree_index_disk_t::remove(const value_t& key, size_t row_id) {
         if (key_is_absent(key)) {
-            return;
+            return core::error_t::no_error();
         }
         result values(resource());
         find(key, values);
@@ -140,17 +141,20 @@ namespace services::index {
             components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row_id));
             db_->remove(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
-            flush_if_needed();
+            return flush_if_needed();
         }
+        return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::flush_if_needed() {
+    // THE THRESHOLD FLUSH IS THE WRITE, and its failure used to end here: force_flush's
+    // io_error was bound to a local and `return`ed away, so an index whose entries never
+    // reached the device reported the same silence as one that did. Nothing downstream
+    // re-checks. The answer travels to whoever asked for the write now.
+    core::error_t btree_index_disk_t::flush_if_needed() {
         if (should_flush()) {
-            auto flush_error = force_flush();
-            if (flush_error.type != core::error_code_t::none) {
-                return;
-            }
+            return force_flush();
         }
+        return core::error_t::no_error();
     }
 
     void btree_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {

@@ -91,7 +91,10 @@ namespace services::disk {
 
         actor_zeta::unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
-        actor_zeta::unique_future<components::pg_catalog_append_range_t>
+        // Appends the row and reports the range it occupies, or refuses. See
+        // manager_disk_t::append_pg_catalog_row: a zero-count range means "nothing asked to
+        // be written", never "the write failed" — the failure travels in the wrapper.
+        actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row(execution_context_t ctx,
                               components::catalog::oid_t table_oid,
                               components::vector::data_chunk_t row);

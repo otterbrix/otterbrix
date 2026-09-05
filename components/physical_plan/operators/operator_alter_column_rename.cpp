@@ -172,7 +172,14 @@ namespace components::operators {
                                              exec_ctx,
                                              pg_attr,
                                              std::move(new_row));
-            auto rng = co_await std::move(wf);
+            auto rng_r = co_await std::move(wf);
+            if (rng_r.has_error()) {
+                // Same half-renamed state as the zero-row case below, with the reason attached.
+                set_error(rng_r.error());
+                mark_failed();
+                co_return;
+            }
+            auto rng = std::move(rng_r.value());
             // The live row is already deleted above. A 0-row append would leave the column
             // half-renamed — invisible to resolve_table under either name, and with no MVCC
             // marker for recovery — so this is a hard error rather than a mark_executed() lie

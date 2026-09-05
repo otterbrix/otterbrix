@@ -52,17 +52,19 @@ _exported_symbols.extend([
     "connect",
 ])
 
-# try to load old sql-based bindings for backwards compatibility
-try:
-    from .otterbrix import Client, Connection, Cursor, to_aggregate
-    _exported_symbols.extend([
-        "Client",
-        "Connection",
-        "Cursor",
-        "to_aggregate",
-    ])
-except ImportError:
-    pass
+# The sql-based bindings. main.cpp defines Client / Connection / Cursor / to_aggregate
+# unconditionally (no build option gates them), so their absence is a broken extension
+# module, not a supported configuration -- import them like every other name above and let
+# the ImportError name the missing symbol at import time. The try/except this replaces
+# called itself "backwards compatibility" and swallowed exactly that failure: the names
+# vanished from the package and the user met an AttributeError somewhere far from the cause.
+from .otterbrix import Client, Connection, Cursor, to_aggregate
+_exported_symbols.extend([
+    "Client",
+    "Connection",
+    "Cursor",
+    "to_aggregate",
+])
 
 import otterbrix.typing as typing
 

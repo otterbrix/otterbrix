@@ -440,8 +440,8 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
                                                     pg_index,  // refclassid
                                                     idx_oid,   // refobjid
                                                     'n');
-        appends_local.push_back(
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row)));
+        appends_local.push_back(disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row))));
 
         // (2) delete the pg_depend row we just appended (objid == col 1 == dep_objid).
         //     delete_pg_catalog_rows_inner only emits a PHYSICAL_DELETE when it finds
@@ -453,8 +453,8 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
 
         // (3) append a pg_index row — a DIFFERENT catalog, after the delete.
         auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true, components::catalog::indtype::single);
-        appends_local.push_back(
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row)));
+        appends_local.push_back(disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row))));
 
         std::set<catalog::oid_t> deletes_local{pg_depend};
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -491,7 +491,8 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         const catalog::oid_t idx_oid = oids[0];
 
         auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true, components::catalog::indtype::single);
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row));
+        auto rng = disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,

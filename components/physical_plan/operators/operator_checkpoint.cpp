@@ -24,7 +24,14 @@ namespace components::operators {
             auto [_fi, fif] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::flush_all_indexes,
                                                ctx->session);
-            co_await std::move(fif);
+            // THE STATEMENT IS THE CHANNEL. Step 4 below truncates the WAL behind whatever
+            // this step made durable, so an index flush that did not reach the device must
+            // stop the round here rather than be logged inside the agent and forgotten.
+            if (auto flush_error = co_await std::move(fif); flush_error.contains_error()) {
+                set_error(flush_error);
+                mark_failed();
+                co_return;
+            }
         }
 
         // snapshot the current WAL id BEFORE the checkpoint so the per-table

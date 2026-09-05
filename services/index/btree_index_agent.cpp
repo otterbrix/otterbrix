@@ -494,19 +494,17 @@ namespace services::index {
         co_return std::move(rows);
     }
 
-    btree_index_agent_t::unique_future<void> btree_index_agent_t::force_flush(session_id_t session) {
+    btree_index_agent_t::unique_future<core::error_t> btree_index_agent_t::force_flush(session_id_t session) {
         // A dropped agent has no tree -- flushing it would be a use-after-free, so skip.
         trace(log_, "btree_index_agent_t::force_flush, session: {}", session.data());
-        if (!is_dropped_) {
-            // Checkpoint path, not a statement: there is no cursor to fail here, so the
-            // result is recorded rather than propagated. The DML paths above DO propagate
-            // it.
-            auto flush_error = store_.force_flush();
-            if (flush_error.type != core::error_code_t::none) {
-                error(log_, "btree_index_agent_t::force_flush: {}", flush_error.what);
-            }
+        if (is_dropped_) {
+            co_return core::error_t::no_error();
         }
-        co_return;
+        // THE ANSWER TRAVELS. This used to end at an error() line: the checkpoint that asked
+        // for the flush was told nothing and went on to truncate the WAL behind an index whose
+        // entries had not reached the device. The DML paths always propagated it; so does this
+        // one now.
+        co_return store_.force_flush();
     }
 
 } // namespace services::index

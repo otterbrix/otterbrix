@@ -59,9 +59,12 @@ namespace services::index {
         // anywhere else is a result built on the process default resource.
         [[nodiscard]] std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
-        void insert(const value_t& key, size_t value);
-        void remove(value_t key);
-        void remove(const value_t& key, size_t row_id);
+        // WRITES, and each reports whether the data it wrote reached the device. A write
+        // whose threshold flush failed left the tree naming entries no reader will ever find
+        // again after a restart; returning void made that indistinguishable from success.
+        [[nodiscard]] core::error_t insert(const value_t& key, size_t value);
+        [[nodiscard]] core::error_t remove(value_t key);
+        [[nodiscard]] core::error_t remove(const value_t& key, size_t row_id);
 
         // READS. Every answer is COMPLETE -- an index that reports a subset is a wrong
         // answer, not a fast one -- and every answer comes back in ASCENDING key order.
@@ -141,7 +144,9 @@ namespace services::index {
             dirty_ = false;
             ops_since_flush_ = 0;
         }
-        void flush_if_needed();
+        // Flushes when the operation counter crosses the threshold, and reports the io_error
+        // when that flush does not reach the disk (see the .cpp).
+        [[nodiscard]] core::error_t flush_if_needed();
 
         std::pmr::memory_resource* resource_;
         uint64_t flush_threshold_;

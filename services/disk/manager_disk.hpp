@@ -838,8 +838,11 @@ namespace services::disk {
         // same trade-off as PostgreSQL's pre-allocation approach.
         unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
-        // WAL-safe append of a single pre-built row into a pg_catalog table.
-        unique_future<components::pg_catalog_append_range_t>
+        // WAL-safe append of a single pre-built row into a pg_catalog table, or the reason
+        // the row was not written. The wrapper is what separates "appended nothing" from
+        // "could not append": a zero-count range reads as a no-op at every call site, so
+        // without it a refused catalog write left the DDL statement reporting success.
+        unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row(execution_context_t ctx,
                               components::catalog::oid_t table_oid,
                               components::vector::data_chunk_t row);
@@ -952,18 +955,22 @@ namespace services::disk {
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
         uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data);
-        void direct_delete_sync(components::catalog::oid_t table_oid,
-                                const std::pmr::vector<int64_t>& row_ids,
-                                uint64_t count);
-        void direct_update_sync(components::catalog::oid_t table_oid,
-                                const std::pmr::vector<int64_t>& row_ids,
-                                components::vector::data_chunk_t& new_data);
+        // These three REFUSE rather than no-op when the table has no storage on its owning
+        // agent: they run on the WAL-replay path, where a dropped mutation is a journalled
+        // change that recovery declined to restore and nothing re-derives later. See
+        // agent_disk_t's declarations for the full reasoning.
+        [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
+                                                       const std::pmr::vector<int64_t>& row_ids,
+                                                       uint64_t count);
+        [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
+                                                       const std::pmr::vector<int64_t>& row_ids,
+                                                       components::vector::data_chunk_t& new_data);
         // WAL-replay of a PHYSICAL_ADD_COLUMN record: re-apply each schema column to
         // the owned storage ahead of the dependent PHYSICAL_INSERT. `schema_chunk` is
         // a 0-row chunk whose columns ARE the new columns (alias-tagged types).
         // Idempotent: columns already present (by name) are skipped.
-        void direct_add_column_sync(components::catalog::oid_t table_oid,
-                                    const components::vector::data_chunk_t& schema_chunk);
+        [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
+                                                           const components::vector::data_chunk_t& schema_chunk);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }

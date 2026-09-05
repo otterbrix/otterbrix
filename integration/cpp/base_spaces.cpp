@@ -380,15 +380,39 @@ namespace otterbrix {
                                             break;
                                         }
                                     }
-                                    disk_ptr->direct_add_column_sync(table_oid, r->physical_data.front());
+                                    if (auto add_err =
+                                            disk_ptr->direct_add_column_sync(table_oid, r->physical_data.front());
+                                        add_err.contains_error()) {
+                                        error(log, "spaces::replay: {}", add_err.what);
+                                    }
                                 }
                                 break;
                             case services::wal::wal_record_type::PHYSICAL_DELETE: {
-                                disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
+                                // THE STORAGE HAS TO EXIST FIRST, exactly as the INSERT branch
+                                // makes it exist. A DELETE record names row ids and nothing
+                                // else, so there is no chunk to synthesise a table from — the
+                                // most this leg can do is load the .otbx the catalog says is
+                                // there. If that still leaves no storage, the journalled
+                                // delete cannot be applied and SAYING SO is the whole point:
+                                // the silent version left rows the WAL says are deleted alive
+                                // after recovery, with nothing anywhere to notice.
+                                if (!disk_ptr->has_storage(table_oid)) {
+                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                }
+                                if (auto del_err = disk_ptr->direct_delete_sync(table_oid,
+                                                                                r->physical_row_ids,
+                                                                                r->physical_row_count);
+                                    del_err.contains_error()) {
+                                    error(log, "spaces::replay: {}", del_err.what);
+                                }
                                 break;
                             }
                             case services::wal::wal_record_type::PHYSICAL_UPDATE:
                                 if (!r->physical_data.empty()) {
+                                    // Same load-first rule as the DELETE branch above.
+                                    if (!disk_ptr->has_storage(table_oid)) {
+                                        disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                    }
                                     // physical_row_ids is flat across the batch; slice it per
                                     // chunk in vector order to match each chunk's rows.
                                     std::size_t id_base = 0;
@@ -402,7 +426,10 @@ namespace otterbrix {
                                             ids.push_back(r->physical_row_ids[id_base + i]);
                                         }
                                         id_base += n;
-                                        disk_ptr->direct_update_sync(table_oid, ids, chunk);
+                                        if (auto upd_err = disk_ptr->direct_update_sync(table_oid, ids, chunk);
+                                            upd_err.contains_error()) {
+                                            error(log, "spaces::replay: {}", upd_err.what);
+                                        }
                                     }
                                 }
                                 break;

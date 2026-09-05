@@ -837,7 +837,10 @@ namespace components::table {
     }
 
     uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
-        const bool is_txn = transaction_id != 0;
+        // The is_txn == false leg is what gives DIRECT_WRITE_TXN_ID its meaning: it stamps an
+        // immediately-committed version id, so no publish/revert is owed afterwards. Named
+        // rather than re-derived, because two disk-side handlers branch on the same sentinel.
+        const bool is_txn = !is_direct_write_txn(transaction_id);
         version_delete_state del_state(*this, transaction_id, table, start, is_txn);
 
         for (uint64_t i = 0; i < count; i++) {

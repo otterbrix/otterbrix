@@ -72,36 +72,58 @@ namespace services::disk {
         return append_r.value();
     }
 
-    void manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
-                                            const std::pmr::vector<int64_t>& row_ids,
-                                            uint64_t count) {
+    // THE THREE REPLAY ROUTERS. Each names the owning agent with pool_idx_for_oid and
+    // forwards; a manager with no agents, or an empty agent slot, is a journalled change with
+    // nowhere to land and is reported rather than dropped. See agent_disk_t's declarations.
+    core::error_t manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
+                                                     const std::pmr::vector<int64_t>& row_ids,
+                                                     uint64_t count) {
         // Bootstrap / WAL-replay only; routes the physical delete to the owning agent
-        // under transaction_data{0, 0} (replay carries no MVCC txn).
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            agents_[pool_idx]->direct_delete_sync(table_oid, row_ids, count, components::table::transaction_data{0, 0});
+        // under transaction_data{0, 0} (DIRECT_WRITE_TXN_ID — replay carries no MVCC txn).
+        if (agents_.empty()) {
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"direct_delete_sync: no disk agents", resource()}};
         }
+        const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (agents_[pool_idx] == nullptr) {
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"direct_delete_sync: owning disk agent is null", resource()}};
+        }
+        return agents_[pool_idx]->direct_delete_sync(table_oid,
+                                                     row_ids,
+                                                     count,
+                                                     components::table::transaction_data{0, 0});
     }
 
-    void manager_disk_t::direct_update_sync(catalog::oid_t table_oid,
-                                            const std::pmr::vector<int64_t>& row_ids,
-                                            components::vector::data_chunk_t& new_data) {
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            agents_[pool_idx]->direct_update_sync(table_oid, row_ids, new_data);
+    core::error_t manager_disk_t::direct_update_sync(catalog::oid_t table_oid,
+                                                     const std::pmr::vector<int64_t>& row_ids,
+                                                     components::vector::data_chunk_t& new_data) {
+        if (agents_.empty()) {
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"direct_update_sync: no disk agents", resource()}};
         }
+        const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (agents_[pool_idx] == nullptr) {
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"direct_update_sync: owning disk agent is null", resource()}};
+        }
+        return agents_[pool_idx]->direct_update_sync(table_oid, row_ids, new_data);
     }
 
-    void manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
-                                                const components::vector::data_chunk_t& schema_chunk) {
+    core::error_t manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
+                                                         const components::vector::data_chunk_t& schema_chunk) {
         // Bootstrap / WAL-replay only; routes the schema-growth record to the owning
         // agent so the new columns exist before the dependent PHYSICAL_INSERT replays.
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            if (agents_[pool_idx] != nullptr) {
-                agents_[pool_idx]->direct_add_column_sync(table_oid, schema_chunk);
-            }
+        if (agents_.empty()) {
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"direct_add_column_sync: no disk agents", resource()}};
         }
+        const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (agents_[pool_idx] == nullptr) {
+            return core::error_t{core::error_code_t::io_error,
+                                 std::pmr::string{"direct_add_column_sync: owning disk agent is null", resource()}};
+        }
+        return agents_[pool_idx]->direct_add_column_sync(table_oid, schema_chunk);
     }
 
     // --- Storage management ---

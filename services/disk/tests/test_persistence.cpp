@@ -812,10 +812,10 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
                                                         /*added_at_commit_id*/ kPersistedCommitId,
                                                         /*dropped_at_commit_id*/ 0);
         std::vector<components::pg_catalog_append_range_t> appends;
-        auto rng = fd.invoke(&manager_disk_t::append_pg_catalog_row,
-                             disk_test_helpers::auto_ctx(),
-                             pg_attr,
-                             std::move(attr_row));
+        auto rng = disk_test_helpers::append_ok(fd.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                          disk_test_helpers::auto_ctx(),
+                                                          pg_attr,
+                                                          std::move(attr_row)));
         appends.push_back(std::move(rng));
         fd.invoke(&manager_disk_t::storage_publish_commits,
                   disk_test_helpers::rebuild_ctx(),

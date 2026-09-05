@@ -133,8 +133,16 @@ namespace components::operators {
                                          exec_ctx,
                                          pg_computed_column,
                                          std::move(cc_row));
-        if (auto rng = co_await std::move(wf); rng.count > 0) {
-            ctx->pg_catalog_appends.push_back(std::move(rng));
+        auto rng_r = co_await std::move(wf);
+        if (rng_r.has_error()) {
+            // The tombstone IS the unregistration. Without it the column stays live and
+            // reporting success would hide that from the statement.
+            set_error(rng_r.error());
+            mark_failed();
+            co_return;
+        }
+        if (rng_r.value().count > 0) {
+            ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
         }
 
         // Note: a previous version of this code added an immediate

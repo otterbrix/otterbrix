@@ -61,7 +61,8 @@ namespace components::operators {
         // Two-phase: every append is independent (no iteration consumes the
         // previous result), so send all rows first then await in order.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-        std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> append_futures(resource_);
+        std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
+            append_futures(resource_);
         append_futures.reserve(catalog_writes_.size());
         for (auto& [tbl_oid, row] : catalog_writes_) {
             auto [_, f] = actor_zeta::send(ctx->disk_address,
@@ -71,10 +72,25 @@ namespace components::operators {
                                            std::move(row));
             append_futures.push_back(std::move(f));
         }
+        // EVERY future is drained before the first refusal is acted on: abandoning the
+        // rest would leave replies for a statement that no longer exists. First error wins.
+        core::error_t append_error = core::error_t::no_error();
         for (auto& f : append_futures) {
-            auto rng = co_await std::move(f);
-            if (rng.count > 0)
-                ctx->pg_catalog_appends.push_back(std::move(rng));
+            auto rng_r = co_await std::move(f);
+            if (rng_r.has_error()) {
+                if (!append_error.contains_error()) {
+                    append_error = rng_r.error();
+                }
+                continue;
+            }
+            if (rng_r.value().count > 0)
+                ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+        }
+        if (append_error.contains_error()) {
+            // A catalog row that never landed leaves the view existing in name only.
+            set_error(std::move(append_error));
+            mark_failed();
+            co_return;
         }
 
         // Created empty (WITH NO DATA semantics): driving body_op_ here to

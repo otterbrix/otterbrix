@@ -158,7 +158,13 @@ namespace services::index {
 
         // Checkpoint fan-out from manager_index_t::flush_all_indexes. Ordered behind any
         // pending write in this agent's FIFO, so it never races one.
-        unique_future<void> force_flush(session_id_t session);
+        //
+        // IT REPORTS. The return type used to be void, so both families ended their handler
+        // by logging the store's io_error and replying as if the flush had happened — and the
+        // checkpoint that asked for it went on to truncate the WAL behind an index whose
+        // entries were still only in memory. There is a statement above this fan-out on the
+        // CHECKPOINT path, and it is now the one that decides what a failed flush means.
+        unique_future<core::error_t> force_flush(session_id_t session);
 
         // THE ORDER IS THE MESSAGE ID SPACE. actor_zeta::msg_id is the method's INDEX in
         // this list (action_id_impl -> find_method_index), so removing or reordering an
@@ -232,7 +238,7 @@ namespace services::index {
         {
             agent.read_rows(session, components::expressions::compare_type::eq, key, txn_id)
             } -> std::same_as<actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>>;
-        { agent.force_flush(session) } -> std::same_as<actor_zeta::unique_future<void>>;
+        { agent.force_flush(session) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
         // The table this agent's index belongs to. manager_index_t reaps by table oid and
         // asks the agent rather than keeping a second map that could disagree with it.
         { agent.table_oid() } -> std::same_as<components::catalog::oid_t>;

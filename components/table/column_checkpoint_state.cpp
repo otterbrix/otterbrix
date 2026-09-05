@@ -7,6 +7,7 @@
 
 #include <components/table/column_data.hpp>
 #include <components/table/column_segment.hpp>
+#include <components/table/column_state.hpp>
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/buffer_handle.hpp>
 #include <components/table/storage/buffer_manager.hpp>
@@ -183,6 +184,59 @@ namespace components::table {
     column_checkpoint_state_t::flush_segment(column_segment_t& segment, uint64_t row_start, uint64_t tuple_count) {
         auto& block_manager = column_data_.block_manager();
 
+        const auto phys = segment.type.to_physical_type();
+        const bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
+                                    phys != types::physical_type::INVALID);
+        const auto loaded_compression = segment.compression();
+
+        // A segment whose payload lives in a real FILE block (is_reloadable) is READ-ONLY: appends
+        // refuse it and open a fresh transient (column_data_t::initialize_append), updates ride the
+        // overlay this checkpoint refuses to serialize, and the buffer pool relies on the block
+        // re-reading byte-identically after an eviction. So its on-disk bytes at (block, offset)
+        // ARE the segment, and when that image is already in its final persisted form the new root
+        // can NAME the existing block instead of copying it. Shadow paging supports a block shared
+        // between the live tree and the root under construction: reclaim_superseded_root skips
+        // everything in pending_root_data_, serialize_free_list never publishes a block the root
+        // names, and nothing in a checkpoint round writes into an already-written block. Without
+        // this, every round rewrote the WHOLE table into fresh blocks and free-listed the previous
+        // round's copies — measured offline: 113 of 294 blocks (29.6 MB of a 77 MB file) were that
+        // superseded generation, ~2851 bytes per row.
+        //
+        // Final-form cases, i.e. where the copy would be byte-identical to what is already there:
+        //   * a compressed image (CONSTANT/RLE/DICTIONARY): only a committed checkpoint produces
+        //     one, so it is final by construction;
+        //   * a disk-backed STRING image: only initialize_column produces disk-backed STRING
+        //     segments (the write-through transition excludes them), so the dictionary is already
+        //     compacted and every big-string payload already persisted — its overflow list is
+        //     re-emitted with the pointer, or the reloaded markers would resolve to nothing;
+        //   * an uncompressed image the analysis below would not even look at (validity bitmaps,
+        //     single-tuple segments): raw bytes, copied verbatim today.
+        // The one disk-backed shape NOT taken here is an uncompressed fixed-size image with rows
+        // to analyze: a write-through block (filled during append) has never been through the
+        // compression analysis, and skipping it would silently disable CONSTANT/RLE/DICTIONARY
+        // for every filled segment. It falls through; if the analysis declines every compressed
+        // form, the default branch below still references it in place.
+        const bool disk_backed = segment.block && segment.block->is_reloadable();
+        if (disk_backed) {
+            const bool analyzable = is_fixed_size && tuple_count > 1 && segment.type_size > 0;
+            const bool final_form = loaded_compression != compression::compression_type::UNCOMPRESSED ||
+                                    phys == types::physical_type::STRING || !analyzable;
+            if (final_form) {
+                storage::data_pointer_t dp;
+                dp.row_start = row_start;
+                dp.tuple_count = tuple_count;
+                dp.block_pointer = storage::block_pointer_t(segment.block->block_id(),
+                                                            static_cast<uint32_t>(segment.block_offset()));
+                dp.compression = loaded_compression;
+                dp.segment_size = segment.segment_size();
+                if (auto* state = segment.segment_state()) {
+                    dp.overflow_blocks = state->additional_blocks();
+                }
+                data_pointers_.push_back(std::move(dp));
+                return true;
+            }
+        }
+
         // pin the segment's buffer to get data
         auto pinned = block_manager.buffer_manager.pin(segment.block);
         if (pinned.has_error()) {
@@ -191,19 +245,12 @@ namespace components::table {
         auto& handle = pinned.value();
         auto* data = handle.ptr();
 
-        auto phys = segment.type.to_physical_type();
-        bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
-                              phys != types::physical_type::INVALID);
-
-        // A DISK-LOADED segment that is already compressed (CONSTANT/RLE/DICTIONARY) holds its COMPRESSED
-        // byte stream in the pinned buffer, NOT raw values. Re-running the compression analysis below would
-        // read those compressed bytes as raw fixed-width values and re-compress garbage (reopen corruption:
-        // a packed RLE column read back as 0x140003). Such a segment is already in its final on-disk form,
-        // so copy its bytes through VERBATIM to a fresh allocation, preserving the compression type and the
-        // (compressed) segment_size. A freshly-appended in-memory segment is UNCOMPRESSED (compression_
-        // defaults to UNCOMPRESSED until checkpoint), so this branch only fires for segments loaded from a
-        // prior checkpoint.
-        const auto loaded_compression = segment.compression();
+        // A compressed (CONSTANT/RLE/DICTIONARY) segment holds its COMPRESSED byte stream in the
+        // pinned buffer, NOT raw values. Re-running the compression analysis below would read those
+        // compressed bytes as raw fixed-width values and re-compress garbage (reopen corruption: a
+        // packed RLE column read back as 0x140003). Every producer of compressed segments makes them
+        // disk-backed, so the in-place branch above already returned; this verbatim copy stays as
+        // the correct handling should a compressed segment ever arrive here another way.
         if (loaded_compression != compression::compression_type::UNCOMPRESSED && data && segment.segment_size() > 0) {
             const auto compressed_size = segment.segment_size();
             auto* compressed_data = data + segment.block_offset();
@@ -296,6 +343,21 @@ namespace components::table {
         // Default: UNCOMPRESSED
         auto segment_size = segment.segment_size();
         storage::data_pointer_t dp;
+
+        // Disk-backed and the analysis above declined every compressed form: the uncompressed
+        // copy would be byte-identical to the payload already at (block, offset), so name that
+        // instead (see the in-place note at the top). Only the analyzable fixed-size shape can
+        // reach this point disk-backed — every other disk-backed shape returned before the pin.
+        if (disk_backed) {
+            dp.row_start = row_start;
+            dp.tuple_count = tuple_count;
+            dp.block_pointer = storage::block_pointer_t(segment.block->block_id(),
+                                                        static_cast<uint32_t>(segment.block_offset()));
+            dp.compression = compression::compression_type::UNCOMPRESSED;
+            dp.segment_size = segment_size;
+            data_pointers_.push_back(std::move(dp));
+            return true;
+        }
 
         // A STRING segment persists a TIGHT image, never its whole allocation. Two reasons, both
         // handled on a writable copy of the segment:

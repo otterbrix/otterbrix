@@ -18,6 +18,7 @@ set(${PROJECT_NAME}_SOURCES
         test_eviction_queue_leak_repro.cpp
         test_metadata.cpp
         test_checkpoint_load.cpp
+        test_checkpoint_in_place.cpp
         test_transaction_manager.cpp
         test_mvcc_operations.cpp
         test_statistics.cpp

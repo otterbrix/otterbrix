@@ -182,6 +182,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_drop_index_repeat.cpp
         test_drop_restrict_deptype.cpp
         test_fixture_root_qualification.cpp
+        test_pg_catalog_dml_guard.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

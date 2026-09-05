@@ -724,8 +724,8 @@ TEST_CASE("block_manager: create_new_database refuses an unusable block allocati
 // committed header promotes them to reusable_, and a later round hands one back out and
 // register_block()s a FRESH handle for it.
 //
-// If the stale handle outlives that (data_table_t::row_group() hands out shared_ptr copies
-// by value, so a holder can outlive compact), its destructor erased the LIVE handle's slot.
+// If the stale handle outlives that (data_table_t::row_group() hands out COUNTED collection
+// copies by value, so a holder can outlive compact), its destructor erased the LIVE handle's slot.
 // From that instant registry_alive(id) is false while a live segment still reads the block —
 // and registry_alive is the subtraction that stops A7.3's reclaim from freeing live table
 // state. The same erase also defeats register_block's dedup, so two handles with independent

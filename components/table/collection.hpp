@@ -1,5 +1,7 @@
 #pragma once
 #include <atomic>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
 
@@ -29,7 +31,26 @@ namespace components::table {
         uint64_t max_row_group_;
     };
 
-    class collection_t {
+    // Ownership: SHARED, and the sharing OUTLIVES the sharer. data_table_t owns one collection
+    // and hands out counted copies BY VALUE (data_table_t::row_group()); data_table_t::compact
+    // then REPLACES that collection with a compacted rebuild and frees the outgoing one's disk
+    // blocks. A copy taken before the swap keeps the REPLACED collection — and every
+    // block_handle_t its segments own — alive until the holder lets go, which is deliberate and
+    // load-bearing: block_manager_t::unregister_block(block_handle_t&) is identity-checked
+    // precisely because those stale handles are destroyed after their block ids have been reused
+    // (see the note there, and the ITEM C cases in test_root_reclaim / test_block_manager). The
+    // reference count therefore lives inside the object (boost::intrusive_ref_counter;
+    // std::shared_ptr is forbidden — rule 14).
+    //
+    // `final` is load-bearing: nothing derives from collection_t, which is why the counter needs
+    // no virtual destructor, and marking it final keeps that true. Every collection is allocated
+    // with plain `new`, never from the pmr resource — the resource parameter only feeds the
+    // object's internal containers — so the counter's `delete` is the matching deallocation.
+    //
+    // No WEAK reference to a collection exists anywhere in the tree, and none may be added:
+    // intrusive_ref_counter has no weak analogue. A caller that needs to observe a collection
+    // without keeping it alive has to be given something else, not a raw pointer.
+    class collection_t final : public boost::intrusive_ref_counter<collection_t> {
     public:
         collection_t(std::pmr::memory_resource* resource,
                      storage::block_manager_t& block_manager,
@@ -100,8 +121,11 @@ namespace components::table {
         const std::pmr::vector<types::complex_logical_type>& types() const;
         void adopt_types(std::pmr::vector<types::complex_logical_type> types);
 
-        std::shared_ptr<collection_t> add_column(column_definition_t& new_column);
-        std::shared_ptr<collection_t> remove_column(uint64_t col_idx);
+        // The ALTER successors. Each builds a WHOLE new collection whose row groups SHARE this
+        // collection's column objects and row-version managers (see row_group_t::add_column /
+        // remove_column), so the parent stays readable while the successor is installed.
+        boost::intrusive_ptr<collection_t> add_column(column_definition_t& new_column);
+        boost::intrusive_ptr<collection_t> remove_column(uint64_t col_idx);
         // TODO: type casting
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
         // std::vector<storage_index_t> bound_columns);

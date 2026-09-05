@@ -120,7 +120,12 @@ namespace components::table {
 
         uint64_t row_group_size() const;
 
-        std::shared_ptr<collection_t> row_group() const;
+        // Hands back a COUNTED COPY, by value, and that is load-bearing rather than incidental:
+        // the caller's copy may outlive compact(), which replaces row_groups_ with a compacted
+        // rebuild and frees the outgoing collection's disk blocks. The stale holder keeps the
+        // REPLACED collection — and its block handles — alive until it lets go; see the ownership
+        // note on collection_t and the ITEM C reasoning in compact().
+        boost::intrusive_ptr<collection_t> row_group() const;
 
         uint64_t calculate_size();
         void cleanup_versions(uint64_t lowest_active_start_time);
@@ -145,6 +150,22 @@ namespace components::table {
                        storage::block_manager_t& block_manager,
                        storage::metadata_reader_t& reader);
 
+#ifdef DEV_MODE
+        // Test-observable IDENTITY of the collection this table OWNS, read straight off the
+        // member rather than through row_group() — so the gate can tell "row_group() handed back
+        // the object the table owns" from "row_group() handed back something that merely reads
+        // the same". A deep copy, or a fresh empty collection on a table that has never been
+        // appended to, is invisible to every scan, count and checksum a test could take; the
+        // address and the owner count are the only things that tell them apart.
+        //
+        // The owner count is the half that catches a conversion which copies the POINTER without
+        // counting the reference: address equality would still hold, while the holder kept no
+        // claim on the object and compact() would free it underneath. Gate:
+        // test_collection_ownership.cpp.
+        const collection_t* collection_identity() const;
+        uint64_t collection_owner_count() const;
+#endif
+
     private:
         void initialize_scan_with_offset(table_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,
@@ -167,7 +188,12 @@ namespace components::table {
         // of the replay loop was removed for racing on storages_, TSan-confirmed.
         //
         // Adding a mutex back would not fix a race; it would hide the ownership rule.
-        std::shared_ptr<collection_t> row_groups_;
+        //
+        // Counted, not exclusive: row_group() hands out copies and compact() swaps this pointer
+        // while such copies are still outstanding, so whichever of the table and its stale
+        // holders dies last frees the collection. The count lives inside collection_t (see the
+        // note on that class), not in a control block.
+        boost::intrusive_ptr<collection_t> row_groups_;
         // false = this table was superseded by an ALTER successor (the ALTER constructors
         // clear the parent's flag). Readers: append_lock / update_column report a
         // write_conflict, append asserts, compact asserts. In the current lifecycle a

@@ -678,8 +678,9 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
 // ITEM C — a collection held across compact must not strip the registry entry of a block id
 // that has since been REUSED by the live table.
 //
-// data_table_t::row_group() hands out shared_ptr<collection_t> copies BY VALUE, so the
-// replaced collection can outlive compact(). compact() mark_as_free's + unregister_block(id)'s
+// data_table_t::row_group() hands out COUNTED collection copies BY VALUE (the count lives
+// inside collection_t), so the replaced collection outlives compact() for as long as any holder
+// keeps its copy. compact() mark_as_free's + unregister_block(id)'s
 // the outgoing collection's ids while that collection's segments still own handles for them;
 // the ids go to pending_free_, a committed header promotes them to reusable_, and the next
 // round hands one back out and register_block()s a FRESH handle for it. When the stale holder

@@ -26,6 +26,7 @@ set(${PROJECT_NAME}_SOURCES
         test_checkpoint_crash_matrix.cpp
         test_alter_column_sharing.cpp
         test_alter_version_sharing.cpp
+        test_collection_ownership.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

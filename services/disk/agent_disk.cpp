@@ -2127,7 +2127,7 @@ namespace services::disk {
         }
 
         auto& table = entry->table_storage.table();
-        // The shared_ptr is scoped to the counting, NOT held across compact(): a holder that
+        // The counted copy is scoped to the counting, NOT held across compact(): a holder that
         // outlives the swap keeps the REPLACED collection's block handles alive past the
         // reclaim, and their destructors then erase registry slots that a reused id has already
         // refilled (see block_manager_t::unregister_block).

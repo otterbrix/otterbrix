@@ -73,8 +73,9 @@ namespace components::table::storage {
     //   blocks while its segments still own handles for them -> the ids sit in pending_free_
     //   -> a committed header promotes them to reusable_ -> a later round's free_block_id hands
     //   one back out and register_block(id) installs a FRESH handle H2 -> only THEN does the
-    //   stale holder let go (data_table_t::row_group() returns shared_ptr copies BY VALUE, so
-    //   the replaced collection can outlive compact) and H1's destructor lands here.
+    //   stale holder let go (data_table_t::row_group() returns COUNTED collection copies BY
+    //   VALUE, so the replaced collection lives until its last holder drops, not until the
+    //   swap) and H1's destructor lands here.
     //
     // Erasing by id at that point removes H2's slot. Two consequences, both bad:
     //   * registry_alive(id) goes false while a live segment is still reading the block, and

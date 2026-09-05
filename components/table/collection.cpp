@@ -407,15 +407,19 @@ namespace components::table {
         }
     }
 
-    std::shared_ptr<collection_t> collection_t::add_column(column_definition_t& new_column) {
+    boost::intrusive_ptr<collection_t> collection_t::add_column(column_definition_t& new_column) {
         auto new_types = types_;
         new_types.push_back(new_column.type());
-        auto result = std::make_shared<collection_t>(resource_,
-                                                     block_manager_,
-                                                     std::move(new_types),
-                                                     row_start_,
-                                                     total_rows_.load(),
-                                                     row_group_size_);
+        // Plain `new`, never the pmr resource: the reference count lives inside the collection, so
+        // the counter's `delete` is the matching deallocation. Nothing was lost by giving up
+        // make_shared's single object+control-block allocation — no weak_ptr, aliasing pointer,
+        // custom deleter or shared_from_this is ever taken on a collection.
+        auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
+                                                                          block_manager_,
+                                                                          std::move(new_types),
+                                                                          row_start_,
+                                                                          total_rows_.load(),
+                                                                          row_group_size_));
 
         vector::vector_t default_vector(resource_, new_column.type());
         for (auto& current_row_group : row_groups_->segments()) {
@@ -427,17 +431,18 @@ namespace components::table {
         return result;
     }
 
-    std::shared_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
+    boost::intrusive_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
         assert(col_idx < types_.size());
         auto new_types = types_;
         new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
-        auto result = std::make_shared<collection_t>(resource_,
-                                                     block_manager_,
-                                                     std::move(new_types),
-                                                     row_start_,
-                                                     total_rows_.load(),
-                                                     row_group_size_);
+        // Same allocation note as add_column above.
+        auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
+                                                                          block_manager_,
+                                                                          std::move(new_types),
+                                                                          row_start_,
+                                                                          total_rows_.load(),
+                                                                          row_group_size_));
 
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group = current_row_group.remove_column(result.get(), col_idx);

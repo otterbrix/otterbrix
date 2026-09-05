@@ -327,7 +327,7 @@ namespace {
         // GATE 1. The loader registered one block_handle_t per loaded segment plus the
         // big-string overflow blocks — for EVERY node of every column tree, children
         // included. That registry is precisely what this fresh collection owns, so compact's
-        // reclaim source must cover all of it. (Scoped so the shared_ptr copy dies before
+        // reclaim source must cover all of it. (Scoped so the counted copy dies before
         // compact — a held copy would keep the outgoing collection alive, ITEM C.)
         {
             std::pmr::vector<uint64_t> collected{&env.resource};

@@ -80,7 +80,12 @@ namespace components::table {
         , column_definitions_(std::move(column_definitions))
         , is_root_(true)
         , name_(std::move(name)) {
-        this->row_groups_ = std::make_shared<collection_t>(resource_, block_manager, copy_types(), 0);
+        // Plain `new`, never the pmr resource: the reference count lives inside the collection, so
+        // the counter's `delete` is the matching deallocation. Nothing was lost by giving up
+        // make_shared's single object+control-block allocation — no weak_ptr, aliasing pointer,
+        // custom deleter or shared_from_this is ever taken on a collection.
+        this->row_groups_ =
+            boost::intrusive_ptr<collection_t>(new collection_t(resource_, block_manager, copy_types(), 0));
     }
 
     data_table_t::data_table_t(data_table_t& parent, column_definition_t& new_column)
@@ -179,7 +184,10 @@ namespace components::table {
 
     uint64_t data_table_t::row_group_size() const { return row_groups_->row_group_size(); }
 
-    std::shared_ptr<collection_t> data_table_t::row_group() const { return row_groups_; }
+    // A COUNTED copy: the caller's reference keeps this collection alive on its own, so it stays
+    // valid — and keeps its block handles registered — even after compact() swaps a different one
+    // in. See the note on the declaration.
+    boost::intrusive_ptr<collection_t> data_table_t::row_group() const { return row_groups_; }
 
     uint64_t data_table_t::calculate_size() { return row_groups_->calculate_size(); }
 
@@ -252,11 +260,11 @@ namespace components::table {
         }
 
         auto types = row_groups_->types();
-        auto new_collection = std::make_shared<collection_t>(
-            resource_,
-            row_groups_->block_manager(),
-            std::pmr::vector<types::complex_logical_type>(types.begin(), types.end(), resource_),
-            0);
+        auto new_collection = boost::intrusive_ptr<collection_t>(
+            new collection_t(resource_,
+                             row_groups_->block_manager(),
+                             std::pmr::vector<types::complex_logical_type>(types.begin(), types.end(), resource_),
+                             0));
 
         {
             table_append_state append_state(resource_);
@@ -330,7 +338,8 @@ namespace components::table {
         // re-registered the id in between, and A7.2/A7.3 made re-registration the NORMAL case: the ids released
         // here land in pending_free_, a committed header promotes them to reusable_, and the next round hands one
         // back out and register_block()s a FRESH handle for it. A holder that outlives this swap (row_group()
-        // returns shared_ptr copies BY VALUE) then destroyed the stale handle AFTER that, and the id-only erase
+        // returns COUNTED collection copies BY VALUE, so the outgoing collection is destroyed when the LAST
+        // holder lets go, not at the swap) then destroyed the stale handle AFTER that, and the id-only erase
         // took the LIVE handle's slot with it -- turning registry_alive(id) false while a live segment was still
         // reading the block, which is exactly the subtraction reclaim_superseded_root relies on. The handle
         // destructor's erase is now identity-checked (block_manager_t::unregister_block(block_handle_t&)), so it
@@ -802,5 +811,19 @@ namespace components::table {
 
         return table;
     }
+
+#ifdef DEV_MODE
+    const collection_t* data_table_t::collection_identity() const {
+        // The OWNING side, read off the member: row_group() must hand back exactly THIS object,
+        // and after compact() a holder taken before the swap must still name the OLD one while
+        // this answers with the new.
+        return row_groups_.get();
+    }
+
+    uint64_t data_table_t::collection_owner_count() const {
+        // A live collection is owned by at least the table, so 0 can only mean "no object".
+        return row_groups_ ? static_cast<uint64_t>(row_groups_->use_count()) : 0;
+    }
+#endif
 
 } // namespace components::table

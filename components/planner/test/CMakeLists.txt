@@ -7,6 +7,11 @@ set(${PROJECT_NAME}_SOURCES
         test_promote_star.cpp
         test_pushed_spec_build.cpp
         test_create_plan_pushdown.cpp
+        test_create_plan_sequence.cpp
+        test_view_expansion.cpp
+        test_ddl_oid_batch_refusal.cpp
+        test_ddl_unresolved_refusal.cpp
+        test_pushdown_key_arena.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

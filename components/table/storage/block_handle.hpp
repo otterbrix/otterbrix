@@ -36,7 +36,11 @@ namespace components::table::storage {
         COLUMN_DATA = 6,
         METADATA = 7,
         OVERFLOW_STRINGS = 8,
-        IN_MEMORY_TABLE = 9,
+        // Buffers with no file behind them — what register_transient_memory hands out and what
+        // column_segment_t's in-place grow allocates. The name is a leftover of a removed
+        // in-memory storage mode, whose tables it never accounted for anyway. Runtime
+        // accounting only: the value is never serialized.
+        TRANSIENT_TABLE = 9,
         ALLOCATOR = 10,
         EXTENSION = 11,
         TRANSACTION = 12,
@@ -113,15 +117,13 @@ namespace components::table::storage {
         // Same condition load() uses.
         bool is_reloadable() const { return block_id_ < MAXIMUM_BLOCK; }
 
-        // Spill state. Deliberately SEPARATE from block_id_/is_reloadable(): that expression means
+        // Spill state, deliberately SEPARATE from block_id_/is_reloadable(): that expression means
         // four different things around the tree ("has a disk copy", "is shared/read-only", "already
-        // written through", "is a real .otbx id, free it on compact"), and widening it to cover
-        // temporary copies would silently flip all four. Worse, a temp id would then reach
+        // written through", "is a real .otbx id, free it on compact"), so widening it to cover
+        // temporary copies would silently flip all four. A temp id would also reach
         // single_file_block_manager_t::block_location, where (2^62 + N) * block_size overflows onto
-        // exactly real block N — corruption that reads back with a valid checksum.
-        //
-        // So a spilled block keeps its transient identity and gains a slot in the pool's scratch
-        // file instead.
+        // exactly real block N — corruption that reads back with a valid checksum. So a spilled block
+        // keeps its transient identity and gains a slot in the pool's scratch file instead.
         bool has_temp_copy() const { return temp_slot_ != INVALID_TEMP_SLOT; }
         // `bytes` is what was written to the scratch file (the whole allocation); `user_size` is
         // the logical size the buffer was created with. construct_manager_buffer() derives the

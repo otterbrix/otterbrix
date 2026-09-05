@@ -104,7 +104,7 @@ def prepare_base_setup(db_name: str, csv_path: Path, use_hash_index: bool, flush
     index_sql = f"CREATE INDEX idx_id_hash ON {db_name}.kv USING hash (id);" if use_hash_index else f"CREATE INDEX idx_id ON {db_name}.kv (id);"
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE kv (id INTEGER, payload STRING) WITH (storage = 'disk', bitcask_flush_threshold = {flush_threshold}, bitcask_segment_record_limit = {segment_limit});\n"
+        f"CREATE TABLE kv (id INTEGER, payload STRING) WITH (bitcask_flush_threshold = {flush_threshold}, bitcask_segment_record_limit = {segment_limit});\n"
         f"-- @load_csv {csv_path} kv ,\n"
         f"{index_sql};"
     )

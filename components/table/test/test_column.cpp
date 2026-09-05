@@ -2,10 +2,13 @@
 
 #include <components/table/standard_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdio>
 #include <filesystem>
+#include <string>
+#include <unistd.h>
 
 TEST_CASE("components::table::column") {
     using namespace components::types;
@@ -52,6 +55,12 @@ TEST_CASE("components::table::column") {
         return std::string{"long_string_with_index_" + number};
     };
 
+    // Every block below runs on a real .otbx, re-created fresh for each one, and they DO reach
+    // the disk path: a nested column's child segment holds 1024 values, so a 1024-row append of
+    // a 128-element ARRAY fills (and writes through) 128 of them. Substrate only — no assertion
+    // below is about it.
+    const std::string db_path = "/tmp/test_otterbrix_column_" + std::to_string(::getpid()) + ".otbx";
+
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BOOLEAN, "flag");
     fields.emplace_back(logical_type::INTEGER, "number");
@@ -63,7 +72,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::UBIGINT);
         // Append
         {
@@ -138,7 +149,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::STRING_LITERAL);
         // Append
         {
@@ -218,7 +231,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column =
             column_data_t::create_column(&resource,
                                          block_manager,
@@ -317,7 +332,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column =
             column_data_t::create_column(&resource,
                                          block_manager,
@@ -433,7 +450,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource,
                                                    block_manager,
                                                    0,
@@ -538,7 +557,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource,
                                                    block_manager,
                                                    0,
@@ -671,7 +692,9 @@ TEST_CASE("components::table::column") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-        auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
+        std::remove(db_path.c_str());
+        auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+        REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource, block_manager, 0, 0, struct_type);
 
         // Append
@@ -845,4 +868,6 @@ TEST_CASE("components::table::column") {
         }
         */
     }
+
+    std::remove(db_path.c_str());
 }

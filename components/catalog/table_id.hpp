@@ -31,14 +31,15 @@ namespace components::catalog {
         // hashing/equality is by name, the OID is purely an identity tag for catalog
         // joins (pg_attribute.attrelid, pg_depend.refobjid, etc).
         [[nodiscard]] oid_t oid() const noexcept { return oid_; }
-        // Immutable after first non-INVALID assignment: re-stamping the same value is a no-op,
-        // changing to a different value throws std::logic_error.
+        // Immutable after first non-INVALID assignment: re-stamping the same value is a
+        // no-op; changing to a different value is a programmer error and ABORTS — loud
+        // in every build, debug and NDEBUG alike (rule 2: no exceptions to throw, and a
+        // silent no-op would let two identities of the same table diverge unseen).
         void set_oid(oid_t oid);
 
     private:
         table_namespace_t namespace_parts_;
         std::pmr::string name_;
-        std::pmr::memory_resource* resource_;
         oid_t oid_{INVALID_OID};
     };
 } // namespace components::catalog

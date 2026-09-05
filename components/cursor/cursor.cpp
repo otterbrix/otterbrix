@@ -16,19 +16,21 @@ namespace components::cursor {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
+    // A cursor's data lives on the cursor's resource — the error message included. Neither of
+    // error_t's own paths puts it there (a copy lands on the default resource, a move keeps
+    // the producer's), so the message is rebuilt through the one canonical residency point.
     cursor_t::cursor_t(std::pmr::memory_resource* resource, const core::error_t& error)
         : chunks_(resource)
         , type_data_(resource)
-        , error_(error) {
+        , error_(core::error_on(resource, error)) {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, core::error_t&& error)
-        : chunks_(resource)
-        , type_data_(resource)
-        , error_(std::move(error)) {
-        chunks_.emplace_back(empty_chunk(resource));
-    }
+        // `error` is a named parameter and therefore an lvalue, so this delegates to the
+        // constructor above: a cursor never adopts the producer's buffer, it rebuilds the
+        // message on its own resource.
+        : cursor_t(resource, error) {}
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk)
         : size_(chunk.size())
@@ -84,7 +86,9 @@ namespace components::cursor {
 
     std::size_t cursor_t::size() const { return size_; }
     std::size_t cursor_t::column_count() const { return type_data_.size(); }
-    std::size_t cursor_t::column_index(std::string_view key) const { return chunks_.front().column_index(key); }
+    core::result_wrapper_t<std::size_t> cursor_t::column_index(std::string_view key) const {
+        return chunks_.front().column_index(key);
+    }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
     void cursor_t::advance() { ++current_index_; }
     index_t cursor_t::current_index() const { return current_index_; }
@@ -124,7 +128,7 @@ namespace components::cursor {
 
     bool cursor_t::is_error() const noexcept { return error_.contains_error(); }
 
-    core::error_t cursor_t::get_error() const { return error_; }
+    const core::error_t& cursor_t::get_error() const noexcept { return error_; }
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource) { return cursor_t_ptr{new cursor_t(resource)}; }
 

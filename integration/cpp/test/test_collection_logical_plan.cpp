@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -38,9 +39,8 @@ using id_par = core::parameter_id_t;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_collection::logical_plan") {
-    auto config = test_create_config("/tmp/test_collection_logical_plan");
+    auto config = test_create_config(integration_fixture_path("test_collection_logical_plan"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
 
     test_spaces space(config);

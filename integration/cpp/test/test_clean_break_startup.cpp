@@ -4,6 +4,7 @@
 // manager at the same directory observes the persisted state.
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <actor-zeta/spawn.hpp>
@@ -33,10 +34,7 @@ using namespace disk_test_helpers;
 using session_id_t = components::session::session_id_t;
 
 namespace {
-    std::string clean_break_dir() {
-        static std::string p = "/tmp/test_otterbrix_clean_break_" + std::to_string(::getpid());
-        return p;
-    }
+    std::string clean_break_dir() { return integration_fixture_path("test_clean_break_startup").string(); }
 
     // The manager actors self-drive on internal threads; futures become ready
     // asynchronously. Pump the (thread-safe) child scheduler with a bounded poll
@@ -58,7 +56,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", integration_fixture_path("test_clean_break_startup/logs").string()))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -186,12 +184,12 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
         auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
                                                     &manager_disk_t::resolve_namespace,
                                                     ctx,
-                                                    std::string("durable_ns"),
-                                                    std::uint64_t{0});
+                                                    std::string("durable_ns"));
         poll_ready(fd2.scheduler, fut);
         auto rr = std::move(fut).take_ready();
-        REQUIRE(rr.found);
-        REQUIRE(rr.oid == ns_oid);
+        REQUIRE_FALSE(rr.has_error());
+        REQUIRE(rr.value().found);
+        REQUIRE(rr.value().oid == ns_oid);
     }
     std::filesystem::remove_all(dir);
 }
@@ -228,10 +226,11 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
         auto [_, nfut] = actor_zeta::otterbrix::send(fd2.manager->address(),
                                                      &manager_disk_t::resolve_namespace,
                                                      ctx,
-                                                     std::string("ns"),
-                                                     std::uint64_t{0});
+                                                     std::string("ns"));
         poll_ready(fd2.scheduler, nfut);
-        auto rns = std::move(nfut).take_ready();
+        auto rns_r = std::move(nfut).take_ready();
+        REQUIRE_FALSE(rns_r.has_error());
+        auto& rns = rns_r.value();
         REQUIRE(rns.found);
 
         auto rt = test_probe::probe_table(fd2, ctx, rns.oid, std::string("tbl"));
@@ -314,11 +313,11 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
         auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
                                                     &manager_disk_t::resolve_namespace,
                                                     ctx,
-                                                    std::string("post_restart"),
-                                                    std::uint64_t{0});
+                                                    std::string("post_restart"));
         poll_ready(fd2.scheduler, fut);
         auto rns = std::move(fut).take_ready();
-        REQUIRE(rns.found);
+        REQUIRE_FALSE(rns.has_error());
+        REQUIRE(rns.value().found);
     }
     std::filesystem::remove_all(dir);
 }
@@ -361,7 +360,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
 }
 
 // 8. Hard-fail on legacy catalog.otbx file: base_otterbrix_t throws on construction when
-// the legacy catalog.otbx file is present in the disk path. M8 clean-break behaviour:
+// the legacy catalog.otbx file is present in the disk path. Clean-break behaviour: the
 // operator must migrate / remove the file before booting on the new code.
 TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") {
     auto dir = std::filesystem::path(clean_break_dir() + "/hard_fail");
@@ -390,6 +389,59 @@ TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") 
         // Other exception types are NOT what we want here.
     }
     REQUIRE(threw_with_expected_message);
+    std::filesystem::remove_all(dir);
+}
+
+// 8b. A REFUSED STARTUP MUST NOT MAKE THE DIRECTORY UNOPENABLE. base_otterbrix_t
+// registers main_path_ in a process-wide set to refuse a second LIVE instance on
+// the same directory, and it inserts that entry BEFORE everything that can throw.
+// The destructor is what erases it — and a constructor that throws never gets one.
+// So without the scope guard that releases the registration on the way out, the
+// operator fixes the real fault (here: removes the legacy catalog.otbx the previous
+// attempt refused on) and the retry in the same process answers "otterbrix instance
+// has to have unique directory": a refusal naming neither the real fault nor
+// anything actionable, for a directory that is in fact free. The registration must
+// therefore survive only a SUCCESSFUL construction.
+TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_directory") {
+    auto dir = std::filesystem::path(clean_break_dir() + "/refused_release");
+    std::filesystem::remove_all(dir);
+    auto disk_subdir = dir / "wal";
+    std::filesystem::create_directories(disk_subdir);
+
+    // Arm the same startup refusal case 8 uses.
+    const auto legacy = disk_subdir / "catalog.otbx";
+    {
+        std::ofstream out(legacy.string(), std::ios::binary);
+        out << "legacy_marker";
+    }
+    REQUIRE(std::filesystem::exists(legacy));
+
+    auto config = test_create_config(dir);
+    bool first_refused = false;
+    try {
+        test_spaces space(config);
+    } catch (const std::runtime_error& e) {
+        first_refused = std::string(e.what()).find("Legacy catalog format detected") != std::string::npos;
+    }
+    REQUIRE(first_refused);
+
+    // The operator does exactly what the refusal asked for.
+    std::filesystem::remove(legacy);
+    REQUIRE_FALSE(std::filesystem::exists(legacy));
+
+    // The retry must now START, not report the directory taken.
+    std::string retry_error;
+    bool retry_started = false;
+    try {
+        test_spaces space(config);
+        retry_started = true;
+    } catch (const std::runtime_error& e) {
+        retry_error = e.what();
+    }
+    INFO("retry refused with: " << retry_error);
+    CHECK(retry_error.find("unique directory") == std::string::npos);
+    REQUIRE(retry_started);
+
     std::filesystem::remove_all(dir);
 }
 

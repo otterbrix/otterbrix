@@ -75,6 +75,23 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
+        // Written INSIDE the CREATE TABLE that produces the constrained table, as a
+        // child of that statement's node_create_collection_t. Such a node names a
+        // table that does not exist yet, so the two halves of its enrichment split:
+        // the NAMES are checked against the declared column list (by the parent's
+        // enrich case), and the ATTOIDS are stamped by rewrite_create_table, which
+        // is where they are minted. The enrich case for this node type therefore
+        // skips an inline node — its parent already ran the guards.
+        bool inline_with_table() const noexcept { return inline_with_table_; }
+        void set_inline_with_table(bool value) noexcept { inline_with_table_ = value; }
+
+        // Inline FOREIGN KEY whose referenced table IS the table being created
+        // (`CREATE TABLE t (... REFERENCES t (id))`). There is no catalog entry to
+        // resolve against on either side: both column lists live in the same
+        // declaration, and both oids are minted by the same rewrite.
+        bool self_reference() const noexcept { return self_reference_; }
+        void set_self_reference(bool value) noexcept { self_reference_ = value; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -96,6 +113,8 @@ namespace components::logical_plan {
         components::catalog::oid_t ref_table_oid_{components::catalog::INVALID_OID};
         std::vector<components::catalog::oid_t> fk_col_attoids_;
         std::vector<components::catalog::oid_t> ref_col_attoids_;
+        bool inline_with_table_{false};
+        bool self_reference_{false};
     };
 
     using node_create_constraint_ptr = boost::intrusive_ptr<node_create_constraint_t>;

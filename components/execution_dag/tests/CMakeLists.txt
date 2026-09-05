@@ -2,6 +2,7 @@ project(test_execution_dag)
 
 set(${PROJECT_NAME}_SOURCES
         test_execution_dag.cpp
+        test_execution_dag_residency.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

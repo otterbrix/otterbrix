@@ -93,7 +93,10 @@ namespace services::dispatcher {
             }
         }
 
-        std::optional<complex_logical_type> materialize_family(const graph_execution_context& context,
+        //! `resource` carries nothing but the refusal message create_decimal may build for an
+        //! out-of-window session setting; resolve_function's own arena is threaded down for it.
+        std::optional<complex_logical_type> materialize_family(std::pmr::memory_resource* resource,
+                                                               const graph_execution_context& context,
                                                                const complex_logical_type& family,
                                                                const complex_logical_type& argument) {
             if (family.type() == argument.type()) {
@@ -102,10 +105,19 @@ namespace services::dispatcher {
             if (family.type() != logical_type::DECIMAL) {
                 return std::nullopt;
             }
-            return complex_logical_type::create_decimal(context.decimal_width, context.decimal_scale);
+            // The session's DECIMAL width/scale are settings, not literals: an
+            // out-of-window pair means "no materialization for this family", never a
+            // decimal type nothing can persist.
+            auto materialized =
+                complex_logical_type::create_decimal(resource, context.decimal_width, context.decimal_scale);
+            if (materialized.has_error()) {
+                return std::nullopt;
+            }
+            return std::move(materialized.value());
         }
 
-        std::optional<complex_logical_type> constrain_to_domain(const cast_registry_t& cast_registry,
+        std::optional<complex_logical_type> constrain_to_domain(std::pmr::memory_resource* resource,
+                                                                const cast_registry_t& cast_registry,
                                                                 const graph_execution_context& context,
                                                                 const parameter_type& parameter,
                                                                 const complex_logical_type& unified) {
@@ -115,7 +127,8 @@ namespace services::dispatcher {
             std::optional<complex_logical_type> best;
             std::optional<cast_cost> best_cost;
             for (const auto& entry : parameter.admissible()) {
-                auto materialized = is_family_entry(entry) ? materialize_family(context, entry, unified) : entry;
+                auto materialized =
+                    is_family_entry(entry) ? materialize_family(resource, context, entry, unified) : entry;
                 if (!materialized.has_value()) {
                     continue;
                 }
@@ -152,7 +165,7 @@ namespace services::dispatcher {
                 complex_logical_type target;
                 if (!parameter.is_variable()) {
                     if (is_family_entry(parameter.type())) {
-                        auto materialized = materialize_family(context, parameter.type(), arguments[i]);
+                        auto materialized = materialize_family(resource, context, parameter.type(), arguments[i]);
                         if (!materialized.has_value()) {
                             return std::nullopt;
                         }
@@ -171,7 +184,8 @@ namespace services::dispatcher {
                         if (!unified.has_value()) {
                             return std::nullopt;
                         }
-                        auto constrained = constrain_to_domain(cast_registry, context, parameter, *unified);
+                        auto constrained =
+                            constrain_to_domain(resource, cast_registry, context, parameter, *unified);
                         if (!constrained.has_value()) {
                             return std::nullopt;
                         }

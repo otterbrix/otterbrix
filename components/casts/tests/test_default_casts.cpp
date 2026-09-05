@@ -6,6 +6,7 @@
 
 #include <core/date/date_parse.hpp>
 #include <core/date/date_to_string.hpp>
+#include <core/pmr.hpp>
 
 #include <cmath>
 #include <limits>
@@ -16,6 +17,26 @@ using namespace components;
 using namespace components::casts;
 using types::complex_logical_type;
 using types::logical_type;
+
+namespace {
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14).
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
+    // create_decimal reports an out-of-window (width, scale) through core::error_t. Every
+    // literal these tests use is inside the window, so the helper checks the result and
+    // hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
 
 namespace {
     // Search operates on complex_logical_type (a bare logical_type cannot carry
@@ -343,7 +364,7 @@ TEST_CASE("default casts: DECIMAL <-> double round-trips, passes inf/nan, errors
     cast_registry_t registry{resource};
     register_default_casts(registry);
 
-    const complex_logical_type decimal_type = complex_logical_type::create_decimal(10, 2); // DECIMAL(10,2)
+    const complex_logical_type decimal_type = make_decimal(10, 2); // DECIMAL(10,2)
     const cast_entry* to_double = registry.find(decimal_type, double_type);
     const cast_entry* from_double = registry.find(double_type, decimal_type);
     REQUIRE(to_double != nullptr);
@@ -400,7 +421,7 @@ TEST_CASE("default casts: DECIMAL <-> integer rounds, fails on overflow and spec
     cast_registry_t registry{resource};
     register_default_casts(registry);
 
-    const complex_logical_type decimal_type = complex_logical_type::create_decimal(10, 2); // DECIMAL(10,2)
+    const complex_logical_type decimal_type = make_decimal(10, 2); // DECIMAL(10,2)
     const cast_entry* to_bigint = registry.find(decimal_type, bigint_type);
     const cast_entry* from_bigint = registry.find(bigint_type, decimal_type);
     REQUIRE(to_bigint != nullptr);
@@ -488,8 +509,8 @@ TEST_CASE("default casts: DECIMAL -> DECIMAL rescales, rounds half away, overflo
     cast_registry_t registry{resource};
     register_default_casts(registry);
 
-    const complex_logical_type narrow = complex_logical_type::create_decimal(10, 2); // INT64
-    const complex_logical_type wider = complex_logical_type::create_decimal(12, 4);  // INT64, holds narrow
+    const complex_logical_type narrow = make_decimal(10, 2); // INT64
+    const complex_logical_type wider = make_decimal(12, 4);  // INT64, holds narrow
     const cast_entry* up = registry.find(narrow, wider);
     const cast_entry* down = registry.find(wider, narrow);
     REQUIRE(up != nullptr);
@@ -542,7 +563,7 @@ TEST_CASE("default casts: DECIMAL -> DECIMAL rescales, rounds half away, overflo
     // Overflow (too many integer digits) errors under CAST, NULLs under TRY_CAST; inf
     // passes through to the destination sentinel.
     {
-        const complex_logical_type tiny = complex_logical_type::create_decimal(6, 2); // INT32, 4 integer digits
+        const complex_logical_type tiny = make_decimal(6, 2); // INT32, 4 integer digits
         const cast_entry* to_tiny = registry.find(narrow, tiny);
         REQUIRE(to_tiny != nullptr);
 
@@ -572,8 +593,8 @@ TEST_CASE("default casts: two DECIMALs promote to their deduced supertype") {
 
     auto decimal_common = [&](uint8_t lw, uint8_t ls, uint8_t rw, uint8_t rs) {
         return common(registry,
-                      complex_logical_type::create_decimal(lw, ls),
-                      complex_logical_type::create_decimal(rw, rs));
+                      make_decimal(lw, ls),
+                      make_decimal(rw, rs));
     };
 
     // Neither holds the other: dec(10,4) [6 int, 4 frac] + dec(12,2) [10 int, 2 frac]
@@ -615,7 +636,7 @@ TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specia
     cast_registry_t registry{resource};
     register_default_casts(registry);
 
-    const complex_logical_type decimal_type = complex_logical_type::create_decimal(10, 2); // INT64
+    const complex_logical_type decimal_type = make_decimal(10, 2); // INT64
     const cast_entry* to_string = registry.find(decimal_type, string_type);
     const cast_entry* from_string = registry.find(string_type, decimal_type);
     REQUIRE(to_string != nullptr);
@@ -2063,8 +2084,8 @@ TEST_CASE("composite_cast: identity/copy leaf builds partially-changed composite
     // same_cast_type copy that would skip the width/scale change (same_cast_type collapses
     // DECIMAL params, so a copy path would silently keep the wrong scale).
     {
-        const complex_logical_type dec_10_2 = complex_logical_type::create_decimal(10, 2);
-        const complex_logical_type dec_12_4 = complex_logical_type::create_decimal(12, 4);
+        const complex_logical_type dec_10_2 = make_decimal(10, 2);
+        const complex_logical_type dec_12_4 = make_decimal(12, 4);
 
         auto identity = registry.resolve(dec_10_2, dec_10_2, cast_type::explicit_only);
         REQUIRE(identity.has_value());
@@ -2543,8 +2564,8 @@ TEST_CASE("default casts: common(DECIMAL, floating) depends on the decimal width
     register_default_casts(registry);
 
     // float holds ~7 significant decimal digits, double ~15.
-    const complex_logical_type narrow = complex_logical_type::create_decimal(6, 2);
-    const complex_logical_type wide = complex_logical_type::create_decimal(10, 2);
+    const complex_logical_type narrow = make_decimal(6, 2);
+    const complex_logical_type wide = make_decimal(10, 2);
 
     REQUIRE(registry.cost_of(narrow, float_type)->precision_loss == 0);
     REQUIRE(registry.cost_of(wide, float_type)->precision_loss > 0);
@@ -2565,7 +2586,7 @@ TEST_CASE("default casts: BOOLEAN <-> DECIMAL is explicit-only, like BOOLEAN <->
     register_default_casts(registry);
 
     const complex_logical_type boolean{logical_type::BOOLEAN};
-    const complex_logical_type decimal = complex_logical_type::create_decimal(10, 2);
+    const complex_logical_type decimal = make_decimal(10, 2);
 
     REQUIRE(registry.level_of(boolean, decimal) == std::optional<cast_type>{cast_type::explicit_only});
     REQUIRE(registry.resolve(boolean, decimal, cast_type::explicit_only).has_value());
@@ -2583,7 +2604,7 @@ TEST_CASE("default casts: DECIMAL -> BOOLEAN is (x != 0), not a truncation") {
     graph_execution_context context{};
 
     const complex_logical_type boolean{logical_type::BOOLEAN};
-    const complex_logical_type decimal = complex_logical_type::create_decimal(10, 2);
+    const complex_logical_type decimal = make_decimal(10, 2);
 
     REQUIRE(registry.level_of(decimal, boolean) == std::optional<cast_type>{cast_type::explicit_only});
     REQUIRE_FALSE(registry.resolve(decimal, boolean, cast_type::assignment).has_value());
@@ -2659,8 +2680,8 @@ TEST_CASE("default casts: find_best_common_type over N inputs") {
     SECTION("no inputs has no common type") { REQUIRE_FALSE(common_of({}).has_value()); }
 
     SECTION("decimals widen to a constructed supertype that is no input") {
-        const auto narrow = complex_logical_type::create_decimal(6, 2);
-        const auto scaled = complex_logical_type::create_decimal(6, 4);
+        const auto narrow = make_decimal(6, 2);
+        const auto scaled = make_decimal(6, 4);
         auto widened = common_of({narrow, scaled});
         REQUIRE(widened.has_value());
         REQUIRE(widened->type.type() == logical_type::DECIMAL);
@@ -2685,7 +2706,7 @@ TEST_CASE("default casts: NULL reaches every type by one lossless implicit cast"
     SECTION("it reaches concrete, parameterized and constructed targets alike") {
         // The point of resolving this by rule rather than by table: none of these could be
         // enumerated as registry entries (every decimal width, every array length, every struct).
-        const auto decimal = complex_logical_type::create_decimal(9, 3);
+        const auto decimal = make_decimal(9, 3);
         std::pmr::vector<complex_logical_type> fields{resource};
         fields.emplace_back(logical_type::INTEGER);
         fields.back().set_alias("f");
@@ -2781,8 +2802,8 @@ TEST_CASE("default casts: NULL is transparent to common-type resolution") {
         // The parameterized families settle by folding width/scale, which a null cannot take part
         // in — so it has to be dropped rather than folded, or the search falls back to picking the
         // wider INPUT instead of the constructed supertype that is neither.
-        const auto narrow = complex_logical_type::create_decimal(6, 2);
-        const auto scaled = complex_logical_type::create_decimal(6, 4);
+        const auto narrow = make_decimal(6, 2);
+        const auto scaled = make_decimal(6, 4);
         auto without_null = common_of({narrow, scaled});
         auto with_null = common_of({null_type, narrow, scaled});
         REQUIRE(without_null.has_value());

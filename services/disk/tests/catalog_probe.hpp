@@ -3,27 +3,24 @@
 // Test-only catalog-read oracle.
 //
 // Production resolves catalog objects via physical-plan operators that call
-// manager_disk_t::read_chunks_by_key. The disk-layer methods resolve_table /
-// resolve_type / resolve_function used to provide the same lookups as a single
-// mailbox call and were kept ONLY because disk tests used them as a convenient
-// read oracle. Those methods have been deleted; this header reproduces the exact
-// lookup logic they performed, but issues every catalog read through the live
-// read_chunks_by_key path (the same boundary production uses).
+// manager_disk_t::read_chunks_by_key. The disk layer carries no resolve_table / resolve_type
+// shortcut of its own — such a method would exist ONLY to give disk tests a convenient
+// single-mailbox-call read oracle. This header IS that oracle: it performs the same lookups, but
+// issues every catalog read through the live read_chunks_by_key path.
 //
-// Each probe_* function mirrors a former resolve_*_result_t (plain std fields the
-// tests assert) and reproduces the former filtering rules:
-//   - probe_table  : pg_class scan by (relnamespace, relname); then pg_attribute
-//                    columns with the same MVCC visibility filter (added_at /
-//                    dropped_at vs ctx.txn.start_time) + attnum sort, OR the
-//                    pg_computed_column branch (max-version-per-name, refcount>0,
-//                    attoid-ASC order) for relkind='g' tables.
-//   - probe_type   : pg_type scan by (typnamespace, typname); composite fallback
-//                    via pg_class (relkind='c') + pg_attribute fields.
+// Each probe_* function mirrors one resolve_*_result_t (plain std fields the tests assert) and
+// applies the same filtering rules:
+//   - probe_table    : pg_class scan by (relnamespace, relname); then pg_attribute columns with the
+//                      same MVCC visibility filter (added_at / dropped_at vs ctx.txn.start_time) +
+//                      attnum sort, OR the pg_computed_column branch (max-version-per-name,
+//                      refcount>0, attoid-ASC order) for relkind='g' tables.
+//   - probe_type     : pg_type scan by (typnamespace, typname); composite fallback via pg_class
+//                      (relkind='c') + pg_attribute fields.
 //   - probe_function : pg_proc scan by (pronamespace, proname).
 //
-// Reads route through the fixture's invoke mechanism (fx.invoke / fx.invoke_async),
-// so this header is fixture-agnostic: both the disk-test `fixture` and the
-// integration `fresh_disk` expose a compatible invoke template.
+// Reads route through the fixture's invoke mechanism (fx.invoke / fx.invoke_async), so this header
+// is fixture-agnostic: both the disk-test `fixture` and the integration `fresh_disk` expose a
+// compatible invoke template.
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -37,6 +34,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <memory_resource>
 #include <string>
 #include <unordered_map>
@@ -45,6 +43,44 @@
 namespace services::disk::test_probe {
 
     namespace catalog = components::catalog;
+
+    // A snapshot that really does see every committed column.
+    //
+    // components::table::transaction_data{} -- and the transaction_data{0, 0} most probe fixtures
+    // spell out -- is only HALF a see-all. Its snapshot_horizon defaults to UINT64_MAX, so ROW
+    // visibility sees everything committed; its start_time is 0, and COLUMN visibility
+    // (added_at_commit_id <= start_time) is judged against start_time. A probe built that way reads
+    // as "a snapshot taken before the first commit" and hides every column an ALTER ... ADD COLUMN
+    // ever added, so a probe has to name the snapshot it means on BOTH halves.
+    //
+    // THE SITES THAT STILL BUILD A start_time == 0 CONTEXT are safe only because they never run the
+    // backfill: services/disk/tests/test_error_handling.cpp and test_d4_lazy_load.cpp write columns
+    // through disk_test_helpers::test_add_column, which calls catalog::build_pg_attribute_row with
+    // the DEFAULT added_at_commit_id = 0 and publishes directly, never reaching
+    // operator_commit_transaction_t's STEP 4; test_checkpoint_dirty.cpp's {0, 0} is a
+    // storage_append context and never calls probe_table. Any probe fixture that starts driving
+    // ALTER ... ADD COLUMN through the real commit pipeline has to switch to probe_see_all_txn(),
+    // or it will stop seeing the column.
+    //
+    // AND THE ASYMMETRY THIS EXPOSES, which is NOT a test-only matter. In production the same
+    // pg_attribute rows are filtered by TWO DIFFERENT CLOCKS:
+    //   * components/physical_plan/operators/operator_resolve_table.cpp takes ctx->txn.start_time
+    //     and applies added_at <= start_time;
+    //   * components/physical_plan/operators/alter_validators.cpp takes exec_ctx.txn.snapshot_horizon
+    //     and applies added_at <= horizon;
+    //   * ROW visibility (row_version_manager's use_inserted_version) uses horizon plus
+    //     in_flight_snapshot, i.e. the alter_validators clock.
+    // components/table/transaction_manager.cpp draws start_time and every commit_id from the ONE
+    // current_timestamp_ counter, and published_horizon_ only ever holds an already allocated
+    // commit_id, so start_time > snapshot_horizon ALWAYS: resolve_table is strictly the weaker
+    // filter, and it also ignores in_flight_snapshot entirely. The window that opens: B commits and
+    // is handed commit id C (in_flight, not yet published); A begins with start_time > C and
+    // horizon < C; A's resolve_table admits a column added at C while A's row reads reject every row
+    // B wrote. Only reachable once added_at is a real commit id rather than a permanent 0. Recorded
+    // here; not fixed here.
+    inline components::table::transaction_data probe_see_all_txn() {
+        return components::table::transaction_data{0, std::numeric_limits<std::uint64_t>::max()};
+    }
 
     // --- test-local result structs (mirror the deleted resolve_*_result_t) ---
 
@@ -460,15 +496,23 @@ namespace services::disk::test_probe {
         std::pmr::vector<components::types::complex_logical_type> child_types(&fx.resource);
         child_types.reserve(fields.size());
         for (auto& f : fields) {
-            components::types::complex_logical_type ft =
-                f.atttypspec.empty() ? components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)}
-                                     : catalog::decode_type_spec(&fx.resource, f.atttypspec);
+            components::types::complex_logical_type ft{components::types::logical_type::UNKNOWN};
+            if (f.atttypspec.empty()) {
+                ft = components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)};
+            } else {
+                auto ft_r = catalog::decode_type_spec(&fx.resource, f.atttypspec);
+                assert(!ft_r.has_error());
+                ft = std::move(ft_r.value());
+            }
             if (ft.type() == components::types::logical_type::UNKNOWN) {
                 std::string ref_name(ft.type_name());
                 if (!ref_name.empty()) {
                     auto nested = probe_type(fx, ctx, namespace_oid, ref_name);
-                    if (nested.found && !nested.typdefspec.empty())
-                        ft = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
+                    if (nested.found && !nested.typdefspec.empty()) {
+                        auto nested_r = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
+                        assert(!nested_r.has_error());
+                        ft = std::move(nested_r.value());
+                    }
                 }
             }
             ft.set_alias(f.attname);

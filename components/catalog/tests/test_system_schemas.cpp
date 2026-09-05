@@ -25,18 +25,21 @@ TEST_CASE("catalog::system_schemas::distinct_well_known_oids") {
     }
 }
 
-// 3. find_system_table — basic name lookup including non-existent.
+// 3. find_system_table — lookup by oid, including an oid no system table owns.
+// There is no name overload, so there is exactly one way to address a system table and no
+// second mapping that can drift from this one. There is no "empty oid" case to cover on its
+// own either — INVALID_OID is simply one more oid nothing owns.
 TEST_CASE("catalog::system_schemas::find_system_table") {
-    REQUIRE(find_system_table("pg_class") != nullptr);
-    REQUIRE(find_system_table("pg_class")->relation_oid == well_known_oid::pg_class_table);
-    REQUIRE(find_system_table("pg_attribute") != nullptr);
-    REQUIRE(find_system_table("nonexistent") == nullptr);
-    REQUIRE(find_system_table("") == nullptr);
+    REQUIRE(find_system_table(well_known_oid::pg_class_table) != nullptr);
+    REQUIRE(find_system_table(well_known_oid::pg_class_table)->relation_oid == well_known_oid::pg_class_table);
+    REQUIRE(find_system_table(well_known_oid::pg_attribute_table) != nullptr);
+    REQUIRE(find_system_table(oid_t{99999}) == nullptr);
+    REQUIRE(find_system_table(INVALID_OID) == nullptr);
 }
 
 // 4. pg_class describes itself — has relname / relnamespace / relkind columns.
 TEST_CASE("catalog::system_schemas::pg_class_self_describable") {
-    const auto* def = find_system_table("pg_class");
+    const auto* def = find_system_table(well_known_oid::pg_class_table);
     REQUIRE(def != nullptr);
     std::unordered_set<std::string> col_names;
     for (const auto& c : def->columns) {
@@ -50,7 +53,7 @@ TEST_CASE("catalog::system_schemas::pg_class_self_describable") {
 
 // 5. pg_attribute has the columns required for column lifecycle.
 TEST_CASE("catalog::system_schemas::pg_attribute_supports_attnum_lifecycle") {
-    const auto* def = find_system_table("pg_attribute");
+    const auto* def = find_system_table(well_known_oid::pg_attribute_table);
     REQUIRE(def != nullptr);
     std::unordered_set<std::string> col_names;
     for (const auto& c : def->columns) {
@@ -66,7 +69,7 @@ TEST_CASE("catalog::system_schemas::pg_attribute_supports_attnum_lifecycle") {
 
 // 6. pg_index has indisvalid (Decision 3 — index visibility to planner).
 TEST_CASE("catalog::system_schemas::pg_index_has_indisvalid") {
-    const auto* def = find_system_table("pg_index");
+    const auto* def = find_system_table(well_known_oid::pg_index_table);
     REQUIRE(def != nullptr);
     bool has_indisvalid = false;
     for (const auto& c : def->columns) {
@@ -80,7 +83,7 @@ TEST_CASE("catalog::system_schemas::pg_index_has_indisvalid") {
 
 // 7. pg_database carries (oid, datname). Required for CREATE/DROP DATABASE DDL plumbing.
 TEST_CASE("catalog::system_schemas::pg_database_minimal_columns") {
-    const auto* def = find_system_table("pg_database");
+    const auto* def = find_system_table(well_known_oid::pg_database_table);
     REQUIRE(def != nullptr);
     REQUIRE(def->relation_oid == well_known_oid::pg_database_table);
     std::unordered_set<std::string> col_names;
@@ -101,9 +104,11 @@ TEST_CASE("catalog::system_schemas::pg_database_minimal_columns") {
 // without this one, inserting a column in the middle of a schema leaves the whole suite green
 // while every positional reader silently shifts onto its neighbour.
 namespace {
-    void require_layout(const char* table, std::initializer_list<const char*> expected) {
+    // Keyed by oid, not by name: exactly one way to address a system table. The name is
+    // still printed, but it comes FROM the definition rather than being the key.
+    void require_layout(oid_t table, std::initializer_list<const char*> expected) {
         const auto* def = find_system_table(table);
-        INFO("system table: " << table);
+        INFO("system table oid: " << static_cast<unsigned>(table));
         REQUIRE(def != nullptr);
         REQUIRE(def->columns.size() == expected.size());
         std::size_t i = 0;
@@ -116,9 +121,9 @@ namespace {
 } // namespace
 
 TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
-    require_layout("pg_namespace", {"oid", "nspname"});
-    require_layout("pg_class", {"oid", "relname", "relnamespace", "relkind", "relstoragemode"});
-    require_layout("pg_attribute",
+    require_layout(well_known_oid::pg_namespace_table, {"oid", "nspname"});
+    require_layout(well_known_oid::pg_class_table, {"oid", "relname", "relnamespace", "relkind", "relstoragemode"});
+    require_layout(well_known_oid::pg_attribute_table,
                    {"attoid",
                     "attrelid",
                     "attname",
@@ -131,8 +136,8 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
                     "attdefspec",
                     "added_at_commit_id",
                     "dropped_at_commit_id"});
-    require_layout("pg_index", {"indexrelid", "indrelid", "indkey", "indisvalid"});
-    require_layout("pg_computed_column",
+    require_layout(well_known_oid::pg_index_table, {"indexrelid", "indrelid", "indkey", "indisvalid", "indtype"});
+    require_layout(well_known_oid::pg_computed_column_table,
                    {"relid", "attoid", "attname", "atttypid", "atttypspec", "attversion", "attrefcount"});
 }
 
@@ -144,9 +149,9 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
 // every table that has constants. Reorder a schema, rename a column or mistype an index, and the
 // constant that silently started pointing at its neighbour fails here instead of in a resolve.
 namespace {
-    void require_col(const char* table, std::uint64_t position, const char* name) {
+    void require_col(oid_t table, std::uint64_t position, const char* name) {
         const auto* def = find_system_table(table);
-        INFO("system table " << table << ", column position " << position);
+        INFO("system table oid " << static_cast<unsigned>(table) << ", column position " << position);
         REQUIRE(def != nullptr);
         REQUIRE(position < def->columns.size());
         REQUIRE(std::string(def->columns[position].name()) == std::string(name));
@@ -155,84 +160,85 @@ namespace {
 
 TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     // pg_constraint
-    require_col("pg_constraint", pg_constraint_col::oid, "oid");
-    require_col("pg_constraint", pg_constraint_col::conname, "conname");
-    require_col("pg_constraint", pg_constraint_col::conrelid, "conrelid");
-    require_col("pg_constraint", pg_constraint_col::contype, "contype");
-    require_col("pg_constraint", pg_constraint_col::confrelid, "confrelid");
-    require_col("pg_constraint", pg_constraint_col::conkey, "conkey");
-    require_col("pg_constraint", pg_constraint_col::confkey, "confkey");
-    require_col("pg_constraint", pg_constraint_col::confmatchtype, "confmatchtype");
-    require_col("pg_constraint", pg_constraint_col::confdeltype, "confdeltype");
-    require_col("pg_constraint", pg_constraint_col::confupdtype, "confupdtype");
-    require_col("pg_constraint", pg_constraint_col::conexpr, "conexpr");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::oid, "oid");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::conname, "conname");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::conrelid, "conrelid");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::contype, "contype");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::confrelid, "confrelid");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::conkey, "conkey");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::confkey, "confkey");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::confmatchtype, "confmatchtype");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::confdeltype, "confdeltype");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::confupdtype, "confupdtype");
+    require_col(well_known_oid::pg_constraint_table, pg_constraint_col::conexpr, "conexpr");
     // pg_attribute
-    require_col("pg_attribute", pg_attribute_col::attoid, "attoid");
-    require_col("pg_attribute", pg_attribute_col::attrelid, "attrelid");
-    require_col("pg_attribute", pg_attribute_col::attname, "attname");
-    require_col("pg_attribute", pg_attribute_col::atttypid, "atttypid");
-    require_col("pg_attribute", pg_attribute_col::attnum, "attnum");
-    require_col("pg_attribute", pg_attribute_col::attnotnull, "attnotnull");
-    require_col("pg_attribute", pg_attribute_col::atthasdefault, "atthasdefault");
-    require_col("pg_attribute", pg_attribute_col::attisdropped, "attisdropped");
-    require_col("pg_attribute", pg_attribute_col::atttypspec, "atttypspec");
-    require_col("pg_attribute", pg_attribute_col::attdefspec, "attdefspec");
-    require_col("pg_attribute", pg_attribute_col::added_at_commit_id, "added_at_commit_id");
-    require_col("pg_attribute", pg_attribute_col::dropped_at_commit_id, "dropped_at_commit_id");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attoid, "attoid");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attrelid, "attrelid");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attname, "attname");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::atttypid, "atttypid");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attnum, "attnum");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attnotnull, "attnotnull");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::atthasdefault, "atthasdefault");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attisdropped, "attisdropped");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::atttypspec, "atttypspec");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attdefspec, "attdefspec");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::added_at_commit_id, "added_at_commit_id");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::dropped_at_commit_id, "dropped_at_commit_id");
     // pg_class
-    require_col("pg_class", pg_class_col::oid, "oid");
-    require_col("pg_class", pg_class_col::relname, "relname");
-    require_col("pg_class", pg_class_col::relnamespace, "relnamespace");
-    require_col("pg_class", pg_class_col::relkind, "relkind");
-    require_col("pg_class", pg_class_col::relstoragemode, "relstoragemode");
+    require_col(well_known_oid::pg_class_table, pg_class_col::oid, "oid");
+    require_col(well_known_oid::pg_class_table, pg_class_col::relname, "relname");
+    require_col(well_known_oid::pg_class_table, pg_class_col::relnamespace, "relnamespace");
+    require_col(well_known_oid::pg_class_table, pg_class_col::relkind, "relkind");
+    require_col(well_known_oid::pg_class_table, pg_class_col::relstoragemode, "relstoragemode");
     // pg_namespace
-    require_col("pg_namespace", pg_namespace_col::oid, "oid");
-    require_col("pg_namespace", pg_namespace_col::nspname, "nspname");
+    require_col(well_known_oid::pg_namespace_table, pg_namespace_col::oid, "oid");
+    require_col(well_known_oid::pg_namespace_table, pg_namespace_col::nspname, "nspname");
     // pg_index
-    require_col("pg_index", pg_index_col::indexrelid, "indexrelid");
-    require_col("pg_index", pg_index_col::indrelid, "indrelid");
-    require_col("pg_index", pg_index_col::indkey, "indkey");
-    require_col("pg_index", pg_index_col::indisvalid, "indisvalid");
+    require_col(well_known_oid::pg_index_table, pg_index_col::indexrelid, "indexrelid");
+    require_col(well_known_oid::pg_index_table, pg_index_col::indrelid, "indrelid");
+    require_col(well_known_oid::pg_index_table, pg_index_col::indkey, "indkey");
+    require_col(well_known_oid::pg_index_table, pg_index_col::indisvalid, "indisvalid");
+    require_col(well_known_oid::pg_index_table, pg_index_col::indtype, "indtype");
     // pg_computed_column
-    require_col("pg_computed_column", pg_computed_column_col::relid, "relid");
-    require_col("pg_computed_column", pg_computed_column_col::attoid, "attoid");
-    require_col("pg_computed_column", pg_computed_column_col::attname, "attname");
-    require_col("pg_computed_column", pg_computed_column_col::atttypid, "atttypid");
-    require_col("pg_computed_column", pg_computed_column_col::atttypspec, "atttypspec");
-    require_col("pg_computed_column", pg_computed_column_col::attversion, "attversion");
-    require_col("pg_computed_column", pg_computed_column_col::attrefcount, "attrefcount");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::relid, "relid");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::attoid, "attoid");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::attname, "attname");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::atttypid, "atttypid");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::atttypspec, "atttypspec");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::attversion, "attversion");
+    require_col(well_known_oid::pg_computed_column_table, pg_computed_column_col::attrefcount, "attrefcount");
     // pg_type
-    require_col("pg_type", pg_type_col::oid, "oid");
-    require_col("pg_type", pg_type_col::typname, "typname");
-    require_col("pg_type", pg_type_col::typnamespace, "typnamespace");
-    require_col("pg_type", pg_type_col::typdefspec, "typdefspec");
+    require_col(well_known_oid::pg_type_table, pg_type_col::oid, "oid");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typname, "typname");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typnamespace, "typnamespace");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typdefspec, "typdefspec");
     // pg_database
-    require_col("pg_database", pg_database_col::oid, "oid");
-    require_col("pg_database", pg_database_col::datname, "datname");
+    require_col(well_known_oid::pg_database_table, pg_database_col::oid, "oid");
+    require_col(well_known_oid::pg_database_table, pg_database_col::datname, "datname");
     // pg_rewrite
-    require_col("pg_rewrite", pg_rewrite_col::oid, "oid");
-    require_col("pg_rewrite", pg_rewrite_col::rulename, "rulename");
-    require_col("pg_rewrite", pg_rewrite_col::ev_class, "ev_class");
-    require_col("pg_rewrite", pg_rewrite_col::ev_type, "ev_type");
-    require_col("pg_rewrite", pg_rewrite_col::ev_action, "ev_action");
+    require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::oid, "oid");
+    require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::rulename, "rulename");
+    require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::ev_class, "ev_class");
+    require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::ev_type, "ev_type");
+    require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::ev_action, "ev_action");
     // pg_depend
-    require_col("pg_depend", pg_depend_col::classid, "classid");
-    require_col("pg_depend", pg_depend_col::objid, "objid");
-    require_col("pg_depend", pg_depend_col::refclassid, "refclassid");
-    require_col("pg_depend", pg_depend_col::refobjid, "refobjid");
-    require_col("pg_depend", pg_depend_col::deptype, "deptype");
+    require_col(well_known_oid::pg_depend_table, pg_depend_col::classid, "classid");
+    require_col(well_known_oid::pg_depend_table, pg_depend_col::objid, "objid");
+    require_col(well_known_oid::pg_depend_table, pg_depend_col::refclassid, "refclassid");
+    require_col(well_known_oid::pg_depend_table, pg_depend_col::refobjid, "refobjid");
+    require_col(well_known_oid::pg_depend_table, pg_depend_col::deptype, "deptype");
     // pg_proc
-    require_col("pg_proc", pg_proc_col::oid, "oid");
-    require_col("pg_proc", pg_proc_col::proname, "proname");
-    require_col("pg_proc", pg_proc_col::pronamespace, "pronamespace");
-    require_col("pg_proc", pg_proc_col::pronargs, "pronargs");
-    require_col("pg_proc", pg_proc_col::prouid, "prouid");
+    require_col(well_known_oid::pg_proc_table, pg_proc_col::oid, "oid");
+    require_col(well_known_oid::pg_proc_table, pg_proc_col::proname, "proname");
+    require_col(well_known_oid::pg_proc_table, pg_proc_col::pronamespace, "pronamespace");
+    require_col(well_known_oid::pg_proc_table, pg_proc_col::pronargs, "pronargs");
+    require_col(well_known_oid::pg_proc_table, pg_proc_col::prouid, "prouid");
     // pg_sequence
-    require_col("pg_sequence", pg_sequence_col::seqrelid, "seqrelid");
-    require_col("pg_sequence", pg_sequence_col::seqstart, "seqstart");
-    require_col("pg_sequence", pg_sequence_col::seqincrement, "seqincrement");
-    require_col("pg_sequence", pg_sequence_col::seqmin, "seqmin");
-    require_col("pg_sequence", pg_sequence_col::seqmax, "seqmax");
-    require_col("pg_sequence", pg_sequence_col::seqcycle, "seqcycle");
-    require_col("pg_sequence", pg_sequence_col::seqlast, "seqlast");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqrelid, "seqrelid");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqstart, "seqstart");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqincrement, "seqincrement");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqmin, "seqmin");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqmax, "seqmax");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqcycle, "seqcycle");
+    require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqlast, "seqlast");
 }

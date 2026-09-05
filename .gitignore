@@ -263,6 +263,7 @@ benchmarks/bench_run.log
 /log/
 /wal/
 test_collection_*/
+test_connect_persistence_*/
 integration/python/**/log/
 integration/python/**/wal/
 /integration/python/.coverage
@@ -296,4 +297,4 @@ CMakeUserPresets.json
 # local build trees (TSAN/ASAN side builds) and session-local agent settings
 build-tsan/
 build-*/
-.claude/
+.cache

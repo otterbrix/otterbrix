@@ -31,16 +31,34 @@ namespace components::operators {
             }
         }
 
-        // IN_MEMORY-only deployment (no disk actor): no pg_settings persistence,
-        // so skip the catalog write.
+        // The pg_settings row is what makes the setting outlive the process; with
+        // no disk actor to write it, SET TIME ZONE has validated a name and
+        // persisted nothing, which a silent mark_executed() would report as done.
+        // No production topology wires an executor without the disk actor
+        // (base_spaces spawns it unconditionally), so the refusal costs nothing
+        // where it cannot fire — same convention as the cast operators.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            mark_executed();
+            set_error(core::error_t{
+                core::error_code_t::physical_plan_error,
+                std::pmr::string{"set_timezone: no disk actor is wired — the pg_settings row cannot be "
+                                 "written, so the setting would not survive this process",
+                                 this->resource()}});
+            mark_failed();
             co_return;
         }
 
-        const auto* settings_def = components::catalog::find_system_table("pg_settings");
+        const auto* settings_def =
+            components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
+        // pg_settings is a well-known compiled-in table; a registry that cannot
+        // name it is not a topology, and "succeed without writing" is the same
+        // silent lie the empty-address branch above refuses to tell.
         if (settings_def == nullptr) {
-            mark_executed();
+            set_error(core::error_t{
+                core::error_code_t::physical_plan_error,
+                std::pmr::string{"set_timezone: the pg_settings schema is missing from the system-table "
+                                 "registry — the setting cannot be persisted",
+                                 this->resource()}});
+            mark_failed();
             co_return;
         }
 
@@ -54,18 +72,25 @@ namespace components::operators {
         row.set_value(1, 0, std::string_view(timezone_name_.data(), timezone_name_.size()));
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
-        auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::append_pg_catalog_row,
-                                         exec_ctx,
-                                         components::catalog::well_known_oid::pg_settings_table,
-                                         std::move(row));
+        auto [_u, uf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    components::catalog::well_known_oid::pg_settings_table,
+                                                    std::move(row));
         // Record the append range so the executor's commit tail publishes (and,
         // on error, reverts) this pg_settings row through the unified DML path.
-        // append_pg_catalog_row returns count==0 for the txn-less (transaction_id
-        // == 0) case, mirroring operator_insert's catalog-branch recording guard.
-        auto rng = co_await std::move(uf);
-        if (rng.count > 0)
-            ctx->pg_catalog_appends.push_back(std::move(rng));
+        // append_pg_catalog_row returns count==0 for the direct-write (transaction_id
+        // == 0) case, mirroring operator_insert's catalog-branch recording guard, and an
+        // ERROR when the row could not be written at all — which SET TIME ZONE must not
+        // report as a successful setting change.
+        auto rng_r = co_await std::move(uf);
+        if (rng_r.has_error()) {
+            set_error(rng_r.error());
+            mark_failed();
+            co_return;
+        }
+        if (rng_r.value().count > 0)
+            ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
         mark_executed();
     }
 

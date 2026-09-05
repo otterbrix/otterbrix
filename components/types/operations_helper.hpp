@@ -184,12 +184,8 @@ namespace components::types {
             // case physical_type::NA:
             //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
             default:
-                // A true invariant violation must never throw (an exception aborts messily through the
-                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
-                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
-                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
-                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
-                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                // Same genuine "cannot happen" as simple_physical_type_switch above, and abort for the
+                // same reason: a throw would unwind messily through the noexcept executor coroutine.
                 assert(false && "simple_physical_type_switch: unhandled physical type");
                 std::abort();
         }
@@ -230,12 +226,8 @@ namespace components::types {
             // case physical_type::NA:
             //     return simple_physical_type_switch<DoubleCallback, std::nullptr_t>(type_right, std::forward<Args>(args)...);
             default:
-                // A true invariant violation must never throw (an exception aborts messily through the
-                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
-                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
-                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
-                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
-                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                // Same genuine "cannot happen" as simple_physical_type_switch above, and abort for the
+                // same reason: a throw would unwind messily through the noexcept executor coroutine.
                 assert(false && "simple_physical_type_switch: unhandled physical type");
                 std::abort();
         }
@@ -286,9 +278,12 @@ namespace components::types {
         absl::MakeInt128(0x1ED09BEAD87C0, 0x378D8E6400000000),
         absl::MakeInt128(0x13426172C74D82, 0x2B878FE800000000),
         absl::MakeInt128(0xC097CE7BC90715, 0xB34B9F1000000000),
-        absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000)
-        // There is another power of 10, but negative counterpart can not be represented, so we are not using it
-        //absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)
+        absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000),
+        // 10^38. It is representable both ways — int128's minimum is -2^127 = -1.70141...e38
+        // and -10^38 clears it by 7.0e37 — and it must stay in the array: TWO readers index
+        // 38, decimal_length()'s `>= POWERS_OF_TEN[38]` test and int_to_decimal's
+        // POWERS_OF_TEN[width - scale], which reaches it for the perfectly legal NUMERIC(38,0).
+        absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)
     };
 
     // double supports up to 15 decimal places, so we stop there

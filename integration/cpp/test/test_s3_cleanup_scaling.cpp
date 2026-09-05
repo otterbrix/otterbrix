@@ -1,23 +1,53 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <components/catalog/catalog_oids.hpp>
+#include <components/table/collection.hpp>
+#include <components/table/column_definition.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <core/pmr.hpp>
+#include <services/disk/manager_disk.hpp>
+
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
-// Does the per-commit cleanup cost grow as a table piles up tombstones?
+// Where does a disk-backed table's dead-row reclaim happen, and what does a small commit pay
+// for it?
 //
-// The COMMIT walk itself does not: on a nearly clean table, committing a one-row DELETE visits
-// 1024 version slots — one vector — whatever the table size.
+// These two cases used to answer a narrower question. agent_disk_t::maybe_cleanup_inner rode the
+// COMMIT fan-out and asked collection_t::committed_row_count() on every commit to decide whether
+// to compact; that call reaches chunk_vector_info::committed_deleted_count, which re-scans all
+// 1024 slots of EVERY vector still carrying a committed tombstone. UPDATE here is
+// tombstone+append, so a table under a long UPDATE workload accumulates them and every later
+// commit, however small, paid for all of them.
 //
-// The cleanup side is a different walk. agent_disk_t::maybe_cleanup_inner asks
-// collection_t::committed_row_count() on every commit to decide whether to compact, and that
-// reaches chunk_vector_info::committed_deleted_count, which re-scans all slots of EVERY vector
-// still carrying a committed tombstone. On a fresh table there are almost none. UPDATE here is
-// tombstone+append, so a table under a long UPDATE workload accumulates them — and then every
-// later commit, however small, would pay for all of them.
+// That walk is no longer on the write path for a DISK-backed table, which is every user table
+// (operator_create_collection_t). Under the split free pool a compact whose header never commits
+// cannot RETURN space, only spend it — measured at +2.9 MB per call — so compaction of a disk
+// table was made one indivisible unit with the checkpoint that commits it, and
+// maybe_cleanup_inner now turns disk entries away. The old probes therefore read a flat zero and
+// their positive controls (`REQUIRE(control > 0)`, `REQUIRE(series.back() > 0)`) failed for the
+// one reason a positive control exists to catch: the instrument was wired to a path deliberately
+// not taken.
 //
-// Hidden by default ([.]): it does repeated 200k-row update passes. Run it with [s3cleanup].
+// Retargeted, with the owner's per-test consent, to measure the reclaim where it now happens.
+// Each case asserts BOTH halves, because either alone is satisfiable by a broken engine:
+//
+//   * the commit pays NOTHING — cleanup_slots_visited() stays 0 across the whole workload no
+//     matter how many tombstones earlier statements piled up; it goes red the moment the walk
+//     returns to the write path;
+//   * the reclaim still HAPPENS — after CHECKPOINT the durable root holds exactly the live rows.
+//     Measured with the engine down against a freshly loaded .otbx, the only reading that cannot
+//     be produced by in-memory state, and because a checkpoint whose compact was refused defers
+//     the whole entry, leaving the OLD row count on disk. This is the new positive control: a
+//     number that must move from 200000 to the live count, and that reads wrong rather than zero
+//     if the apparatus comes unwired.
+//
+// Hidden by default ([.]): repeated 200k-row update passes. Run them with [s3cleanup].
 
 namespace {
     constexpr int kRows = 200000;
@@ -38,141 +68,240 @@ namespace {
             REQUIRE(d->execute_sql(session, sql)->is_success());
         }
     }
+
+    // The only user table in these cases: `<main_path>/.../<oid>/table.otbx` with oid past
+    // FIRST_USER_OID. Every system catalog sits below it, so the filter finds the user table
+    // without the test having to learn its oid.
+    std::filesystem::path find_user_table_otbx(const std::filesystem::path& root) {
+        std::filesystem::path found;
+        if (!std::filesystem::exists(root)) {
+            return found;
+        }
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file() || entry.path().filename() != "table.otbx") {
+                continue;
+            }
+            const std::string oid_dir = entry.path().parent_path().filename().string();
+            char* end = nullptr;
+            const unsigned long oid = std::strtoul(oid_dir.c_str(), &end, 10);
+            if (end == nullptr || *end != '\0' || oid < components::catalog::FIRST_USER_OID) {
+                continue;
+            }
+            found = entry.path();
+        }
+        return found;
+    }
+
+    // Physical rows the DURABLE root stores, read with the engine shut down against a freshly
+    // loaded .otbx. A compacted checkpoint writes only live rows; a checkpoint whose compact
+    // was refused writes nothing at all and leaves the previous root's count standing. The
+    // counted collection copy is scoped to the read — a holder kept past a reclaim keeps block
+    // handles alive with it.
+    uint64_t durable_row_count(const std::filesystem::path& otbx, std::pmr::memory_resource* resource) {
+        services::disk::table_storage_t ts(resource, otbx, std::vector<components::table::column_definition_t>{});
+        REQUIRE_FALSE(ts.construction_failed());
+        auto collection = ts.table().row_group();
+        return collection->total_rows();
+    }
 } // namespace
 
-TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulated_tombstones", "[.][s3cleanup]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup");
+TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_reclaimed_at_checkpoint",
+          "[.][s3cleanup]") {
+    auto config = test_create_config(integration_fixture_path("test_s3/cleanup"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
-    test_spaces space(config);
-    auto* d = space.dispatcher();
-    auto exec = [&](const std::string& sql) {
-        auto session = otterbrix::session_id_t();
-        return d->execute_sql(session, sql);
-    };
 
-    REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
-    REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
-    fill(d, "t", kRows);
+    core::pmr::otterbrix_resource resource;
+    int64_t live_rows = 0;
 
-    // The probe statement must be a DELETE, not an INSERT: the cleanup fan-out is gated on the
-    // commit carrying base deletes (operator_commit_transaction.cpp skips it for an append-only
-    // commit, which produces zero dead rows), so an append-only probe reads zero for the wrong
-    // reason.
-    //
-    // It deletes one row from the UNTOUCHED tail of the table, so the probe never overlaps the
-    // rows the update passes tombstone — what it pays for is other statements' leftovers.
-    int probe_id = kRows - 1;
-    auto cleanup_slots_for_one_commit = [&]() {
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
+
+        REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
+        REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
+        fill(d, "t", kRows);
+
+        // The probe statement must be a DELETE, not an INSERT: the cleanup fan-out is gated on
+        // the commit carrying base deletes (operator_commit_transaction.cpp skips it for an
+        // append-only commit, which produces zero dead rows), so an append-only probe would
+        // read zero for the wrong reason — the fan-out never leaves the operator.
+        //
+        // It deletes one row from the UNTOUCHED tail of the table, so the probe never overlaps
+        // the rows the update passes tombstone: what it would pay for is other statements'
+        // leftovers.
+        int probe_id = kRows - 1;
+        auto cleanup_slots_for_one_commit = [&]() {
+            components::table::reset_cleanup_slots_visited();
+            REQUIRE(exec("DELETE FROM tomb.t WHERE id = " + std::to_string(probe_id--) + ";")->is_success());
+            return components::table::cleanup_slots_visited();
+        };
+
+        const auto before_any_update = cleanup_slots_for_one_commit();
+        INFO("cleanup slots for one commit, before any update pass: " << before_any_update);
+        CHECK(before_any_update == 0);
+
+        std::vector<uint64_t> series;
+        for (int pass = 1; pass <= 10; ++pass) {
+            // UPDATE is tombstone+append: this leaves kUpdatedPerPass committed tombstones
+            // behind, and ten passes leave half a million.
+            REQUIRE(
+                exec("UPDATE tomb.t SET v = v + 1 WHERE id < " + std::to_string(kUpdatedPerPass) + ";")->is_success());
+            series.push_back(cleanup_slots_for_one_commit());
+        }
+
+        INFO("cleanup slots walked by ONE trivial commit, after each update pass:");
+        for (size_t i = 0; i < series.size(); ++i) {
+            INFO("  pass " << (i + 1) << ": " << series[i]);
+        }
+
+        // The claim under test, in its strict form: a small commit pays for NO tombstone, not
+        // even its own. Half a million accumulated tombstones later the write path still walks
+        // zero slots, because the decision walk left it entirely.
+        for (size_t i = 0; i < series.size(); ++i) {
+            INFO("pass " << (i + 1));
+            CHECK(series[i] == 0);
+        }
+
+        // Contiguous bulk delete: a fully deleted vector collapses into a chunk_constant_info
+        // whose committed_deleted_count is O(1), so this shape could never make the old walk
+        // grow past the one partially-hit boundary vector. It is still the cheapest way to put
+        // a big block of dead rows on the table for the reclaim half below.
+        REQUIRE(exec("DELETE FROM tomb.t WHERE id >= 100000 AND id < 150000;")->is_success());
         components::table::reset_cleanup_slots_visited();
-        components::table::reset_version_slots_visited();
-        REQUIRE(exec("DELETE FROM tomb.t WHERE id = " + std::to_string(probe_id--) + ";")->is_success());
-        return components::table::cleanup_slots_visited();
-    };
+        REQUIRE(exec("DELETE FROM tomb.t WHERE id = 60000;")->is_success());
+        const auto after_bulk = components::table::cleanup_slots_visited();
+        INFO("cleanup slots for one commit after 50k rows were deleted: " << after_bulk);
+        CHECK(after_bulk == 0);
 
-    const auto before_any_update = cleanup_slots_for_one_commit();
-    INFO("cleanup slots for one commit, before any update pass: " << before_any_update);
+        {
+            auto cur = exec("SELECT count(*) FROM tomb.t;");
+            REQUIRE(cur->is_success());
+            live_rows = cur->value(0, 0).value<int64_t>();
+        }
+        INFO("live rows before the checkpoint: " << live_rows);
+        REQUIRE(live_rows > 0);
+        REQUIRE(live_rows < kRows);
 
-    std::vector<uint64_t> series;
-    for (int pass = 1; pass <= 10; ++pass) {
-        // UPDATE is tombstone+append: this leaves kUpdatedPerPass committed tombstones behind.
-        REQUIRE(exec("UPDATE tomb.t SET v = v + 1 WHERE id < " + std::to_string(kUpdatedPerPass) + ";")->is_success());
-        series.push_back(cleanup_slots_for_one_commit());
+        REQUIRE(exec("CHECKPOINT;")->is_success());
     }
 
-    INFO("cleanup slots walked by ONE trivial commit, after each update pass:");
-    for (size_t i = 0; i < series.size(); ++i) {
-        INFO("  pass " << (i + 1) << ": " << series[i]);
-    }
-    INFO("pass 1 = " << series.front() << ", pass 10 = " << series.back());
+    // Engine down. The durable root must hold the live rows and nothing else — which is the
+    // reclaim the commit-side gate no longer performs, done by the round that can commit it.
+    const auto otbx = find_user_table_otbx(config.main_path);
+    INFO("user .otbx: " << otbx.string());
+    REQUIRE_FALSE(otbx.empty());
 
-    // The claim under test: a small commit must not pay for tombstones it did not create. The
-    // bound is stated against pass 1 so the test reports the SHAPE, not an absolute.
-    CHECK(series.back() <= series.front() * 2);
-
-    // Positive control. A counter that reads zero everywhere proves nothing about the code — it
-    // usually means the instrument is not wired to the path. Deleting a quarter of the table must
-    // make the cleanup walk SOMETHING; if this fails, every number above is meaningless.
-    REQUIRE(exec("DELETE FROM tomb.t WHERE id >= 100000 AND id < 150000;")->is_success());
-    components::table::reset_cleanup_slots_visited();
-    REQUIRE(exec("DELETE FROM tomb.t WHERE id = 60000;")->is_success());
-    const auto control = components::table::cleanup_slots_visited();
-    INFO("positive control — cleanup slots after 50k rows were deleted: " << control);
-    REQUIRE(control > 0);
+    const auto physical = durable_row_count(otbx, &resource);
+    INFO("physical rows in the durable root: " << physical << ", live rows: " << live_rows
+                                               << ", rows ever inserted: " << kRows);
+    CHECK(physical == static_cast<uint64_t>(live_rows));
 }
 
-// The case the contiguous test above cannot reach.
+// The case the contiguous one above cannot reach.
 //
 // Deleting a contiguous range takes whole vectors out at once, and a fully deleted vector is
-// recorded as a chunk_constant_info whose committed_deleted_count is O(1) — which is why the
-// contiguous probe reads a flat 1024 (just the one partially-hit boundary vector).
+// recorded as a chunk_constant_info whose committed_deleted_count is O(1) — so the contiguous
+// case leaves just the one partially-hit boundary vector behind.
 //
 // A SCATTERED update leaves every vector partially tombstoned, so every vector keeps a
-// chunk_vector_info with any_deleted set, and the cleanup re-walks all 1024 slots of each on every
-// later commit — the shape an OLTP workload updating rows by primary key produces.
-TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_cost_per_commit", "[.][s3cleanup]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup_scattered");
+// chunk_vector_info with any_deleted set, and the old cleanup re-walked all 1024 slots of each
+// on every later commit — the shape an OLTP workload updating rows by primary key produces,
+// and the worst case the pair was written for. It is also the harder reclaim: no vector can be
+// dropped whole, so the checkpoint's compact has to rebuild every one of them.
+TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_reclaimed_at_checkpoint",
+          "[.][s3cleanup]") {
+    auto config = test_create_config(integration_fixture_path("test_s3/cleanup_scattered"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
-    test_spaces space(config);
-    auto* d = space.dispatcher();
-    auto exec = [&](const std::string& sql) {
-        auto session = otterbrix::session_id_t();
-        return d->execute_sql(session, sql);
-    };
 
-    REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
-    REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
-    fill(d, "t", kRows);
+    core::pmr::otterbrix_resource resource;
+    int64_t live_rows = 0;
 
-    int probe_id = kRows - 1;
-    auto cleanup_slots_for_one_commit = [&]() {
-        components::table::reset_cleanup_slots_visited();
-        REQUIRE(exec("DELETE FROM tomb.t WHERE id = " + std::to_string(probe_id--) + ";")->is_success());
-        return components::table::cleanup_slots_visited();
-    };
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
 
-    const auto clean = cleanup_slots_for_one_commit();
-    INFO("scattered: cleanup slots before any update pass: " << clean);
+        REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
+        REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
+        fill(d, "t", kRows);
 
-    std::vector<uint64_t> series;
-    for (int pass = 1; pass <= 5; ++pass) {
-        // Every 4th row: each 1024-row vector keeps ~256 live and ~256 tombstoned rows, so no
-        // vector can collapse into the O(1) constant form.
-        REQUIRE(exec("UPDATE tomb.t SET v = v + 1 WHERE id % 4 = 0;")->is_success());
-        series.push_back(cleanup_slots_for_one_commit());
+        int probe_id = kRows - 1;
+        auto cleanup_slots_for_one_commit = [&]() {
+            components::table::reset_cleanup_slots_visited();
+            REQUIRE(exec("DELETE FROM tomb.t WHERE id = " + std::to_string(probe_id--) + ";")->is_success());
+            return components::table::cleanup_slots_visited();
+        };
+
+        const auto clean = cleanup_slots_for_one_commit();
+        INFO("scattered: cleanup slots before any update pass: " << clean);
+        CHECK(clean == 0);
+
+        std::vector<uint64_t> series;
+        for (int pass = 1; pass <= 5; ++pass) {
+            // Every 4th row: each 1024-row vector keeps ~256 live and ~256 tombstoned rows, so
+            // no vector can collapse into the O(1) constant form.
+            REQUIRE(exec("UPDATE tomb.t SET v = v + 1 WHERE id % 4 = 0;")->is_success());
+            series.push_back(cleanup_slots_for_one_commit());
+        }
+
+        INFO("scattered: cleanup slots walked by ONE trivial commit, per pass:");
+        for (size_t i = 0; i < series.size(); ++i) {
+            INFO("  pass " << (i + 1) << ": " << series[i]);
+        }
+
+        // Same claim, on the shape that used to make it fail: one small commit pays for no
+        // tombstone any other statement left behind.
+        for (size_t i = 0; i < series.size(); ++i) {
+            INFO("pass " << (i + 1));
+            CHECK(series[i] == 0);
+        }
+
+        {
+            auto cur = exec("SELECT count(*) FROM tomb.t;");
+            REQUIRE(cur->is_success());
+            live_rows = cur->value(0, 0).value<int64_t>();
+        }
+        INFO("scattered: live rows before the checkpoint: " << live_rows);
+        REQUIRE(live_rows > 0);
+
+        REQUIRE(exec("CHECKPOINT;")->is_success());
     }
 
-    INFO("scattered: cleanup slots walked by ONE trivial commit, per pass:");
-    for (size_t i = 0; i < series.size(); ++i) {
-        INFO("  pass " << (i + 1) << ": " << series[i]);
-    }
-    INFO("scattered: pass 1 = " << series.front() << ", pass 5 = " << series.back());
+    const auto otbx = find_user_table_otbx(config.main_path);
+    INFO("user .otbx: " << otbx.string());
+    REQUIRE_FALSE(otbx.empty());
 
-    // Same instrument discipline as above: a flat zero would mean the probe missed the path.
-    REQUIRE(series.back() > 0);
-
-    // The claim, stated where it can actually be tested: one small commit must not pay for
-    // tombstones other statements left behind.
-    CHECK(series.back() <= 4 * components::vector::DEFAULT_VECTOR_CAPACITY);
+    // Five scattered update passes over 200k rows leave a million dead rows behind, none of
+    // them in a vector that can be dropped whole. The durable root must carry none of them.
+    const auto physical = durable_row_count(otbx, &resource);
+    INFO("scattered: physical rows in the durable root: " << physical << ", live rows: " << live_rows);
+    CHECK(physical == static_cast<uint64_t>(live_rows));
 }
 
 // The corner that matters most in practice: a table WITH an index.
 //
 // compact() shifts row positions and the index engines hold positional row refs, so
 // operator_commit_transaction filters the compact set through manager_index_t::tables_without_indexes
-// before sending maybe_cleanup_many. An indexed table is therefore dropped from safe_oids — which
-// means either the cleanup never runs for it (cost zero) or, if it did, its tombstones could never
-// be compacted away and the walk would grow without bound. Those are opposite outcomes and only a
-// measurement separates them.
+// before sending maybe_cleanup_many. An indexed table is therefore dropped from safe_oids twice
+// over — once by that index filter, once by the DISK gate the two cases above describe — so its
+// per-commit cleanup cost is zero for two independent reasons, and this case pins the bound that
+// holds under either. Its reclaim rides the checkpoint round like every other disk table's, and
+// operator_checkpoint_t repopulates the index afterwards precisely because that compact renumbers
+// the rows underneath it.
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::indexed_table_cleanup_cost", "[.][s3cleanup]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup_indexed");
+    auto config = test_create_config(integration_fixture_path("test_s3/cleanup_indexed"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

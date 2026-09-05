@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/casts/default_casts.hpp>
@@ -82,9 +83,8 @@ using expressions::sort_order;
 static const std::string db = "starjoindb";
 
 TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
-    auto config = test_create_config("/tmp/test_star_join_e2e/rows");
+    auto config = test_create_config(integration_fixture_path("test_star_join_e2e/rows"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
@@ -365,9 +365,8 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
 // under the Hash Join for MIN/MAX and NOT for SUM (which is excluded).
 // ============================================================================
 TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
-    auto config = test_create_config("/tmp/test_eager_agg/rows");
+    auto config = test_create_config(integration_fixture_path("test_eager_agg/rows"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
@@ -451,9 +450,8 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
 // unchanged with the partial physically pushed.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_safe") {
-    auto config = test_create_config("/tmp/test_eager_agg/dup");
+    auto config = test_create_config(integration_fixture_path("test_eager_agg/dup"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();

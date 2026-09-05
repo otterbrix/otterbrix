@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
@@ -79,7 +80,7 @@ namespace {
 // does NOT reach: composite (multi-column) keys and SQL NULL-distinct semantics.
 
 TEST_CASE("unique constraint operator: composite key duplicate is caught", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // Two columns (a,b) form one UNIQUE constraint. Rows 0 and 2 share (1,9).
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
@@ -100,7 +101,7 @@ TEST_CASE("unique constraint operator: composite key duplicate is caught", "[uni
 }
 
 TEST_CASE("unique constraint operator: composite key with differing second column passes", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
@@ -118,7 +119,7 @@ TEST_CASE("unique constraint operator: composite key with differing second colum
 }
 
 TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // Two rows both NULL in the unique column: SQL UNIQUE treats NULLs as distinct,
     // so this is NOT a violation.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
@@ -143,7 +144,7 @@ TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[uni
 //     bucket, so they are ONE key.
 // ---------------------------------------------------------------------------
 TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::DOUBLE);
     cols.back().set_alias("score");
@@ -157,7 +158,7 @@ TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught",
 }
 
 TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::DOUBLE);
     cols.back().set_alias("score");
@@ -177,7 +178,7 @@ TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", 
 // UNRESOLVED row — comparing the wrong cell.
 // ---------------------------------------------------------------------------
 TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     // Flat base [10, 20, 30]; dictionary view picks rows {2, 0} -> [30, 10].
     vector::vector_t base(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);
@@ -200,4 +201,182 @@ TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[un
     REQUIRE(vector::cells_equal(dict, 0, flat, 0));
     REQUIRE(vector::cells_equal(dict, 1, flat, 1));
     REQUIRE_FALSE(vector::cells_equal(dict, 0, flat, 1));
+}
+
+// ---------------------------------------------------------------------------
+// A GROUP THIS WRITE-SET CANNOT ANSWER IS A REFUSAL, NOT A SKIP.
+//
+// The group column names arrive already resolved from LIVE pg_attribute rows of
+// this very table (operator_resolve_constraint refuses a group it cannot resolve
+// rather than dropping it), and the DML materialises every column of the row it
+// writes. So a name with no column in the write-set means the write-set and the
+// catalog disagree about the table's shape — and there is no reading of an absent
+// column that is a uniqueness check.
+//
+// This used to `continue` on that condition, which is this operator's SUCCESS
+// path: the declared key was enforced against nothing and the rows the DML had
+// ALREADY written stayed in the table. Same defect, same shape and same cure as
+// operator_fk_check_t's "referencing column has no position in the written row",
+// which was made loud earlier; this is the UNIQUE / PRIMARY KEY half of it.
+// ---------------------------------------------------------------------------
+TEST_CASE("unique constraint operator: a key column absent from the write-set is refused, not skipped",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+    // Write-set exposes only "a"; the group is declared on (a, b).
+    std::pmr::vector<types::complex_logical_type> cols(&resource);
+    cols.emplace_back(types::logical_type::BIGINT);
+    cols.back().set_alias("a");
+    vector::data_chunk_t chunk(&resource, cols, 2);
+    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_cardinality(2);
+
+    std::string err;
+    REQUIRE(run_unique(&resource, std::move(chunk), {{"a", "b"}}, &err));
+    INFO("error: " << err);
+    // The message has to name the column the user can act on, not the symptom.
+    REQUIRE(err.find("\"b\"") != std::string::npos);
+}
+
+TEST_CASE("unique constraint operator: a key column list that is empty is refused, not skipped",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+    // An empty column list enforces nothing at all: every row has the same
+    // (zero-column) key, so the constraint is either meaningless or lost. Mirrors
+    // operator_fk_check_t's `indices.empty()` refusal.
+    std::pmr::vector<types::complex_logical_type> cols(&resource);
+    cols.emplace_back(types::logical_type::BIGINT);
+    cols.back().set_alias("a");
+    vector::data_chunk_t chunk(&resource, cols, 2);
+    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_cardinality(2);
+
+    std::string err;
+    REQUIRE(run_unique(&resource, std::move(chunk), {{}}, &err));
+    INFO("error: " << err);
+}
+
+// ---------------------------------------------------------------------------
+// EVERY CHUNK IS READ BY THE FIRST CHUNK'S POSITIONS, SO EVERY CHUNK MUST HAVE
+// THE FIRST CHUNK'S LAYOUT.
+//
+// The operator resolves each key column's position ONCE, against the FRONT
+// chunk, and then indexes chunk.data[position] in EVERY chunk of the write-set.
+// The "one DML — one schema" invariant makes that legal today; a chunk with a
+// different layout would be read at the first chunk's positions anyway — a
+// NARROWER chunk as memory PAST ITS COLUMNS (out of bounds, silently), a
+// REORDERED chunk as THE WRONG COLUMN (below: the duplicate key 1 in the second
+// chunk sits at position 1, the operator reads position 0 = 999, and the
+// declared UNIQUE key admits the duplicate in silence). There is no reading of
+// the wrong column that is a uniqueness check, so a chunk that disagrees with
+// the front chunk's layout is refused, not read.
+// ---------------------------------------------------------------------------
+TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the first chunk is refused",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    // Chunk 1: [k, v], key column "k" at position 0, k = 1.
+    std::pmr::vector<types::complex_logical_type> cols1(&resource);
+    cols1.emplace_back(types::logical_type::BIGINT);
+    cols1.back().set_alias("k");
+    cols1.emplace_back(types::logical_type::BIGINT);
+    cols1.back().set_alias("v");
+    vector::data_chunk_t chunk1(&resource, cols1, 1);
+    chunk1.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk1.set_value(1, 0, types::logical_value_t(&resource, int64_t(100)));
+    chunk1.set_cardinality(1);
+
+    // Chunk 2: [v, k] — same columns, SWAPPED. Its "k" duplicates chunk 1's key.
+    std::pmr::vector<types::complex_logical_type> cols2(&resource);
+    cols2.emplace_back(types::logical_type::BIGINT);
+    cols2.back().set_alias("v");
+    cols2.emplace_back(types::logical_type::BIGINT);
+    cols2.back().set_alias("k");
+    vector::data_chunk_t chunk2(&resource, cols2, 1);
+    chunk2.set_value(0, 0, types::logical_value_t(&resource, int64_t(999)));
+    chunk2.set_value(1, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk2.set_cardinality(1);
+
+    operators::chunks_vector_t chunks(&resource);
+    chunks.emplace_back(std::move(chunk1));
+    chunks.emplace_back(std::move(chunk2));
+    auto data = operators::make_operator_data(&resource, std::move(chunks));
+
+    operators::operator_ptr op(
+        new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"k"}}));
+    op->set_children(operators::operator_ptr(new constraint_source_operator_t(&resource, std::move(data))));
+
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    auto fut = op->await_async_and_resume(&ctx);
+    REQUIRE(fut.is_ready());
+    std::move(fut).take_ready();
+
+    INFO("a write-set chunk that disagrees with the first chunk's layout must be refused, "
+         "never read at the first chunk's positions");
+    REQUIRE(op->has_error());
+    const std::string err{op->get_error().what};
+    INFO("error: " << err);
+    REQUIRE(err.find("\"k\"") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// LAYER 2 IS NOT SWITCHED OFF BY AN UNRESOLVED TABLE NAME.
+//
+// Skipping the existing-row layer on
+//
+//     ctx->disk_address == empty_address() || table_oid_ == INVALID_OID
+//
+// takes this operator's SUCCESS path: the rows are ALREADY written when a
+// constraint sink runs, so skipping the scan leaves a duplicate of a STORED row in
+// the table and reports success. The two halves of that condition are not the same
+// kind of fact: an empty disk address is TOPOLOGY (no disk actor to ask, which is
+// how the unit tests above run), while INVALID_OID is an UNRESOLVED TABLE NAME — a
+// disk actor is right there and the operator declines to use it. Same "success path
+// a declared key must not have" the empty-group and absent-column guards above
+// close, closed the same way.
+//
+// PATH NOT NAMED. No live SQL statement reaches it: both splice sites (planner.cpp
+// rewrite_insert / rewrite_update) take the oid from the very node whose
+// unique_groups came from catalog_resolves_t::constraints_for(table_oid), and that
+// function returns nullptr for INVALID_OID — a non-empty group list implies a
+// resolved oid. So this is a SENTINEL, and its sensitivity is proven by injection:
+// with `|| table_oid_ == catalog::INVALID_OID` added back to the LAYER-2 skip it
+// goes red on the REQUIRE below.
+// ---------------------------------------------------------------------------
+TEST_CASE("unique constraint operator: an unresolved table oid does not disable the existing-row layer",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<types::complex_logical_type> cols(&resource);
+    cols.emplace_back(types::logical_type::BIGINT);
+    cols.back().set_alias("a");
+    vector::data_chunk_t chunk(&resource, cols, 2);
+    // Two DISTINCT keys: LAYER 1 has nothing to say about them, so whatever the
+    // operator answers here is LAYER 2's answer alone.
+    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_cardinality(2);
+
+    operators::operator_ptr op(
+        new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"a"}}));
+    op->set_children(make_child(&resource, std::move(chunk)));
+
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    // A disk actor IS wired up. address_t::operator== compares the pointee, so
+    // any non-null pointer is "not the empty address" as far as the operator's
+    // topology check goes; nothing is ever enqueued on it, because the refusal
+    // lands before the first send.
+    int disk_actor_stand_in = 0;
+    ctx.disk_address = actor_zeta::address_t{&resource, &disk_actor_stand_in};
+
+    auto fut = op->await_async_and_resume(&ctx);
+    REQUIRE(fut.is_ready());
+    std::move(fut).take_ready();
+
+    INFO("a UNIQUE group whose table never resolved must be refused, not passed");
+    REQUIRE(op->has_error());
+    const std::string err{op->get_error().what};
+    INFO("error: " << err);
+    // The message has to say WHICH fact is missing, not just that something is.
+    REQUIRE(err.find("table") != std::string::npos);
 }

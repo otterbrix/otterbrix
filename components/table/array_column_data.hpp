@@ -36,7 +36,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
         [[nodiscard]] core::result_wrapper_t<bool>
         append(column_append_state& state, vector::vector_t& vector, uint64_t count) override;
-        void revert_append(int64_t start_row) override;
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(int64_t start_row) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;
@@ -55,6 +55,24 @@ namespace components::table {
                                      std::vector<column_segment_info>& result) override;
 
         size_t array_size() const;
+
+        // Disk load: no own segments — persisted count + the persisted validity bitmap
+        // (child_columns[0]) + the persisted element child (child_columns[1], rows *
+        // array_size entries).
+        [[nodiscard]] core::result_wrapper_t<bool>
+        initialize_column(const persistent_column_data_t& persistent_data) override;
+
+        // Compact reclaim: an array node owns no segments of its own — everything it
+        // stores lives in its validity child and its element column, so those are what is
+        // collected. See the contract on column_data_t::collect_disk_block_ids.
+        void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const override;
+
+    private:
+        // Checkpoint NVI hook: child_columns[0] = validity, child_columns[1] = the element
+        // column's persistent form.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                            persistent_column_data_t& persistent) override;
     };
 
 } // namespace components::table

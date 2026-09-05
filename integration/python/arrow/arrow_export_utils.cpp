@@ -2,6 +2,8 @@
 
 #include "arrow_array_stream.hpp"
 
+#include <cassert>
+
 #include <components/vector/arrow/arrow.hpp>
 #include <components/vector/arrow/arrow_converter.hpp>
 
@@ -20,9 +22,11 @@ namespace otterbrix {
 
     namespace pyarrow {
 
-        py::object to_arrow_table(const std::vector<components::types::complex_logical_type>& types,
+        py::object to_arrow_table(std::pmr::memory_resource* resource,
+                                  const std::vector<components::types::complex_logical_type>& types,
                                   const std::vector<std::string>& names,
                                   const py::list& batches) {
+            assert(resource != nullptr && "to_arrow_table needs the caller's arena");
             py::gil_scoped_acquire acquire;
 
             auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
@@ -30,7 +34,9 @@ namespace otterbrix {
             auto schema_import_func = pyarrow_lib_module.attr("Schema").attr("_import_from_c");
 
             // Core to_arrow_schema derives column names from the type aliases; fold names into typed aliases.
-            std::pmr::vector<components::types::complex_logical_type> schema_types(std::pmr::get_default_resource());
+            // Scoped to this call: the vector dies at the closing brace, after to_arrow_schema
+            // has copied everything it needs into the exported ArrowSchema.
+            std::pmr::vector<components::types::complex_logical_type> schema_types(resource);
             schema_types.reserve(types.size());
             for (std::size_t i = 0; i < types.size(); i++) {
                 auto t = types[i];

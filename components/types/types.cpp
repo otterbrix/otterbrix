@@ -6,6 +6,13 @@
 namespace components::types {
 
     namespace {
+        // The answer the name accessors give for a type that carries no name. A single
+        // immortal empty string, so the accessors can keep returning a reference.
+        const std::string& no_name() {
+            static const std::string empty{};
+            return empty;
+        }
+
         std::array<physical_type, 256> make_physical_type_table() {
             std::array<physical_type, 256> t{};
             for (auto& v : t) v = physical_type::INVALID;
@@ -46,25 +53,30 @@ namespace components::types {
 
         const auto physical_type_table = make_physical_type_table();
 
-        physical_type decimal_storage_type(uint8_t width) {
-            static constexpr uint8_t max_width_16 = 4;
-            static constexpr uint8_t max_width_32 = 9;
-            static constexpr uint8_t max_width_64 = 18;
-            static constexpr uint8_t max_width_128 = 38;
-            if (width <= max_width_16) {
-                return physical_type::INT16;
-            } else if (width <= max_width_32) {
-                return physical_type::INT32;
-            } else if (width <= max_width_64) {
-                return physical_type::INT64;
-            } else if (width <= max_width_128) {
-                return physical_type::INT128;
-            } else {
-                throw std::runtime_error("can not create decimal with width bigger than: " +
-                                         std::to_string(static_cast<int>(max_width_128)));
-            }
-        }
     } // anonymous namespace
+
+    // A throw here would be reachable from ordinary SQL — `NUMERIC(39,0)` walks straight into
+    // it through create_decimal — and from the DECIMAL arm of the index-key decoder, which reads
+    // width from disk bytes. Rule 2: no exceptions. The out-of-window answer is INVALID, and
+    // create_decimal (the only path that reaches the extension constructor with a
+    // caller-supplied width) refuses before ever getting here.
+    physical_type decimal_storage_for_width(uint8_t width) noexcept {
+        static constexpr uint8_t max_width_16 = 4;
+        static constexpr uint8_t max_width_32 = 9;
+        static constexpr uint8_t max_width_64 = 18;
+        if (width == 0) {
+            return physical_type::INVALID;
+        } else if (width <= max_width_16) {
+            return physical_type::INT16;
+        } else if (width <= max_width_32) {
+            return physical_type::INT32;
+        } else if (width <= max_width_64) {
+            return physical_type::INT64;
+        } else if (width <= DECIMAL_MAX_WIDTH) {
+            return physical_type::INT128;
+        }
+        return physical_type::INVALID;
+    }
 
     physical_type to_physical_type(logical_type type) { return physical_type_table[static_cast<uint8_t>(type)]; }
 
@@ -328,13 +340,38 @@ namespace components::types {
         return false;
     }
 
+    // THE THREE NAME ACCESSORS ARE TOTAL FUNCTIONS, AND THEY HAVE TO BE.
+    //
+    // A type with no extension_ is not a broken object: it is what the DEFAULT constructor
+    // builds, what `complex_logical_type{logical_type::UINTEGER}` builds, what
+    // components/catalog/system_table_schemas.cpp builds for every system-table column
+    // before column_definition_t names it, and what catalog::decode_type_spec("") and
+    // catalog::oid_to_builtin_type() hand a READER back. has_alias() already answers "no
+    // name" for that state without complaining, and 18 production sites already spell the
+    // answer by hand as `has_alias() ? alias() : std::string{}` — the other 76 call alias()
+    // straight, correct only while somebody upstream remembered to name the type.
+    //
+    // These three used to claim the state impossible — assert(extension_) in alias() and
+    // type_name(), and in is_unnamed() no check at all. That is wrong twice over. It is a
+    // Debug ABORT on a READ path (`SELECT * FROM pg_class` died in alias(); rule 6 — loud
+    // is required, fatal is not, and an abort while reading leaves a database nobody can
+    // open), and under NDEBUG the assert simply vanishes and leaves a null unique_ptr
+    // dereference in its place — the same wrong answer with no message at all. is_unnamed()
+    // was already in that second state in every build.
+    //
+    // The empty name is the honest answer for a nameless type, not a fallback: nothing is
+    // being guessed, and nothing that HAS a name is affected.
     const std::string& complex_logical_type::alias() const {
-        assert(extension_);
+        if (!extension_) {
+            return no_name();
+        }
         return extension_->alias();
     }
 
     const std::string& complex_logical_type::type_name() const {
-        assert(extension_);
+        if (!extension_) {
+            return no_name();
+        }
         if (extension_->type() == logical_type_extension::extension_type::UNKNOWN) {
             return static_cast<unknown_logical_type_extension*>(extension_.get())->type_name();
         } else if (extension_->type() == logical_type_extension::extension_type::STRUCT) {
@@ -345,12 +382,22 @@ namespace components::types {
         return extension_->alias();
     }
 
+    // Same rule, plus the two checks the static_cast never made: a STRUCT-tagged type that
+    // never went through create_struct carries no struct extension (or a GENERIC one, from
+    // set_alias on a bare tag), and the field vector has a size.
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
+        if (!extension_ || extension_->type() != logical_type_extension::extension_type::STRUCT) {
+            return no_name();
+        }
+        const auto& children = static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+        if (index >= children.size()) {
+            return no_name();
+        }
+        return children[index].alias();
     }
 
-    bool complex_logical_type::is_unnamed() const { return extension_->alias().empty(); }
+    bool complex_logical_type::is_unnamed() const { return !extension_ || extension_->alias().empty(); }
 
     bool complex_logical_type::is_nested() const {
         switch (type_) {
@@ -534,8 +581,39 @@ namespace components::types {
                (type >= logical_type::UTINYINT && type <= logical_type::UHUGEINT);
     }
 
-    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
-        assert(width >= scale);
+    core::result_wrapper_t<complex_logical_type>
+    complex_logical_type::create_decimal(std::pmr::memory_resource* resource,
+                                         uint8_t width,
+                                         uint8_t scale,
+                                         std::string alias) {
+        // The resource is the CALLER'S, and it is touched only on the refusal path below: an
+        // in-window DECIMAL builds its extension without allocating from it at all.
+        //
+        // This used to read std::pmr::new_delete_resource() and carry a note calling that a
+        // rule-14 debt held up by the signature. The signature is now the one the note asked
+        // for, and the callers it named all pass the arena they already held:
+        // type_spec_codec.cpp (decode_one), base_statistics.cpp,
+        // logical_value_binary_codec.hpp (read_decimal_payload), sql/transformer/utils.cpp
+        // (get_type), system_table_schemas.cpp (parse_flat_type),
+        // vector/arrow/scaner/arrow_type.cpp (type_from_format) and cast_registry.cpp, whose
+        // enclosing cast_registry_t carries resource_ and now gets asked for it.
+        //
+        // Two call sites hand over std::pmr::null_memory_resource() on purpose. Both build a
+        // DECIMAL from LITERAL constants that is_valid_decimal_spec accepts (default_casts.cpp's
+        // DECIMAL(18,0) registry key and the cast benchmark's DECIMAL(10,2)), so the branch
+        // below is unreachable there by construction; null turns a future edit that breaks that
+        // into an immediate, loud failure instead of a silent process-global allocation. Never
+        // pass null from a site whose (width, scale) come from data.
+        assert(resource != nullptr && "create_decimal needs a resource for its refusal message");
+        if (!is_valid_decimal_spec(width, scale)) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"DECIMAL(" + std::to_string(static_cast<unsigned>(width)) + "," +
+                                                      std::to_string(static_cast<unsigned>(scale)) +
+                                                      ") is out of range: width must be between 1 and " +
+                                                      std::to_string(static_cast<unsigned>(DECIMAL_MAX_WIDTH)) +
+                                                      " and scale must not exceed width",
+                                                  resource});
+        }
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),
                                     std::move(alias));
@@ -720,7 +798,7 @@ namespace components::types {
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
         : logical_type_extension(extension_type::DECIMAL)
-        , stored_as_(decimal_storage_type(width))
+        , stored_as_(decimal_storage_for_width(width))
         , width_(width)
         , scale_(scale) {}
 

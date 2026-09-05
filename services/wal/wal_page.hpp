@@ -5,7 +5,37 @@
 #include <cstring>
 #include <string>
 
+#ifdef DEV_MODE
+#include <core/file/file_handle.hpp>
+#include <filesystem>
+#include <memory>
+#endif
+
 namespace services::wal {
+
+#ifdef DEV_MODE
+    // Fault-injection seam for WAL SEGMENT FILES.
+    //
+    // The .otbx seam (single_file_block_manager_t::dev_set_file_interposer) wraps the handle
+    // of a database file and covers nothing else; the WAL opens its segments itself through
+    // core::filesystem::open_file, so without this no test can tell the journal "this page
+    // write fails" or "this segment will not open". Plain virtual interface, NOT
+    // std::function (rule 14); process-wide, DEV_MODE-only, read once per open by
+    // wal_page_writer_t and wal_page_reader_t.
+    //
+    // Returning nullptr from wrap() MODELS AN UNOPENABLE SEGMENT, and it is faithful rather
+    // than a shortcut: open_file's own failure answer IS nullptr (local_file_system.cpp
+    // returns it whenever open(2) reports -1), so the interposed path and the real one hand
+    // the caller the identical value.
+    struct wal_file_interposer_t {
+        virtual ~wal_file_interposer_t() = default;
+        virtual std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) = 0;
+    };
+
+    void dev_set_wal_file_interposer(wal_file_interposer_t* interposer); // nullptr = off
+    wal_file_interposer_t* dev_wal_file_interposer();
+#endif
 
     static constexpr uint32_t PAGE_SIZE = 4096;
     static constexpr uint32_t PAGE_HEADER_SIZE = 32;
@@ -64,19 +94,10 @@ namespace services::wal {
         /// Compute CRC32 over the full page (PAGE_SIZE bytes starting at page_data).
         /// The checksum field within the header is zeroed during computation.
         void compute_checksum(char* page_data) {
-            // Zero the checksum field before computing.
-            // checksum lives at offset 24 within the header (8+8+4+4+2 = 26... let's compute).
-            // Actually we store checksum in this struct, which is at the start of the page.
-            // Offset of checksum within wal_page_header_t:
-            //   page_lsn(8) + page_end_lsn(8) + num_records(4) + data_size(4) + flags(2) = 26
-            uint32_t saved = checksum;
             checksum = 0;
-            // Write header to page buffer so CRC covers the zeroed checksum
             std::memcpy(page_data, this, PAGE_HEADER_SIZE);
             checksum = compute_page_crc(page_data);
-            // Write final checksum back to page buffer
             std::memcpy(page_data + offsetof(wal_page_header_t, checksum), &checksum, sizeof(checksum));
-            (void) saved;
         }
 
         /// Verify the checksum of the full page.
@@ -96,10 +117,5 @@ namespace services::wal {
     };
 
     static_assert(sizeof(wal_page_header_t) == 32, "page header must be 32 bytes");
-
-    /// Result of seek_to_lsn.
-    struct wal_page_position_t {
-        size_t page_index{0};
-    };
 
 } // namespace services::wal

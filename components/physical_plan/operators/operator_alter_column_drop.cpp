@@ -5,6 +5,7 @@
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -12,6 +13,8 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,19 +25,19 @@ namespace components::operators {
     operator_alter_column_drop_t::operator_alter_column_drop_t(std::pmr::memory_resource* resource,
                                                                log_t log,
                                                                catalog::oid_t table_oid,
-                                                               catalog::oid_t namespace_oid,
                                                                std::string column_name,
                                                                catalog::oid_t attoid,
-                                                               catalog::drop_behavior_t behavior)
+                                                               catalog::drop_behavior_t behavior,
+                                                               bool missing_ok)
         // Tagged as alter_column_drop (catch-all read_write_operator_t — same
         // convention as the sibling alter_column_add / alter_column_rename
         // operators).
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
-        , namespace_oid_(namespace_oid)
         , column_name_(std::move(column_name))
         , attoid_(attoid)
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , missing_ok_(missing_ok) {}
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -45,23 +48,27 @@ namespace components::operators {
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid = catalog::well_known_oid::pg_constraint_table;
 
-        // Keyed single-row read of the live pg_attribute row. attoid_ was
-        // pre-stamped by enrich_logical_plan; INVALID means "column not found",
-        // so no-op.
-        if (attoid_ == catalog::INVALID_OID) {
+        // Keyed read of the table's live pg_attribute rows, then match the column BY NAME.
+        //
+        // NAME, not attoid_: nothing in the pipeline stamps the node's attoid (node_alter_column_t::set_attoid
+        // has no callers), so keying on it and no-oping when it is INVALID_OID makes ALTER TABLE DROP COLUMN
+        // report success having written nothing at all — no tombstone, no dependent scrub, no storage release.
+        // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table states this operator
+        // does. attoid_ stays a CROSS-CHECK: when a caller does stamp it, the row must be that row.
+        if (column_name_.empty()) {
             mark_executed();
             co_return;
         }
 
         std::pmr::vector<std::uint64_t> pa_keys(resource_);
-        pa_keys.emplace_back(catalog::pg_attribute_col::attoid);
-        auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_chunks_by_key,
-                                           exec_ctx,
-                                           pg_attr_oid,
-                                           std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, attoid_),
-                                           std::pmr::vector<std::uint64_t>{resource_});
+        pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
+        auto [_pa, paf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::read_chunks_by_key,
+                                                      exec_ctx,
+                                                      pg_attr_oid,
+                                                      std::move(pa_keys),
+                                                      components::operators::make_key_chunk(resource_, table_oid_),
+                                                      std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
             // A failed catalog read is not a miss; treating it as one lets the
@@ -85,7 +92,18 @@ namespace components::operators {
                     continue;
                 if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue; // already dropped
-                attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (chunk.is_null(2, i))
+                    continue;
+                // get_value<string_view> (NOT chunk.value(), whose logical_value_t is a
+                // temporary the view would outlive) — this one points into the chunk's own
+                // string buffer, which is alive for the whole comparison below.
+                const auto attname_cell = chunk.get_value<std::string_view>(2, i);
+                if (attname_cell != column_name_)
+                    continue;
+                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
+                    continue; // a stamped identity must match the row it names
+                attoid = row_attoid;
                 atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
                                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                 attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
@@ -102,7 +120,54 @@ namespace components::operators {
                 break;
         }
         if (attoid == catalog::INVALID_OID) {
-            // Row not found or already dropped: no-op, no error.
+            // The column is not there — either never was, or a tombstone already hides it.
+            //
+            // REFUSED, not a silent no-op. PostgreSQL refuses it too (`column "x" of relation "y" does not
+            // exist`), and the silence costs more than a wasted statement: a migration that drops a column and
+            // then reads the table under its new shape gets a green ALTER and a schema that never changed, with
+            // nothing between the two to say which half lied.
+            //
+            // WHAT MAKES THE REFUSAL SAFE: a relkind='g' (document) table keeps its columns in pg_computed_column
+            // and has NO pg_attribute row, so EVERY column of one misses the read above. Such a drop never
+            // reaches this operator — the planner routes a relkind='g' DROP COLUMN to
+            // operator_computed_field_unregister_t (rewrite_alter_table), which refuses a missing field the same
+            // way against the catalog that actually holds it.
+            //
+            // IF EXISTS is the one form PostgreSQL lets pass, and it is carried on the node rather than assumed —
+            // so accepting the miss is the caller's explicit request, not this operator's guess.
+            if (missing_ok_) {
+                mark_executed();
+                co_return;
+            }
+            // Name the relation, not just the column: in a script that alters several
+            // tables, "column x does not exist" does not say which one was missing it.
+            // pg_class read on the refusal path only, same as the blocking branch below.
+            std::pmr::vector<std::uint64_t> cl_keys(resource_);
+            cl_keys.emplace_back(catalog::pg_class_col::oid);
+            auto [_cl, clf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::read_chunks_by_key,
+                                                          exec_ctx,
+                                                          pg_class_oid,
+                                                          std::move(cl_keys),
+                                                          components::operators::make_key_chunk(resource_, table_oid_),
+                                                          std::pmr::vector<std::uint64_t>{resource_});
+            auto cls_batches_r = co_await std::move(clf);
+            if (cls_batches_r.has_error()) {
+                set_error(cls_batches_r.error());
+                co_return;
+            }
+            auto rel_id = alter_validators::relation_identity_of(cls_batches_r.value());
+            std::string rel = std::move(rel_id.relname);
+            if (rel.empty()) {
+                rel = "oid ";
+                rel += std::to_string(table_oid_);
+            }
+            std::string msg = "column \"";
+            msg += column_name_;
+            msg += "\" of relation \"";
+            msg += rel;
+            msg += "\" does not exist; use DROP COLUMN IF EXISTS to ignore it";
+            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }
@@ -111,7 +176,7 @@ namespace components::operators {
         std::pmr::vector<std::uint64_t> pd_keys(resource_);
         pd_keys.emplace_back(catalog::pg_depend_col::refclassid);
         pd_keys.emplace_back(catalog::pg_depend_col::refobjid);
-        auto [_pd, pdf] = actor_zeta::send(
+        auto [_pd, pdf] = actor_zeta::otterbrix::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_chunks_by_key,
             exec_ctx,
@@ -129,39 +194,182 @@ namespace components::operators {
         std::size_t dep_row_count = 0;
         for (const auto& chunk : dep_batches) dep_row_count += chunk.size();
 
-        // ABORT-on-error gate: validate dependents BEFORE the first mutating
-        // delete/append below, so a rejected DROP leaves the catalog untouched.
-        std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
-        dependents.reserve(dep_row_count);
+        // ABORT-on-error gate: validate dependents BEFORE the first mutating delete/append below, so a
+        // rejected DROP leaves the catalog untouched.
+        //
+        // TWO REFUSAL SETS, DIFFERENT AUDIENCES.
+        //
+        // `blocking` is the subset NO behavior may cascade over: a CONSTRAINT that depends on this column
+        // through a 'n' (normal) edge. Only one writer emits that shape — build_create_constraint_writes, for
+        // the confkey columns of a FOREIGN KEY, i.e. the PARENT columns a constraint on ANOTHER table
+        // references. Everything else reaching here is 'i' (internal): an index or a constraint whose own key
+        // column this is, which cannot outlive the column and is therefore dropped with it, below.
+        //
+        // `restrict_blockers` is the subset only a statement that WROTE RESTRICT refuses: any edge whose deptype
+        // blocks (catalog::deptype::blocks_restrict — 'n'), whatever catalog it lives in. It is a SUPERSET of
+        // `blocking` and is read only on the restrict_ leg, so the two sets never disagree about a foreign key.
+        //
+        // WITH TODAY'S WRITERS THE TWO SETS ARE EQUAL, and that is worth saying out loud rather than leaving to
+        // be rediscovered: the only 'n' edges anything writes onto a column are the confkey rows, which are
+        // pg_constraint-classed, so the FK gate below answers every shape SQL can currently produce and the
+        // RESTRICT gate under it is never the one that speaks. It is kept broader on purpose — a blocking edge
+        // from any other catalog must not become droppable the day some writer emits one — and because it is
+        // unreachable from SQL it is pinned by a FORGED edge instead
+        // (integration/cpp/test/test_drop_restrict_deptype.cpp,
+        // drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop). Without that case, deleting
+        // this whole gate would leave every test green.
+        std::pmr::vector<catalog::oid_t> restrict_blockers{resource_};
+        restrict_blockers.reserve(dep_row_count);
+        std::pmr::vector<catalog::oid_t> blocking{resource_};
         for (auto& chunk : dep_batches) {
-            if (chunk.column_count() < 2)
-                continue;
+            // A CHUNK NARROWER THAN pg_depend'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The read was issued
+            // with an empty projection ("all columns"), so the reply's width is the width of the pg_depend
+            // storage itself, and every row this engine writes carries all 5 columns (build_pg_depend_row /
+            // build_create_constraint_writes). Tolerating a chunk without the deptype column reads every
+            // constraint dependency in it as NON-blocking, so DROP COLUMN proceeds over a foreign key that
+            // references the column — the exact silence the `blocking` gate below exists to prevent. The
+            // threshold is the largest ordinal read below: deptype (4).
+            if (chunk.column_count() <= catalog::pg_depend_col::deptype) {
+                std::string msg = "alter_column_drop: pg_depend answered with ";
+                msg += std::to_string(chunk.column_count());
+                msg += " column(s), fewer than the ";
+                msg += std::to_string(static_cast<std::size_t>(catalog::pg_depend_col::deptype) + 1);
+                msg += " this build reads — the column's dependencies cannot be classified";
+                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                co_return;
+            }
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
                 const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+                const bool deptype_null = chunk.is_null(catalog::pg_depend_col::deptype, i);
+                const auto deptype_cell =
+                    deptype_null ? std::string_view{}
+                                 : chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
+
+                // WHICH DEPENDENTS A WRITTEN `RESTRICT` REFUSES. Counting EVERY row keyed on the column made a
+                // column undroppable under RESTRICT by the index built on it — an edge that is dropped with the
+                // column a few lines below, so the refusal named a dependent that was never going to survive.
+                // An unreadable deptype is a dependency of UNKNOWN kind, and one of the kinds blocks: it is read
+                // as blocking here, never as clear. (For a constraint edge that same unreadable cell is a hard
+                // refusal — see the gate right below, which runs whatever the behavior is.)
+                if (deptype_cell.empty() || catalog::deptype::blocks_restrict(deptype_cell[0])) {
+                    restrict_blockers.push_back(dep_oid);
+                }
+
+                if (dep_cls != catalog::well_known_oid::pg_constraint_table)
+                    continue;
+                // A CONSTRAINT EDGE WHOSE deptype CANNOT BE READ IS A DEPENDENCY OF
+                // UNKNOWN KIND — and one of the kinds is "blocks this drop". Reading
+                // it as non-blocking is the same silence as the missing column above,
+                // one cell at a time; no writer in this engine emits a NULL deptype.
+                if (deptype_null) {
+                    std::string msg = "alter_column_drop: a pg_depend row for constraint oid ";
+                    msg += std::to_string(dep_oid);
+                    msg += " has no readable deptype — whether it blocks dropping column \"";
+                    msg += column_name_;
+                    msg += "\" cannot be determined";
+                    set_error(
+                        core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                    co_return;
+                }
+                if (!deptype_cell.empty() && deptype_cell[0] == 'n')
+                    blocking.push_back(dep_oid);
             }
         }
-        auto ec_cascade =
-            components::catalog::alter_column_validators::validate_cascade_dependencies(resource_, dependents);
-        if (ec_cascade.contains_error()) {
-            set_error(std::move(ec_cascade));
+        if (!blocking.empty()) {
+            // Rule 6: name the cause, not the symptom. Without this the statement is ACCEPTED and the damage
+            // surfaces later, in a different table, as "keyed read: table has no column <name>" on every
+            // subsequent insert. Resolve the blocking constraint's name and owning table so the message names
+            // objects the user can act on. Both reads are on the refusal path only.
+            std::string con_name;
+            catalog::oid_t con_relid = catalog::INVALID_OID;
+            std::pmr::vector<std::uint64_t> pc_keys(resource_);
+            pc_keys.emplace_back(catalog::pg_constraint_col::oid);
+            auto [_pc, pcf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::read_chunks_by_key,
+                                            exec_ctx,
+                                            pg_con_oid,
+                                            std::move(pc_keys),
+                                            components::operators::make_key_chunk(resource_, blocking.front()),
+                                            std::pmr::vector<std::uint64_t>{resource_});
+            auto con_batches_r = co_await std::move(pcf);
+            if (con_batches_r.has_error()) {
+                set_error(con_batches_r.error());
+                co_return;
+            }
+            for (auto& chunk : con_batches_r.value()) {
+                if (chunk.size() == 0 || chunk.column_count() <= catalog::pg_constraint_col::conrelid)
+                    continue;
+                if (!chunk.is_null(catalog::pg_constraint_col::conname, 0))
+                    con_name.assign(chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, 0));
+                if (!chunk.is_null(catalog::pg_constraint_col::conrelid, 0))
+                    con_relid = static_cast<catalog::oid_t>(
+                        chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, 0));
+                break;
+            }
+            std::string con_table;
+            if (con_relid != catalog::INVALID_OID) {
+                std::pmr::vector<std::uint64_t> cl_keys(resource_);
+                cl_keys.emplace_back(catalog::pg_class_col::oid);
+                auto [_cl, clf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                pg_class_oid,
+                                                std::move(cl_keys),
+                                                components::operators::make_key_chunk(resource_, con_relid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
+                auto cls_batches_r = co_await std::move(clf);
+                if (cls_batches_r.has_error()) {
+                    set_error(cls_batches_r.error());
+                    co_return;
+                }
+                for (auto& chunk : cls_batches_r.value()) {
+                    if (chunk.size() == 0 || chunk.column_count() <= catalog::pg_class_col::relname)
+                        continue;
+                    if (!chunk.is_null(catalog::pg_class_col::relname, 0))
+                        con_table.assign(chunk.get_value<std::string_view>(catalog::pg_class_col::relname, 0));
+                    break;
+                }
+            }
+            // A blocking edge with no readable constraint row still blocks: fall back
+            // to the oid in the text, never to letting the drop through.
+            if (con_name.empty()) {
+                con_name = "oid ";
+                con_name += std::to_string(blocking.front());
+            }
+            if (con_table.empty()) {
+                con_table = "oid ";
+                con_table += std::to_string(con_relid);
+            }
+            std::string msg = "cannot drop column \"";
+            msg += column_name_;
+            msg += "\": foreign key constraint \"";
+            msg += con_name;
+            msg += "\" on table \"";
+            msg += con_table;
+            msg += "\" references it; drop that constraint or that table first";
+            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }
 
-        // for RESTRICT, abort if any non-internal dep exists. For CASCADE,
-        // drop each dependent object.
-        if (behavior_ == catalog::drop_behavior_t::restrict_) {
-            if (!dependents.empty()) {
-                set_error(
-                    core::error_t{core::error_code_t::other_error,
-                                  std::pmr::string{"DROP COLUMN RESTRICT: column has dependent objects", resource_}});
-                mark_executed();
-                co_return;
-            }
+        // RESTRICT (written or defaulted — PostgreSQL parity) refuses when a BLOCKING dependent exists; a
+        // written CASCADE drops each dependent object below. `restrict_blockers` is already the filtered
+        // subset; the FK-parent gate above ran unconditionally and refuses under every behavior, so nothing
+        // here can let a foreign key through.
+        if (catalog::refuses_on_dependency(behavior_) && !restrict_blockers.empty()) {
+            // No structured DDL-refusal cursor exists: the message string is the only channel, so it names the
+            // blocking oid itself.
+            std::string msg = "DROP COLUMN RESTRICT: column has dependent objects (blocking oid ";
+            msg += std::to_string(static_cast<unsigned>(restrict_blockers.front()));
+            msg += ")";
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+            mark_executed();
+            co_return;
         }
 
         // Collect every dependent-scrub delete across all dep_rows into one
@@ -202,24 +410,61 @@ namespace components::operators {
             }
         }
         if (!dep_specs.empty()) {
-            auto [_dep, depf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                 exec_ctx,
-                                                 std::move(dep_specs));
-            co_await std::move(depf);
+            auto [_dep, depf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                            exec_ctx,
+                                            std::move(dep_specs));
+            auto dep_deleted = co_await std::move(depf);
+            // WHICH ZERO IS AN ERROR HERE — not this one. These specs are a scrub TEMPLATE applied per dependent
+            // object (pg_index/pg_constraint/pg_class/pg_depend for each dep row), so a spec that matches nothing
+            // is the template over-reaching, not a row that refused to go. The refusal itself is fatal, and has to
+            // be known BEFORE the live pg_attribute row below is touched: everything after this point
+            // half-applies the drop.
+            if (dep_deleted.has_error()) {
+                set_error(dep_deleted.error());
+                mark_failed();
+                co_return;
+            }
         }
 
-        // soft-delete the column: drop original pg_attribute row,
-        // then append a tombstone with attisdropped=true. The tombstone keeps
-        // attnum so existing rows on disk that reference this slot remain
-        // self-describing for MVCC visibility.
-        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                         exec_ctx,
-                                         pg_attr_oid,
-                                         std::int64_t{0},
-                                         attoid);
-        co_await std::move(df);
+        // soft-delete the column: drop the original pg_attribute row, then append a tombstone with
+        // attisdropped=true. The tombstone keeps attnum so existing rows on disk that reference this slot
+        // remain self-describing for MVCC visibility.
+        //
+        // THROUGH THE BATCHED TWIN, with one spec, for its ANSWER: the singular delete_pg_catalog_rows still
+        // returns void, and this is the delete of the whole statement — the row that says the column exists,
+        // read a few lines up (attoid, attnum, atttypid all come from it). A scrub that removed nothing here
+        // would leave the live row AND the tombstone appended below describing the same attoid, i.e. a column
+        // that is both there and dropped. Zero deleted is therefore an error, unlike every zero above.
+        //
+        // AND "READ A FEW LINES UP" IS ONLY AN ARGUMENT BECAUSE BOTH SIDES SHARE A SNAPSHOT. The read above
+        // went through read_chunks_by_key with THIS exec_ctx; the delete's scan runs under the same ctx.txn
+        // (agent_disk_t::delete_pg_catalog_rows_inner). A delete scan carrying no transaction would see less
+        // than the read did, and this verdict would fire on the legal `BEGIN; ALTER TABLE t ADD COLUMN c;
+        // ALTER TABLE t DROP COLUMN c;`. Gate: integration/cpp/test/test_catalog_delete_refusal.cpp,
+        // a_column_added_and_dropped_in_one_transaction_is_dropped.
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> attr_specs(resource_);
+        attr_specs.push_back({pg_attr_oid, std::int64_t{0}, attoid});
+        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                    exec_ctx,
+                                                    std::move(attr_specs));
+        auto attr_deleted_r = co_await std::move(df);
+        if (attr_deleted_r.has_error()) {
+            set_error(attr_deleted_r.error());
+            mark_failed();
+            co_return;
+        }
+        const auto& attr_deleted = attr_deleted_r.value();
+        if (attr_deleted.empty() || attr_deleted.front() == 0) {
+            std::string msg = "operator_alter_column_drop: no pg_attribute row was deleted for attoid ";
+            msg += std::to_string(attoid);
+            msg += " — the column is still live in the catalog";
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+            mark_failed();
+            co_return;
+        }
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
 
@@ -240,12 +485,19 @@ namespace components::operators {
                                                          att_defspec,
                                                          /*added_at_commit_id=*/0,
                                                          /*dropped_at_commit_id=*/0);
-        auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::append_pg_catalog_row,
-                                         exec_ctx,
-                                         pg_attr_oid,
-                                         std::move(tombstone));
-        auto rng = co_await std::move(wf);
+        auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    pg_attr_oid,
+                                                    std::move(tombstone));
+        auto rng_r = co_await std::move(wf);
+        if (rng_r.has_error()) {
+            // Same half-applied state as the zero-row case below, with the reason attached.
+            set_error(rng_r.error());
+            mark_failed();
+            co_return;
+        }
+        auto rng = std::move(rng_r.value());
         // The live row is already deleted above. A 0-row tombstone append leaves
         // the column half-applied (invisible to resolve_table, no MVCC marker for
         // recovery), so surface a hard error instead of letting mark_executed() lie.
@@ -257,16 +509,39 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
-        // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same
-        // attoid as the live row — identity-preserving tombstone).
+        // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same attoid as the live row —
+        // identity-preserving tombstone) — and name the physical column the commit has to release once that
+        // tombstone is committed.
+        //
+        // ORDER, and why the release is NOT sent from here. The storage-side drop is a rebuild: it forgets the
+        // column and destroys the object that knows which blocks it sat on, so it cannot be undone. The
+        // tombstone above is not durable yet — it is a pg_attribute row carrying insert_id == this txn_id,
+        // which an explicit ROLLBACK reverts (storage_revert_appends) and a crash before the commit marker
+        // discards. Dropping the column here would let the physical drop become durable (the next checkpoint
+        // of THIS table writes a root without the column) while the tombstone never does — catalog says the
+        // column exists, storage no longer has it. So this operator only MARKS the drop, exactly as
+        // operator_dynamic_cascade_delete_t only MARKS a dropped table, and operator_commit_transaction_t
+        // performs it after the WAL commit marker and the publish barrier.
+        //
+        // (What moves the release to commit time is ORDERING, not the one-await-per-handler rule: that rule
+        // bites on methods dispatched from a behavior() switch, and this is an operator driven by
+        // executor_t::execute_pipeline inside the executor actor's own coroutine.)
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
             attoid,
-            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at});
+            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
+            table_oid_,
+            column_name_,
+            // rename_to_attname is the storage_rename kind's field; a DROP names no new name,
+            // and added_column_type is the added_at kind's — a DROP creates no column either.
+            std::string{},
+            components::types::complex_logical_type{}});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
-        // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,
-        // which clears matching pg_computed_column rows. This branch handles
-        // regular (relkind='r') tables only.
+        // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table, which clears matching
+        // pg_computed_column rows. This branch handles regular (relkind='r') tables only — which is also why the
+        // physical release marked above is safe to arm unconditionally: the relkind='g' storage, whose
+        // mid-pipeline drop_column once broke the re-INSERT path (see the note at the end of
+        // operator_computed_field_unregister.cpp), never reaches this operator.
 
         mark_executed();
     }

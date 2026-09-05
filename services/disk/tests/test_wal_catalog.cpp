@@ -7,17 +7,21 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/catalog/session_catalog.hpp>
+#include <core/date/timezones.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_reader.hpp>
 
+#include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
 #include <filesystem>
@@ -107,49 +111,22 @@ namespace {
         }
     };
 
-    // WAL records carry table_oid; pg_catalog tables have well-known oids
-    // (pg_class=11, pg_attribute=12, pg_namespace=10, pg_depend=15, pg_index=17,
-    // pg_proc=14, pg_type=13, pg_constraint=16, pg_sequence=34, pg_rewrite=35,
-    // pg_computed_column=18, pg_database=19). Anything below FIRST_USER_OID is
-    // a system-table record.
+    // WAL records carry table_oid, and every pg_catalog table has a well-known OID
+    // fixed in catalog_oids.hpp. Anything below FIRST_USER_OID is a system-table
+    // record; a specific table is selected by well_known_oid::pg_*_table.
 
     namespace wk = components::catalog::well_known_oid;
-
-    components::catalog::oid_t pg_catalog_oid_for(const std::string& collection) {
-        if (collection == "pg_namespace")
-            return wk::pg_namespace_table;
-        if (collection == "pg_class")
-            return wk::pg_class_table;
-        if (collection == "pg_attribute")
-            return wk::pg_attribute_table;
-        if (collection == "pg_type")
-            return wk::pg_type_table;
-        if (collection == "pg_proc")
-            return wk::pg_proc_table;
-        if (collection == "pg_depend")
-            return wk::pg_depend_table;
-        if (collection == "pg_constraint")
-            return wk::pg_constraint_table;
-        if (collection == "pg_index")
-            return wk::pg_index_table;
-        if (collection == "pg_computed_column")
-            return wk::pg_computed_column_table;
-        if (collection == "pg_database")
-            return wk::pg_database_table;
-        if (collection == "pg_sequence")
-            return wk::pg_sequence_table;
-        if (collection == "pg_rewrite")
-            return wk::pg_rewrite_table;
-        return components::catalog::INVALID_OID;
-    }
 
     std::size_t pg_catalog_physical_count(const std::string& dir) {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
-        services::wal::wal_reader_t reader(c, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         std::size_t n = 0;
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid != components::catalog::INVALID_OID &&
@@ -159,15 +136,17 @@ namespace {
         return n;
     }
 
-    std::size_t pg_catalog_records_for(const std::string& dir, const std::string& collection) {
+    std::size_t pg_catalog_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
-        services::wal::wal_reader_t reader(c, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         std::size_t n = 0;
-        const auto target_oid = pg_catalog_oid_for(collection);
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid == target_oid)
                 ++n;
@@ -187,8 +166,11 @@ namespace {
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
-        services::wal::wal_reader_t reader(c, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         std::vector<phys_rec_t> seq;
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid != components::catalog::INVALID_OID &&
@@ -206,10 +188,35 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        (void) fx;
+        // The fixture's ctor ran the bootstrap; prove it did its half before asserting the
+        // absence of WAL records below (a bootstrap that seeded nothing would also emit none).
+        REQUIRE_FALSE(fx.disk->read_setting_sync("TimeZone").empty());
     }
     // No ddl_* invoked → no WAL records expected.
     REQUIRE(pg_catalog_physical_count(dir) == 0);
+    cleanup_dir(dir);
+}
+
+// 1b. The default the bootstrap seeds must be a value the engine itself recognizes. It used
+//     to seed 'UTC' — which core::date::timezone_to_offset refuses (the recognizer's contract
+//     is lowercase input, and the one SQL ingress lowercases before it stores), so EVERY start
+//     of EVERY node seeded a default and then WARNed about refusing it, and the stored
+//     catalog's timezone offset never came from the setting it had just written.
+TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") {
+    auto dir = wal_cat_dir() + "/tz_default";
+    cleanup_dir(dir);
+    {
+        fixture fx(dir);
+        const auto seeded = fx.disk->read_setting_sync("TimeZone");
+        REQUIRE_FALSE(seeded.empty());
+        CAPTURE(seeded);
+        // Seeding "UTC" here would be refused by the engine's own recognizer.
+        REQUIRE(core::date::timezone_to_offset(seeded).has_value());
+        // And the consumer that WARNed on every start accepts it now.
+        components::catalog::session_catalog_t accepts;
+        REQUIRE_FALSE(accepts.set_timezone(&fx.resource, seeded).contains_error());
+        REQUIRE(accepts.timezone_offset == core::date::timezone_offset_t{0});
+    }
     cleanup_dir(dir);
 }
 
@@ -220,10 +227,10 @@ TEST_CASE("services::disk::wal_catalog::create_namespace_writes_pg_namespace") {
     auto before = std::size_t{0};
     {
         fixture fx(dir);
-        before = pg_catalog_records_for(dir, "pg_namespace");
+        before = pg_catalog_records_for(dir, wk::pg_namespace_table);
         test_create_namespace(fx, "user_ns");
     }
-    auto after = pg_catalog_records_for(dir, "pg_namespace");
+    auto after = pg_catalog_records_for(dir, wk::pg_namespace_table);
     REQUIRE(after > before);
     cleanup_dir(dir);
 }
@@ -235,8 +242,8 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
     std::size_t cls_before = 0, att_before = 0;
     {
         fixture fx(dir);
-        cls_before = pg_catalog_records_for(dir, "pg_class");
-        att_before = pg_catalog_records_for(dir, "pg_attribute");
+        cls_before = pg_catalog_records_for(dir, wk::pg_class_table);
+        att_before = pg_catalog_records_for(dir, wk::pg_attribute_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -245,8 +252,8 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
         cols.emplace_back("count", components::types::complex_logical_type{components::types::logical_type::INTEGER});
         test_create_table(fx, ns_oid, "t", cols);
     }
-    auto cls_after = pg_catalog_records_for(dir, "pg_class");
-    auto att_after = pg_catalog_records_for(dir, "pg_attribute");
+    auto cls_after = pg_catalog_records_for(dir, wk::pg_class_table);
+    auto att_after = pg_catalog_records_for(dir, wk::pg_attribute_table);
     REQUIRE(cls_after >= cls_before + 1);
     // pg_attribute rows for all columns are now batched into a single WAL
     // record (one chunk holds N rows, see build_create_table_writes).
@@ -261,13 +268,13 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_depend") {
     std::size_t before = 0;
     {
         fixture fx(dir);
-        before = pg_catalog_records_for(dir, "pg_depend");
+        before = pg_catalog_records_for(dir, wk::pg_depend_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         test_create_table(fx, ns_oid, "t", cols);
     }
-    auto after = pg_catalog_records_for(dir, "pg_depend");
+    auto after = pg_catalog_records_for(dir, wk::pg_depend_table);
     // table→namespace only — column→type pg_depend written only when atttypid != INVALID_OID.
     REQUIRE(after >= before + 1);
     cleanup_dir(dir);
@@ -280,14 +287,14 @@ TEST_CASE("services::disk::wal_catalog::create_index_writes_pg_index") {
     std::size_t idx_before = 0;
     {
         fixture fx(dir);
-        idx_before = pg_catalog_records_for(dir, "pg_index");
+        idx_before = pg_catalog_records_for(dir, wk::pg_index_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rt_oid = test_create_table(fx, ns_oid, "t", cols);
         test_create_index(fx, ns_oid, rt_oid, "idx_id", std::vector<std::string>{"id"});
     }
-    auto idx_after = pg_catalog_records_for(dir, "pg_index");
+    auto idx_after = pg_catalog_records_for(dir, wk::pg_index_table);
     REQUIRE(idx_after >= idx_before + 1);
     cleanup_dir(dir);
 }
@@ -299,7 +306,7 @@ TEST_CASE("services::disk::wal_catalog::index_set_valid_writes_pg_index") {
     std::size_t idx_before = 0, after = 0;
     {
         fixture fx(dir);
-        idx_before = pg_catalog_records_for(dir, "pg_index");
+        idx_before = pg_catalog_records_for(dir, wk::pg_index_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -307,7 +314,7 @@ TEST_CASE("services::disk::wal_catalog::index_set_valid_writes_pg_index") {
         // test_create_index already marks the index as valid; no separate set_valid needed.
         test_create_index(fx, ns_oid, rt_oid, "idx_id", std::vector<std::string>{"id"});
     }
-    after = pg_catalog_records_for(dir, "pg_index");
+    after = pg_catalog_records_for(dir, wk::pg_index_table);
     REQUIRE(after >= idx_before + 1);
     cleanup_dir(dir);
 }
@@ -319,13 +326,13 @@ TEST_CASE("services::disk::wal_catalog::create_type_writes_pg_type_and_depend") 
     std::size_t ty_before = 0, dep_before = 0;
     {
         fixture fx(dir);
-        ty_before = pg_catalog_records_for(dir, "pg_type");
-        dep_before = pg_catalog_records_for(dir, "pg_depend");
+        ty_before = pg_catalog_records_for(dir, wk::pg_type_table);
+        dep_before = pg_catalog_records_for(dir, wk::pg_depend_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         test_create_type(fx, ns_oid, "widget");
     }
-    REQUIRE(pg_catalog_records_for(dir, "pg_type") >= ty_before + 1);
-    REQUIRE(pg_catalog_records_for(dir, "pg_depend") >= dep_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_type_table) >= ty_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_depend_table) >= dep_before + 1);
     cleanup_dir(dir);
 }
 
@@ -336,13 +343,13 @@ TEST_CASE("services::disk::wal_catalog::create_function_writes_pg_proc_and_depen
     std::size_t pr_before = 0, dep_before = 0;
     {
         fixture fx(dir);
-        pr_before = pg_catalog_records_for(dir, "pg_proc");
-        dep_before = pg_catalog_records_for(dir, "pg_depend");
+        pr_before = pg_catalog_records_for(dir, wk::pg_proc_table);
+        dep_before = pg_catalog_records_for(dir, wk::pg_depend_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         test_create_function(fx, ns_oid, "my_fn");
     }
-    REQUIRE(pg_catalog_records_for(dir, "pg_proc") >= pr_before + 1);
-    REQUIRE(pg_catalog_records_for(dir, "pg_depend") >= dep_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_proc_table) >= pr_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_depend_table) >= dep_before + 1);
     cleanup_dir(dir);
 }
 
@@ -363,8 +370,11 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     configuration::config_wal c;
     c.path = dir;
     c.on = true;
-    services::wal::wal_reader_t reader(c, log);
-    auto records = reader.read_committed_records(services::wal::id_t{0});
+    core::pmr::otterbrix_resource reader_resource;
+    services::wal::wal_reader_t reader(&reader_resource, c, log);
+    auto records_result = reader.read_committed_records(services::wal::id_t{0});
+    REQUIRE_FALSE(records_result.has_error());
+    auto& records = records_result.value();
     bool seen_any = false;
     for (auto& r : records) {
         if (!r.is_physical())
@@ -392,12 +402,12 @@ TEST_CASE("services::disk::wal_catalog::drop_table_no_resurrect_writes") {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         t_oid = test_create_table(fx, ns_oid, "t", cols);
-        cls_before_drop = pg_catalog_records_for(dir, "pg_class");
+        cls_before_drop = pg_catalog_records_for(dir, wk::pg_class_table);
         test_drop_table(fx, t_oid);
     }
     // After the drop we still see at least the INSERT records that created the table — drop
     // path is MVCC-delete, not WAL append for new pg_class rows.
-    auto cls_after = pg_catalog_records_for(dir, "pg_class");
+    auto cls_after = pg_catalog_records_for(dir, wk::pg_class_table);
     REQUIRE(cls_after >= cls_before_drop);
     cleanup_dir(dir);
 }
@@ -432,11 +442,11 @@ TEST_CASE("services::disk::wal_catalog::create_sequence_writes_pg_class") {
     std::size_t cls_before = 0;
     {
         fixture fx(dir);
-        cls_before = pg_catalog_records_for(dir, "pg_class");
+        cls_before = pg_catalog_records_for(dir, wk::pg_class_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         test_create_sequence(fx, ns_oid, "widget_seq");
     }
-    REQUIRE(pg_catalog_records_for(dir, "pg_class") >= cls_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_class_table) >= cls_before + 1);
     cleanup_dir(dir);
 }
 
@@ -471,8 +481,8 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
                                                     pg_index,  // refclassid
                                                     idx_oid,   // refobjid
                                                     'n');
-        appends_local.push_back(
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row)));
+        appends_local.push_back(disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row))));
 
         // (2) delete the pg_depend row we just appended (objid == col 1 == dep_objid).
         //     delete_pg_catalog_rows_inner only emits a PHYSICAL_DELETE when it finds
@@ -483,9 +493,14 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, auto_ctx(), pg_depend, std::int64_t{1}, dep_objid);
 
         // (3) append a pg_index row — a DIFFERENT catalog, after the delete.
-        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true);
-        appends_local.push_back(
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row)));
+        auto idx_row = catalog::build_pg_index_row(&fx.resource,
+                                                   idx_oid,
+                                                   idx_oid,
+                                                   std::string("0"),
+                                                   true,
+                                                   components::catalog::indtype::single);
+        appends_local.push_back(disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row))));
 
         std::set<catalog::oid_t> deletes_local{pg_depend};
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -521,8 +536,14 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t idx_oid = oids[0];
 
-        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true);
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row));
+        auto idx_row = catalog::build_pg_index_row(&fx.resource,
+                                                   idx_oid,
+                                                   idx_oid,
+                                                   std::string("0"),
+                                                   true,
+                                                   components::catalog::indtype::single);
+        auto rng = disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -549,5 +570,288 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
     }
     // (b) no WAL record was emitted — WAL manager was never wired.
     REQUIRE(pg_catalog_physical_count(dir) == 0);
+    cleanup_dir(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Wave-disk cases: the PHYSICAL_ADD_COLUMN journal leg on the append and update
+// paths, and the backfill's replay leg.
+// ---------------------------------------------------------------------------
+
+namespace {
+    // Count the PHYSICAL_ADD_COLUMN records the journal holds for one table.
+    std::size_t add_column_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
+        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        configuration::config_wal c;
+        c.path = dir;
+        c.on = true;
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        std::size_t n = 0;
+        for (auto& r : records_result.value()) {
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_ADD_COLUMN && r.table_oid == target_oid)
+                ++n;
+        }
+        return n;
+    }
+
+    // Build a one-chunk batch over BIGINT columns col_names, all rows valued base+i.
+    std::pmr::vector<components::vector::data_chunk_t> bigint_batch(std::pmr::memory_resource* resource,
+                                                                    const std::vector<std::string>& col_names,
+                                                                    uint64_t rows,
+                                                                    std::int64_t base) {
+        std::pmr::vector<components::types::complex_logical_type> types(resource);
+        for (const auto& name : col_names) {
+            components::types::complex_logical_type t{components::types::logical_type::BIGINT};
+            t.set_alias(name);
+            types.push_back(std::move(t));
+        }
+        components::vector::data_chunk_t chunk(resource, types, rows);
+        chunk.set_cardinality(rows);
+        for (uint64_t i = 0; i < rows; ++i) {
+            for (uint64_t cidx = 0; cidx < col_names.size(); ++cidx) {
+                chunk.set_value(cidx, i, static_cast<std::int64_t>(base + static_cast<std::int64_t>(i)));
+            }
+        }
+        std::pmr::vector<components::vector::data_chunk_t> batch(resource);
+        batch.emplace_back(std::move(chunk));
+        return batch;
+    }
+
+    components::execution_context_t txn_exec_ctx(uint64_t txn_id, components::catalog::oid_t table_oid) {
+        components::table::transaction_data td(txn_id, 1);
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        return components::execution_context_t{session_id_t{}, td, {}, table_oid};
+    }
+} // namespace
+
+// THE ADD-COLUMN JOURNAL RECORD IS AWAITED, NOT FIRE-AND-FORGET. Schema growth on the append
+// path sends its PHYSICAL_ADD_COLUMN record ahead of the PHYSICAL_INSERT to the same FIFO WAL
+// worker; dropping that future would leave the record's outcome unread. It is kept and DRAINED
+// after the insert await — a completed future by then (same FIFO worker, send order), so the
+// drain never suspends and the handler keeps its single suspension point. This case pins the
+// drained path end-to-end on the happy side: a growth
+// append with WAL wired must succeed, materialise the row, AND land exactly one
+// PHYSICAL_ADD_COLUMN record in the journal, wal-id-ordered AHEAD of the PHYSICAL_INSERT it
+// enabled. A hang in the drain (the lost-wakeup the ordering guards against) or a mis-read
+// of the future fails here. The pure "add-column write refused while the insert write
+// succeeds" isolation is NOT stageable at this layer — wal_page_writer coalesces both small
+// records into one buffered page and one file write, so any file-level fault that reaches
+// the add-column write reaches the insert write too, and the insert's already-awaited
+// refusal covers the append on either leg. The drain's value is that the add-column outcome is
+// not LEAKED, proven structurally plus by this happy-path guard.
+TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_ahead_of_the_insert") {
+    auto dir = wal_cat_dir() + "/addcol_journaled";
+    cleanup_dir(dir);
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    {
+        fixture fx(dir);
+        auto ns_oid = test_create_namespace(fx, "ns_addcol");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_addcol", cols);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  cols,
+                  /*is_computed=*/false);
+
+        // A first, healthy append (no growth): one row of just column 'a'.
+        {
+            auto r = fx.invoke(&manager_disk_t::storage_append,
+                               txn_exec_ctx(88, table_oid),
+                               table_oid,
+                               bigint_batch(&fx.resource, {"a"}, 1, 1));
+            REQUIRE_FALSE(r.has_error());
+            REQUIRE(r.value().second == 1);
+        }
+
+        // A second append that CARRIES a new alias 'b' at a wider width — stage 1b grows the
+        // schema, emits the PHYSICAL_ADD_COLUMN record (now drained), then the PHYSICAL_INSERT.
+        {
+            auto r = fx.invoke(&manager_disk_t::storage_append,
+                               txn_exec_ctx(88, table_oid),
+                               table_oid,
+                               bigint_batch(&fx.resource, {"a", "b"}, 1, 2));
+            INFO("the drained add-column path must not hang and must not fail the growth append");
+            REQUIRE_FALSE(r.has_error());
+            REQUIRE(r.value().second == 1);
+        }
+
+        // Commit txn 88 so read_committed_records keeps the physical records.
+        {
+            auto [_c, cf] = actor_zeta::otterbrix::send(fx.wal->address(),
+                                                        &services::wal::manager_wal_replicate_t::commit_txn,
+                                                        session_id_t{},
+                                                        std::uint64_t{88},
+                                                        services::wal::wal_sync_mode::NORMAL,
+                                                        catalog::well_known_oid::main_database,
+                                                        std::uint64_t{1000});
+            for (int i = 0; i < 400000 && !cf.is_ready(); ++i) {
+                fx.scheduler->run(1);
+                std::this_thread::yield();
+            }
+            REQUIRE(cf.is_ready());
+            REQUIRE_FALSE(std::move(cf).take_ready().has_error());
+        }
+
+        auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+        REQUIRE_FALSE(total.has_error());
+        REQUIRE(total.value() == 2);
+    }
+
+    INFO("exactly one PHYSICAL_ADD_COLUMN record, and it precedes its PHYSICAL_INSERT in wal order");
+    REQUIRE(add_column_records_for(dir, table_oid) == 1);
+    // Ordering: the first physical record for this table that is an ADD_COLUMN must come
+    // before the INSERT it enabled (read_committed_records returns wal-id ascending).
+    {
+        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        configuration::config_wal c;
+        c.path = dir;
+        c.on = true;
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        int add_col_idx = -1;
+        int growth_insert_idx = -1;
+        int seq = 0;
+        int inserts_seen = 0;
+        for (auto& r : records_result.value()) {
+            if (r.table_oid != table_oid || !r.is_physical()) {
+                continue;
+            }
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_ADD_COLUMN && add_col_idx < 0) {
+                add_col_idx = seq;
+            }
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
+                ++inserts_seen;
+                // The growth INSERT is the SECOND insert for this table (the first append
+                // carried no growth).
+                if (inserts_seen == 2) {
+                    growth_insert_idx = seq;
+                }
+            }
+            ++seq;
+        }
+        REQUIRE(add_col_idx >= 0);
+        REQUIRE(growth_insert_idx >= 0);
+        REQUIRE(add_col_idx < growth_insert_idx);
+    }
+    cleanup_dir(dir);
+}
+
+// THE BACKFILL'S REPLAY LEG, PINNED WITHOUT THE DESTRUCTOR CHECKPOINT. The added_at_commit_id
+// stamp is patched in memory and journalled as a PHYSICAL_UPDATE; after a kill with NO
+// checkpoint the journal is the stamp's ONLY carrier. The restart test in integration absorbs
+// the stamp through the teardown checkpoint, which leaves the record's content and the
+// disk-side replay leg (direct_update_sync) unpinned there. This fixture never checkpoints:
+// phase B replays the journal through the same direct_* methods base_spaces replay uses and the
+// stamp must come back.
+TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_through_the_journal_alone") {
+    auto dir = wal_cat_dir() + "/backfill_replay";
+    cleanup_dir(dir);
+    constexpr auto pg_attr = catalog::well_known_oid::pg_attribute_table;
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    catalog::oid_t attoid_a = catalog::INVALID_OID;
+
+    auto read_added_at = [&](fixture& fx, catalog::oid_t attoid) -> std::int64_t {
+        std::pmr::vector<std::uint64_t> keys{&fx.resource};
+        keys.emplace_back(catalog::pg_attribute_col::attoid);
+        std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
+        vals.emplace_back(&fx.resource, attoid);
+        auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), std::move(vals));
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.is_null(catalog::pg_attribute_col::added_at_commit_id, i))
+                    continue;
+                return chunk.get_value<std::int64_t>(catalog::pg_attribute_col::added_at_commit_id, i);
+            }
+        }
+        return -1;
+    };
+
+    // Phase A — live: create a table (its column's pg_attribute row is journalled), stamp
+    // added_at via the backfill (journalled as PHYSICAL_UPDATE), then KILL: the fixture
+    // teardown checkpoints nothing.
+    {
+        fixture fx(dir);
+        auto ns_oid = test_create_namespace(fx, "ns_backfill");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_backfill", cols);
+
+        // Find the attoid the create minted for column 'a'.
+        {
+            std::pmr::vector<std::uint64_t> keys{&fx.resource};
+            keys.emplace_back(catalog::pg_attribute_col::attrelid);
+            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
+            vals.emplace_back(&fx.resource, table_oid);
+            auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), std::move(vals));
+            for (auto& chunk : batches) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (chunk.is_null(catalog::pg_attribute_col::attoid, i))
+                        continue;
+                    attoid_a = static_cast<catalog::oid_t>(
+                        chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, i));
+                }
+            }
+            REQUIRE(attoid_a != catalog::INVALID_OID);
+        }
+
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills(&fx.resource);
+        components::pg_attribute_commit_id_backfill_t b;
+        b.attoid = attoid_a;
+        b.kind = components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
+        backfills.push_back(std::move(b));
+        auto stamp_err = fx.invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
+                                   auto_ctx(),
+                                   std::move(backfills),
+                                   std::uint64_t{4242});
+        REQUIRE_FALSE(stamp_err.contains_error());
+        REQUIRE(read_added_at(fx, attoid_a) == 4242);
+    }
+
+    // Read the journal BEFORE any new engine touches the directory.
+    core::pmr::otterbrix_resource reader_resource;
+    configuration::config_wal wal_c;
+    wal_c.path = dir;
+    wal_c.on = true;
+    auto reader_log = initialization_logger("python", "/tmp/docker_logs/");
+    services::wal::wal_reader_t reader(&reader_resource, wal_c, reader_log);
+    auto records_result = reader.read_committed_records(services::wal::id_t{0});
+    REQUIRE_FALSE(records_result.has_error());
+    auto& records = records_result.value();
+
+    // Phase B — restart after the kill: bootstrap re-seeds, then the journal's pg_attribute
+    // records are applied through the SAME direct replay methods base_spaces uses
+    // (direct_append_sync per chunk for PHYSICAL_INSERT, direct_update_sync for
+    // PHYSICAL_UPDATE). The stamp must come back from the journal alone.
+    {
+        fixture fx2(dir, /*wire_wal=*/false);
+        std::size_t updates_applied = 0;
+        for (auto& r : records) {
+            if (!r.is_physical() || r.table_oid != pg_attr)
+                continue;
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
+                for (auto& chunk : r.physical_data) {
+                    auto append_r = fx2.disk->direct_append_sync(pg_attr, chunk);
+                    REQUIRE_FALSE(append_r.has_error());
+                }
+            } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
+                REQUIRE_FALSE(r.physical_data.empty());
+                auto upd_err = fx2.disk->direct_update_sync(pg_attr, r.physical_row_ids, r.physical_data.front());
+                REQUIRE_FALSE(upd_err.contains_error());
+                ++updates_applied;
+            }
+        }
+        INFO("the journal must hold the backfill's PHYSICAL_UPDATE record");
+        REQUIRE(updates_applied >= 1);
+        INFO("after replay the stamp is back — the journal alone carried it across the kill");
+        REQUIRE(read_added_at(fx2, attoid_a) == 4242);
+    }
     cleanup_dir(dir);
 }

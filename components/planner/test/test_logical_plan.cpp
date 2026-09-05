@@ -337,3 +337,54 @@ TEST_CASE("components::planner::update") {
                 R"_($update: <oid:0> {$upsert: 0, $match: {"key": {$eq: #1}}, $limit: 1})_");
     }
 }
+
+// Folding only the enrich-stamped OIDs into node_drop_t::hash_impl means that at plan
+// time — when every OID is still INVALID_OID — `DROP TABLE a`, `DROP TABLE b`,
+// `DROP TABLE IF EXISTS a` and `DROP TABLE a RESTRICT` all hash IDENTICALLY. The
+// fields the statement is actually built from (the written names, missing_ok,
+// behavior) must reach the hash, or any node-keyed container folds distinct drops
+// into one bucket entry.
+TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto base = [&]() {
+        auto n = make_node_drop(&resource, drop_target_kind::collection);
+        n->set_dbname("db");
+        n->set_relname("t");
+        return n;
+    };
+
+    auto a = base();
+
+    SECTION("a different relname hashes differently") {
+        auto b = base();
+        b->set_relname("u");
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("a different dbname hashes differently") {
+        auto b = base();
+        b->set_dbname("other");
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("IF EXISTS hashes differently from the loud form") {
+        auto b = base();
+        b->set_missing_ok(true);
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("RESTRICT hashes differently from CASCADE") {
+        auto b = base();
+        // The node default IS restrict_ (#638), so the differing side is CASCADE.
+        b->set_behavior(components::catalog::drop_behavior_t::cascade_);
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("a different index name hashes differently") {
+        auto i1 = make_node_drop(&resource, drop_target_kind::index);
+        i1->set_dbname("db");
+        i1->set_relname("t");
+        i1->set_index_name("idx1");
+        auto i2 = make_node_drop(&resource, drop_target_kind::index);
+        i2->set_dbname("db");
+        i2->set_relname("t");
+        i2->set_index_name("idx2");
+        REQUIRE(i1->hash() != i2->hash());
+    }
+}

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -80,7 +81,7 @@ namespace {
 // ---------------------------------------------------------------- SELECT x
 
 TEST_CASE("integration::cpp::select_rework::plain column passes through untouched") {
-    auto config = make_test_config("/tmp/test_select_rework/plain");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/plain"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -95,7 +96,7 @@ TEST_CASE("integration::cpp::select_rework::plain column passes through untouche
 }
 
 TEST_CASE("integration::cpp::select_rework::explicit cast of a column projects one column") {
-    auto config = make_test_config("/tmp/test_select_rework/plain_cast");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/plain_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -109,7 +110,7 @@ TEST_CASE("integration::cpp::select_rework::explicit cast of a column projects o
 // ------------------------------------------------------------ SELECT x + 1
 
 TEST_CASE("integration::cpp::select_rework::arithmetic over a column and a literal", "[select_rework]") {
-    auto config = make_test_config("/tmp/test_select_rework/arithmetic");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/arithmetic"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -127,7 +128,7 @@ TEST_CASE("integration::cpp::select_rework::arithmetic over a column and a liter
 }
 
 TEST_CASE("integration::cpp::select_rework::a column used twice still projects one result") {
-    auto config = make_test_config("/tmp/test_select_rework/twice");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/twice"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -139,7 +140,7 @@ TEST_CASE("integration::cpp::select_rework::a column used twice still projects o
 }
 
 TEST_CASE("integration::cpp::select_rework::cast applied to an arithmetic result") {
-    auto config = make_test_config("/tmp/test_select_rework/result_cast");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/result_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -148,10 +149,17 @@ TEST_CASE("integration::cpp::select_rework::cast applied to an arithmetic result
     REQUIRE(cursor->is_success());
     CHECK(cursor->size() == 2);
     CHECK(column_count(cursor) == 1);
+    // The VALUES, not just the shape: folding this projection into a single constant
+    // parameter -- get_value reads a cast's operand as an A_Const, over the `x + 1` A_Expr
+    // that lands on the operator node's lexpr POINTER -- makes both rows come back carrying
+    // the same run-dependent garbage, which the shape checks above never notice.
+    // x is -2 and 3.
+    CHECK(numeric_at(cursor, 0) == Catch::Approx(-1.0));
+    CHECK(numeric_at(cursor, 1) == Catch::Approx(4.0));
 }
 
 TEST_CASE("integration::cpp::select_rework::two columns of different types unify") {
-    auto config = make_test_config("/tmp/test_select_rework/mixed");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -167,7 +175,7 @@ TEST_CASE("integration::cpp::select_rework::two columns of different types unify
 // ------------------------------------------------------------ SELECT x > 1
 
 TEST_CASE("integration::cpp::select_rework::comparison projects a boolean") {
-    auto config = make_test_config("/tmp/test_select_rework/comparison");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/comparison"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -184,7 +192,7 @@ TEST_CASE("integration::cpp::select_rework::comparison projects a boolean") {
 }
 
 TEST_CASE("integration::cpp::select_rework::comparison unifies its operands first") {
-    auto config = make_test_config("/tmp/test_select_rework/comparison_mixed");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/comparison_mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -202,7 +210,7 @@ TEST_CASE("integration::cpp::select_rework::comparison unifies its operands firs
 // ----------------------------------------------------------- SELECT abs(x)
 
 TEST_CASE("integration::cpp::select_rework::row function alone in the target list") {
-    auto config = make_test_config("/tmp/test_select_rework/row_function_bare");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/row_function_bare"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -222,7 +230,7 @@ TEST_CASE("integration::cpp::select_rework::row function alone in the target lis
 }
 
 TEST_CASE("integration::cpp::select_rework::function over a column in its domain") {
-    auto config = make_test_config("/tmp/test_select_rework/function");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/function"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -237,7 +245,7 @@ TEST_CASE("integration::cpp::select_rework::function over a column in its domain
 }
 
 TEST_CASE("integration::cpp::select_rework::function argument is cast into the domain") {
-    auto config = make_test_config("/tmp/test_select_rework/function_cast");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/function_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -260,7 +268,7 @@ TEST_CASE("integration::cpp::select_rework::function argument is cast into the d
 }
 
 TEST_CASE("integration::cpp::select_rework::function over an operator result") {
-    auto config = make_test_config("/tmp/test_select_rework/function_of_operator");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/function_of_operator"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -272,7 +280,7 @@ TEST_CASE("integration::cpp::select_rework::function over an operator result") {
 }
 
 TEST_CASE("integration::cpp::select_rework::cast on column, on literal and on result together") {
-    auto config = make_test_config("/tmp/test_select_rework/all_three");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/all_three"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -281,10 +289,14 @@ TEST_CASE("integration::cpp::select_rework::cast on column, on literal and on re
     REQUIRE(cursor->is_success());
     CHECK(cursor->size() == 2);
     CHECK(column_count(cursor) == 1);
+    // Same constant-folding trap as the arithmetic case, one nesting level deeper:
+    // abs(-2 + 1) = 1, abs(3 + 1) = 4.
+    CHECK(numeric_at(cursor, 0) == 1.0);
+    CHECK(numeric_at(cursor, 1) == 4.0);
 }
 
 TEST_CASE("integration::cpp::select_rework::several computed columns keep their own slots") {
-    auto config = make_test_config("/tmp/test_select_rework/several");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/several"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -296,7 +308,7 @@ TEST_CASE("integration::cpp::select_rework::several computed columns keep their 
 }
 
 TEST_CASE("integration::cpp::select_rework::star expands in place among computed columns") {
-    auto config = make_test_config("/tmp/test_select_rework/star_mixed");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/star_mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -340,7 +352,7 @@ TEST_CASE("integration::cpp::select_rework::star expands in place among computed
 }
 
 TEST_CASE("integration::cpp::select_rework::star inside a call is not expanded") {
-    auto config = make_test_config("/tmp/test_select_rework/star_call");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/star_call"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -364,7 +376,7 @@ TEST_CASE("integration::cpp::select_rework::star inside a call is not expanded")
 }
 
 TEST_CASE("integration::cpp::select_rework::bare star is a passthrough") {
-    auto config = make_test_config("/tmp/test_select_rework/star_bare");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/star_bare"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -397,7 +409,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::select_rework::null propagates through an operator", "[select_rework]") {
-    auto config = make_test_config("/tmp/test_select_rework/null_operator");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/null_operator"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -427,7 +439,7 @@ TEST_CASE("integration::cpp::select_rework::null propagates through an operator"
 }
 
 TEST_CASE("integration::cpp::select_rework::comparison against null is unknown") {
-    auto config = make_test_config("/tmp/test_select_rework/null_comparison");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/null_comparison"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -456,7 +468,7 @@ TEST_CASE("integration::cpp::select_rework::comparison against null is unknown")
 }
 
 TEST_CASE("integration::cpp::select_rework::null propagates through a function") {
-    auto config = make_test_config("/tmp/test_select_rework/null_function");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/null_function"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -471,7 +483,7 @@ TEST_CASE("integration::cpp::select_rework::null propagates through a function")
 }
 
 TEST_CASE("integration::cpp::select_rework::cast over a null keeps it null") {
-    auto config = make_test_config("/tmp/test_select_rework/null_cast");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/null_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -483,7 +495,7 @@ TEST_CASE("integration::cpp::select_rework::cast over a null keeps it null") {
 }
 
 TEST_CASE("integration::cpp::select_rework::untyped null literal adopts a type") {
-    auto config = make_test_config("/tmp/test_select_rework/null_literal");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/null_literal"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -519,7 +531,7 @@ TEST_CASE("integration::cpp::select_rework::untyped null literal adopts a type")
 // ------------------------------------------------------- cast versus try_cast
 
 TEST_CASE("integration::cpp::select_rework::cast fails hard on a value that does not fit") {
-    auto config = make_test_config("/tmp/test_select_rework/cast_overflow");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/cast_overflow"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
@@ -531,7 +543,7 @@ TEST_CASE("integration::cpp::select_rework::cast fails hard on a value that does
 }
 
 TEST_CASE("integration::cpp::select_rework::cast of an unparsable string fails") {
-    auto config = make_test_config("/tmp/test_select_rework/cast_parse");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/cast_parse"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
@@ -553,7 +565,7 @@ TEST_CASE("integration::cpp::select_rework::cast of an unparsable string fails")
 }
 
 TEST_CASE("integration::cpp::select_rework::try_cast nulls the failing rows") {
-    auto config = make_test_config("/tmp/test_select_rework/try_cast");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/try_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
@@ -575,7 +587,7 @@ TEST_CASE("integration::cpp::select_rework::try_cast nulls the failing rows") {
 }
 
 TEST_CASE("integration::cpp::select_rework::try_cast over unparsable strings") {
-    auto config = make_test_config("/tmp/test_select_rework/try_cast_parse");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/try_cast_parse"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
@@ -605,7 +617,7 @@ TEST_CASE("integration::cpp::select_rework::try_cast over unparsable strings") {
 // ------------------------------------------------------------------- WHERE
 
 TEST_CASE("integration::cpp::select_rework::where comparison filters rows", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_cmp");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_cmp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -620,7 +632,7 @@ TEST_CASE("integration::cpp::select_rework::where comparison filters rows", "[.p
 }
 
 TEST_CASE("integration::cpp::select_rework::where and or not compose", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_logic");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_logic"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -643,7 +655,7 @@ TEST_CASE("integration::cpp::select_rework::where and or not compose", "[.pushdo
 }
 
 TEST_CASE("integration::cpp::select_rework::where null row does not survive", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_null");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_null"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -660,7 +672,7 @@ TEST_CASE("integration::cpp::select_rework::where null row does not survive", "[
 }
 
 TEST_CASE("integration::cpp::select_rework::where is null and is not null", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_isnull");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_isnull"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -678,7 +690,7 @@ TEST_CASE("integration::cpp::select_rework::where is null and is not null", "[.p
 }
 
 TEST_CASE("integration::cpp::select_rework::where unifies its operands", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_mixed");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -692,7 +704,7 @@ TEST_CASE("integration::cpp::select_rework::where unifies its operands", "[.push
 }
 
 TEST_CASE("integration::cpp::select_rework::where over a computed operand", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_computed");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_computed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -704,7 +716,7 @@ TEST_CASE("integration::cpp::select_rework::where over a computed operand", "[.p
 }
 
 TEST_CASE("integration::cpp::select_rework::where like filters", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_like");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_like"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
@@ -717,7 +729,7 @@ TEST_CASE("integration::cpp::select_rework::where like filters", "[.pushdown_fil
 }
 
 TEST_CASE("integration::cpp::select_rework::where in filters", "[.pushdown_filter]") {
-    auto config = make_test_config("/tmp/test_select_rework/where_in");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/where_in"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -731,7 +743,7 @@ TEST_CASE("integration::cpp::select_rework::where in filters", "[.pushdown_filte
 // ------------------------------------------------------- GROUP BY / HAVING
 
 TEST_CASE("integration::cpp::select_rework::scalar aggregate over all rows") {
-    auto config = make_test_config("/tmp/test_select_rework/agg_scalar");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/agg_scalar"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed_with_nulls(d);
@@ -754,7 +766,7 @@ TEST_CASE("integration::cpp::select_rework::scalar aggregate over all rows") {
 }
 
 TEST_CASE("integration::cpp::select_rework::group by a key") {
-    auto config = make_test_config("/tmp/test_select_rework/agg_group");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/agg_group"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE grp;")->is_success());
@@ -776,7 +788,7 @@ TEST_CASE("integration::cpp::select_rework::group by a key") {
 }
 
 TEST_CASE("integration::cpp::select_rework::having filters groups") {
-    auto config = make_test_config("/tmp/test_select_rework/agg_having");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/agg_having"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE grp;")->is_success());
@@ -793,7 +805,7 @@ TEST_CASE("integration::cpp::select_rework::having filters groups") {
 }
 
 TEST_CASE("integration::cpp::select_rework::grouped operator over a call and a cast") {
-    auto config = make_test_config("/tmp/test_select_rework/agg_operand_kinds");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/agg_operand_kinds"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE grp;")->is_success());
@@ -824,7 +836,7 @@ TEST_CASE("integration::cpp::select_rework::grouped operator over a call and a c
 }
 
 TEST_CASE("integration::cpp::select_rework::large groups span several chunks") {
-    auto config = make_test_config("/tmp/test_select_rework/agg_large_groups");
+    auto config = make_test_config(integration_fixture_path("test_select_rework/agg_large_groups"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE big;")->is_success());

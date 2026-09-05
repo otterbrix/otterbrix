@@ -4,6 +4,7 @@ _exported_symbols = []
 from .otterbrix import (
     OtterBrixPyConnection,
     OtterBrixPyRelation,
+    OtterBrixPyResult,
     Expression,
     ConstantExpression,
     ColumnExpression,
@@ -12,6 +13,7 @@ from .otterbrix import (
 _exported_symbols.extend([
     "OtterBrixPyConnection",
     "OtterBrixPyRelation",
+    "OtterBrixPyResult",
     "Expression",
     "ConstantExpression",
     "ColumnExpression",
@@ -52,17 +54,19 @@ _exported_symbols.extend([
     "connect",
 ])
 
-# try to load old sql-based bindings for backwards compatibility
-try:
-    from .otterbrix import Client, Connection, Cursor, to_aggregate
-    _exported_symbols.extend([
-        "Client",
-        "Connection",
-        "Cursor",
-        "to_aggregate",
-    ])
-except ImportError:
-    pass
+# The sql-based bindings. main.cpp defines Client / Connection / Cursor / to_aggregate
+# unconditionally (no build option gates them), so their absence is a broken extension
+# module, not a supported configuration -- import them like every other name above and let
+# the ImportError name the missing symbol at import time. A try/except around this import
+# swallows exactly that failure: the names vanish from the package and the user meets an
+# AttributeError somewhere far from the cause.
+from .otterbrix import Client, Connection, Cursor, to_aggregate
+_exported_symbols.extend([
+    "Client",
+    "Connection",
+    "Cursor",
+    "to_aggregate",
+])
 
 import otterbrix.typing as typing
 

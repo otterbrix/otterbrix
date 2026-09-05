@@ -42,9 +42,10 @@ namespace components::operators {
         // Null-sender guard: with no dispatcher to talk to there is no txn to
         // drain or abort — leave the locals empty.
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_dr, drf] = actor_zeta::send(ctx->current_message_sender,
-                                               &services::dispatcher::manager_dispatcher_t::txn_abort_drain_msg,
-                                               ctx->session);
+            auto [_dr, drf] =
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::txn_abort_drain_msg,
+                                            ctx->session);
             services::dispatcher::txn_abort_drain_t drain = co_await std::move(drf);
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
@@ -60,10 +61,10 @@ namespace components::operators {
         if (txn_data.transaction_id != 0 && !swap_appends.empty() &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};
-            auto [_r, rf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_revert_appends,
-                                             swap_ctx,
-                                             std::move(swap_appends));
+            auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_revert_appends,
+                                                        swap_ctx,
+                                                        std::move(swap_appends));
             co_await std::move(rf);
         }
 
@@ -93,10 +94,10 @@ namespace components::operators {
                                                           txn_data,
                                                           ctx->execution_context.timezone_offset,
                                                           oid};
-                auto [_ri, rif] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::revert_insert,
-                                                   abort_ctx,
-                                                   oid);
+                auto [_ri, rif] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                              &services::index::manager_index_t::revert_insert,
+                                                              abort_ctx,
+                                                              oid);
                 revert_index_futures.push_back(std::move(rif));
             }
             for (auto oid : base_delete_tables) {
@@ -104,10 +105,10 @@ namespace components::operators {
                                                           txn_data,
                                                           ctx->execution_context.timezone_offset,
                                                           oid};
-                auto [_rd, rdf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::revert_delete,
-                                                   abort_ctx,
-                                                   oid);
+                auto [_rd, rdf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                              &services::index::manager_index_t::revert_delete,
+                                                              abort_ctx,
+                                                              oid);
                 revert_index_futures.push_back(std::move(rdf));
             }
             for (auto& rif : revert_index_futures) {
@@ -143,10 +144,10 @@ namespace components::operators {
             revert_set.insert(pg_catalog_delete_tables.begin(), pg_catalog_delete_tables.end());
             std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
             components::execution_context_t rd_ctx{ctx->session, txn_data, ctx->execution_context.timezone_offset};
-            auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::storage_revert_deletes,
-                                               rd_ctx,
-                                               std::move(revert_delete_tables));
+            auto [_rd, rdf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::storage_revert_deletes,
+                                                          rd_ctx,
+                                                          std::move(revert_delete_tables));
             co_await std::move(rdf);
         }
 
@@ -160,17 +161,17 @@ namespace components::operators {
         //     non-empty drained set so a txn that ran no DROP pays nothing.
         if (txn_data.transaction_id != 0 && !dropped_storage_oids.empty()) {
             if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                auto [_sa, saf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_drop_aborted,
-                                                   ctx->session,
-                                                   txn_data.transaction_id);
+                auto [_sa, saf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_drop_aborted,
+                                                              ctx->session,
+                                                              txn_data.transaction_id);
                 co_await std::move(saf);
             }
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-                auto [_ta, taf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::table_drop_aborted,
-                                                   ctx->session,
-                                                   txn_data.transaction_id);
+                auto [_ta, taf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                              &services::index::manager_index_t::table_drop_aborted,
+                                                              ctx->session,
+                                                              txn_data.transaction_id);
                 co_await std::move(taf);
             }
         }
@@ -192,11 +193,11 @@ namespace components::operators {
                 std::pmr::vector<actor_zeta::unique_future<void>> drop_index_futures{resource()};
                 drop_index_futures.reserve(created_indexes.size());
                 for (auto& idx : created_indexes) {
-                    auto [_di, dif] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::drop_index,
-                                                       ctx->session,
-                                                       idx.table_oid,
-                                                       services::index::index_name_t(idx.name.c_str()));
+                    auto [_di, dif] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                  &services::index::manager_index_t::drop_index,
+                                                                  ctx->session,
+                                                                  idx.table_oid,
+                                                                  idx.index_oid);
                     drop_index_futures.push_back(std::move(dif));
                 }
                 for (auto& f : drop_index_futures) {
@@ -218,10 +219,11 @@ namespace components::operators {
                     std::pmr::vector<actor_zeta::unique_future<void>> unregister_futures{resource()};
                     unregister_futures.reserve(created_storage_oids.size());
                     for (auto oid : created_storage_oids) {
-                        auto [_u, uf] = actor_zeta::send(ctx->index_address,
-                                                         &services::index::manager_index_t::unregister_collection,
-                                                         ctx->session,
-                                                         oid);
+                        auto [_u, uf] =
+                            actor_zeta::otterbrix::send(ctx->index_address,
+                                                        &services::index::manager_index_t::unregister_collection,
+                                                        ctx->session,
+                                                        oid);
                         unregister_futures.push_back(std::move(uf));
                     }
                     // Await EVERY unregister before any disk drop (index-before-disk).
@@ -233,10 +235,10 @@ namespace components::operators {
                     std::pmr::vector<components::catalog::oid_t> drop_oids{created_storage_oids.begin(),
                                                                            created_storage_oids.end(),
                                                                            resource()};
-                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::drop_storage_many,
-                                                     ctx->session,
-                                                     std::move(drop_oids));
+                    auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::drop_storage_many,
+                                                                ctx->session,
+                                                                std::move(drop_oids));
                     co_await std::move(df);
                 }
             }

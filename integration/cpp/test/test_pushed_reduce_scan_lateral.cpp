@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
 
@@ -30,9 +31,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_redrive") {
-    auto config = test_create_config("/tmp/test_pushed_reduce_scan_lateral");
+    auto config = test_create_config(integration_fixture_path("test_pushed_reduce_scan_lateral"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

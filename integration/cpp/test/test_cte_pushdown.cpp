@@ -21,6 +21,7 @@
 // pushdown) and are intentionally not exercised here.
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -69,9 +70,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cte_pushdown::pushes_into_body") {
-    auto config = test_create_config("/tmp/test_cte_pushdown/pos");
+    auto config = test_create_config(integration_fixture_path("test_cte_pushdown/pos"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -156,9 +156,8 @@ TEST_CASE("integration::cte_pushdown::pushes_into_body") {
 }
 
 TEST_CASE("integration::cte_pushdown::negatives_stay_correct") {
-    auto config = test_create_config("/tmp/test_cte_pushdown/neg");
+    auto config = test_create_config(integration_fixture_path("test_cte_pushdown/neg"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -219,9 +218,8 @@ TEST_CASE("integration::cte_pushdown::negatives_stay_correct") {
 }
 
 TEST_CASE("integration::cte_pushdown::distinct_survives_full_push") {
-    auto config = test_create_config("/tmp/test_cte_pushdown/distinct");
+    auto config = test_create_config(integration_fixture_path("test_cte_pushdown/distinct"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -288,9 +286,8 @@ TEST_CASE("integration::cte_pushdown::distinct_survives_full_push") {
 }
 
 TEST_CASE("integration::cte_pushdown::recursive_untouched") {
-    auto config = test_create_config("/tmp/test_cte_pushdown/rec");
+    auto config = test_create_config(integration_fixture_path("test_cte_pushdown/rec"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

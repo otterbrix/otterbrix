@@ -8,6 +8,21 @@ using file_lock_type = core::filesystem::file_lock_type;
 
 namespace core::b_plus_tree {
 
+#ifdef DEV_MODE
+    namespace {
+        size_t g_max_leaf_nodes_override = 0;
+    } // namespace
+
+    void dev_set_max_leaf_nodes(size_t limit) noexcept { g_max_leaf_nodes_override = limit; }
+    size_t max_leaf_nodes() noexcept {
+        return g_max_leaf_nodes_override != 0 ? g_max_leaf_nodes_override : MAX_LEAF_NODES;
+    }
+#else
+    namespace {
+        constexpr size_t max_leaf_nodes() noexcept { return MAX_LEAF_NODES; }
+    } // namespace
+#endif
+
     /* base node */
 
     btree_t::base_node_t::base_node_t(std::pmr::memory_resource* resource,
@@ -156,7 +171,7 @@ namespace core::b_plus_tree {
         other->nodes_end_ -= rebalance_size;
     }
 
-    void btree_t::inner_node_t::merge(base_node_t* neighbour) {
+    bool btree_t::inner_node_t::merge(base_node_t* neighbour) {
         assert((left_node_ == neighbour || right_node_ == neighbour) && "merge requires neighbouring nodes");
         assert(min_index() > neighbour->max_index() || max_index() < neighbour->min_index());
         assert(count() != 0 && neighbour->count() != 0);
@@ -172,6 +187,9 @@ namespace core::b_plus_tree {
         }
         nodes_end_ += delta_count;
         other->nodes_end_ -= delta_count;
+        // An inner node's children are pointers already in memory: there is nothing here that can
+        // refuse to move.
+        return true;
     }
 
     void btree_t::inner_node_t::build(btree_t::inner_node_t::base_node_t** nodes, size_t count) {
@@ -195,13 +213,14 @@ namespace core::b_plus_tree {
     /* leaf node */
 
     btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
-                                      std::unique_ptr<filesystem::file_handle_t> file,
+                                      filesystem::local_file_system_t& fs,
+                                      filesystem::path_t file_path,
                                       index_t (*func)(const item_data&),
                                       uint64_t segment_tree_id,
                                       size_t min_node_capacity,
                                       size_t max_node_capacity)
         : btree_t::base_node_t(resource, min_node_capacity, max_node_capacity)
-        , segment_tree_(std::make_unique<segment_tree_t>(resource, func, std::move(file)))
+        , segment_tree_(std::make_unique<segment_tree_t>(resource, func, fs, std::move(file_path)))
         , segment_tree_id_(segment_tree_id) {}
 
     btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
@@ -223,13 +242,16 @@ namespace core::b_plus_tree {
     }
     bool btree_t::leaf_node_t::remove_index(const index_t& index) { return segment_tree_->remove_index(index); }
 
-    btree_t::leaf_node_t* btree_t::leaf_node_t::split(std::unique_ptr<filesystem::file_handle_t> file,
-                                                      uint64_t segment_tree_id) {
-        return new leaf_node_t(resource_,
-                               segment_tree_->split(std::move(file)),
-                               segment_tree_id,
-                               min_node_capacity_,
-                               max_node_capacity_);
+    btree_t::leaf_node_t* btree_t::leaf_node_t::split(filesystem::path_t file_path, uint64_t segment_tree_id) {
+        auto* node = new leaf_node_t(resource_,
+                                     segment_tree_->split(std::move(file_path)),
+                                     segment_tree_id,
+                                     min_node_capacity_,
+                                     max_node_capacity_);
+        // The half that splits off reports where its parent reports; a leaf created mid-walk that
+        // kept its own private cell would be the one leaf nothing above could hear.
+        node->set_failure_channel(segment_tree_->failure_channel());
+        return node;
     }
 
     void btree_t::leaf_node_t::balance(base_node_t* neighbour) {
@@ -241,9 +263,9 @@ namespace core::b_plus_tree {
         }
     }
 
-    void btree_t::leaf_node_t::merge(base_node_t* neighbour) {
+    bool btree_t::leaf_node_t::merge(base_node_t* neighbour) {
         assert((left_node_ == neighbour || right_node_ == neighbour) && "merge requires neighbouring nodes");
-        segment_tree_->merge(static_cast<leaf_node_t*>(neighbour)->segment_tree_);
+        return segment_tree_->merge(static_cast<leaf_node_t*>(neighbour)->segment_tree_);
     }
 
     bool btree_t::leaf_node_t::contains_index(const index_t& index) { return segment_tree_->contains_index(index); }
@@ -298,19 +320,26 @@ namespace core::b_plus_tree {
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            std::unique_ptr<core::filesystem::file_handle_t> file =
-                open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
             root_ = static_cast<base_node_t*>(new leaf_node_t(resource_,
-                                                              std::move(file),
+                                                              fs_,
+                                                              std::move(file_name),
                                                               key_func_,
                                                               segment_tree_id,
                                                               min_node_capacity_,
                                                               max_node_capacity_));
-            reinterpret_cast<leaf_node_t*>(root_)->append(index, item);
+            static_cast<leaf_node_t*>(root_)->set_failure_channel(&failures_);
+            // THE LEAF'S ANSWER MUST NOT BE THROWN AWAY. append() reports a leaf that could not
+            // get memory as false rather than leaving through an exception, so discarding it
+            // makes the first item of a fresh index one the tree counts, answers true about, and
+            // does not hold. The leaf itself is real either way -- its file exists and the
+            // metadata list has to name it -- so only the item is in question here.
+            const bool stored = static_cast<leaf_node_t*>(root_)->append(index, item);
             leaf_nodes_count_++;
-            item_count_++;
+            if (stored) {
+                item_count_++;
+            }
             tree_mutex_.unlock();
-            return true;
+            return stored;
         } else if (root_->is_leaf_node()) {
             assert(root_->unique_entry_count() != 0);
             bool result;
@@ -320,9 +349,8 @@ namespace core::b_plus_tree {
                 uint64_t segment_tree_id = get_unique_id_();
                 std::filesystem::path file_name = storage_directory_;
                 file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-                std::unique_ptr<core::filesystem::file_handle_t> file =
-                    open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
-                leaf_node_t* splited_node = static_cast<leaf_node_t*>(root_)->split(std::move(file), segment_tree_id);
+                leaf_node_t* splited_node =
+                    static_cast<leaf_node_t*>(root_)->split(std::move(file_name), segment_tree_id);
                 leaf_nodes_count_++;
                 if (splited_node->min_index() < index) {
                     result = splited_node->append(index, item);
@@ -378,10 +406,8 @@ namespace core::b_plus_tree {
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            std::unique_ptr<core::filesystem::file_handle_t> file =
-                open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
             leaf_node_t* splited_node =
-                static_cast<leaf_node_t*>(current_node)->split(std::move(file), segment_tree_id);
+                static_cast<leaf_node_t*>(current_node)->split(std::move(file_name), segment_tree_id);
             leaf_nodes_count_++;
 
             if (splited_node->min_index() <= index) {
@@ -515,12 +541,31 @@ namespace core::b_plus_tree {
                 if (current_node->right_node_ &&
                     current_node->right_node_->unique_entry_count() <= merge_share_boundary_) {
                     current_node->right_node_->lock_exclusive();
-                    current_node->right_node_->merge(current_node);
+                    const bool merged = current_node->right_node_->merge(current_node);
                     current_node->right_node_->unlock_exclusive();
+                    if (!merged) {
+                        // THE NEIGHBOUR REFUSED TO TAKE IT, and the lines below this branch
+                        // delete `current_node`. A leaf that met a block it could not read cannot
+                        // hand its blocks over, and a destination that cannot grow cannot take
+                        // them -- in both cases the merge moved NOTHING, so going on would remove
+                        // a node whose rows nothing else has. Leave it where it is: an under-full
+                        // node is a shape the tree tolerates, and the reason is on the channel.
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else if (current_node->left_node_ && current_node->left_node_->count() <= merge_share_boundary_) {
                     current_node->left_node_->lock_exclusive();
-                    current_node->left_node_->merge(current_node);
+                    const bool merged = current_node->left_node_->merge(current_node);
                     current_node->left_node_->unlock_exclusive();
+                    if (!merged) {
+                        // THE NEIGHBOUR REFUSED TO TAKE IT and nothing moved, so the deletion
+                        // below would drop rows nothing else has -- see the first such branch
+                        // in remove().
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else {
                     // cannot merge with anyone
                     if (current_node->right_node_) {
@@ -655,13 +700,29 @@ namespace core::b_plus_tree {
                 if (current_node->right_node_ &&
                     current_node->right_node_->unique_entry_count() <= merge_share_boundary_) {
                     current_node->right_node_->lock_exclusive();
-                    current_node->right_node_->merge(current_node);
+                    const bool merged = current_node->right_node_->merge(current_node);
                     current_node->right_node_->unlock_exclusive();
+                    if (!merged) {
+                        // THE NEIGHBOUR REFUSED TO TAKE IT and nothing moved, so the deletion
+                        // below would drop rows nothing else has -- see the first such branch
+                        // in remove().
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else if (current_node->left_node_ &&
                            current_node->left_node_->unique_entry_count() <= merge_share_boundary_) {
                     current_node->left_node_->lock_exclusive();
-                    current_node->left_node_->merge(current_node);
+                    const bool merged = current_node->left_node_->merge(current_node);
                     current_node->left_node_->unlock_exclusive();
+                    if (!merged) {
+                        // THE NEIGHBOUR REFUSED TO TAKE IT and nothing moved, so the deletion
+                        // below would drop rows nothing else has -- see the first such branch
+                        // in remove().
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else {
                     // cannot merge with anyone
                     if (current_node->right_node_) {
@@ -730,7 +791,13 @@ namespace core::b_plus_tree {
         result.reserve(item_count_);
         while (first_leaf) {
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // See full_scan: the allocation-refusal leg leaves an empty slot no walk
+                    // may dereference; the refusal is on the channel.
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     result.push_back(it->index);
                 }
             }
@@ -790,16 +857,55 @@ namespace core::b_plus_tree {
         // leaf are filled in; the tail would otherwise be uninitialised heap on disk.
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         *buffer = item_count_;
-        *(buffer + 1) = leaf_nodes_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
+        // THE END OF THAT BUFFER, which the loop below has to know about: it walks the leaf list
+        // and writes one id per leaf into a region that holds MAX_LEAF_NODES of them, so without
+        // this bound a tree that outgrew the ceiling writes past the allocation on EVERY flush.
+        const uint64_t* const buffer_end =
+            reinterpret_cast<const uint64_t*>(buffer) + (METADATA_SIZE / sizeof(uint64_t));
+        const size_t leaf_ceiling = max_leaf_nodes();
 
         // save each segment tree
         bool ok = true;
+        size_t written_ids = 0;
         while (node) {
             ok = node->flush() && ok;
+            if (written_ids == leaf_ceiling || buffer_writer == buffer_end) {
+                // Loud, and not fatal: the leaves themselves are still being written, so nothing
+                // already on the device is lost or altered. What cannot be written is the LIST, so
+                // this flush is not durable and says so -- a metadata file naming only the first
+                // MAX_LEAF_NODES leaves would silently drop the rest of the tree at the next load.
+                //
+                // TODO: grow the metadata file past one METADATA_SIZE region and lift the ceiling
+                // instead of refusing at it.
+                ok = false;
+                node = static_cast<leaf_node_t*>(node->right_node_);
+                continue;
+            }
             *buffer_writer = node->segment_tree_id();
             buffer_writer++;
+            written_ids++;
             node = static_cast<leaf_node_t*>(node->right_node_);
+        }
+        // The count in the header has to agree with the ids that follow it, or load() reads ids
+        // that were never written. ALWAYS the number actually written, not leaf_nodes_count_ and
+        // then a repair on the failure path: the two agree only while nothing has gone wrong with
+        // the counter itself, and the counter is exactly what a lie here would be believed from.
+        *(buffer + 1) = written_ids;
+        if (!ok) {
+            // A flush that could not WRITE every leaf, or could not NAME every leaf at the
+            // ceiling, must not replace the metadata. The list built above names leaves
+            // including the one whose flush refused -- for a brand-new leaf that is a file
+            // that was never created, and load() answers a named-but-missing file with the
+            // WHOLE tree empty (io_error on the channel). Writing this list would turn one
+            // refused leaf into the loss of every other leaf at the next open. The last-good
+            // metadata on the device names only files that exist, so the tree stays openable
+            // at its last durable state; the false return says the NEW state is not durable,
+            // and the leaves that stayed dirty are written by the next flush that succeeds --
+            // which then replaces the list as a whole.
+            tree_mutex_.unlock();
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            return false;
         }
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);
@@ -835,9 +941,17 @@ namespace core::b_plus_tree {
             root_ = nullptr;
         }
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
+        if (file == nullptr) {
+            // open_file reports failure by returning nullptr, not by throwing -- the same door
+            // flush() already checks. Dereferencing it below was a crash on an unreadable file.
+            failures_.report(load_failure_t::io_error);
+            tree_mutex_.unlock();
+            return;
+        }
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         if (!file->read(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
+            failures_.report(load_failure_t::io_error);
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
             return;
@@ -845,6 +959,23 @@ namespace core::b_plus_tree {
 
         item_count_ = *buffer;
         leaf_nodes_count_ = *(buffer + 1);
+        if (leaf_nodes_count_ > MAX_LEAF_NODES) {
+            // THE COUNT CAME OFF THE DISK and must not be believed on its own: it sizes the read
+            // that follows (one uint64 per leaf out of a buffer that holds MAX_LEAF_NODES of
+            // them) and the node array allocated for it. A poked or torn counter therefore reads
+            // past the buffer, and a large enough one asks the allocator for terabytes -- which
+            // throws std::bad_alloc out of load(), i.e. the database does not open.
+            //
+            // Refuse the metadata file instead. The tree opens EMPTY rather than not at all, the
+            // leaf files are untouched, and the refusal is on the channel.
+            failures_.report(load_failure_t::data_corruption);
+            item_count_ = 0;
+            leaf_nodes_count_ = 0;
+            root_ = nullptr;
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            tree_mutex_.unlock();
+            return;
+        }
         if (leaf_nodes_count_ == 0) {
             // Nothing to rebuild. Falling through would allocate a zero-length node array and then
             // read *nodes_layer out of it.
@@ -868,6 +999,13 @@ namespace core::b_plus_tree {
             std::filesystem::path leaf_file_name = storage_directory_;
             leaf_file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
             if (!file_exists(fs_, leaf_file_name)) {
+                // A leaf the metadata NAMES but the directory does not hold. Returning an
+                // empty tree from this leg would be a silent SUBSET -- every row of every
+                // other leaf vanishes with no way to ask why -- so the refusal goes on the
+                // channel like every other load failure. The tree still opens
+                // (empty), still answers about nothing rather than something else, and
+                // its files can still be deleted, which is all DROP INDEX needs.
+                failures_.report(load_failure_t::io_error);
                 for (size_t j = 0; j < i; j++) {
                     delete *(nodes_layer + j);
                 }
@@ -878,15 +1016,15 @@ namespace core::b_plus_tree {
                 tree_mutex_.unlock();
                 return;
             }
-            std::unique_ptr<core::filesystem::file_handle_t> leaf_file =
-                open_file(fs_, leaf_file_name, file_flags::READ | file_flags::WRITE);
             base_node_t* node = static_cast<base_node_t*>(new leaf_node_t(resource_,
-                                                                          std::move(leaf_file),
+                                                                          fs_,
+                                                                          std::move(leaf_file_name),
                                                                           key_func_,
                                                                           segment_tree_id,
                                                                           min_node_capacity_,
                                                                           max_node_capacity_));
 
+            static_cast<leaf_node_t*>(node)->set_failure_channel(&failures_);
             static_cast<leaf_node_t*>(node)->load();
             *(nodes_layer + i) = node;
             if (left_node) {

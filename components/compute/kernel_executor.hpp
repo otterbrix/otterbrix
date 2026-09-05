@@ -4,6 +4,7 @@
 #include "kernel_signature.hpp"
 
 #include <memory>
+#include <memory_resource>
 #include <vector>
 
 namespace components::compute::detail {
@@ -25,7 +26,10 @@ namespace components::compute::detail {
         [[nodiscard]] virtual core::error_t
         finalize(aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& output) = 0;
 
-        static std::unique_ptr<kernel_executor_t> make_vector();
-        static std::unique_ptr<kernel_executor_t> make_aggregate();
+        // `resource` is the resource the caller resolved the executor with. It outlives the
+        // executor and is the only one on hand before init() has run, which is exactly when a
+        // refusal about the missing init has to be worded.
+        static std::unique_ptr<kernel_executor_t> make_vector(std::pmr::memory_resource* resource);
+        static std::unique_ptr<kernel_executor_t> make_aggregate(std::pmr::memory_resource* resource);
     };
 } // namespace components::compute::detail

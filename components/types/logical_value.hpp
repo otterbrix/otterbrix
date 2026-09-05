@@ -83,28 +83,33 @@ namespace components::types {
         static logical_value_t create_list(std::pmr::memory_resource* r,
                                            const complex_logical_type& type,
                                            const std::vector<logical_value_t>& values);
+        // Builds a LIST value carrying the DECLARED list type as-is -- extension
+        // (field_id/required) included -- where create_list above wraps the given CHILD type
+        // into a fresh default extension. Use this when the list type already exists (a
+        // column's declared type); use create_list when only the element type is known.
+        static logical_value_t create_list_from_type(std::pmr::memory_resource* r,
+                                                     const complex_logical_type& list_type,
+                                                     const std::vector<logical_value_t>& values);
         static logical_value_t create_union(std::pmr::memory_resource* r,
                                             std::pmr::vector<complex_logical_type> types,
                                             uint8_t tag,
                                             logical_value_t value);
         static logical_value_t create_variant(std::pmr::memory_resource* r, std::vector<logical_value_t> values);
 
-        static logical_value_t sum(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t subtract(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t mult(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t divide(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t modulus(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t exponent(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t sqr_root(const logical_value_t& value);
-        static logical_value_t cube_root(const logical_value_t& value);
-        static logical_value_t factorial(const logical_value_t& value);
-        static logical_value_t absolute(const logical_value_t& value);
-        static logical_value_t bit_and(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t bit_or(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t bit_xor(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t bit_not(const logical_value_t& value);
-        static logical_value_t bit_shift_l(const logical_value_t& value1, const logical_value_t& value2);
-        static logical_value_t bit_shift_r(const logical_value_t& value1, const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> sum(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> subtract(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> mult(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> divide(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> modulus(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> exponent(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
+        static core::result_wrapper_t<logical_value_t> bit_and(const logical_value_t& value1,
+                                                          const logical_value_t& value2);
 
     private:
         complex_logical_type type_;

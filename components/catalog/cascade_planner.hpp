@@ -23,8 +23,12 @@ namespace components::catalog {
         explicit cascade_plan_t(std::pmr::memory_resource* resource)
             : steps(resource) {}
 
-        // DROP succeeded: ordered list of objects to drop (children first, root last).
-        // Empty when behavior==restrict_ and no external dependencies exist.
+        // DROP succeeded: ordered list of objects to drop (children first, seed last).
+        // NEVER EMPTY when status==ok — the seed's own step is always the last entry,
+        // under every behavior. An accepted DROP that planned no steps is a statement
+        // that deletes nothing and answers success, which is what this used to be on
+        // the RESTRICT allow-path. Empty steps therefore only ever accompany a
+        // non-ok status (restrict_blocked / cycle_detected).
         std::pmr::vector<drop_step_t> steps;
 
         // Non-INVALID_OID when RESTRICT is blocked: OID of the blocking dependent.
@@ -39,8 +43,17 @@ namespace components::catalog {
     //   Implemented by disk as a closure over collect_dependents(); the catalog owns
     //   only the traversal logic, not the storage scan.
     //
-    // behavior: restrict_ → return immediately with blocking_oid if any 'n' dependency
-    //           exists; cascade_ → compute full topological drop order.
+    // behavior: collapses through catalog::refuses_on_dependency
+    //   (components/catalog/results/ddl_result.hpp), never by comparing against a
+    //   single enumerator:
+    //     restrict_    — RESTRICT, written or defaulted (PostgreSQL parity, #638).
+    //                    GATE ONLY: if any DIRECT 'n' (normal) dependency reaches
+    //                    the seed, the plan comes back restrict_blocked with
+    //                    blocking_oid and NO steps. Past the gate it falls through
+    //                    to the same order computation as CASCADE — refusing is
+    //                    all RESTRICT does differently; it never shrinks an
+    //                    accepted drop.
+    //     cascade_     — a written CASCADE. No gate, full topological drop order.
     cascade_plan_t plan_drop(std::pmr::memory_resource* resource,
                              oid_t seed_classid,
                              oid_t seed_oid,

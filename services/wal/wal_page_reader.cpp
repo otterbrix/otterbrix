@@ -6,13 +6,26 @@
 
 namespace services::wal {
 
-    wal_page_reader_t::wal_page_reader_t(const std::filesystem::path& segment_path)
-        : path_(segment_path) {
+    wal_page_reader_t::wal_page_reader_t(std::pmr::memory_resource* resource, const std::filesystem::path& segment_path)
+        : resource_(resource)
+        , path_(segment_path)
+        , open_error_(core::error_t::no_error()) {
         auto flags = core::filesystem::file_flags::READ;
         file_ = core::filesystem::open_file(fs_, path_, flags, core::filesystem::file_lock_type::NO_LOCK);
+#ifdef DEV_MODE
+        if (auto* interposer = dev_wal_file_interposer(); interposer != nullptr) {
+            file_ = interposer->wrap(path_, std::move(file_));
+        }
+#endif
         if (file_) {
             file_size_ = file_->file_size();
+            return;
         }
+        // Keep the reason. Everything downstream reads zero pages from an unopened
+        // segment, and without this the zero is read as "the segment is empty".
+        open_error_ = core::error_t(
+            core::error_code_t::io_error,
+            std::pmr::string{"wal segment could not be opened for reading: " + path_.string(), resource_});
     }
 
     bool wal_page_reader_t::read_page(size_t page_index, char* buf) {
@@ -23,16 +36,42 @@ namespace services::wal {
         return file_->read(buf, static_cast<uint64_t>(PAGE_SIZE), offset);
     }
 
+    // TEST-ONLY OBSERVER: answers a zeroed header for a page it cannot read, deliberately —
+    // no production decision hangs off it any more. truncate_before, the one caller that
+    // unlinked files from this answer, reads through read_verified_page_header below, which
+    // CANNOT answer zeros. The read goes through read_page so a failed read yields the whole
+    // zeroed header rather than a partially filled one.
     wal_page_header_t wal_page_reader_t::read_page_header(size_t page_index) {
         wal_page_header_t hdr;
         std::memset(&hdr, 0, sizeof(hdr));
 
-        uint64_t offset = static_cast<uint64_t>(page_index) * PAGE_SIZE;
-        if (offset + PAGE_HEADER_SIZE > file_size_) {
+        alignas(4096) char page_buf[PAGE_SIZE];
+        if (!read_page(page_index, page_buf)) {
             return hdr;
         }
-        file_->read(&hdr, static_cast<uint64_t>(PAGE_HEADER_SIZE), offset);
+        std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);
         return hdr;
+    }
+
+    // ONE PAGE, ONE READ. The header this answers comes from the SAME bytes the checksum
+    // verified. Verifying the page with one read and re-reading the header with a second — the
+    // shape its caller truncate_before would otherwise take — answers a ZEROED header when
+    // that second read fails, and page_end_lsn == 0 is <= every checkpoint id: the segment
+    // gets unlinked for a read failure. Returning false covers both "unreadable" and "does not
+    // verify"; the caller cannot tell them apart and must not: both mean "this file's bound is
+    // unknown, keep it".
+    bool wal_page_reader_t::read_verified_page_header(size_t page_index, wal_page_header_t& out) {
+        alignas(4096) char page_buf[PAGE_SIZE];
+        if (!read_page(page_index, page_buf)) {
+            return false;
+        }
+        wal_page_header_t hdr;
+        std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);
+        if (!hdr.verify_checksum(page_buf)) {
+            return false;
+        }
+        out = hdr;
+        return true;
     }
 
     size_t wal_page_reader_t::page_count() const {
@@ -43,68 +82,69 @@ namespace services::wal {
     }
 
     bool wal_page_reader_t::verify_page_checksum(size_t page_index) {
+        wal_page_header_t ignored;
+        return read_verified_page_header(page_index, ignored);
+    }
+
+    wal_page_reader_t::segment_scan_t wal_page_reader_t::scan_pages() {
+        segment_scan_t scan;
+        if (!is_open()) {
+            return scan;
+        }
+
         alignas(4096) char page_buf[PAGE_SIZE];
-        if (!read_page(page_index, page_buf)) {
-            return false;
-        }
-        wal_page_header_t hdr;
-        std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);
-        return hdr.verify_checksum(page_buf);
-    }
+        const size_t count = page_count();
+        for (size_t pi = 1; pi <= count; ++pi) { // data pages start at index 1
+            wal_page_header_t hdr{};
+            const bool readable = read_page(pi, page_buf);
+            if (readable) {
+                std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);
+            }
+            if (!readable || !hdr.verify_checksum(page_buf)) {
+                scan.chain_intact = false;
+                if (scan.first_broken_page == 0) {
+                    scan.first_broken_page = pi;
+                }
+                continue;
+            }
 
-    bool wal_page_reader_t::verify_chain() {
-        size_t count = page_count();
-        for (size_t i = 0; i < count; ++i) {
-            if (!verify_page_checksum(i + 1)) { // data pages start at index 1
-                return false;
+            // The page vouches for its own header, so page_end_lsn is usable — and it is
+            // usable whether or not an earlier page failed.
+            if (scan.first_broken_page != 0) {
+                ++scan.verified_pages_after_break;
+                if (scan.first_verified_lsn_after_break == 0) {
+                    scan.first_verified_lsn_after_break = hdr.page_lsn;
+                }
+            }
+            if (scan.first_verified_page_lsn == 0) {
+                scan.first_verified_page_lsn = hdr.page_lsn;
+            }
+            if (hdr.page_end_lsn > scan.highest_page_end_lsn) {
+                scan.highest_page_end_lsn = hdr.page_end_lsn;
             }
         }
-        return true;
+        return scan;
     }
 
-    wal_page_position_t wal_page_reader_t::seek_to_lsn(id_t target_lsn) {
-        size_t count = page_count();
-        if (count == 0) {
-            return {0};
+    // The chain answer is one field of the scan above; keeping a second loop here would be a
+    // second place for the two to disagree.
+    bool wal_page_reader_t::verify_chain() { return scan_pages().chain_intact; }
+
+    core::result_wrapper_t<std::vector<record_t>> wal_page_reader_t::read_all_records(id_t after_id) {
+        // AN UNREADABLE SEGMENT IS NOT AN EMPTY ONE. Returning {} here is what made every
+        // committed transaction living in this segment disappear from startup replay in
+        // silence; the caller now has to look at the refusal before it looks at the rows.
+        if (!is_open()) {
+            return open_error_;
         }
 
-        // Binary search over data pages (indices 1..count).
-        // Each page has page_lsn (first LSN) and page_end_lsn (last LSN).
-        // We want the page where page_lsn <= target_lsn <= page_end_lsn.
-        size_t lo = 1;
-        size_t hi = count; // inclusive page index = count (last data page)
-        size_t result = 1;
-
-        while (lo <= hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            auto hdr = read_page_header(mid);
-
-            if (hdr.page_lsn <= target_lsn) {
-                result = mid;
-                if (hdr.page_end_lsn >= target_lsn) {
-                    // Found exact page.
-                    break;
-                }
-                lo = mid + 1;
-            } else {
-                if (mid == 0) {
-                    break;
-                }
-                hi = mid - 1;
-            }
-        }
-
-        return {result};
-    }
-
-    std::vector<record_t> wal_page_reader_t::read_all_records(id_t after_id) {
         std::vector<record_t> records;
         size_t count = page_count();
         if (count == 0) {
-            return records;
+            return std::move(records);
         }
 
-        auto* resource = std::pmr::get_default_resource();
+        auto* resource = resource_;
 
         // Buffer for accumulating spanning records.
         std::vector<char> span_buffer;
@@ -240,7 +280,7 @@ namespace services::wal {
             }
         }
 
-        return records;
+        return std::move(records);
     }
 
 } // namespace services::wal

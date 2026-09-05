@@ -13,6 +13,8 @@ namespace components::logical_plan {
                     return "DROP COLUMN";
                 case alter_table_kind::rename_column:
                     return "RENAME COLUMN";
+                case alter_table_kind::drop_constraint:
+                    return "DROP CONSTRAINT";
             }
             return "?";
         }
@@ -68,7 +70,8 @@ namespace components::logical_plan {
             if (i > 0) {
                 s << ",";
             }
-            s << " " << kind_to_string(sub.kind) << " " << sub.column_name;
+            s << " " << kind_to_string(sub.kind) << " "
+              << (sub.kind == alter_table_kind::drop_constraint ? sub.constraint_name : sub.column_name);
             if (sub.kind == alter_table_kind::rename_column) {
                 s << " -> " << sub.new_column_name;
             }

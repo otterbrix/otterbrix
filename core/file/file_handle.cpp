@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstdio>
 
-#ifndef PLATFORM_WINDOWS
 #include <dirent.h>
 #include <fcntl.h>
 #include <string.h>
@@ -18,17 +17,6 @@
 #define _XOPEN_SOURCE_EXTENDED 1
 #include <sys/resource.h>
 #define PATH_MAX _XOPEN_PATH_MAX
-#endif
-
-#else
-#include <string>
-#include <sysinfoapi.h>
-
-#ifdef __MINGW32__
-extern "C" WINBASEAPI BOOL WINAPI GetPhysicallyInstalledSystemMemory(PULONGLONG);
-#endif
-
-#undef FILE_CREATE
 #endif
 
 namespace core::filesystem {
@@ -47,7 +35,7 @@ namespace core::filesystem {
         return ::core::filesystem::read(fs_, *this, buffer, static_cast<int64_t>(nr_bytes), location);
     }
 
-    int64_t file_handle_t::write(void* buffer, uint64_t nr_bytes) {
+    write_result_t file_handle_t::write(void* buffer, uint64_t nr_bytes) {
         return ::core::filesystem::write(fs_, *this, buffer, static_cast<int64_t>(nr_bytes));
     }
 

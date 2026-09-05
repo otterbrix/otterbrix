@@ -22,6 +22,19 @@ namespace components::logical_plan {
 
     using insert_column_bindings_t = std::pmr::vector<insert_column_binding_t>;
 
+    // One table column the statement did NOT write. The DEFAULT is expanded ABOVE the
+    // journal: operator_insert materialises these columns into the chunk before the
+    // append, so the row that reaches storage, the WAL record and the constraint
+    // operators is FULL WIDTH and already carries what the catalog says the column
+    // defaults to. There is one source (pg_attribute.attdefspec) and one reader of it.
+    struct insert_fill_column_t {
+        std::pmr::string name;            // catalog column name — the append routes by it
+        types::complex_logical_type type; // the column's stored type
+        types::logical_value_t value;     // the DEFAULT, or a typed NULL when there is none
+    };
+
+    using insert_fill_list_t = std::pmr::vector<insert_fill_column_t>;
+
     class node_insert_t final : public node_t {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
@@ -79,17 +92,11 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
-        // Decoded column DEFAULT values (name -> value), stamped by the enrich pass
-        // from pg_attribute.attdefspec. A column omitted from the INSERT column list
-        // stores its DEFAULT (filled agent-side at storage_append), so the constraint
-        // operators must evaluate an ABSENT column AS its default — the planner
-        // forwards these onto the node_check_constraint_t wrapper.
-        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
-            column_defaults_ = std::move(v);
-        }
-        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
-            return column_defaults_;
-        }
+        // Columns the statement omitted, with the value each must be filled with
+        // (see insert_fill_column_t). Stamped ONCE by the enrich pass, from the one
+        // source of defaults there is; operator_insert materialises them in push().
+        void set_fill_list(insert_fill_list_t v) { fill_list_ = std::move(v); }
+        const insert_fill_list_t& fill_list() const { return fill_list_; }
 
         // One entry per incoming chunk column, in chunk order. Stamped by validate_schema.
         void set_column_bindings(insert_column_bindings_t v) { column_bindings_ = std::move(v); }
@@ -110,9 +117,9 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
         insert_column_bindings_t column_bindings_;
+        insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

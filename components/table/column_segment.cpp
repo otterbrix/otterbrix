@@ -2,35 +2,46 @@
 
 #include "row_group.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 #include "column_state.hpp"
 #include "storage/block_manager.hpp"
 #include "storage/buffer_handle.hpp"
 #include "storage/buffer_manager.hpp"
-
-#include <expressions/compare_expression.hpp>
+#include "storage/partial_block_manager.hpp"
 
 namespace components::table {
 
     namespace impl {
 
         static constexpr uint64_t DEFAULT_STRING_BLOCK_LIMIT = 4096;
-        static constexpr uint64_t BIG_STRING_MARKER_BASE_SIZE = sizeof(uint32_t) + sizeof(int32_t);
-        static constexpr uint32_t INVALID_BLOCK = uint32_t(-1);
-        static constexpr uint32_t MAXIMUM_BLOCK = uint32_t(1) << 30;
+        // The marker is uint64 block id + int64 offset — the dictionary reservation, the writer
+        // and the reader MUST all agree on this width. An 8-byte value here makes
+        // write_string_marker (16 bytes) overrun the reservation and overwrite the previous
+        // dictionary entry, and read_string_marker memcpy 8 bytes into a uint32_t.
+        static constexpr uint64_t BIG_STRING_MARKER_BASE_SIZE = sizeof(uint64_t) + sizeof(int64_t);
+        static constexpr uint64_t INVALID_BLOCK = uint64_t(-1);
+        // Overflow blocks are TRANSIENT buffer-manager blocks; their ids start at
+        // storage::MAXIMUM_BLOCK (1<<62). The old impl-local uint32(1<<30) was a second,
+        // different MAXIMUM_BLOCK that made every real overflow id fail is_valid.
+        static constexpr uint64_t MAXIMUM_BLOCK = storage::MAXIMUM_BLOCK;
 
         struct string_location_t {
-            string_location_t(uint32_t block_id, int32_t offset)
+            string_location_t(uint64_t block_id, int64_t offset)
                 : block_id(block_id)
                 , offset(offset) {}
             string_location_t() = default;
-            bool is_valid(uint64_t block_size) {
-                auto cast_block_size = static_cast<int32_t>(block_size);
-                return offset < cast_block_size && (block_id == INVALID_BLOCK || block_id >= MAXIMUM_BLOCK);
-            }
-            uint32_t block_id;
-            int32_t offset;
+            // block_id has THREE legal states and no others:
+            //   INVALID_BLOCK        -> inline string, `offset` indexes the segment dictionary;
+            //   >= MAXIMUM_BLOCK     -> transient overflow block, live in this process only;
+            //   <  MAXIMUM_BLOCK     -> a real FILE block written by the checkpoint.
+            // Without the third state a checkpointed big string is unreadable after a reload:
+            // the marker names a transient block that died with the writing process.
+            bool is_overflow() const { return block_id != INVALID_BLOCK; }
+            uint64_t block_id;
+            int64_t offset;
         };
 
         typedef struct {
@@ -42,6 +53,26 @@ namespace components::table {
         } dictionary_compression_header_t;
 
         static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(dictionary_compression_header_t);
+
+        // The width of ONE element in a segment's RAW payload. This is not always
+        // complex_logical_type::size(): a LIST segment stores the uint64 child-offset per row
+        // (see the LIST legs of string-free append / fixed_size_scan / finalize_append, all of
+        // which use uint64_t), while the logical size is sizeof(list_entry_t) == 16.
+        //
+        // Every consumer that walks the payload as raw bytes -- the checkpoint's
+        // CONSTANT/RLE/DICTIONARY analysis and the compressed scan/fetch paths -- must use
+        // THIS width. Using the logical 16 for a LIST segment made the checkpoint compress
+        // twice the segment's real extent (folding whatever followed the offsets into the
+        // "values") and made the compressed scan write 16 bytes per row into a result vector
+        // sized 8 bytes per row: an 8 KiB heap overrun per 1024-row vector, reachable from a
+        // plain SELECT on a reloaded LIST column. It corrupted the pmr pool silently because
+        // the byte STREAM happened to round-trip, so only the overrun was wrong.
+        uint64_t stored_element_size(const types::complex_logical_type& type) {
+            if (type.to_physical_type() == types::physical_type::LIST) {
+                return sizeof(uint64_t);
+            }
+            return type.size();
+        }
 
         template<typename T>
         T load(void* ptr) {
@@ -76,28 +107,32 @@ namespace components::table {
             store<uint32_t>(container.end, startptr + sizeof(uint32_t));
         }
 
-        void read_string_marker(std::byte* target, uint32_t& block_id, int32_t& offset) {
+        void read_string_marker(std::byte* target, uint64_t& block_id, int64_t& offset) {
             memcpy(&block_id, target, sizeof(uint64_t));
             target += sizeof(uint64_t);
-            memcpy(&offset, target, sizeof(int32_t));
+            memcpy(&offset, target, sizeof(int64_t));
         }
 
-        string_location_t fetch_string_location(string_dictionary_container_t dict,
-                                                std::byte* base_ptr,
-                                                int32_t dict_offset,
-                                                uint64_t block_size) {
+        // No throw: this runs on the scan/fetch hot path and across actor boundaries (rules 2/9).
+        // A dictionary offset outside the block is corruption; the caller turns `false` into a
+        // data_corruption error on its own state channel.
+        bool fetch_string_location(string_dictionary_container_t dict,
+                                   std::byte* base_ptr,
+                                   int32_t dict_offset,
+                                   uint64_t block_size,
+                                   string_location_t& out) {
             if (dict_offset + static_cast<int32_t>(block_size) < 0 || dict_offset > static_cast<int32_t>(block_size)) {
-                throw std::runtime_error("fetch_string_location: incorrect pointer and size");
+                return false;
             }
             if (dict_offset >= 0) {
-                return string_location_t(INVALID_BLOCK, dict_offset);
+                out = string_location_t(INVALID_BLOCK, dict_offset);
+                return true;
             }
 
-            string_location_t result;
             read_string_marker(base_ptr + dict.end - static_cast<uint64_t>(-1 * dict_offset),
-                               result.block_id,
-                               result.offset);
-            return result;
+                               out.block_id,
+                               out.offset);
+            return true;
         }
 
         std::string_view read_string(std::byte* target, int32_t offset, uint32_t string_length) {
@@ -111,23 +146,128 @@ namespace components::table {
             return std::string_view(reinterpret_cast<char*>(ptr + sizeof(uint32_t)), str_length);
         }
 
+        core::error_t string_read_error(column_segment_t& segment, const char* what) {
+            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            message.append(what);
+            return core::error_t(core::error_code_t::data_corruption, std::move(message));
+        }
+
+        core::error_t string_read_error(column_segment_t& segment, const char* what, uint64_t block_id) {
+            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            message.append(what);
+            message.append(" (block id ");
+            message.append(std::to_string(block_id).c_str());
+            message.append(")");
+            return core::error_t(core::error_code_t::data_corruption, std::move(message));
+        }
+
+        // The `default:` leg of every physical-type dispatch below. NOT dead code even now
+        // that the whole fixed-width family is covered: physical_type still carries STRUCT,
+        // UNION, ARRAY, NA, UNKNOWN and INVALID, and a segment is a leaf that owns bytes, so
+        // none of them can be served here (a STRUCT/ARRAY column owns no segment of its own —
+        // struct_column_data_t / array_column_data_t hand the work to the child columns).
+        //
+        // NOT a `throw std::logic_error`: that is the wrong channel twice over — rule 2
+        // (errors are core::error_t) and rule 9, since a read runs inside an actor-zeta
+        // coroutine whose unhandled_exception() aborts the PROCESS, so an unreadable column
+        // would take the whole database down instead of failing one statement. Loud, not
+        // fatal (rule 6).
+        core::error_t unsupported_segment_type_error(column_segment_t& segment, const char* what) {
+            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            message.append(what);
+            message.append(": no segment storage for physical type ");
+            message.append(std::to_string(static_cast<int>(segment.type.to_physical_type())).c_str());
+            return core::error_t(core::error_code_t::unimplemented_yet, std::move(message));
+        }
+
+        // Resolve the block a big-string marker points at. TWO id domains, disjoint by
+        // construction:
+        //   * id >= MAXIMUM_BLOCK -> TRANSIENT block allocated by write_string_memory in this
+        //     process; it lives in state.overflow_blocks and dies with the process.
+        //   * id <  MAXIMUM_BLOCK -> a real FILE block. The checkpoint copies the payload there
+        //     and rewrites the marker; the reload registers it from the persisted list before
+        //     the first read (column_segment_t ctor). A marker in this domain that nobody
+        //     registered is corruption, NOT "look it up anyway": registering an arbitrary id
+        //     would read whatever else lives at that block.
+        //
+        // NOT fprintf + assert(false) + std::abort(): this is reachable from a plain SELECT,
+        // and killing the host process makes the database impossible to open. Rule 6 wants
+        // LOUD, not FATAL: report through the caller's error channel and let the scan/fetch
+        // unwind.
+        std::shared_ptr<storage::block_handle_t>
+        resolve_overflow_block(column_segment_t& segment, uint64_t block_id, core::error_t& error) {
+            auto* raw_state = segment.segment_state();
+            if (!raw_state) {
+                error = string_read_error(segment, "fetch_string: STRING segment has no segment state", block_id);
+                return nullptr;
+            }
+            auto& string_state = raw_state->cast<uncompressed_string_segment_state>();
+            if (block_id >= MAXIMUM_BLOCK) {
+                auto it = string_state.overflow_blocks.find(block_id);
+                if (it == string_state.overflow_blocks.end() || !it->second) {
+                    error = string_read_error(segment,
+                                              "fetch_string: transient overflow block is not registered in the "
+                                              "segment state",
+                                              block_id);
+                    return nullptr;
+                }
+                return it->second->block;
+            }
+            auto handle = string_state.registered_handle(block_id);
+            if (!handle) {
+                error = string_read_error(segment,
+                                          "fetch_string: on-disk overflow block is not registered for this segment",
+                                          block_id);
+                return nullptr;
+            }
+            return handle;
+        }
+
         std::string_view fetch_string(string_dictionary_container_t dict,
                                       std::byte* base_ptr,
                                       string_location_t location,
                                       uint32_t string_length) {
+            // NULL/empty shortcut applies to INLINE entries only: for an overflow entry an
+            // offset of 0 is the legitimate position of the FIRST string in its block.
             if (location.offset == 0) {
                 return std::string_view(nullptr, 0);
             }
             return std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
         }
+        // Borrowing variant, used only by callers whose result dies with the fetch state's pins
+        // (column_fetch_state::result_outlives_pins == false). Failures go to state.fetch_error
+        // and the returned view is empty -- nothing here aborts.
         std::string_view fetch_string_from_dict(column_segment_t& segment,
+                                                column_fetch_state& state,
                                                 string_dictionary_container_t dict,
                                                 std::byte* base_ptr,
                                                 int32_t dict_offset,
                                                 uint32_t string_length) {
             auto block_size = segment.block_manager().block_size();
-            assert(dict_offset <= static_cast<int32_t>(block_size));
-            string_location_t location = fetch_string_location(dict, base_ptr, dict_offset, block_size);
+            string_location_t location;
+            if (!fetch_string_location(dict, base_ptr, dict_offset, block_size, location)) {
+                state.fetch_error =
+                    string_read_error(segment, "fetch_string: dictionary offset outside the block");
+                return std::string_view(nullptr, 0);
+            }
+            if (location.is_overflow()) {
+                // Big string: the bytes live in a separate overflow block -- TRANSIENT while the
+                // segment is only in memory, a real FILE block once it has been checkpointed.
+                // The returned view borrows those bytes, so the pin must outlive it: park the
+                // handle in the fetch state's `handles` map (keyed by block id, exactly like the
+                // segment's own block) instead of pinning locally and releasing on return. A
+                // disk overflow block is evictable+reloadable, so a released pin really can
+                // move the bytes out from under the view.
+                auto overflow = resolve_overflow_block(segment, location.block_id, state.fetch_error);
+                if (!overflow) {
+                    return std::string_view(nullptr, 0);
+                }
+                auto* pinned = state.get_or_insert_handle(overflow);
+                if (!pinned) {
+                    return std::string_view(nullptr, 0); // state.fetch_error already set
+                }
+                return read_string_with_length(pinned->ptr(), static_cast<int32_t>(location.offset));
+            }
             return fetch_string(dict, base_ptr, location, string_length);
         }
 
@@ -143,35 +283,44 @@ namespace components::table {
                                             std::byte* base_ptr,
                                             int32_t dict_offset,
                                             uint32_t string_length,
-                                            vector::string_vector_buffer_t& aux) {
+                                            vector::string_vector_buffer_t& aux,
+                                            core::error_t& error) {
 #ifdef DEV_MODE
             components::table::note_string_materialization();
 #endif
             auto block_size = segment.block_manager().block_size();
-            assert(dict_offset <= static_cast<int32_t>(block_size));
-            string_location_t location = fetch_string_location(dict, base_ptr, dict_offset, block_size);
-            if (location.offset == 0) {
-                // NULL / empty string: no payload to own.
+            string_location_t location;
+            if (!fetch_string_location(dict, base_ptr, dict_offset, block_size, location)) {
+                error = string_read_error(segment, "fetch_string: dictionary offset outside the block");
                 return std::string_view(nullptr, 0);
             }
             std::string_view borrowed;
-            if (location.block_id == INVALID_BLOCK) {
+            if (!location.is_overflow()) {
+                // NULL / empty string: no payload to own. INLINE-only rule — an overflow
+                // entry's offset 0 is the first string of its block.
+                if (location.offset == 0) {
+                    return std::string_view(nullptr, 0);
+                }
                 // Inline string: bytes live in the dictionary of the pinned block.
                 borrowed =
                     std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
             } else {
                 // Big-string overflow: the marker points at a separate overflow block
-                // holding [uint32 length][bytes]. Pin it, resolve, then intern. The
-                // pin is local to this resolution and released when `pinned` destructs.
-                auto& string_state = segment.segment_state()->cast<uncompressed_string_segment_state>();
-                auto overflow_block = string_state.handle(segment.block_manager(), location.block_id);
-                auto pinned = segment.block->block_manager.buffer_manager.pin(overflow_block);
-                if (pinned.has_error()) {
-                    // Unresolvable overflow block: yield an empty view rather than a
-                    // dangling/garbage one. (No-throw hot path.)
+                // holding [uint32 length][bytes]. Resolve, pin, then intern. The pin is
+                // local to this resolution and released when `pinned` destructs -- safe
+                // because the bytes are COPIED into the result-owned heap below.
+                auto overflow = resolve_overflow_block(segment, location.block_id, error);
+                if (!overflow) {
                     return std::string_view(nullptr, 0);
                 }
-                borrowed = read_string_with_length(pinned.value().ptr(), location.offset);
+                auto pinned = segment.block->block_manager.buffer_manager.pin(overflow);
+                if (pinned.has_error()) {
+                    // OOM, or a checksum mismatch when a disk overflow block is re-read.
+                    // Report it rather than yielding a silently empty string.
+                    error = pinned.error();
+                    return std::string_view(nullptr, 0);
+                }
+                borrowed = read_string_with_length(pinned.value().ptr(), static_cast<int32_t>(location.offset));
             }
             // Copy the bytes into the result-owned heap and return a view over the copy.
             return std::string_view(reinterpret_cast<char*>(aux.insert(borrowed)), borrowed.size());
@@ -186,9 +335,25 @@ namespace components::table {
             storage::buffer_handle_t handle;
 
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
+            auto block_size = segment.block_manager().block_size();
+            // One string's [uint32 length][bytes] record must fit ONE block, because the
+            // checkpoint persists it as one contiguous run inside one file block. Unchecked, the
+            // allocation below exceeds the block size for a string larger than a block; the
+            // payload then has no representable on-disk form at all, so it is silently dropped
+            // and the reload aborts. Refuse LOUDLY at write time instead of writing something
+            // that cannot survive a restart (rules 2/6 -- reported, not thrown, not a fallback).
+            if (static_cast<uint64_t>(total_length) > block_size) {
+                std::pmr::string message(buffer_manager.resource());
+                message.append("string value of ");
+                message.append(std::to_string(string.size()).c_str());
+                message.append(" bytes exceeds the maximum storable string size of ");
+                message.append(std::to_string(block_size - sizeof(uint32_t)).c_str());
+                message.append(" bytes (one overflow block)");
+                return core::error_t(core::error_code_t::unimplemented_yet, std::move(message));
+            }
             auto& state = segment.segment_state()->cast<uncompressed_string_segment_state>();
             if (!state.head || state.head->offset + total_length >= state.head->size) {
-                auto alloc_size = std::max(static_cast<uint64_t>(total_length), segment.block_manager().block_size());
+                auto alloc_size = block_size;
                 auto new_block = std::make_unique<string_block_t>();
                 new_block->offset = 0;
                 new_block->size = alloc_size;
@@ -301,10 +466,21 @@ namespace components::table {
             if (state.result_outlives_pins) {
                 // The caller keeps this chunk after our pins are gone, so the bytes have to be the
                 // result's own. Same mechanism the bulk scan path uses.
-                auto& aux = static_cast<vector::string_vector_buffer_t&>(*result.auxiliary());
-                result_data[result_idx] = fetch_string_owned(segment, dict, baseptr, dict_offset, string_length, aux);
+                // Guard the heap the same way string_scan_partial does: a STRING vector built by
+                // a data_chunk_t already carries one, but this leg is now also reached for a
+                // STRUCT FIELD's vector, and interning into a missing/wrong-typed buffer would be
+                // exactly the dangling read this branch exists to prevent.
+                auto aux_buffer = result.auxiliary();
+                if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
+                    aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
+                    result.set_auxiliary(aux_buffer);
+                }
+                auto& aux = static_cast<vector::string_vector_buffer_t&>(*aux_buffer);
+                result_data[result_idx] =
+                    fetch_string_owned(segment, dict, baseptr, dict_offset, string_length, aux, state.fetch_error);
             } else {
-                result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+                result_data[result_idx] =
+                    fetch_string_from_dict(segment, state, dict, baseptr, dict_offset, string_length);
             }
         }
 
@@ -920,13 +1096,45 @@ namespace components::table {
                                                                     baseptr,
                                                                     base_data[static_cast<uint64_t>(start) + i],
                                                                     string_length,
-                                                                    *aux);
+                                                                    *aux,
+                                                                    state.scan_error);
                 previous_offset = base_data[static_cast<uint64_t>(start) + i];
+                // An unresolvable overflow block / a corrupt dictionary offset is not a
+                // per-cell hiccup: stop the vector immediately so the caller sees the error
+                // instead of a tail of silently empty strings. column_data_t::scan_vector and
+                // row_group_t propagate scan_error upward.
+                if (state.scan_error.contains_error()) {
+                    return;
+                }
             }
+        }
+
+        // The arena a column segment's statistics live on, taken from the block the segment is
+        // built over. It is a function and not an inline dereference in the initializer list so
+        // that the check can stand AHEAD of the dereference it guards: segment_statistics_ is
+        // initialized from this resource, so a constructor BODY runs too late to say anything
+        // about a null handle.
+        //
+        // An invariant rather than a refusal, established by reading every construction site:
+        // create_segment forwards an error-checked register_transient_memory (make_shared /
+        // pin(...).block_handle(), never null) and column_data_t's checkpoint and reload paths
+        // forward block_manager_t::register_block, which returns a locked live entry or a
+        // make_shared. There is no caller that can deliver null, and no channel here to report
+        // it through. Under NDEBUG the check is gone and a null handle is a null dereference,
+        // which is the same answer this code gave before, one line later.
+        static std::pmr::memory_resource* segment_arena(const std::shared_ptr<storage::block_handle_t>& block) {
+            assert(block && "a column segment takes its arena from its block; the handle cannot be null");
+            return block->block_manager.buffer_manager.resource();
         }
     } // namespace impl
 
-    column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block,
+    // The block parameter is deliberately NOT named `block`: it used to shadow the member of
+    // that name, and the shadow killed the size guard below. `assert(!block || ...)` in the body
+    // read the PARAMETER, which the initializer list had already moved into the member, and a
+    // moved-from std::shared_ptr is guaranteed empty -- so `!block` was true for every segment
+    // ever built and the comparison behind it never ran. The same assert in the two move
+    // constructors reads the MEMBER and is live, which is what kept the dead one looking right.
+    column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block_p,
                                        const types::complex_logical_type& type,
                                        int64_t start,
                                        uint64_t count,
@@ -936,13 +1144,22 @@ namespace components::table {
                                        std::unique_ptr<column_segment_state> segment_state)
         : segment_base_t(start, count)
         , type(type)
-        , type_size(type.size())
-        , block(std::move(block))
+        , type_size(impl::stored_element_size(type))
+        , block(std::move(block_p))
         , block_id_(block_id)
         , offset_(offset)
         , segment_size_(segment_size)
-        , segment_statistics_(std::pmr::get_default_resource()) {
-        assert(!block || segment_size_ <= block_manager().block_size());
+        // The segment's arena is the buffer manager's, reached through the block this segment
+        // is built over -- the same road this constructor's own error message takes a few lines
+        // down (the register_block loop). Read from `this->block`, which is already initialized
+        // here (it is declared ahead of the statistics), and screened by impl::segment_arena so
+        // the null check stands ahead of the dereference instead of behind it.
+        , segment_statistics_(impl::segment_arena(this->block)) {
+        // Now that nothing shadows the member, the guard is the one that was meant: a segment
+        // that does not fit its block overruns it on the first scan. The disk path screens the
+        // same number ahead of the constructor and reports data_corruption
+        // (column_data_t::initialize_column), so what is left here is the in-process invariant.
+        assert(segment_size_ <= block_manager().block_size());
 
         if (type.type() == types::logical_type::VALIDITY) {
             auto& buffer_manager = this->block->block_manager.buffer_manager;
@@ -969,7 +1186,36 @@ namespace components::table {
             }
             auto state = std::make_unique<uncompressed_string_segment_state>();
             if (segment_state) {
-                state->on_disk_blocks = std::move(segment_state->blocks);
+                // A reloaded STRING segment's dictionary holds big-string markers that name real
+                // FILE blocks (the checkpoint rewrote them out of the transient domain). Register
+                // those blocks NOW so the first read resolves instead of missing. This is the only
+                // path that fills the parameter the ctor has always accepted and nobody ever
+                // passed -- which is exactly why a checkpointed big string was unreadable after a
+                // reload.
+                //
+                // register_block() creates a weak-registry handle for an EXISTING file block; it
+                // takes nothing from the free list, so reopening still allocates ZERO blocks. The
+                // handles are UNLOADED and reloadable, so the pool evicts and re-reads them like
+                // any packed data block -- they are not pinned here.
+                //
+                // register_block ANSWERS, and the answer is not decoration: it is false when this
+                // same list already named that block. persist_string_overflow dedupes out_blocks,
+                // so no writer of this format can emit a duplicate -- seeing one means the pointer
+                // stream is corrupt, and accepting it would leave on_disk_blocks disagreeing with
+                // the file about what this segment owns (which is what drives compact's reclaim).
+                // It cannot throw out of a constructor on the open path (rules 2/6/9), so it is
+                // latched and column_data_t::initialize_column reports it.
+                for (uint64_t overflow_block_id : segment_state->blocks) {
+                    if (!state->register_block(this->block->block_manager, overflow_block_id)) {
+                        if (!construction_error_.contains_error()) {
+                            construction_error_ = core::error_t(
+                                core::error_code_t::data_corruption,
+                                std::pmr::string("column load: the persisted big-string overflow list names block " +
+                                                     std::to_string(overflow_block_id) + " twice",
+                                                 this->block->block_manager.buffer_manager.resource()));
+                        }
+                    }
+                }
             }
             segment_state_ = std::move(state);
         }
@@ -1002,6 +1248,123 @@ namespace components::table {
     }
 
     uint64_t column_segment_t::segment_size() const { return segment_size_; }
+
+    bool column_segment_t::references_string_overflow(const std::byte* segment_data,
+                                                      uint64_t segment_size,
+                                                      uint64_t tuple_count) const {
+        if (type.to_physical_type() != types::physical_type::STRING || !segment_data || tuple_count == 0) {
+            return false;
+        }
+        if (segment_size < impl::DICTIONARY_HEADER_SIZE + tuple_count * sizeof(int32_t)) {
+            // The offset array does not fit the segment -- reading it here would run off the
+            // block. Answer YES so persist_string_overflow runs and reports the corruption
+            // through its error channel; a silent "no markers, copy verbatim" would be a
+            // fallback around a corrupt segment.
+            return true;
+        }
+        // A negative dictionary offset IS the "this row is a big-string marker" encoding
+        // (string_append writes -dictionary_size for the overflow branch).
+        const auto* offsets = reinterpret_cast<const int32_t*>(segment_data + impl::DICTIONARY_HEADER_SIZE);
+        for (uint64_t i = 0; i < tuple_count; i++) {
+            if (offsets[i] < 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    core::result_wrapper_t<bool>
+    column_segment_t::persist_string_overflow(std::byte* segment_copy,
+                                              uint64_t segment_size,
+                                              uint64_t tuple_count,
+                                              storage::partial_block_manager_t& pbm,
+                                              std::vector<uint64_t>& out_blocks) {
+        auto& buffer_manager = block->block_manager.buffer_manager;
+        auto* resource = buffer_manager.resource();
+        const uint64_t block_size = block_manager().block_size();
+
+        auto corrupt = [&](const char* what) {
+            std::pmr::string message(resource);
+            message.append("checkpoint of STRING segment: ");
+            message.append(what);
+            return core::error_t(core::error_code_t::data_corruption, std::move(message));
+        };
+
+        if (segment_size < impl::DICTIONARY_HEADER_SIZE + tuple_count * sizeof(int32_t)) {
+            return corrupt("dictionary header and offset array do not fit the segment");
+        }
+        const auto dict_end = impl::load<uint32_t>(segment_copy + sizeof(uint32_t));
+        if (static_cast<uint64_t>(dict_end) > segment_size) {
+            return corrupt("dictionary end is outside the segment");
+        }
+        auto* offsets = reinterpret_cast<int32_t*>(segment_copy + impl::DICTIONARY_HEADER_SIZE);
+
+        // A NULL row copies the PREVIOUS row's dictionary offset verbatim (string_append), so a
+        // NULL that follows a big string names the very same marker. Rewriting a marker twice
+        // would re-resolve the already-rewritten (not yet registered) id and fail, so each
+        // marker position is handled exactly once.
+        std::pmr::unordered_set<uint64_t> rewritten(resource);
+
+        for (uint64_t i = 0; i < tuple_count; i++) {
+            const int32_t dict_offset = offsets[i];
+            if (dict_offset >= 0) {
+                continue;
+            }
+            // dict_offset is negative here, so |dict_offset| may exceed dict_end on a corrupt
+            // segment; check the subtraction BEFORE relying on the result.
+            const uint64_t marker_distance = static_cast<uint64_t>(-static_cast<int64_t>(dict_offset));
+            if (marker_distance > static_cast<uint64_t>(dict_end)) {
+                return corrupt("big-string marker lies outside the segment");
+            }
+            const uint64_t marker_pos = static_cast<uint64_t>(dict_end) - marker_distance;
+            if (marker_pos + impl::BIG_STRING_MARKER_BASE_SIZE > segment_size) {
+                return corrupt("big-string marker runs past the end of the segment");
+            }
+            if (!rewritten.insert(marker_pos).second) {
+                continue;
+            }
+            auto* marker = segment_copy + marker_pos;
+
+            uint64_t source_block_id = 0;
+            int64_t source_offset = 0;
+            impl::read_string_marker(marker, source_block_id, source_offset);
+
+            core::error_t resolve_error = core::error_t::no_error();
+            auto source = impl::resolve_overflow_block(*this, source_block_id, resolve_error);
+            if (!source) {
+                return resolve_error;
+            }
+            auto pinned = buffer_manager.pin(source);
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>(); // out_of_memory / data_corruption on reload
+            }
+            if (source_offset < 0 || static_cast<uint64_t>(source_offset) + sizeof(uint32_t) > block_size) {
+                return corrupt("big-string payload offset is outside its overflow block");
+            }
+            auto* payload = pinned.value().ptr() + source_offset;
+            const auto payload_length = impl::load<uint32_t>(payload);
+            const uint64_t record_size = sizeof(uint32_t) + payload_length;
+            if (static_cast<uint64_t>(source_offset) + record_size > block_size) {
+                return corrupt("big-string payload runs past the end of its overflow block");
+            }
+
+            // One [uint32 length][bytes] record per string, placed by the SAME shared
+            // partial_block_manager that packs data and validity segments: a record above the
+            // 0.8 threshold takes a dedicated block, a smaller one is packed alongside other
+            // payloads. The resulting block is an ordinary disk block -- reloadable, evictable,
+            // never pinned by the segment state.
+            const auto allocation = pbm.get_block_allocation(record_size);
+            pbm.write_to_block(allocation.block_id, allocation.offset_in_block, payload, record_size);
+            impl::write_string_marker(marker, allocation.block_id, static_cast<int64_t>(allocation.offset_in_block));
+            // Several payloads pack into one partial block, so the same id comes back
+            // repeatedly. Record it once: the list is persisted, replayed into the segment
+            // state on load, and walked by collect_disk_block_ids.
+            if (std::find(out_blocks.begin(), out_blocks.end(), allocation.block_id) == out_blocks.end()) {
+                out_blocks.push_back(allocation.block_id);
+            }
+        }
+        return true;
+    }
 
     core::result_wrapper_t<std::unique_ptr<column_segment_t>>
     column_segment_t::create_segment(storage::buffer_manager_t& manager,
@@ -1040,7 +1403,19 @@ namespace components::table {
                                 uint64_t result_offset,
                                 scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            //assert(result_offset == 0);
+            // The entire-vector leg REPLACES the result wholesale, so a non-zero result_offset
+            // would be silently dropped — rows already written at [0, result_offset) overwritten.
+            // Unreachable today (get_vector_scan_type only answers ENTIRE_VECTOR for non-flat
+            // results, which no offset-writing caller produces), but the commented-out assert
+            // that stood guard here vanished under NDEBUG; the refusal now rides scan_error.
+            if (result_offset != 0) {
+                state.scan_error =
+                    core::error_t(core::error_code_t::invalid_parameter,
+                                  std::pmr::string("column scan: an entire-vector scan cannot honour a result "
+                                                   "offset",
+                                                   block->block_manager.buffer_manager.resource()));
+                return;
+            }
             scan(state, scan_count, result);
         } else {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
@@ -1152,141 +1527,9 @@ namespace components::table {
             case types::physical_type::STRING:
                 return impl::string_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
             default:
-                throw std::logic_error("Unsupported type for FixedSizeUncompressed::GetFunction");
+                state.fetch_error = impl::unsupported_segment_type_error(*this, "column_segment_t::fetch_row");
+                return;
         }
-    }
-
-    template<class T, class COMP, bool HAS_NULL>
-    static uint64_t filter_selection(vector::unified_vector_format& uvf,
-                                     T predicate,
-                                     vector::indexing_vector_t& sel,
-                                     uint64_t approved_tuple_count,
-                                     vector::indexing_vector_t& result_sel) {
-        auto& mask = uvf.validity;
-        auto vec = uvf.get_data<T>();
-        uint64_t result_count = 0;
-        for (uint64_t i = 0; i < approved_tuple_count; i++) {
-            auto idx = sel.get_index(i);
-            auto vector_idx = uvf.referenced_indexing->get_index(idx);
-            COMP comparator{};
-            bool comparison_result =
-                (!HAS_NULL || mask.row_is_valid(vector_idx)) && comparator(vec[vector_idx], predicate);
-            result_sel.set_index(result_count, idx);
-            result_count += comparison_result;
-        }
-        return result_count;
-    }
-
-    template<class T>
-    static void filter_selection_switch(vector::unified_vector_format& uvf,
-                                        T predicate,
-                                        vector::indexing_vector_t& indexing,
-                                        uint64_t& approved_tuple_count,
-                                        expressions::compare_type comparison_type) {
-        vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
-        auto& mask = uvf.validity;
-        // the inplace loops take the result as the last parameter
-        switch (comparison_type) {
-            case expressions::compare_type::eq: {
-                if (mask.all_valid()) {
-                    approved_tuple_count = filter_selection<T, std::equal_to<T>, false>(uvf,
-                                                                                        predicate,
-                                                                                        indexing,
-                                                                                        approved_tuple_count,
-                                                                                        new_indexing);
-                } else {
-                    approved_tuple_count = filter_selection<T, std::equal_to<T>, true>(uvf,
-                                                                                       predicate,
-                                                                                       indexing,
-                                                                                       approved_tuple_count,
-                                                                                       new_indexing);
-                }
-                break;
-            }
-            case expressions::compare_type::ne: {
-                if (mask.all_valid()) {
-                    approved_tuple_count = filter_selection<T, std::not_equal_to<T>, false>(uvf,
-                                                                                            predicate,
-                                                                                            indexing,
-                                                                                            approved_tuple_count,
-                                                                                            new_indexing);
-                } else {
-                    approved_tuple_count = filter_selection<T, std::not_equal_to<T>, true>(uvf,
-                                                                                           predicate,
-                                                                                           indexing,
-                                                                                           approved_tuple_count,
-                                                                                           new_indexing);
-                }
-                break;
-            }
-            case expressions::compare_type::lt: {
-                if (mask.all_valid()) {
-                    approved_tuple_count = filter_selection<T, std::less<T>, false>(uvf,
-                                                                                    predicate,
-                                                                                    indexing,
-                                                                                    approved_tuple_count,
-                                                                                    new_indexing);
-                } else {
-                    approved_tuple_count = filter_selection<T, std::less<T>, true>(uvf,
-                                                                                   predicate,
-                                                                                   indexing,
-                                                                                   approved_tuple_count,
-                                                                                   new_indexing);
-                }
-                break;
-            }
-            case expressions::compare_type::gt: {
-                if (mask.all_valid()) {
-                    approved_tuple_count = filter_selection<T, std::greater<T>, false>(uvf,
-                                                                                       predicate,
-                                                                                       indexing,
-                                                                                       approved_tuple_count,
-                                                                                       new_indexing);
-                } else {
-                    approved_tuple_count = filter_selection<T, std::greater<T>, true>(uvf,
-                                                                                      predicate,
-                                                                                      indexing,
-                                                                                      approved_tuple_count,
-                                                                                      new_indexing);
-                }
-                break;
-            }
-            case expressions::compare_type::lte: {
-                if (mask.all_valid()) {
-                    approved_tuple_count = filter_selection<T, std::less_equal<T>, false>(uvf,
-                                                                                          predicate,
-                                                                                          indexing,
-                                                                                          approved_tuple_count,
-                                                                                          new_indexing);
-                } else {
-                    approved_tuple_count = filter_selection<T, std::less_equal<T>, true>(uvf,
-                                                                                         predicate,
-                                                                                         indexing,
-                                                                                         approved_tuple_count,
-                                                                                         new_indexing);
-                }
-                break;
-            }
-            case expressions::compare_type::gte: {
-                if (mask.all_valid()) {
-                    approved_tuple_count = filter_selection<T, std::greater_equal<T>, false>(uvf,
-                                                                                             predicate,
-                                                                                             indexing,
-                                                                                             approved_tuple_count,
-                                                                                             new_indexing);
-                } else {
-                    approved_tuple_count = filter_selection<T, std::greater_equal<T>, true>(uvf,
-                                                                                            predicate,
-                                                                                            indexing,
-                                                                                            approved_tuple_count,
-                                                                                            new_indexing);
-                }
-                break;
-            }
-            default:
-                throw std::logic_error("Unknown comparison type for filter");
-        }
-        indexing = new_indexing;
     }
 
     void column_segment_t::skip(column_scan_state& state) { state.internal_index = state.row_index; }
@@ -1302,7 +1545,7 @@ namespace components::table {
             return old_handle.convert_error<bool>();
         }
         // Genuine fresh allocation — this is the OOM-able site.
-        auto new_handle = buffer_manager.allocate(storage::memory_tag::IN_MEMORY_TABLE, new_size);
+        auto new_handle = buffer_manager.allocate(storage::memory_tag::TRANSIENT_TABLE, new_size);
         if (new_handle.has_error()) {
             return new_handle.convert_error<bool>();
         }
@@ -1372,7 +1615,7 @@ namespace components::table {
             case types::physical_type::STRING:
                 return impl::string_append(*this, data, offset, count);
             default:
-                throw std::logic_error("Unsupported type for FixedSizeUncompressed::GetFunction");
+                return impl::unsupported_segment_type_error(*this, "column_segment_t::append");
         }
     }
 
@@ -1428,11 +1671,11 @@ namespace components::table {
                 return total_size;
             }
             default:
-                throw std::logic_error("Unsupported type for FixedSizeUncompressed::GetFunction");
+                return impl::unsupported_segment_type_error(*this, "column_segment_t::finalize_append");
         }
     }
 
-    void column_segment_t::revert_append(uint64_t start_row) {
+    core::result_wrapper_t<bool> column_segment_t::revert_append(uint64_t start_row) {
         // A BIT (validity) segment stores appended rows as validity bits, so reverting must reset the
         // bits in [start_row, end) back to valid before the tail is reused on re-append. A STRING
         // segment stores per-row offsets as the CUMULATIVE dictionary size (scan derives each length
@@ -1444,10 +1687,14 @@ namespace components::table {
         if (type.to_physical_type() == types::physical_type::STRING) {
             uint64_t new_count = start_row - static_cast<uint64_t>(start);
             auto& buffer_manager = block->block_manager.buffer_manager;
-            // Resident managed block (already pinned on the append path); pin cannot OOM here.
+            // A resident managed block normally cannot fail to pin, but "normally" is not a
+            // channel: skipping the dictionary rollback splices the reverted payload onto the
+            // next appended string. The refusal now rides the revert_append chain (rule 6).
             auto pinned = buffer_manager.pin(block);
-            assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
-            if (!pinned.has_error()) {
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>();
+            }
+            {
                 auto& handle = pinned.value();
                 auto dict = impl::dictionary(*this, handle);
                 auto offsets = reinterpret_cast<int32_t*>(handle.ptr() + block_offset() + impl::DICTIONARY_HEADER_SIZE);
@@ -1462,27 +1709,39 @@ namespace components::table {
             uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
             auto& buffer_manager = block->block_manager.buffer_manager;
-            // Resident managed block (already pinned on the append path); pin cannot OOM here.
+            // Same contract as the STRING leg above: a skipped bitmap reset resurrects the
+            // reverted rows' NULL bits on re-append, so the pin refusal is returned, not assumed away.
             auto pinned = buffer_manager.pin(block);
-            assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
-            if (!pinned.has_error()) {
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>();
+            }
+            {
                 auto& handle = pinned.value();
+                // The bitmap starts at the SEGMENT's offset inside the block, not at the block
+                // base: a write-through/checkpoint-packed validity segment shares its block with
+                // other segments at block_offset() != 0 (partial-block packing), and the data segment packed
+                // at offset 0 is typically the SAME column's values. Addressing handle.ptr()
+                // directly smeared this 0xFF reset over that neighbour, so after a multi-row-group
+                // revert the surviving rows of the first packed column read mask bytes (-1/-2).
+                // Byte-wise on purpose: the reset starts at an arbitrary BIT boundary, so the
+                // shared first byte is patched separately and the tail is memset — a word-wide
+                // view buys nothing here. (The packer now 8-aligns segment starts, so a uint64_t*
+                // view would be legal again; keeping bytes avoids the width assumption entirely.)
+                auto* bitmap = handle.ptr() + block_offset();
                 uint64_t revert_start;
                 if (start_bit % 8 != 0) {
-                    uint64_t byte_pos = start_bit / 8;
-                    uint64_t bit_end = (byte_pos + 1) * 8;
-                    vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(handle.ptr()));
-                    for (uint64_t i = start_bit; i < bit_end; i++) {
-                        mask.set_valid(i);
-                    }
-                    revert_start = bit_end / 8;
+                    // Reverted rows share their first byte with kept rows: set only the
+                    // tail bits [start_bit % 8, 8) of that byte back to valid.
+                    bitmap[start_bit / 8] |= static_cast<std::byte>(0xFFu << (start_bit % 8));
+                    revert_start = start_bit / 8 + 1;
                 } else {
                     revert_start = start_bit / 8;
                 }
-                memset(handle.ptr() + revert_start, 0xFF, segment_size_ - revert_start);
+                memset(bitmap + revert_start, 0xFF, segment_size_ - revert_start);
             }
         }
         count = start_row - static_cast<uint64_t>(start);
+        return true;
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
@@ -1536,9 +1795,6 @@ namespace components::table {
             case types::physical_type::DOUBLE:
                 impl::fixed_size_scan<double>(*this, state, scan_count, result);
                 break;
-                // case types::physical_type::INTERVAL:
-                // impl::fixed_size_scan<interval_t>(*this, state, scan_count, result);
-                break;
             case types::physical_type::LIST:
                 impl::fixed_size_scan<uint64_t>(*this, state, scan_count, result);
                 break;
@@ -1549,7 +1805,8 @@ namespace components::table {
                 impl::string_scan_partial(*this, state, scan_count, result, 0);
                 break;
             default:
-                throw std::logic_error("Unsupported type for FixedSizeUncompressed::GetFunction");
+                state.scan_error = impl::unsupported_segment_type_error(*this, "column_segment_t::scan");
+                break;
         }
     }
 
@@ -1581,6 +1838,8 @@ namespace components::table {
                 impl::fixed_size_scan_partial<int32_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::INT64:
+                // int64_t, NOT POSIX ino64_t: the inode type rode in on a transitive
+                // <sys/types.h> include and only matched by accident of both being 8 bytes.
                 impl::fixed_size_scan_partial<int64_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::UINT8:
@@ -1607,9 +1866,6 @@ namespace components::table {
             case types::physical_type::DOUBLE:
                 impl::fixed_size_scan_partial<double>(*this, state, scan_count, result, result_offset);
                 break;
-                // case types::physical_type::INTERVAL:
-                // impl::fixed_size_scan_partial<interval_t>(*this, state, scan_count, result, result_offset);
-                break;
             case types::physical_type::LIST:
                 impl::fixed_size_scan_partial<uint64_t>(*this, state, scan_count, result, result_offset);
                 break;
@@ -1620,7 +1876,8 @@ namespace components::table {
                 impl::string_scan_partial(*this, state, scan_count, result, result_offset);
                 break;
             default:
-                throw std::logic_error("Unsupported type for FixedSizeUncompressed::GetFunction");
+                state.scan_error = impl::unsupported_segment_type_error(*this, "column_segment_t::scan_partial");
+                break;
         }
     }
 

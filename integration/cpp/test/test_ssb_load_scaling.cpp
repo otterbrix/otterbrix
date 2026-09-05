@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -102,7 +103,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_at_scale_factor_one", "[.][ssbcapacity]") {
-    probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity", true);
+    probe_capacity(integration_fixture_path("test_ssb/capacity"), true);
 }
 
 // The same volume with the WAL OFF, where there are no auto-checkpoints at all: nothing reaches the
@@ -110,7 +111,7 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_at_scale_factor_on
 // column segments (can_unload refuses a block with no disk copy). If that path regresses, this case
 // runs out of memory where the WAL-on one does not.
 TEST_CASE("integration::cpp::test_ssb_load_scaling::capacity_without_wal", "[.][ssbcapacity]") {
-    probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity_nowal", false);
+    probe_capacity(integration_fixture_path("test_ssb/capacity_nowal"), false);
 }
 
 namespace {
@@ -122,7 +123,6 @@ namespace {
 
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = wal_on;
         config.log.level = log_t::level::off;
         test_spaces space(config);
@@ -198,7 +198,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_cost_per_slice", "[.][ssbload]") {
-    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch1000_nowal",
+    measure_lineorder_load(integration_fixture_path("test_ssb/load_batch1000_nowal"),
                            1000,
                            false,
                            "batch 1000, WAL off");
@@ -207,7 +207,7 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_cost_per_slice", "
 // The benchmark runner's exact shape: 100-row batches and the WAL enabled. If this one degrades
 // while the case above stays flat, the cost is not in the insert path at all.
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_as_the_runner_loads_it", "[.][ssbload]") {
-    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch100_wal", 100, true, "batch 100, WAL on");
+    measure_lineorder_load(integration_fixture_path("test_ssb/load_batch100_wal"), 100, true, "batch 100, WAL on");
 }
 
 namespace {
@@ -222,7 +222,6 @@ namespace {
 
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = wal_on;
         // The auto-checkpoint threshold is left at its production default on purpose: the defect this
         // guards against — the counter holding the WHOLE WAL directory size instead of the bytes written
@@ -343,9 +342,8 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not
         "ssb" / "lineorder.tbl";
     REQUIRE(std::filesystem::exists(source));
 
-    auto config = test_create_config("/tmp/otterbrix/integration/test_ssb/explicit_checkpoint");
+    auto config = test_create_config(integration_fixture_path("test_ssb/explicit_checkpoint"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
     config.log.level = log_t::level::off;
     // Small enough that a slice of rows crosses it several times over.

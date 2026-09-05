@@ -59,7 +59,11 @@ namespace components::planner::optimizer {
         }
 
         ce::key_t local_key(std::pmr::memory_resource* resource, const ce::key_t& src, size_t local_idx) {
-            ce::key_t k = src; // copy storage (name) + flags
+            // `src` belongs to the node being rewritten; the result belongs to the NEW partial
+            // node this rule builds on `resource`. Place the copy there, so the name and the
+            // path below end up on one and the same arena — the rule's, which owns every node it
+            // makes.
+            ce::key_t k{src, resource}; // copy storage (name) + flags onto `resource`
             std::pmr::vector<size_t> p{resource};
             p.push_back(local_idx);
             k.set_path(std::move(p));
@@ -263,13 +267,16 @@ namespace components::planner::optimizer {
             // otherwise the partial emits only its aggregates and the join probes a column that
             // is not there. Collected first, appended below the group_fields so the output order
             // is [keys..., join key, aggregates...], which key_partial_pos/agg_partial_pos assume.
+            // Staging only -- every element is copied into an expression on `resource` below --
+            // but the elements are placed on `resource` too, so no key in this rule's working
+            // set silently lands on the process default.
             std::vector<ce::key_t> emitted_keys;
             for (size_t i = 0; i < keys.size(); ++i) {
                 const size_t local = key_merged[i] - base;
                 auto key = local_key(resource, keys[i]->key(), local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, key));
-                emitted_keys.push_back(key);
+                emitted_keys.emplace_back(key, resource);
                 key_partial_pos[i] = next_pos;
                 if (local == join_key_local) {
                     join_key_covered = true;
@@ -284,7 +291,7 @@ namespace components::planner::optimizer {
                 set_key_path(resource, jk, join_key_local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, jk));
-                emitted_keys.push_back(jk);
+                emitted_keys.emplace_back(jk, resource);
                 join_key_pos = next_pos;
                 ++next_pos;
             }
@@ -333,7 +340,7 @@ namespace components::planner::optimizer {
             // [group keys..., join key (if added), partial aggregates...]. The node
             // still carried the base table's full column list, and BOTH lowerings
             // treat that stamp as the authoritative output layout —
-            // create_plan_aggregate forwards it into operator_group's output_types_
+            // create_plan_aggregate forwards it into operator_hash_group's output_types_
             // and into the pushed reduce spec, either of which then types the
             // partial extremum column with whatever base column happens to sit at
             // the same ordinal (wrong type whenever the ordinals do not coincide).

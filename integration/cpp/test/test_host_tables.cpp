@@ -2,14 +2,15 @@
 // stores ITS OWN metadata in ordinary engine tables and must be able to drive
 // them with plain SQL DML — plus read them back after a restart (.otbx + WAL).
 //
-// B1 repro: the kafka connector's `kafka.__sources` table (8 STRING_LITERAL
-// columns, created node-based like KafkaManager::ensure_sources_table) crashed
-// the engine when written with a SQL INSERT string (see
+// The kafka connector's `kafka.__sources` table (8 STRING_LITERAL columns,
+// created node-based like KafkaManager::ensure_sources_table) crashed the engine
+// when written with a SQL INSERT string (see
 // otterstax integration/kafka/detail/kafka_manager_persistence.cpp: "Insert the
 // row via node_insert (a SQL INSERT string through kafka_query crashes the
 // engine on this table)"). This test pins the exact scenario as a regression.
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
@@ -34,7 +35,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::host_tables::sql_insert_into_node_created_table") {
-    auto config = test_create_config("/tmp/test_host_tables/kafka_repro");
+    auto config = test_create_config(integration_fixture_path("test_host_tables/kafka_repro"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -95,7 +96,7 @@ TEST_CASE("integration::cpp::host_tables::sql_insert_into_node_created_table") {
 }
 
 TEST_CASE("integration::cpp::host_tables::restart_readback") {
-    auto config = test_create_config("/tmp/test_host_tables/restart");
+    auto config = test_create_config(integration_fixture_path("test_host_tables/restart"));
     test_clear_directory(config);
 
     INFO("phase 1: host DB + metadata table via plain DDL/DML");

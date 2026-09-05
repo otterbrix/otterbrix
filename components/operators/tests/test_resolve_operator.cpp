@@ -1,10 +1,31 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/operators/resolve_operator.hpp>
+#include <core/pmr.hpp>
 
 using namespace components::operators;
 using components::types::complex_logical_type;
 using components::types::logical_type;
+
+namespace {
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14).
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
+    // create_decimal reports an out-of-window (width, scale) through core::error_t rather
+    // than an assert that vanishes under NDEBUG. Every literal these tests use is inside
+    // the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
 
 TEST_CASE("operators::resolve_operator: matching operand types") {
     complex_logical_type integer{logical_type::INTEGER};
@@ -43,8 +64,8 @@ TEST_CASE("operators::resolve_operator: temporal rules give a result unrelated t
 }
 
 TEST_CASE("operators::resolve_operator: decimals match only on equal parameters") {
-    auto ten_two = complex_logical_type::create_decimal(10, 2);
-    auto ten_four = complex_logical_type::create_decimal(10, 4);
+    auto ten_two = make_decimal(10, 2);
+    auto ten_four = make_decimal(10, 4);
 
     REQUIRE(resolve_operator(operator_code::add, ten_two, ten_two).has_value());
     REQUIRE_FALSE(resolve_operator(operator_code::add, ten_two, ten_four).has_value());
@@ -78,8 +99,8 @@ TEST_CASE("operators::resolve_operator: bitwise operators are integer-only") {
     REQUIRE_FALSE(resolve_operator(operator_code::bit_and, real, real).has_value());
     REQUIRE_FALSE(resolve_operator(operator_code::bit_or, boolean, boolean).has_value());
     REQUIRE_FALSE(resolve_operator(operator_code::bit_xor,
-                                   complex_logical_type::create_decimal(10, 2),
-                                   complex_logical_type::create_decimal(10, 2))
+                                   make_decimal(10, 2),
+                                   make_decimal(10, 2))
                       .has_value());
 
     auto inverted = resolve_operator(operator_code::bit_not, integer);
@@ -114,12 +135,12 @@ TEST_CASE("operators::resolve_operator: comparisons return bool") {
 
     // Decimals compare only on equal parameters, same as arithmetic.
     REQUIRE(resolve_operator(operator_code::equal,
-                             complex_logical_type::create_decimal(10, 2),
-                             complex_logical_type::create_decimal(10, 2))
+                             make_decimal(10, 2),
+                             make_decimal(10, 2))
                 .has_value());
     REQUIRE_FALSE(resolve_operator(operator_code::equal,
-                                   complex_logical_type::create_decimal(10, 2),
-                                   complex_logical_type::create_decimal(10, 4))
+                                   make_decimal(10, 2),
+                                   make_decimal(10, 4))
                       .has_value());
 }
 
@@ -150,7 +171,7 @@ TEST_CASE("operators::resolve_operator: is_null accepts any type") {
     for (auto type : {complex_logical_type{logical_type::INTEGER},
                       complex_logical_type{logical_type::STRING_LITERAL},
                       complex_logical_type{logical_type::TIMESTAMP},
-                      complex_logical_type::create_decimal(10, 2)}) {
+                      make_decimal(10, 2)}) {
         auto tested = resolve_operator(operator_code::is_null, type);
         REQUIRE(tested.has_value());
         REQUIRE(tested->result.type() == logical_type::BOOLEAN);

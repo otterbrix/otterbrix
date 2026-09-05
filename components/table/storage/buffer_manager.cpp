@@ -21,7 +21,7 @@ namespace components::table::storage {
         throw std::logic_error("Incorrect call: This type of buffer_manager_t can not create 'small-memory' blocks");
     }
 
-    void buffer_manager_t::reserve_memory(uint64_t) {
+    core::result_wrapper_t<bool> buffer_manager_t::reserve_memory_impl(uint64_t) {
         throw std::logic_error("Incorrect call: This type of buffer_manager_t can not reserve memory");
     }
     void buffer_manager_t::free_reserved_memory(uint64_t) {

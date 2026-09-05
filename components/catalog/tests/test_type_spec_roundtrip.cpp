@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/types/types.hpp>
+#include <core/pmr.hpp>
 
 #include <set>
 
@@ -8,7 +9,37 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace {
-    auto* g_resource = std::pmr::new_delete_resource();
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14).
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
+namespace {
+    // The same arena the DECIMAL helper above names, for the same reason (rule 14): this file
+    // has one answer to "where does this live", not two.
+    auto* g_resource = decimal_resource();
+
+    // decode_type_spec answers through core::result_wrapper_t now; every spec in this
+    // file is well-formed, so the helper unwraps and lets a refusal fail the test.
+    components::types::complex_logical_type decode_ok(std::string_view spec) {
+        auto decoded = decode_type_spec(g_resource, spec);
+        REQUIRE_FALSE(decoded.has_error());
+        return std::move(decoded.value());
+    }
 } // namespace
 
 TEST_CASE("catalog::type_spec::scalars_encode_empty") {
@@ -26,7 +57,7 @@ TEST_CASE("catalog::type_spec::scalars_encode_empty") {
 static logical_type persisted_readback(const complex_logical_type& t) {
     auto spec = encode_type_spec(t);
     if (!spec.empty()) {
-        return decode_type_spec(g_resource, spec).type();
+        return decode_ok(spec).type();
     }
     return oid_to_builtin_type(builtin_type_to_oid(t.type()));
 }
@@ -71,11 +102,11 @@ TEST_CASE("catalog::type_spec::blob_uuid_oid_roundtrip") {
 }
 
 TEST_CASE("catalog::type_spec::decimal_roundtrip") {
-    auto t = complex_logical_type::create_decimal(10, 2);
+    auto t = make_decimal(10, 2);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "numeric(10,2)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::DECIMAL);
     const auto* ext = static_cast<const decimal_logical_type_extension*>(t2.extension());
     REQUIRE(ext->width() == 10);
@@ -87,7 +118,7 @@ TEST_CASE("catalog::type_spec::unknown_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "UNKNOWN(myudt)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::UNKNOWN);
     REQUIRE(t2.type_name() == "myudt");
 }
@@ -98,7 +129,7 @@ TEST_CASE("catalog::type_spec::list_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "LIST(int4)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::LIST);
     REQUIRE(t2.child_type().type() == logical_type::INTEGER);
 }
@@ -109,7 +140,7 @@ TEST_CASE("catalog::type_spec::array_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "ARRAY(float8,100)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::ARRAY);
     REQUIRE(t2.child_type().type() == logical_type::DOUBLE);
     const auto* ext = static_cast<const array_logical_type_extension*>(t2.extension());
@@ -123,7 +154,7 @@ TEST_CASE("catalog::type_spec::map_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "MAP(text,int8)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::MAP);
     const auto* ext = static_cast<const map_logical_type_extension*>(t2.extension());
     REQUIRE(ext->key().type() == logical_type::STRING_LITERAL);
@@ -142,7 +173,7 @@ TEST_CASE("catalog::type_spec::struct_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "STRUCT(point,x:int4,y:text)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::STRUCT);
     const auto& fields = t2.child_types();
     REQUIRE(fields.size() == 2);
@@ -164,7 +195,7 @@ TEST_CASE("catalog::type_spec::union_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "UNION(i:int4,s:text)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::UNION);
     // child_types()[0] is the hidden tag; real members start at [1]
     const auto& ch = t2.child_types();
@@ -178,7 +209,7 @@ TEST_CASE("catalog::type_spec::variant_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "VARIANT");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::VARIANT);
 }
 
@@ -195,7 +226,7 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "LIST(STRUCT(coord,lat:float4,lon:float4))");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::LIST);
     REQUIRE(t2.child_type().type() == logical_type::STRUCT);
     const auto& fields = t2.child_type().child_types();
@@ -204,9 +235,10 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
 }
 
 TEST_CASE("catalog::type_spec::decimal_with_old_name_compat") {
-    // Files written before the pg-style rename used "DECIMAL(w,s)".
-    // decode must still accept that form.
-    auto t = decode_type_spec(g_resource, "DECIMAL(18,6)");
+    // The decoder reads both spellings of the decimal head: "numeric" (what the
+    // encoder writes) and "DECIMAL". This pins the second so no writer rename can
+    // silently orphan a spec that spells it this way.
+    auto t = decode_ok("DECIMAL(18,6)");
     REQUIRE(t.type() == logical_type::DECIMAL);
     const auto* ext = static_cast<const decimal_logical_type_extension*>(t.extension());
     REQUIRE(ext->width() == 18);
@@ -214,13 +246,99 @@ TEST_CASE("catalog::type_spec::decimal_with_old_name_compat") {
 }
 
 TEST_CASE("catalog::type_spec::empty_returns_unknown") {
-    auto t = decode_type_spec(g_resource, "");
+    auto t = decode_ok("");
     REQUIRE(t.type() == logical_type::UNKNOWN);
 }
 
 TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
-    // Garbage input must not crash. The flat-text decoder may return any type for
-    // accidentally-valid input — we only verify no exception is thrown.
-    auto t = decode_type_spec(g_resource, "garbage_that_is_not_valid_type_spec");
-    (void) t; // result type is implementation-defined for garbage input
+    // Garbage input must not crash — and it must not become a type either. A bare
+    // name outside the encoder's language is a data_corruption refusal.
+    auto decoded = decode_type_spec(g_resource, "garbage_that_is_not_valid_type_spec");
+    REQUIRE(decoded.has_error());
+    REQUIRE(decoded.error().type == core::error_code_t::data_corruption);
+}
+
+// Names written AS IS produce a spec the strict decoder refuses whenever a field, alias,
+// label or type name carries one of the format's own delimiters ( ) , : = — the DDL goes
+// through and every later resolve fails per-statement. The encoder escapes those
+// characters and the decoder reads the escapes back.
+TEST_CASE("catalog::type_spec::struct_field_names_with_delimiters_roundtrip") {
+    auto f1 = complex_logical_type{logical_type::INTEGER};
+    f1.set_alias("we:ird,na(me)");
+    auto f2 = complex_logical_type{logical_type::STRING_LITERAL};
+    f2.set_alias("back\\slash=eq");
+    std::pmr::vector<complex_logical_type> fields(g_resource);
+    fields.push_back(f1);
+    fields.push_back(f2);
+    auto t = complex_logical_type::create_struct("na:me(d)", fields);
+    auto spec = encode_type_spec(t);
+
+    // Unescaped, the raw delimiters make this spec unreadable (or misread).
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::STRUCT);
+    const auto& out = t2.child_types();
+    REQUIRE(out.size() == 2);
+    REQUIRE(out[0].alias() == "we:ird,na(me)");
+    REQUIRE(out[0].type() == logical_type::INTEGER);
+    REQUIRE(out[1].alias() == "back\\slash=eq");
+    REQUIRE(out[1].type() == logical_type::STRING_LITERAL);
+}
+
+TEST_CASE("catalog::type_spec::union_member_names_with_delimiters_roundtrip") {
+    auto m1 = complex_logical_type{logical_type::INTEGER};
+    m1.set_alias("i:n,t");
+    auto m2 = complex_logical_type{logical_type::STRING_LITERAL};
+    m2.set_alias("s)t(r");
+    std::pmr::vector<complex_logical_type> members(g_resource);
+    members.push_back(m1);
+    members.push_back(m2);
+    auto t = complex_logical_type::create_union(members);
+    auto spec = encode_type_spec(t);
+
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::UNION);
+    const auto& ch = t2.child_types();
+    REQUIRE(ch.size() >= 3);
+    REQUIRE(ch[1].alias() == "i:n,t");
+    REQUIRE(ch[2].alias() == "s)t(r");
+}
+
+TEST_CASE("catalog::type_spec::enum_names_with_delimiters_roundtrip") {
+    std::vector<components::types::logical_value_t> entries;
+    components::types::logical_value_t e0(g_resource, 0);
+    e0.set_alias("a=b,c:d");
+    entries.push_back(std::move(e0));
+    components::types::logical_value_t e1(g_resource, 1);
+    e1.set_alias("plain");
+    entries.push_back(std::move(e1));
+    auto t = complex_logical_type::create_enum("mo:od,s", std::move(entries));
+    auto spec = encode_type_spec(t);
+
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::ENUM);
+    REQUIRE(t2.type_name() == "mo:od,s");
+    const auto* ext = static_cast<const enum_logical_type_extension*>(t2.extension());
+    REQUIRE(ext->entries().size() == 2);
+    REQUIRE(ext->entries()[0].type().alias() == "a=b,c:d");
+    REQUIRE(ext->entries()[1].type().alias() == "plain");
+}
+
+TEST_CASE("catalog::type_spec::unknown_name_with_delimiters_roundtrip") {
+    auto t = complex_logical_type::create_unknown("user)type,");
+    auto spec = encode_type_spec(t);
+
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::UNKNOWN);
+    REQUIRE(t2.type_name() == "user)type,");
+}
+
+TEST_CASE("catalog::type_spec::malformed_escape_refuses") {
+    // A backslash followed by anything outside the escapable set — or a trailing one —
+    // is not silently absorbed into the name: an old raw-written backslash name must
+    // refuse loudly rather than decode to a DIFFERENT name.
+    auto bad = decode_type_spec(g_resource, "UNKNOWN(a\\zb)");
+    REQUIRE(bad.has_error());
+    REQUIRE(bad.error().type == core::error_code_t::data_corruption);
+    auto trailing = decode_type_spec(g_resource, "UNKNOWN(ab\\");
+    REQUIRE(trailing.has_error());
 }

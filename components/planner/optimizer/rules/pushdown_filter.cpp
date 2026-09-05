@@ -170,9 +170,10 @@ namespace components::planner::optimizer {
         // This routes a conjunct whose bare column name ALSO exists on the other side
         // (e.g. t1.id when t2 also has id) — the name-based test below cannot, because
         // the name is a subset of BOTH sides' alias sets, so it always fell to residual.
-        // Fallback (an unvalidated plan whose keys carry no path, or an unknown
-        // left_width): the original alias-subset test. A conjunct that references BOTH
-        // sides (or no column) is unclassified => residual.
+        // An unvalidated plan (keys carry no path, or left_width unknown) is the OTHER
+        // sanctioned input shape, not a degraded one: it is classified by the
+        // alias-subset test, the only identity such a plan carries. A conjunct that
+        // references BOTH sides (or no column) is unclassified => residual.
         conj_side classify_conjunct(const expression_ptr& conj,
                                     size_t left_width,
                                     bool left_width_known,
@@ -202,7 +203,8 @@ namespace components::planner::optimizer {
                 return conj_side::unclassified; // straddles both sides
             }
 
-            // Name-based fallback (validate_schema has not stamped paths on these keys).
+            // Name-based classification — the sanctioned path for plans validate_schema
+            // has not stamped (their keys carry no merged paths to read).
             auto cols = collect_referenced_columns(conj);
             bool in_left = !cols.empty() && std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
             bool in_right =
@@ -222,16 +224,20 @@ namespace components::planner::optimizer {
         // for the left prefix ([0, left_width)); a right-side column sits at
         // left_width + local, so pushing it into the right child unchanged leaves an
         // out-of-range column index. Subtract left_width from the leading path element
-        // (deeper elements index nested struct fields and stay put). The new path is
-        // built on `resource` — never set_path({...}), which pulls the default resource.
+        // (deeper elements index nested struct fields and stay put). The new path is built
+        // on THE KEY'S OWN arena — never set_path({...}), which pulls the default resource,
+        // and never some other arena either: set_path move-assigns, and a pmr
+        // move-assignment keeps the TARGET's allocator, so a path built elsewhere is
+        // element-wise copied into the key's arena and the vector it was built in is thrown
+        // away. Built on k.resource() the hand-over is the pointer steal it reads as.
         // The left bucket needs no rewrite (merged == local there) and the
         // residual keeps its merged paths (it evaluates over the join's merged output).
-        void relocalize_key_path(key_t& k, size_t left_width, std::pmr::memory_resource* resource) {
+        void relocalize_key_path(key_t& k, size_t left_width) {
             const auto& old_path = k.path();
             if (old_path.empty()) {
                 return;
             }
-            std::pmr::vector<size_t> p{resource};
+            std::pmr::vector<size_t> p{k.resource()};
             p.reserve(old_path.size());
             p.push_back(old_path[0] - left_width);
             for (size_t i = 1; i < old_path.size(); ++i) {
@@ -243,8 +249,8 @@ namespace components::planner::optimizer {
         // Re-localizes every key the pushed conjunct references — the same key set
         // the side classifier saw (both ride for_each_referenced_key), so every
         // right-side key is rewritten.
-        void relocalize_keys(const expression_ptr& expr, size_t left_width, std::pmr::memory_resource* resource) {
-            for_each_referenced_key(expr, [&](key_t& k) { relocalize_key_path(k, left_width, resource); });
+        void relocalize_keys(const expression_ptr& expr, size_t left_width) {
+            for_each_referenced_key(expr, [&](key_t& k) { relocalize_key_path(k, left_width); });
         }
 
         // --- identity-projection resolution ----------------------------------------
@@ -532,7 +538,17 @@ namespace components::planner::optimizer {
         // detect_equi_columns (side-local paths + side()), returning the pair in the
         // join's merged coordinate space. nullopt for anything else (non-eq, const
         // operand, nested-field path, same-side).
-        std::optional<equi_pair_t> equi_pair_from_conjunct(const expression_ptr& on_conj, size_t left_width) {
+        //
+        // `resource` is the arena the pair's two key COPIES live on, and it is the rule's
+        // arena — the one that outlives the `pairs` vector these are moved into and every
+        // predicate derived from them. Named, not defaulted: key_t's copy constructor
+        // deliberately keeps standard pmr semantics (an un-placed copy lands on the process
+        // default), so a copy that belongs on a particular arena has to say so through the
+        // allocator-extended constructor. Saying so is what keeps the rule's allocations
+        // countable on the arena the caller handed in instead of leaking into a
+        // process-global one no tracer is watching.
+        std::optional<equi_pair_t>
+        equi_pair_from_conjunct(std::pmr::memory_resource* resource, const expression_ptr& on_conj, size_t left_width) {
             if (!on_conj || on_conj->group() != expression_group::compare) {
                 return std::nullopt;
             }
@@ -546,10 +562,10 @@ namespace components::planner::optimizer {
                 return std::nullopt;
             }
             if (a.side() == side_t::left && b.side() == side_t::right) {
-                return equi_pair_t{a, b, a.path()[0], left_width + b.path()[0]};
+                return equi_pair_t{key_t{a, resource}, key_t{b, resource}, a.path()[0], left_width + b.path()[0]};
             }
             if (a.side() == side_t::right && b.side() == side_t::left) {
-                return equi_pair_t{b, a, b.path()[0], left_width + a.path()[0]};
+                return equi_pair_t{key_t{b, resource}, key_t{a, resource}, b.path()[0], left_width + a.path()[0]};
             }
             return std::nullopt;
         }
@@ -558,7 +574,7 @@ namespace components::planner::optimizer {
         collect_equi_pairs(std::pmr::memory_resource* resource, const expression_ptr& on_expr, size_t left_width) {
             std::pmr::vector<equi_pair_t> pairs{resource};
             for (const auto& c : split_conjuncts(resource, on_expr)) {
-                if (auto p = equi_pair_from_conjunct(c, left_width)) {
+                if (auto p = equi_pair_from_conjunct(resource, c, left_width)) {
                     pairs.push_back(std::move(*p));
                 }
             }
@@ -654,8 +670,31 @@ namespace components::planner::optimizer {
                     // Copy the ON partner key (name + side) and stamp its MERGED path so
                     // the existing bucketer routes it and relocalize_keys localizes it
                     // below the partner scan. Reuse the SAME parameter (no value clone).
-                    key_t partner = *partner_on_key;
-                    std::pmr::vector<size_t> p{resource};
+                    // PLACED on the rule's arena, not left to key_t's plain copy constructor:
+                    // that one keeps standard pmr semantics on purpose (see key.hpp) and puts an
+                    // un-placed copy on the PROCESS DEFAULT, where no tracer accounts for it.
+                    // `resource` is the arena the caller handed the rule; it outlives this local
+                    // and every expression built from it below, which is what the
+                    // allocator-extended constructor's contract asks the caller to guarantee.
+                    key_t partner{*partner_on_key, resource};
+                    // Built on partner's arena — which, since the line above places partner, IS
+                    // `resource`. Written as partner.resource() rather than `resource` because
+                    // what the next line needs is the arena of the ASSIGNMENT TARGET: set_path
+                    // move-assigns this vector into partner's path_, and a pmr move-assignment
+                    // keeps the TARGET's allocator (propagate_on_container_move_assignment is
+                    // false). Sourced from any other arena, the "move" degrades to an
+                    // element-wise copy that allocates in partner's arena anyway — this way it
+                    // is the pointer steal it reads as, and it stays one if partner is ever
+                    // placed somewhere else.
+                    //
+                    // Placing partner does NOT put the derived predicate's key on `resource`:
+                    // make_compare_expression below copies it twice more, un-placed, inside
+                    // components/expressions, and relocalize_key_path then builds that key's
+                    // path on whatever arena those copies chose. Counted, with the split, in
+                    // components/planner/test/test_pushdown_key_arena.cpp,
+                    // "derivation_allocates_on_the_named_arena" -- the rule's own share is what
+                    // this file can answer for, and it is now zero.
+                    std::pmr::vector<size_t> p{partner.resource()};
                     p.push_back(partner_merged);
                     partner.set_path(std::move(p));
                     derived.push_back(kc->key_on_left ? make_compare_expression(resource, kc->op, partner, kc->param)
@@ -953,7 +992,7 @@ namespace components::planner::optimizer {
                             // level's own left_width, so a deep left-then-right push
                             // localizes step by step.
                             for (const auto& conj : right_bucket) {
-                                relocalize_keys(conj, left_width, resource);
+                                relocalize_keys(conj, left_width);
                             }
                             auto new_agg = make_node_aggregate(resource, r_db, r_rel);
                             new_agg->append_child(join->children()[1]);

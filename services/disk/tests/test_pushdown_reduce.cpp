@@ -19,6 +19,7 @@
 #include <components/compute/tests/pushdown_sum_uid.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <core/pmr.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -56,10 +57,19 @@ namespace {
 
     // One-chunk append batch of BIGINT tuples. `rows[i]` is one row across `ncols` columns.
     std::pmr::vector<components::vector::data_chunk_t>
-    batch_rows(std::pmr::memory_resource* r, size_t ncols, const std::vector<std::vector<int64_t>>& rows) {
+    // `names` are the TARGET COLUMN NAMES, carried as the column type aliases. The append
+    // routes by name and by name only — there is no positional fallback behind it — so a
+    // hand-built batch has to say where each column lands, exactly as the insert operator
+    // does when it renames the streamed columns to their targets.
+    batch_rows(std::pmr::memory_resource* r,
+               const std::vector<std::string>& names,
+               const std::vector<std::vector<int64_t>>& rows) {
+        const size_t ncols = names.size();
         std::pmr::vector<types::complex_logical_type> ct{r};
         for (size_t c = 0; c < ncols; ++c) {
-            ct.emplace_back(types::logical_type::BIGINT);
+            types::complex_logical_type t{types::logical_type::BIGINT};
+            t.set_alias(names[c]);
+            ct.emplace_back(std::move(t));
         }
         components::vector::data_chunk_t chunk{r, ct, rows.empty() ? size_t{1} : rows.size()};
         chunk.set_cardinality(rows.size());
@@ -135,11 +145,12 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     // Append 10 + 20 + 30 = 60 UNDER txn 88 (uncommitted; never published).
     const auto txn = open_txn(88);
@@ -148,7 +159,7 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, 1, {{10}, {20}, {30}}));
+                              batch_rows(&fx.resource, {"val"}, {{10}, {20}, {30}}));
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), txn);
@@ -176,11 +187,12 @@ TEST_CASE("pushdown_reduce: empty slice SUM emits one NULL scalar row") {
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     auto partials =
         fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
@@ -200,11 +212,12 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("grp", types::complex_logical_type{types::logical_type::BIGINT});
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     // (grp,val): (1,10),(1,20),(2,30),(2,5) => grp1=30, grp2=35 (distinct sums so key/sum
     // columns are identifiable regardless of output order).
@@ -214,7 +227,7 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, 2, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}));
+                              batch_rows(&fx.resource, {"grp", "val"}, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}));
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/0, /*val_col=*/1), txn);
@@ -248,11 +261,12 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     auto reply = fx.invoke(&manager_disk_t::storage_reduce,
                            session_id_t{},
@@ -270,24 +284,30 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     REQUIRE(rows == 1);
 }
 
-// (e) MISSING/RECORD-ONLY SLICE — an ACTIVE spec routed to an agent that does not
-// own a materialized storage for the oid must still run the reduce over the EMPTY
-// input: a scalar aggregate's finalize emits its mandatory single row (SUM = NULL),
-// NOT the raw drained sentinel (the coordinator dropped its operator_group at
-// lowering, so nobody else can synthesize that row).
-TEST_CASE("pushdown_reduce: scalar reduce over a missing slice still emits its one row") {
+// (e) MISSING/RECORD-ONLY SLICE — THE ROOT OF THE FAMILY case 17 in test_error_handling
+// names. This leg must not REDUCE OVER THE EMPTY INPUT and emit the scalar aggregate's
+// mandatory single row (SUM = NULL) for an oid no agent has a storage for. That row is a FACT
+// ABOUT A TABLE — "your SUM is NULL", "your COUNT is 0" — synthesized from a read that never
+// reached any storage, and it is bit-identical to the row a real, really-empty table produces.
+// Nothing above can tell them apart, so the answer to "how many rows are in that table" would
+// be a routing failure wearing the table's clothes.
+//
+// The pairing is the point, and both halves live here: a real table with no visible rows
+// still emits its one scalar row (case (b) above, unchanged), while an oid that names no
+// storage is a REFUSAL. "Empty table" and "no table here" stop sharing a reply.
+TEST_CASE("pushdown_reduce: a reduce over a missing slice is a refusal, not an empty fold") {
     fixture fx;
 
     // NEVER create a storage for this oid.
     const catalog::oid_t missing_oid{catalog::FIRST_USER_OID + 7};
-    auto partials =
-        fx.drive_reduce(missing_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
-
-    uint64_t rows = 0;
-    for (const auto& chunk : partials) {
-        rows += chunk.size();
-    }
-    REQUIRE(rows == 1);
+    auto r = fx.invoke(&manager_disk_t::storage_reduce,
+                       session_id_t{},
+                       missing_oid,
+                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                       std::vector<size_t>{},
+                       open_txn(88),
+                       build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0));
+    REQUIRE(r.has_error());
 }
 
 // (f) RE-DRIVEN PUSHED SCAN — operator_recursive_cte re-drives its subtree once per
@@ -296,7 +316,7 @@ TEST_CASE("pushdown_reduce: scalar reduce over a missing slice still emits its o
 // instance the send carries): if a drive consumed the armed spec for good, the re-driven
 // pass would reduce with an inactive husk and return garbage.
 TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec on every drive") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     components::operators::pushed_reduce_scan scan{&resource,
                                                    log_t{},
@@ -322,7 +342,7 @@ TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec 
 // a GROUPED aggregate over no rows emits nothing; any arriving row passes through
 // untouched and disarms the synthesis. Pure push/finalize — no actors needed.
 TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     namespace vec = components::vector;
 
     auto make_types = [&](components::types::logical_type t) {
@@ -389,4 +409,42 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         REQUIRE_FALSE(merge.finalize(nullptr, fin).contains_error());
         REQUIRE(fin.empty());
     }
+}
+
+// (g) THE ROUTER'S OWN REFUSAL. Case (e) removes the storage; this one removes the AGENT.
+// A manager configured with no disk agents must not answer a reduce with an empty chunk
+// vector, which the coordinator reads as "this GROUP BY produced no groups" — the routing
+// twin of the empty fold (e) is about. Not reachable behind a statement today (an agentless
+// manager owns no storage, so no plan can resolve a table on it); pinned so the refusal
+// exists and is reachable through the contract. Its six siblings are pinned the same way in
+// services/disk/tests/test_error_handling.cpp.
+TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
+    core::pmr::otterbrix_resource resource;
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
+    configuration::config_disk cfg;
+    cfg.path = reduce_dir() + "/no_agents";
+    cfg.agent = 0;
+    std::filesystem::create_directories(cfg.path);
+    {
+        std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
+            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, cfg, log));
+        auto [_, future] = actor_zeta::otterbrix::send(manager->address(),
+                                                       &manager_disk_t::storage_reduce,
+                                                       session_id_t{},
+                                                       catalog::oid_t{catalog::FIRST_USER_OID},
+                                                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                       std::vector<size_t>{},
+                                                       open_txn(88),
+                                                       build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0));
+        for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            scheduler->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(future.is_ready());
+        REQUIRE(std::move(future).take_ready().has_error());
+    }
+    scheduler->stop();
+    delete scheduler;
+    std::filesystem::remove_all(cfg.path);
 }

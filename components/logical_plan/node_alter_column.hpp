@@ -26,7 +26,8 @@ namespace components::logical_plan {
     // Field usage by op:
     //   add    — column_
     //   rename — old_name_ / new_name_ / attoid_
-    //   drop   — namespace_oid_ / column_name_ / behavior_ / attoid_
+    //   drop   — column_name_ / behavior_ / attoid_ (the column is resolved by
+    //            (attrelid=table_oid, attname); no namespace is read on this leg)
     //   (base) — table_oid() set at construction time by the planner.
     //
     // computed_ marks the relkind='g' (Mongo-style dynamic schema) variants.
@@ -55,12 +56,15 @@ namespace components::logical_plan {
         void set_new_name(core::columnname_t name) { new_name_ = std::move(static_cast<std::string&>(name)); }
 
         // drop (column_name shared with computed unregister; attoid shared with rename)
-        components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
-        void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
         const std::string& column_name() const noexcept { return column_name_; }
         void set_column_name(core::columnname_t name) { column_name_ = std::move(static_cast<std::string&>(name)); }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
+        // `DROP COLUMN IF EXISTS`: the column not being there is the accepted
+        // outcome, not an error. Carried for BOTH drop routes (pg_attribute and
+        // pg_computed_column) so neither has to guess.
+        bool missing_ok() const noexcept { return missing_ok_; }
+        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 
         // rename + drop
         components::catalog::oid_t attoid() const noexcept { return attoid_; }
@@ -87,9 +91,11 @@ namespace components::logical_plan {
         std::string old_name_;
         std::string new_name_;
         // drop
-        components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         std::string column_name_;
-        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
+        // Defaults to restrict_ — the unwritten form IS RESTRICT (PostgreSQL
+        // parity, #638). See node_alter_table.hpp.
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
+        bool missing_ok_{false};
         // rename + drop
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};
         // computed (relkind='g')

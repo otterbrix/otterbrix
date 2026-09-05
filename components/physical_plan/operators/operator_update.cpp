@@ -315,15 +315,13 @@ namespace components::operators {
     core::error_t operator_update::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
-        // UPDATE ... FROM shared core (R6: one implementation, two entry points).
-        // Probes ONE LEFT (target) scan batch against the fully-materialized RIGHT
-        // (FROM) build chunks: a semi-join (a target row is updated once regardless
-        // of how many FROM rows it matches). Per matched LEFT row it builds the
-        // updated out_chunk (matched columns, SET applied), accumulates it into
-        // output_, stages the matched OLD rows for the index mirror (aligned by
-        // row_id with the NEW rows), and — for RETURNING — keeps the matched FROM
-        // rows in lockstep so a joined RETURNING column reads them. push() calls it
-        // per LEFT batch. await_async_and_resume drains it all.
+        // UPDATE ... FROM shared core (R6: one implementation, two entry points). Probes ONE LEFT (target) scan
+        // batch against the fully-materialized RIGHT (FROM) build chunks: a semi-join (a target row is updated
+        // once regardless of how many FROM rows it matches). Per matched LEFT row it builds the updated
+        // out_chunk (matched columns, SET applied), accumulates it into output_, stages the matched OLD rows for
+        // the index mirror (aligned by row_id with the NEW rows), and — for RETURNING — keeps the matched FROM
+        // rows in lockstep so a joined RETURNING column reads them. push() calls it per LEFT batch;
+        // await_async_and_resume drains it all.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -484,13 +482,27 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // BOUNDED DML SINK. The executor drives this INCREMENTALLY: once
-        // per mid-pump "buffer full" (dml_flush_is_final==false) and once at the
-        // post-pump finalize (==true). Each drive flushes whatever push() folded into
-        // output_ since the last flush; only the FINAL drive emits the RETURNING /
-        // affected-count result + mark_executed. With dml_flush_row_threshold==0 the
-        // executor drives await exactly once with is_final==true, collapsing to a
-        // single flush.
+        // A PLAN THAT DECLARES UPSERT IS NOT A PLAN THIS OPERATOR IMPLEMENTS. Accepting the flag into upsert_
+        // and then reading it NOWHERE — while node_update_t prints it ($upsert: 1) — executes a plan promising
+        // insert-or-update as a plain update, so a match that found nothing reports SUCCESS with 0 rows instead
+        // of the insert the plan declared. No SQL reaches the flag (the grammar has neither `upsert` nor ON
+        // CONFLICT); the logical-plan API does. Rule 6: refuse the declared-but-unimplemented semantics loudly,
+        // BEFORE the first flush, instead of executing a quieter statement in their place.
+        if (upsert_) {
+            set_error(core::error_t{
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"UPDATE with upsert=true: upsert semantics are not implemented — "
+                                 "the plan declares an insert-or-update this engine cannot deliver",
+                                 resource_}});
+            mark_failed();
+            co_return;
+        }
+
+        // BOUNDED DML SINK. The executor drives this INCREMENTALLY: once per mid-pump "buffer full"
+        // (dml_flush_is_final==false) and once at the post-pump finalize (==true). Each drive flushes whatever
+        // push() folded into output_ since the last flush; only the FINAL drive emits the RETURNING /
+        // affected-count result + mark_executed. With dml_flush_row_threshold==0 the executor drives await
+        // exactly once with is_final==true, collapsing to a single flush.
         const bool is_final = ctx->dml_flush_is_final;
 
         if (output_ && output_->size() > 0) {
@@ -602,12 +614,12 @@ namespace components::operators {
 #ifdef DEV_MODE
                 g_update_storage_update_sends.fetch_add(1, std::memory_order_relaxed);
 #endif
-                auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_update,
-                                                 exec_ctx,
-                                                 table_oid_,
-                                                 std::move(update_row_ids),
-                                                 std::move(update_data));
+                auto [_u, uf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_update,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(update_row_ids),
+                                                            std::move(update_data));
                 auto update_result = co_await std::move(uf);
                 if (update_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{update_result.error()};
@@ -618,35 +630,44 @@ namespace components::operators {
                 //    owns its WAL write (unlike INSERT's WAL-first storage_append).
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     const uint64_t wal_count = wal_row_ids.size();
-                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::write_physical_update,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(wal_row_ids),
-                                                     std::move(wal_chunks),
-                                                     wal_count,
-                                                     ctx->txn.transaction_id,
-                                                     db_oid);
-                    auto wal_id = co_await std::move(wf);
-                    auto [_df, dff] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::flush,
-                                                       ctx->session,
-                                                       wal_id);
-                    ctx->add_pending_disk_future(std::move(dff));
+                    auto [_w, wf] =
+                        actor_zeta::otterbrix::send(ctx->wal_address,
+                                                    &services::wal::manager_wal_replicate_t::write_physical_update,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    std::move(wal_row_ids),
+                                                    std::move(wal_chunks),
+                                                    wal_count,
+                                                    ctx->txn.transaction_id,
+                                                    db_oid);
+                    auto wal_result = co_await std::move(wf);
+                    if (wal_result.has_error()) {
+                        // The storage_update above already landed, so table and journal now
+                        // disagree: a replay would not re-apply this range. Fail the statement
+                        // so the executor's abort cascade unwinds it, rather than reporting
+                        // rows updated over a record that is not in the journal.
+                        co_return dml_detail::flush_outcome_t{wal_result.error()};
+                    }
+                    // The wal_id this record landed at used to be handed straight to
+                    // manager_disk_t::flush and parked in ctx's pending futures. That method
+                    // flushed nothing — it traced and returned — so the parked future carried no
+                    // durability and the wal_id it advanced to was never read. Both are gone.
+                    // Durability of the table is checkpoint_all's, driven by the WAL manager's
+                    // checkpoint round, not by anything this statement can post.
                 }
 
                 // 4. Mirror to index (old + new data) — one batched send. idx_old came
                 //    from the streaming staging (index_old_chunks_), aligned row-for-row
                 //    + by row_id with the new rows.
                 if (mirror_index) {
-                    auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::update_rows,
-                                                       exec_ctx,
-                                                       table_oid_,
-                                                       std::move(idx_old),
-                                                       std::move(idx_new),
-                                                       std::move(idx_row_ids),
-                                                       range_start);
+                    auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                  &services::index::manager_index_t::update_rows,
+                                                                  exec_ctx,
+                                                                  table_oid_,
+                                                                  std::move(idx_old),
+                                                                  std::move(idx_new),
+                                                                  std::move(idx_row_ids),
+                                                                  range_start);
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
                         // The index still points at the pre-update key. Fail rather than let the
@@ -677,13 +698,11 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 output_->chunks());
-            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE
-            // across all flushes (append ranges are per-flush via record_flush; the
-            // delete marker is a single per-txn/table tombstone). Recorded BEFORE the
-            // flush-error check for the same reason record_flush records the append
-            // range first: the storage op stamps the delete marks before its append
-            // half can fail, and only a recorded marker lets the failed-statement
-            // abort tail (storage_revert_deletes) un-stamp them.
+            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE across all flushes
+            // (append ranges are per-flush via record_flush; the delete marker is a single per-txn/table
+            // tombstone). Recorded BEFORE the flush-error check for the same reason record_flush records the
+            // append range first: the storage op stamps the delete marks before its append half can fail, and
+            // only a recorded marker lets the abort tail (storage_revert_deletes) un-stamp them.
             if (!delete_marker_recorded_) {
                 ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;

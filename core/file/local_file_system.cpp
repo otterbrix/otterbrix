@@ -1,5 +1,32 @@
 #include "local_file_system.hpp"
 
+// NO WINDOWS IMPLEMENTATION LIVES IN THIS FILE, AND SAYING SO OUT LOUD IS THE POINT.
+//
+// What stood under `#ifdef PLATFORM_WINDOWS` here was not platform support. No configuration
+// this tree builds ever compiled it -- CI is macOS and Linux -- so it rotted freely for as long
+// as it existed, and every change to the core/file interface was checked by the POSIX half
+// alone. Measured before removal, with the Win32 SDK types supplied so that every diagnostic
+// came from the arm itself and not from a missing header: 24 hard errors and one silently
+// value-less `bool`.
+//   - the handle/IO arm, 16 errors: a parameter redefined as a different type (was line 717),
+//     `&` parsed after `!=` (724), calls to file_size / set_file_pointer / directory_exists /
+//     file_exists with the wrong arity (762 twice, 807, 900, 918, 922, 944, 947), a lambda
+//     using `fs` without capturing it (931, 933), `this` inside a free function (950);
+//   - the path/environment arm, 8 errors: path_t IS std::filesystem::path, which has no
+//     size(), no operator[], no substr() and no make_prefered() (110, 113, 116, 125, 126, 128);
+//   - a `bool` function whose body simply ends (767-773).
+// Repairing all of that would still not have linked: `trim` and `last_modified_time` had no
+// Windows definition at all -- the second was spelled `llast_modified_time` -- and
+// set_file_pointer / file_pointer were written as free functions, leaving the members of
+// local_file_system_t undefined.
+//
+// So the honest answer is a refusal at the earliest point, not an implementation that only
+// pretends to exist (rule 6: loud, and never silent). A refusal cannot rot; that code could,
+// and did.
+#ifdef PLATFORM_WINDOWS
+#error "core/file/local_file_system.cpp has no Windows implementation. The POSIX arm is the only one this tree builds or tests; a Windows port has to be written and given a CI job, not resurrected from the dead arm that used to sit here."
+#endif
+
 #include "path_utils.hpp"
 #include <algorithm>
 #include <cassert>
@@ -9,23 +36,11 @@
 #include <cstdio>
 #include <sys/stat.h>
 
-#ifndef PLATFORM_WINDOWS
 #include <dirent.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
-#else
-
-#include <io.h>
-#include <string>
-
-#ifdef __MINGW32__
-extern "C" WINBASEAPI BOOL WINAPI GetPhysicallyInstalledSystemMemory(PULONGLONG);
-#endif
-
-#undef FILE_CREATE // woo mingw
-#endif
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <pwd.h>
@@ -38,15 +53,11 @@ extern "C" WINBASEAPI BOOL WINAPI GetPhysicallyInstalledSystemMemory(PULONGLONG)
 #if not(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE == 1)
 #include <libproc.h>
 #endif
-#elif defined(PLATFORM_WINDOWS)
-#include <restartmanager.h>
 #endif
 
 namespace core::filesystem {
 
     static constexpr uint64_t INVALID_INDEX = uint64_t(-1);
-
-#ifndef PLATFORM_WINDOWS
 
     std::string local_file_system_t::enviroment_variable(const std::string& name) {
         const char* env = getenv(name.c_str());
@@ -95,89 +106,12 @@ namespace core::filesystem {
         return path;
     }
 
-#else
-
-    std::string local_file_system_t::enviroment_variable(const std::string& env) {
-        auto env_w = path_utils::UTF8_to_Unicode(env.c_str());
-        auto res_w = _wgetenv(env_w.c_str());
-        if (!res_w) {
-            return std::string();
-        }
-        return path_utils::Unicode_to_UTF8(res_w);
-    }
-
-    static bool starts_with_single_backslash(const path_t& path) {
-        if (path.size() < 2) {
-            return false;
-        }
-        if (path[0] != '/' && path[0] != '\\') {
-            return false;
-        }
-        if (path[1] == '/' || path[1] == '\\') {
-            return false;
-        }
-        return true;
-    }
-
-    path_t local_file_system_t::normalize_path_absolute(const path_t& path) {
-        assert(path.is_absolute());
-        auto result = path;
-        result.make_prefered();
-        std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return std::tolower(c); });
-        if (starts_with_single_backslash(result)) {
-            return working_directory().substr(0, 2) + result;
-        }
-        return result;
-    }
-
-    bool local_file_system_t::set_working_directory(const path_t& path) {
-        auto unicode_path = path_utils::UTF8_to_Unicode(path.c_str());
-        if (!SetCurrentDirectoryW(unicode_path.c_str())) {
-            return false;
-            ;
-        }
-        return true;
-    }
-
-    uint64_t local_file_system_t::available_memory() {
-        ULONGLONG available_memory_kb;
-        if (GetPhysicallyInstalledSystemMemory(&available_memory_kb)) {
-            return std::min<uint64_t>(available_memory_kb * 1000, UINTPTR_MAX);
-        }
-        MEMORYSTATUSEX mem_state;
-        mem_state.dwLength = sizeof(MEMORYSTATUSEX);
-
-        if (GlobalMemoryStatusEx(&mem_state)) {
-            return std::min<uint64_t>(mem_state.ullTotalPhys, UINTPTR_MAX);
-        }
-        return INVALID_INDEX;
-    }
-
-    path_t local_file_system_t::working_directory() {
-        uint64_t count = GetCurrentDirectoryW(0, nullptr);
-        if (count == 0) {
-            return path_t();
-        }
-        auto buffer = std::make_unique<wchar_t[]>(count);
-        uint64_t ret = GetCurrentDirectoryW(count, buffer.get());
-        if (count != ret + 1) {
-            return path_t();
-        }
-        return path_utils::Unicode_to_UTF8(buffer.get());
-    }
-
-#endif
-
     path_t local_file_system_t::home_directory() {
         if (!home_directory_.empty()) {
             return home_directory_;
         }
 
-#ifdef PLATFORM_WINDOWS
-        return local_file_system_t::enviroment_variable("USERPROFILE");
-#else
         return local_file_system_t::enviroment_variable("HOME");
-#endif
     }
 
     bool local_file_system_t::set_home_directory(path_t path) {
@@ -212,7 +146,6 @@ namespace core::filesystem {
 
     void local_file_system_t::reset(file_handle_t& handle) { handle.seek(0); }
 
-#ifndef PLATFORM_WINDOWS
     bool file_exists(local_file_system_t&, const path_t& filename) {
         if (!filename.empty()) {
             if (access(filename.c_str(), 0) == 0) {
@@ -239,51 +172,77 @@ namespace core::filesystem {
         return false;
     }
 
-#else
-    bool file_exists(local_file_system_t&, const path_t& filename) {
-        auto unicode_path = path_utils::UTF8_to_Unicode(filename.c_str());
-        const wchar_t* wpath = unicode_path.c_str();
-        if (_waccess(wpath, 0) == 0) {
-            struct _stati64 status;
-            _wstati64(wpath, &status);
-            if (status.st_mode & S_IFREG) {
-                return true;
-            }
-        }
-        return false;
-    }
-    bool is_pipe(local_file_system_t&, const path_t& filename) {
-        auto unicode_path = path_utils::UTF8_to_Unicode(filename.c_str());
-        const wchar_t* wpath = unicode_path.c_str();
-        if (_waccess(wpath, 0) == 0) {
-            struct _stati64 status;
-            _wstati64(wpath, &status);
-            if (status.st_mode & _S_IFCHR) {
-                return true;
-            }
-        }
-        return false;
-    }
-#endif
-
-#ifndef _WIN32
-
     struct unix_file_handle_t : public file_handle_t {
     public:
         unix_file_handle_t(local_file_system_t& file_system, path_t path, int fd)
             : file_handle_t(file_system, std::move(path))
             , fd(fd) {}
-        ~unix_file_handle_t() override { unix_file_handle_t::close(); }
+        // THE ONE CALLER THAT HAS NOWHERE TO SEND A REFUSAL. close() below returns
+        // core::error_t now, and this call site cannot hand it upward: a destructor's only
+        // channel above itself is a throw, and a throw crossing a destructor is
+        // std::terminate -- trading a report about ONE lost write for the loss of the whole
+        // process, including every other handle that was still going to be flushed. Rule 6
+        // asks refusals to be LOUD, not FATAL, so this prints and drops.
+        //
+        // The value is bound to a NAMED local and then read, so that the drop is a decision
+        // and not an oversight -- error_t is [[nodiscard]] and rule 14 forbids the (void)
+        // cast that would otherwise silence it. close() has already put the path and errno on
+        // stderr by the time control gets here; the line below adds the one fact close()
+        // cannot know, which is that nobody is going to act on it.
+        ~unix_file_handle_t() override {
+            const core::error_t closed = unix_file_handle_t::close();
+            if (closed.contains_error()) {
+                std::fprintf(stderr,
+                             "core::filesystem::unix_file_handle_t::~unix_file_handle_t: the refused close of "
+                             "'%s' above is dropped here -- a destructor has no caller to report it to\n",
+                             path_.c_str());
+            }
+        }
 
         int fd;
 
     public:
-        void close() override {
-            if (fd != -1) {
-                ::close(fd);
-                fd = -1;
+        core::error_t close() override {
+            if (fd == -1) {
+                // Already closed. Idempotent AND honest: there is no refusal to re-report, and
+                // answering io_error here would make every second close a lie.
+                return core::error_t::no_error();
             }
-        };
+            // ::close CAN FAIL, and its failure is not cosmetic: on a write-back filesystem
+            // this is where a deferred write error (EIO) is finally reported, so a discarded
+            // return is a lost write reported as a clean close. That is why this returns
+            // core::error_t and no longer void -- see the note at the declaration in
+            // core/file/file_handle.hpp.
+            const int rc = ::close(fd);
+            const int err = errno; // read BEFORE anything else can overwrite it
+
+            // THE DESCRIPTOR IS RELEASED EITHER WAY, including on EINTR, and that is the one
+            // place this file deliberately clears state before knowing the call succeeded: on
+            // this platform (and on Linux) close() consumes the descriptor before it can
+            // report, so keeping fd set would invite a second close of a number the kernel may
+            // have already handed to another opener.
+            fd = -1;
+
+            if (rc == 0) {
+                return core::error_t::no_error();
+            }
+
+            // BOTH HALVES OF THE REFUSAL, split by what can be carried where. The variable half
+            // -- which file, which errno -- goes to stderr, because the value cannot hold it:
+            // core::error_t's message is a std::pmr::string and this layer owns no arena to
+            // build one on (rule 14 leaves no process-global to borrow, and an arena owned by
+            // the handle would die before a caller could read the string). The value therefore
+            // carries the CODE with an empty message anchored on null_memory_resource, which
+            // allocates nothing by construction -- exactly what error_t::no_error() already
+            // does -- and the caller learns THAT the close was refused.
+            std::fprintf(stderr,
+                         "core::filesystem::unix_file_handle_t::close: closing '%s' failed (errno %d: %s); "
+                         "data written to it may not have reached the device\n",
+                         path_.c_str(),
+                         err,
+                         std::strerror(err));
+            return core::error_t{core::error_code_t::io_error, std::pmr::string{std::pmr::null_memory_resource()}};
+        }
     };
 
     static file_type_t file_type_internal(int fd) {
@@ -425,20 +384,26 @@ namespace core::filesystem {
         return true;
     }
 
-    int64_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
+    write_result_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
-        int64_t bytes_written = 0;
+        uint64_t bytes_written = 0;
         while (nr_bytes > 0) {
             auto bytes_to_write = std::min<uint64_t>(uint64_t(std::numeric_limits<int32_t>::max()), uint64_t(nr_bytes));
             int64_t current_bytes_written = ::write(fd, buffer, bytes_to_write);
             if (current_bytes_written <= 0) {
-                return current_bytes_written;
+                // THE COUNT SURVIVES THE REFUSAL. write(2) short-counts before it refuses --
+                // a file-size rlimit, a filling volume and a signal all produce that shape --
+                // so answering with the refusing call's -1 would drop every byte the earlier
+                // iterations already put on the device and moved the descriptor past. The
+                // caller would be told "nothing", could not tell a stump from an untouched
+                // file, and so could neither truncate it nor rewind to it.
+                return write_result_t::refused(bytes_written);
             }
-            bytes_written += current_bytes_written;
+            bytes_written += static_cast<uint64_t>(current_bytes_written);
             buffer = static_cast<void*>(static_cast<uint8_t*>(buffer) + current_bytes_written);
             nr_bytes -= current_bytes_written;
         }
-        return bytes_written;
+        return write_result_t::done(bytes_written);
     }
 
     int64_t file_size(local_file_system_t&, file_handle_t& handle) {
@@ -570,7 +535,7 @@ namespace core::filesystem {
     }
 
     bool
-    list_files(local_file_system_t& lfs, path_t directory, const std::function<void(const path_t&, bool)>& callback) {
+    list_files(local_file_system_t& lfs, path_t directory, const list_files_callback_t& callback) {
         if (!directory_exists(lfs, directory)) {
             return false;
         }
@@ -602,10 +567,24 @@ namespace core::filesystem {
 
     bool file_sync(local_file_system_t&, file_handle_t& handle) {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
+#if defined(__APPLE__)
+        // On Darwin fsync(2) only pushes dirty pages to the DRIVE, not through
+        // the drive's own write cache — after a crash the data is there, after a
+        // POWER LOSS it may not be. F_FULLFSYNC is the barrier that reaches the
+        // platter; every sync in this engine is a durability barrier (WAL,
+        // checkpoint root, bitcask segment), so anything less is a silent lie.
+        // No fsync fallback when it fails (rule 6): a filesystem that cannot
+        // give the barrier reports false and the caller decides, loudly.
+        if (::fcntl(fd, F_FULLFSYNC) == -1) {
+            return false;
+        }
+        return true;
+#else
         if (fsync(fd) != 0) {
             return false;
         }
         return true;
+#endif
     }
 
     bool move_files(local_file_system_t&, const path_t& source, const path_t& target) {
@@ -614,356 +593,6 @@ namespace core::filesystem {
         }
         return true;
     }
-
-#else
-
-    constexpr char PIPE_PREFIX[] = "\\\\.\\pipe\\";
-
-    std::string last_error_as_string(local_file_system_t&) {
-        DWORD errorMessageID = GetLastError();
-        if (errorMessageID == 0)
-            return std::string();
-
-        LPSTR messageBuffer = nullptr;
-        uint64_t size =
-            FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                           NULL,
-                           errorMessageID,
-                           MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                           (LPSTR) &messageBuffer,
-                           0,
-                           NULL);
-
-        std::string message(messageBuffer, size);
-
-        LocalFree(messageBuffer);
-
-        return message;
-    }
-
-    struct windows_file_handle_t : public file_handle_t {
-    public:
-        windows_file_handle_t(local_file_system_t& file_system, path_t path, HANDLE fd)
-            : file_handle_t(file_system, path)
-            , position_(0)
-            , fd_(fd) {}
-        ~windows_file_handle_t() override { close(); }
-
-        uint64_t position_;
-        HANDLE fd_;
-
-    public:
-        void close() override {
-            if (!fd_) {
-                return;
-            }
-            CloseHandle(fd_);
-            fd_ = nullptr;
-        };
-    };
-
-    std::unique_ptr<file_handle_t>
-    open_file(local_file_system_t& lfs, const path_t& path_p, file_flags flags, file_lock_type) {
-        auto path = lfs.expand_path(path_p);
-        uint16_t flags = static_cast<uint16_t>(flags);
-
-        DWORD desired_access;
-        DWORD share_mode;
-        DWORD creation_disposition = OPEN_EXISTING;
-        DWORD flags_and_attributes = FILE_ATTRIBUTE_NORMAL;
-        bool open_read = (flags & file_flags::READ) != file_flags::EMPTY;
-        bool open_write = (flags & file_flags::WRITE != file_flags::EMPTY);
-        if (open_read && open_write) {
-            desired_access = GENERIC_READ | GENERIC_WRITE;
-            share_mode = 0;
-        } else if (open_read) {
-            desired_access = GENERIC_READ;
-            share_mode = FILE_SHARE_READ;
-        } else if (open_write) {
-            desired_access = GENERIC_WRITE;
-            share_mode = 0;
-        } else {
-            return nullptr;
-        }
-        if (open_write) {
-            if ((flags & file_flags::FILE_CREATE) != file_flags::EMPTY) {
-                creation_disposition = OPEN_ALWAYS;
-            } else if ((flags & file_flags::FILE_CREATE_NEW) != file_flags::EMPTY) {
-                creation_disposition = CREATE_ALWAYS;
-            }
-        }
-        if ((flags & file_flags::DIRECT_IO) != file_flags::EMPTY) {
-            flags_and_attributes |= FILE_FLAG_NO_BUFFERING;
-        }
-        auto unicode_path = path_utils::UTF8_to_Unicode(path.c_str());
-        HANDLE hFile = CreateFileW(unicode_path.c_str(),
-                                   desired_access,
-                                   share_mode,
-                                   NULL,
-                                   creation_disposition,
-                                   flags_and_attributes,
-                                   NULL);
-        if (hFile == INVALID_HANDLE_VALUE) {
-            auto error = last_error_as_string(lfs);
-
-            return nullptr;
-        }
-        auto handle = std::make_unique<windows_file_handle_t>(lfs, path.c_str(), hFile);
-        if ((flags & file_flags::APPEND) != file_flags::EMPTY) {
-            set_file_pointer(*handle, file_size(*handle));
-        }
-        return handle;
-    }
-
-    bool set_file_pointer(local_file_system_t&, file_handle_t& handle, uint64_t location) {
-        auto& whandle = reinterpret_cast<windows_file_handle_t&>(handle);
-        whandle.position_ = location;
-        LARGE_INTEGER wlocation;
-        wlocation.QuadPart = location;
-        SetFilePointerEx(whandle.fd_, wlocation, NULL, FILE_BEGIN);
-    }
-
-    uint64_t file_pointer(local_file_system_t&, file_handle_t& handle) {
-        return reinterpret_cast<windows_file_handle_t&>(handle).position_;
-    }
-
-    static DWORD
-    FSInternalRead(file_handle_t& handle, HANDLE hFile, void* buffer, int64_t nr_bytes, uint64_t location) {
-        DWORD bytes_read = 0;
-        OVERLAPPED ov = {};
-        ov.Internal = 0;
-        ov.InternalHigh = 0;
-        ov.Offset = location & 0xFFFFFFFF;
-        ov.OffsetHigh = location >> 32;
-        ov.hEvent = 0;
-        auto rc = ReadFile(hFile, buffer, (DWORD) nr_bytes, &bytes_read, &ov);
-        if (!rc) {
-            return DWORD();
-        }
-        return bytes_read;
-    }
-
-    bool read(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location) {
-        HANDLE hFile = ((windows_file_handle_t&) handle).fd_;
-        auto bytes_read = FSInternalRead(handle, hFile, buffer, nr_bytes, location);
-        if (bytes_read != nr_bytes) {
-            return false;
-        }
-        return true;
-    }
-
-    int64_t read(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        auto& pos = reinterpret_cast<windows_file_handle_t&>(handle).position_;
-        auto n = std::min<uint64_t>(std::max<uint64_t>(file_size(handle), pos) - pos, nr_bytes);
-        auto bytes_read = FSInternalRead(handle, hFile, buffer, n, pos);
-        pos += bytes_read;
-        return bytes_read;
-    }
-
-    static DWORD
-    FSInternalWrite(file_handle_t& handle, HANDLE hFile, void* buffer, int64_t nr_bytes, uint64_t location) {
-        DWORD bytes_written = 0;
-        OVERLAPPED ov = {};
-        ov.Internal = 0;
-        ov.InternalHigh = 0;
-        ov.Offset = location & 0xFFFFFFFF;
-        ov.OffsetHigh = location >> 32;
-        ov.hEvent = 0;
-        auto rc = WriteFile(hFile, buffer, (DWORD) nr_bytes, &bytes_written, &ov);
-        if (!rc) {
-            return DWORD();
-        }
-        return bytes_written;
-    }
-
-    static int64_t FSWrite(file_handle_t& handle, HANDLE hFile, void* buffer, int64_t nr_bytes, uint64_t location) {
-        int64_t bytes_written = 0;
-        while (nr_bytes > 0) {
-            auto bytes_to_write = std::min<uint64_t>(uint64_t(std::numeric_limits<int32_t>::max()), uint64_t(nr_bytes));
-            DWORD current_bytes_written = FSInternalWrite(handle, hFile, buffer, bytes_to_write, location);
-            if (current_bytes_written <= 0) {
-                return current_bytes_written;
-            }
-            bytes_written += current_bytes_written;
-            buffer = buffer + current_bytes_written;
-            location += current_bytes_written;
-            nr_bytes -= current_bytes_written;
-        }
-        return bytes_written;
-    }
-
-    bool write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        auto bytes_written = FSWrite(handle, hFile, buffer, nr_bytes, location);
-        if (bytes_written != nr_bytes) {
-            return false;
-        }
-        return true;
-    }
-
-    int64_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        auto& pos = reinterpret_cast<windows_file_handle_t&>(handle).position_;
-        auto bytes_written = FSWrite(handle, hFile, buffer, nr_bytes, pos);
-        pos += bytes_written;
-        return bytes_written;
-    }
-
-    int64_t file_size(local_file_system_t&, file_handle_t& handle) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        LARGE_INTEGER result;
-        if (!GetFileSizeEx(hFile, &result)) {
-            return -1;
-        }
-        return result.QuadPart;
-    }
-
-    time_t llast_modified_time(local_file_system_t&, file_handle_t& handle) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-
-        FILETIME last_write;
-        if (GetFileTime(hFile, nullptr, nullptr, &last_write) == 0) {
-            return -1;
-        }
-
-        ULARGE_INTEGER ul;
-        ul.LowPart = last_write.dwLowDateTime;
-        ul.HighPart = last_write.dwHighDateTime;
-        int64_t fileTime64 = ul.QuadPart;
-
-        const auto WINDOWS_TICK = 10000000;
-        const auto SEC_TO_UNIX_EPOCH = 11644473600LL;
-        time_t result = (fileTime64 / WINDOWS_TICK - SEC_TO_UNIX_EPOCH);
-        return result;
-    }
-
-    bool truncate(local_file_system_t&, file_handle_t& handle, int64_t new_size) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        set_file_pointer(handle, new_size);
-        if (!SetEndOfFile(hFile)) {
-            return false;
-        }
-        return true;
-    }
-
-    static DWORD WindowsGetFileAttributes(const path_t& filename) {
-        auto unicode_path = path_utils::UTF8_to_Unicode(filename.c_str());
-        return GetFileAttributesW(unicode_path.c_str());
-    }
-
-    bool directory_exists(local_file_system_t&, const path_t& directory) {
-        DWORD attrs = WindowsGetFileAttributes(directory);
-        return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
-    }
-
-    bool create_directory(local_file_system_t&, const path_t& directory) {
-        if (directory_exists(directory)) {
-            return true;
-        }
-        auto unicode_path = path_utils::UTF8_to_Unicode(directory.c_str());
-        if (directory.empty() || !CreateDirectoryW(unicode_path.c_str(), NULL) || !directory_exists(directory)) {
-            return false;
-        }
-        return true;
-    }
-
-    static bool delete_directory_recursive(local_file_system_t& fs, path_t directory) {
-        list_files(fs, directory, [directory](const path_t& fname, bool is_directory) {
-            if (is_directory) {
-                delete_directory_recursive(fs, directory /= fname);
-            } else {
-                fs.remove_file(directory /= fname);
-            }
-        });
-        auto unicode_path = path_utils::UTF8_to_Unicode(directory.c_str());
-        if (!RemoveDirectoryW(unicode_path.c_str())) {
-            return false;
-        }
-        return true;
-    }
-
-    bool remove_directory(local_file_system_t&, const path_t& directory) {
-        if (file_exists(directory)) {
-            return false;
-        }
-        if (!directory_exists(directory)) {
-            return true;
-        }
-        return delete_directory_recursive(*this, directory.c_str());
-    }
-
-    bool remove_file(local_file_system_t& lfs, const path_t& filename) {
-        auto unicode_path = path_utils::UTF8_to_Unicode(filename.c_str());
-        if (!DeleteFileW(unicode_path.c_str())) {
-            auto error = last_error_as_string(lfs);
-            return false;
-        }
-        return true;
-    }
-
-    bool
-    list_files(local_file_system_t& lfs, path_t directory, const std::function<void(const path_t&, bool)>& callback) {
-        directory /= "*";
-
-        auto unicode_path = path_utils::UTF8_to_Unicode(directory.c_str());
-
-        WIN32_FIND_DATAW ffd;
-        HANDLE hFind = FindFirstFileW(unicode_path.c_str(), &ffd);
-        if (hFind == INVALID_HANDLE_VALUE) {
-            return false;
-        }
-        do {
-            path_t cFileName = path_utils::Unicode_to_UTF8(ffd.cFileName);
-            if (cFileName == "." || cFileName == "..") {
-                continue;
-            }
-            callback(cFileName, ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
-        } while (FindNextFileW(hFind, &ffd) != 0);
-
-        DWORD dwError = GetLastError();
-        if (dwError != ERROR_NO_MORE_FILES) {
-            FindClose(hFind);
-            return false;
-        }
-
-        FindClose(hFind);
-        return true;
-    }
-
-    bool file_sync(local_file_system_t&, file_handle_t& handle) {
-        HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        if (FlushFileBuffers(hFile) == 0) {
-            return false;
-        }
-        return true;
-    }
-
-    bool move_files(local_file_system_t&, const path_t& source, const path_t& target) {
-        auto source_unicode = path_utils::UTF8_to_Unicode(source.c_str());
-        auto target_unicode = path_utils::UTF8_to_Unicode(target.c_str());
-        if (!MoveFileW(source_unicode.c_str(), target_unicode.c_str())) {
-            return false;
-        }
-        return true;
-    }
-
-    file_type_t file_type(local_file_system_t&, file_handle_t& handle) {
-        auto path = reinterpret_cast<windows_file_handle_t&>(handle).path_;
-        if (strncmp(path.c_str(), PIPE_PREFIX, strlen(PIPE_PREFIX)) == 0) {
-            return file_type_t::FIFO;
-        }
-        DWORD attrs = WindowsGetFileAttributes(path.c_str());
-        if (attrs != INVALID_FILE_ATTRIBUTES) {
-            if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-                return file_type_t::DIR;
-            } else {
-                return file_type_t::REGULAR;
-            }
-        }
-        return file_type_t::INVALID;
-    }
-#endif
 
     bool seek(local_file_system_t& lfs, file_handle_t& handle, uint64_t location) {
         lfs.set_file_pointer(handle, location);
@@ -974,15 +603,8 @@ namespace core::filesystem {
 
     static bool is_crawl(const path_t& glob) { return glob == "**"; }
     static bool is_symbolic_link(const path_t& path) {
-#ifndef PLATFORM_WINDOWS
         struct stat status;
         return (lstat(path.c_str(), &status) != -1 && S_ISLNK(status.st_mode));
-#else
-        auto attributes = WindowsGetFileAttributes(path);
-        if (attributes == INVALID_FILE_ATTRIBUTES)
-            return false;
-        return attributes & FILE_ATTRIBUTE_REPARSE_POINT;
-#endif
     }
 
     static void recursive_glob_directories(local_file_system_t& lfs,

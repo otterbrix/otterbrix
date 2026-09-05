@@ -111,8 +111,8 @@ TEST_CASE("services::disk::pg_depend::table_to_namespace_cascade") {
 }
 
 // 2. DROP NAMESPACE under RESTRICT refuses when child tables exist.
-//    NOTE: restrict/cascade distinction is no longer available via the helper API;
-//    this test now verifies that a committed drop removes the namespace rows.
+//    NOTE: the helper API carries no restrict/cascade distinction, so despite its name this
+//    case only verifies that a committed drop removes the namespace rows.
 TEST_CASE("services::disk::pg_depend::drop_namespace_restrict_blocks") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_b", "t1");
@@ -159,8 +159,9 @@ TEST_CASE("services::disk::pg_depend::function_cascades_with_namespace") {
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_e"));
     REQUIRE(ns_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
-    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_e"), std::uint64_t{0});
-    REQUIRE_FALSE(rr.found);
+    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_e"));
+    REQUIRE_FALSE(rr.has_error());
+    REQUIRE_FALSE(rr.value().found);
 }
 
 // 6. ddl_drop_type RESTRICT goes through (no dependents on a freshly-created standalone type).

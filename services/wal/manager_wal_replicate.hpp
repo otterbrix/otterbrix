@@ -29,6 +29,17 @@
 
 namespace services::wal {
 
+#ifdef DEV_MODE
+    // Test-observable count of auto-checkpoint rounds that have ENDED — every exit path of
+    // run_auto_checkpoint, the abandoned ones included. The round is fire-and-forget off
+    // commit_txn and its truncation is its LAST step, so a case that wants to read the journal
+    // the round left behind has no other way to know the round is over: waiting on a clock
+    // reads a round that has not got there yet, and waiting on a disk-agent counter reads one
+    // that has only just started.
+    uint64_t auto_checkpoint_rounds() noexcept;
+    void reset_auto_checkpoint_rounds() noexcept;
+#endif
+
     // Bootstrap address bundle for manager_wal_replicate_t::sync (plain named
     // struct — no std::tuple). Mirrors services::dispatcher::manager_dispatcher_t::
     // sync_pack. disk and index feed the auto-checkpoint orchestration (flush
@@ -67,17 +78,18 @@ namespace services::wal {
         void sync(wal_sync_pack_t pack);
 
         // Contract handlers.
-        unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
+        // See wal_contract for why each of these carries a refusal now.
+        unique_future<core::result_wrapper_t<std::vector<record_t>>> load(session_id_t session, wal::id_t wal_id);
 
         // commit_id (MVCC version from transaction_manager_t::commit()) is
         // written into the COMMIT record so replay can rebuild published_horizon_.
-        unique_future<wal::id_t> commit_txn(session_id_t session,
-                                            uint64_t txn_id,
-                                            wal_sync_mode sync_mode,
-                                            components::catalog::oid_t database_oid,
-                                            uint64_t commit_id);
+        unique_future<core::result_wrapper_t<wal::id_t>> commit_txn(session_id_t session,
+                                                                    uint64_t txn_id,
+                                                                    wal_sync_mode sync_mode,
+                                                                    components::catalog::oid_t database_oid,
+                                                                    uint64_t commit_id);
 
-        unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
+        unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
 
@@ -85,38 +97,40 @@ namespace services::wal {
         // growth trips the threshold; it flushes indexes, checkpoints storage,
         // and truncates the WAL below the checkpoint id. Fire-and-forget so the
         // committer never waits on the checkpoint. See the .cpp for the full
-        // M1.1 truncation/replay-gate invariant.
+        // truncation/replay-gate invariant.
         unique_future<void> run_auto_checkpoint(session_id_t session);
 
         // Writes ONE physical-insert record covering [row_start, row_start + row_count).
         // The chunks are concatenated into a single payload in vector order.
-        unique_future<wal::id_t> write_physical_insert(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                                       uint64_t row_start,
-                                                       uint64_t row_count,
-                                                       uint64_t txn_id,
-                                                       components::catalog::oid_t database_oid);
+        unique_future<core::result_wrapper_t<wal::id_t>>
+        write_physical_insert(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::pmr::vector<components::vector::data_chunk_t> chunks,
+                              uint64_t row_start,
+                              uint64_t row_count,
+                              uint64_t txn_id,
+                              components::catalog::oid_t database_oid);
 
-        unique_future<wal::id_t> write_physical_delete(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::pmr::vector<int64_t> row_ids,
-                                                       uint64_t count,
-                                                       uint64_t txn_id,
-                                                       components::catalog::oid_t database_oid);
+        unique_future<core::result_wrapper_t<wal::id_t>> write_physical_delete(session_id_t session,
+                                                                               components::catalog::oid_t table_oid,
+                                                                               std::pmr::vector<int64_t> row_ids,
+                                                                               uint64_t count,
+                                                                               uint64_t txn_id,
+                                                                               components::catalog::oid_t database_oid);
 
         // Writes ONE physical-update record. row_ids is the flat list of updated
         // storage row-ids; new_data chunks are concatenated into a single payload in
         // vector order and must total `count` rows aligned to row_ids.
-        unique_future<wal::id_t> write_physical_update(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::pmr::vector<int64_t> row_ids,
-                                                       std::pmr::vector<components::vector::data_chunk_t> new_data,
-                                                       uint64_t count,
-                                                       uint64_t txn_id,
-                                                       components::catalog::oid_t database_oid);
+        unique_future<core::result_wrapper_t<wal::id_t>>
+        write_physical_update(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::pmr::vector<int64_t> row_ids,
+                              std::pmr::vector<components::vector::data_chunk_t> new_data,
+                              uint64_t count,
+                              uint64_t txn_id,
+                              components::catalog::oid_t database_oid);
 
-        unique_future<wal::id_t>
+        unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_add_column(session_id_t session,
                                   components::catalog::oid_t table_oid,
                                   std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
@@ -162,6 +176,15 @@ namespace services::wal {
             reset_auto_checkpoint_bytes();
         }
 
+        // THE ONE EXIT OF A ROUND, taken by all four of run_auto_checkpoint's returns —
+        // the completed one and the three that abandon. Being one function is what makes an
+        // ABANDONED round exactly as repeatable as a completed one: the byte window is rebased
+        // on what is actually on disk now, and the dedup guard is released, so the next
+        // threshold trip launches a fresh round instead of finding this one still in flight.
+        // An abandoned round that forgot either half would trade a recoverable failure for a
+        // permanent one, which is the whole reason abandoning is allowed to be the answer here.
+        void end_auto_checkpoint_round() noexcept;
+
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;
 
@@ -191,9 +214,9 @@ namespace services::wal {
 
         // Size of the WAL directory as of the last completed checkpoint. The "since" counter above
         // is the difference against this, which is what its name and the threshold contract say it
-        // is. That counter used to hold the TOTAL directory size instead: once the WAL had passed
-        // the threshold once, every later commit re-tripped it, and every trip copied each table's
-        // whole .otbx file — measured at one checkpoint per commit, 1009 of them for 10k rows.
+        // is. Holding the TOTAL directory size in that counter instead makes every commit after
+        // the first threshold trip re-trip it, and every trip copies each table's whole .otbx
+        // file — measured at one checkpoint per commit, 1009 of them for 10k rows.
         std::atomic<std::uintmax_t> wal_bytes_at_last_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;
@@ -208,10 +231,24 @@ namespace services::wal {
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 
+        // Set when the constructor's segment scan could not READ a segment. That scan is what
+        // recovers global_id_, so an unreadable segment leaves the allocator below ids that
+        // already exist on disk and every later record would reuse them. While it is set the
+        // manager refuses every write, every commit and every truncate rather than issuing an
+        // id it cannot vouch for.
+        core::error_t recovery_error_;
+
         // Retention guard: build_start_wal_position of every in-flight CREATE
         // INDEX backfill. truncate_before clamps to min(this set) so concurrent
         // catchup never misses a truncated record. Empty => no clamp.
-        std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
+        //
+        // A MULTISET, and that is load-bearing: register/unregister arrive in PAIRS, one per
+        // build, and two concurrent builds can legitimately start at the SAME wal position. A
+        // deduplicating set collapsed those into one entry — the first unregister released the
+        // clamp while the second build still needed it (truncate could then unlink the very
+        // segments its catchup reads), and the second unregister found nothing to erase and
+        // aborted the process.
+        std::pmr::multiset<wal::id_t> active_build_start_positions_{resource_};
 
         // Parks the fire-and-forget future of the commit_txn -> run_auto_checkpoint
         // self-send. The loop drains ready entries (poll_auto_checkpoint_). Mirrors

@@ -26,7 +26,12 @@ namespace components::operators {
     // bound, so copy them across as the output batch one-for-one.
     operator_raw_data_t::operator_raw_data_t(const std::pmr::vector<vector::data_chunk_t>& src_chunks)
         : read_only_operator_t(nullptr, log_t{}, operator_type::raw_data) {
-        auto* resource = src_chunks.empty() ? std::pmr::get_default_resource() : src_chunks.front().resource();
+        // The chunk vector names the caller's arena in its allocator whether or not it
+        // holds a chunk — an empty literal batch must NOT fall back to the process-wide
+        // default resource (rule 14): output_ and every later drain chunk would live on
+        // an arena nobody owns. Non-empty keeps the chunks' own resource, which is the
+        // same arena the copies are built on.
+        auto* resource = src_chunks.empty() ? src_chunks.get_allocator().resource() : src_chunks.front().resource();
         chunks_vector_t chunks(resource);
         chunks.reserve(src_chunks.size());
         for (const auto& chunk : src_chunks) {

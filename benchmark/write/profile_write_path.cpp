@@ -101,16 +101,18 @@ namespace {
 
     private:
         static configuration::config make_config(const options_t& o) {
-            auto cfg = configuration::config::default_config();
+            // One named base directory, laid out by create_config. Hand-assigning
+            // `current_path()/"disk"` and `current_path()/"wal"` instead splits one database
+            // across two directories and drops both into whatever directory the profiler was
+            // launched from.
+            auto cfg = configuration::config::create_config(std::filesystem::current_path() /
+                                                            "otterbrix_write_profile_data");
             cfg.log.level = (o.log == "trace") ? log_t::level::trace : log_t::level::off;
-            // Disk and WAL are NOT optional here. An in-memory run measures a
-            // configuration nobody deploys, and it actively misleads: DELETE column
-            // pruning measured 3.6x in memory and exactly nothing on disk, because a
+            // The WAL is NOT optional here. A run without it measures a configuration
+            // nobody deploys, and it actively misleads: DELETE column pruning measured
+            // 3.6x without durable writes and exactly nothing with them, because a
             // different cost dominates there.
-            cfg.disk.on = true;
             cfg.wal.on = true;
-            cfg.disk.path = std::filesystem::current_path() / "disk";
-            cfg.wal.path = std::filesystem::current_path() / "wal";
             return cfg;
         }
     };
@@ -179,7 +181,7 @@ namespace {
         for (std::uint64_t c = 0; c < o.width; ++c) {
             ddl += ", v" + std::to_string(c) + " bigint";
         }
-        ddl += ") WITH (storage = 'disk');";
+        ddl += ") ;";
         if (!run_sql(dispatcher, ddl, nullptr)) {
             return false;
         }

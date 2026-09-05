@@ -18,10 +18,10 @@ namespace components::operators {
         operator_alter_column_drop_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
-                                     components::catalog::oid_t namespace_oid,
                                      std::string column_name,
                                      components::catalog::oid_t attoid,
-                                     components::catalog::drop_behavior_t behavior);
+                                     components::catalog::drop_behavior_t behavior,
+                                     bool missing_ok);
 
         // Sourceless SINK leaf (no data pipeline, no children): the executor
         // admits it as a streaming sink-root and drives await_async_and_resume via
@@ -33,10 +33,16 @@ namespace components::operators {
 
     private:
         components::catalog::oid_t table_oid_;
-        components::catalog::oid_t namespace_oid_;
+        // NO namespace_oid_ HERE. The column is resolved by (attrelid=table_oid_,
+        // attname) — a table oid is already unique across namespaces — so a
+        // namespace oid was stored and never read, dead state that a reader has to
+        // rule out before trusting the resolution above.
         std::string column_name_;
         components::catalog::oid_t attoid_;
         components::catalog::drop_behavior_t behavior_;
+        // `DROP COLUMN IF EXISTS`: the one form in which a column that is not there
+        // is the accepted outcome rather than an error.
+        bool missing_ok_;
     };
 
 } // namespace components::operators

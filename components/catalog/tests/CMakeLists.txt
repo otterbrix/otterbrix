@@ -11,7 +11,14 @@ set(${PROJECT_NAME}_SOURCES
         test_oids.cpp
         test_system_schemas.cpp
         test_type_spec_roundtrip.cpp
+        test_default_spec_roundtrip.cpp
         test_pg_attribute_mvcc_columns.cpp
+        test_oid_csv_channel.cpp
+        test_type_spec_error_channel.cpp
+        test_type_spec_encoder_domains.cpp
+        test_prorettype_channel.cpp
+        test_constraint_write_gate.cpp
+        test_cascade_plan_steps.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -24,6 +24,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 
@@ -55,9 +56,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_index_scan::indexed_select_streams_many_windows") {
-    auto config = test_create_config("/tmp/test_streaming_index_scan_select");
+    auto config = test_create_config(integration_fixture_path("test_streaming_index_scan_select"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -94,9 +94,8 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_select_streams_many_w
 }
 
 TEST_CASE("integration::cpp::streaming_index_scan::point_lookup_and_empty_result") {
-    auto config = test_create_config("/tmp/test_streaming_index_scan_point");
+    auto config = test_create_config(integration_fixture_path("test_streaming_index_scan_point"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -132,9 +131,8 @@ TEST_CASE("integration::cpp::streaming_index_scan::point_lookup_and_empty_result
 }
 
 TEST_CASE("integration::cpp::streaming_index_scan::offset_limit_on_indexed_scan") {
-    auto config = test_create_config("/tmp/test_streaming_index_scan_offlim");
+    auto config = test_create_config(integration_fixture_path("test_streaming_index_scan_offlim"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -157,9 +155,8 @@ TEST_CASE("integration::cpp::streaming_index_scan::offset_limit_on_indexed_scan"
 }
 
 TEST_CASE("integration::cpp::streaming_index_scan::indexed_delete_and_update") {
-    auto config = test_create_config("/tmp/test_streaming_index_scan_dml");
+    auto config = test_create_config(integration_fixture_path("test_streaming_index_scan_dml"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

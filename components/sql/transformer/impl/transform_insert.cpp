@@ -16,11 +16,28 @@ using namespace components::expressions;
 
 namespace {
 
+    // The refusal every unconvertible (source, target) pair below shares. These pairs are
+    // outside the promotion oracle's contract — reaching one means promote_type answered a
+    // type this ladder cannot climb to. An assert(false) followed by a return of the
+    // UNWIDENED VALUE is not enough: under NDEBUG the assert vanishes and a value of the
+    // wrong logical type goes into the promoted column vector — the exact silent wrong
+    // answer this file exists to keep out.
+    core::error_t no_numeric_conversion(std::pmr::memory_resource* resource,
+                                        components::types::logical_type source,
+                                        components::types::logical_type target) {
+        std::pmr::string msg{"INSERT cannot widen a numeric value: no conversion from type#", resource};
+        msg += std::to_string(static_cast<int>(source));
+        msg += " to type#";
+        msg += std::to_string(static_cast<int>(target));
+        return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
+    }
+
     // Converts a numeric logical_value_t to a different numeric type without cast_as (no timezone needed).
     // Both val.type().type() and target must satisfy is_numeric().
-    components::types::logical_value_t numeric_widen(std::pmr::memory_resource* resource,
-                                                     const components::types::logical_value_t& val,
-                                                     components::types::logical_type target) {
+    core::result_wrapper_t<components::types::logical_value_t>
+    numeric_widen(std::pmr::memory_resource* resource,
+                  const components::types::logical_value_t& val,
+                  components::types::logical_type target) {
         using LT = components::types::logical_type;
         if (val.type().type() == target) {
             return val;
@@ -59,9 +76,11 @@ namespace {
                 case LT::FLOAT:
                     dbl = static_cast<double>(val.value<float>());
                     break;
+                case LT::HUGEINT:
+                    dbl = static_cast<double>(val.value<components::types::int128_t>());
+                    break;
                 default:
-                    assert(false && "numeric_widen: unsupported source for float target");
-                    return val;
+                    return no_numeric_conversion(resource, val.type().type(), target);
             }
             if (target == LT::DOUBLE) {
                 return components::types::logical_value_t(resource, dbl);
@@ -98,8 +117,7 @@ namespace {
                     uval = val.value<uint64_t>();
                     break;
                 default:
-                    assert(false && "numeric_widen: unsupported source for unsigned target");
-                    return val;
+                    return no_numeric_conversion(resource, val.type().type(), target);
             }
             switch (target) {
                 case LT::UTINYINT:
@@ -111,11 +129,48 @@ namespace {
                 case LT::UBIGINT:
                     return components::types::logical_value_t(resource, uval);
                 default:
-                    assert(false && "numeric_widen: unsupported unsigned target");
-                    return val;
+                    return no_numeric_conversion(resource, val.type().type(), target);
+            }
+        } else if (target == LT::HUGEINT) {
+            // The 128-bit rung of the same ladder. It exists because an integer literal past
+            // int64 reaches VALUES as a HUGEINT (numeric_literal_value in
+            // components/sql/transformer/utils.cpp): mixing one with a narrower row —
+            // VALUES (12345678901234567890123456789), (1) — promotes the whole column here.
+            // Without this arm promote_type would answer HUGEINT and the switch below would
+            // fall to its default, hand back the UNWIDENED value, and trip set_value's type
+            // assert on the way into the vector.
+            using components::types::int128_t;
+            switch (val.type().type()) {
+                case LT::BOOLEAN:
+                    return components::types::logical_value_t(resource, int128_t{val.value<bool>() ? 1 : 0});
+                case LT::TINYINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int8_t>()});
+                case LT::SMALLINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int16_t>()});
+                case LT::INTEGER:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int32_t>()});
+                case LT::BIGINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int64_t>()});
+                case LT::UTINYINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint8_t>()});
+                case LT::USMALLINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint16_t>()});
+                case LT::UINTEGER:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint32_t>()});
+                case LT::UBIGINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint64_t>()});
+                case LT::FLOAT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<float>()});
+                case LT::DOUBLE:
+                    return components::types::logical_value_t(resource, int128_t{val.value<double>()});
+                default:
+                    return no_numeric_conversion(resource, val.type().type(), target);
             }
         } else {
-            // Signed integer target
+            // Signed integer target. A HUGEINT source is deliberately absent: every caller
+            // passes a target from promote_type, which is never NARROWER than the source, so
+            // reaching here with 128 bits in hand would mean the promotion oracle lied — and
+            // quietly cutting the value down is the silent wrong answer this file keeps out.
             int64_t ival;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -152,8 +207,7 @@ namespace {
                     ival = static_cast<int64_t>(val.value<double>());
                     break;
                 default:
-                    assert(false && "numeric_widen: unsupported source for signed target");
-                    return val;
+                    return no_numeric_conversion(resource, val.type().type(), target);
             }
             switch (target) {
                 case LT::BOOLEAN:
@@ -167,8 +221,7 @@ namespace {
                 case LT::BIGINT:
                     return components::types::logical_value_t(resource, ival);
                 default:
-                    assert(false && "numeric_widen: unsupported signed target");
-                    return val;
+                    return no_numeric_conversion(resource, val.type().type(), target);
             }
         }
     }
@@ -198,11 +251,12 @@ namespace {
 
     // Rebuilds a fixed-ARRAY column vector as a variable-length LIST(elem_type), converting
     // the rows filled so far. Used when a later VALUES row carries a different array shape.
-    components::vector::vector_t promote_array_to_list(std::pmr::memory_resource* resource,
-                                                       const components::vector::vector_t& col,
-                                                       size_t num_rows,
-                                                       const components::types::complex_logical_type& elem_type,
-                                                       uint64_t capacity) {
+    core::result_wrapper_t<components::vector::vector_t>
+    promote_array_to_list(std::pmr::memory_resource* resource,
+                          const components::vector::vector_t& col,
+                          size_t num_rows,
+                          const components::types::complex_logical_type& elem_type,
+                          uint64_t capacity) {
         auto list_type = components::types::complex_logical_type::create_list(elem_type);
         list_type.set_alias(std::string(col.type().alias()));
         components::vector::vector_t new_col(resource, list_type, capacity);
@@ -218,8 +272,14 @@ namespace {
         std::optional<components::vector::vector_t> casted;
         const components::vector::vector_t* elems = &src_child;
         if (src_child.type().to_physical_type() != elem_type.to_physical_type()) {
-            casted.emplace(
-                components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride));
+            // cast_vector range-checks every element; a stored value that does not fit
+            // the promoted element type refuses the INSERT instead of truncating silently.
+            auto casted_result =
+                components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride);
+            if (casted_result.has_error()) {
+                return casted_result.error();
+            }
+            casted.emplace(std::move(casted_result.value()));
             elems = &casted.value();
         }
 
@@ -242,11 +302,11 @@ namespace {
 
     // Promotes an existing column vector to a wider numeric type, converting all stored values.
     // Caller must ensure col.type().type() and promoted are both is_numeric(), and promoted != col.type().type().
-    components::vector::vector_t promote_column(std::pmr::memory_resource* resource,
-                                                const components::vector::vector_t& col,
-                                                size_t num_rows,
-                                                components::types::logical_type promoted,
-                                                uint64_t capacity) {
+    core::result_wrapper_t<components::vector::vector_t> promote_column(std::pmr::memory_resource* resource,
+                                                                        const components::vector::vector_t& col,
+                                                                        size_t num_rows,
+                                                                        components::types::logical_type promoted,
+                                                                        uint64_t capacity) {
         components::vector::vector_t new_col(
             resource,
             components::types::complex_logical_type{promoted, std::string(col.type().alias())},
@@ -258,7 +318,8 @@ namespace {
             if (col.is_null(row)) {
                 new_col.set_null(row, true);
             } else {
-                new_col.set_value(row, numeric_widen(resource, col.value(row), promoted));
+                VALUE_OR_RETURN(auto widened, numeric_widen(resource, col.value(row), promoted));
+                new_col.set_value(row, std::move(widened));
             }
         }
         return new_col;
@@ -270,9 +331,9 @@ namespace {
     // final schema: extend it with null columns for any trailing columns it lacks, and widen
     // any column that a later chunk promoted. Columns that are params in every row of a chunk
     // stay null here and are filled in transform_result::bind.
-    void conform_param_chunks(std::pmr::memory_resource* resource,
-                              std::pmr::vector<components::vector::data_chunk_t>& chunks,
-                              const std::pmr::vector<components::types::complex_logical_type>& schema) {
+    core::error_t conform_param_chunks(std::pmr::memory_resource* resource,
+                                       std::pmr::vector<components::vector::data_chunk_t>& chunks,
+                                       const std::pmr::vector<components::types::complex_logical_type>& schema) {
         for (auto& chunk : chunks) {
             for (size_t i = 0; i < schema.size(); ++i) {
                 const auto& want = schema[i];
@@ -281,11 +342,14 @@ namespace {
                     col.set_null(true);
                     chunk.data.emplace_back(std::move(col));
                 } else if (chunk.data[i].type() != want) {
-                    chunk.data[i] =
-                        promote_column(resource, chunk.data[i], chunk.size(), want.type(), chunk.capacity());
+                    VALUE_OR_RETURN(auto promoted_col,
+                                    promote_column(resource, chunk.data[i], chunk.size(), want.type(),
+                                                   chunk.capacity()));
+                    chunk.data[i] = std::move(promoted_col);
                 }
             }
         }
+        return core::error_t::no_error();
     }
 
 } // anonymous namespace
@@ -328,7 +392,8 @@ namespace components::sql::transform {
                 for (const auto& part : target->indirection->lst) {
                     Node* p = pg_ptr_cast<Node>(part.data);
                     if (nodeTag(p) == T_A_Indices) {
-                        segments.emplace_back(indices_to_str(resource_, pg_ptr_cast<A_Indices>(p)));
+                        VALUE_OR_RETURN(auto segment, indices_to_str(resource_, pg_ptr_cast<A_Indices>(p)));
+                        segments.emplace_back(std::move(segment));
                     } else {
                         segments.emplace_back(pmrStrVal(p, resource_));
                     }
@@ -434,10 +499,13 @@ namespace components::sql::transform {
                                 col_type != val_type) {
                                 auto promoted = types::promote_type(col_type, val_type);
                                 if (promoted != col_type) {
-                                    chunk.data[column_index] =
-                                        promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
+                                    VALUE_OR_RETURN(
+                                        auto promoted_col,
+                                        promote_column(resource_, *it, chunk_row, promoted, chunk.capacity()));
+                                    chunk.data[column_index] = std::move(promoted_col);
                                 }
-                                chunk.set_value(column_index, chunk_row, numeric_widen(resource_, value, promoted));
+                                VALUE_OR_RETURN(auto widened, numeric_widen(resource_, value, promoted));
+                                chunk.set_value(column_index, chunk_row, std::move(widened));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             }
@@ -456,6 +524,21 @@ namespace components::sql::transform {
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.type().type();
+                            // DECIMAL sits outside the widening ladder (is_arithmetic_numeric
+                            // excludes it), so a DECIMAL value meeting a column of any other
+                            // type — or another DECIMAL of a different (width, scale) — has
+                            // no promotion path; the unchecked set_value below would store a
+                            // wrongly-typed cell. Refuse the row instead.
+                            if (!value.is_null() &&
+                                (col_type == types::logical_type::DECIMAL ||
+                                 val_type == types::logical_type::DECIMAL) &&
+                                it->type() != value.type()) {
+                                return core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{"INSERT cannot mix a DECIMAL value with values of a "
+                                                     "different type in one column of a VALUES list",
+                                                     resource_});
+                            }
                             // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
                             // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
                             // An unpromotable mix takes the plain per-value store below.
@@ -463,10 +546,13 @@ namespace components::sql::transform {
                                 col_type != val_type) {
                                 auto promoted = types::promote_type(col_type, val_type);
                                 if (promoted != col_type) {
-                                    chunk.data[column_index] =
-                                        promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
+                                    VALUE_OR_RETURN(
+                                        auto promoted_col,
+                                        promote_column(resource_, *it, chunk_row, promoted, chunk.capacity()));
+                                    chunk.data[column_index] = std::move(promoted_col);
                                 }
-                                chunk.set_value(column_index, chunk_row, numeric_widen(resource_, value, promoted));
+                                VALUE_OR_RETURN(auto widened, numeric_widen(resource_, value, promoted));
+                                chunk.set_value(column_index, chunk_row, std::move(widened));
                             } else if (array_shapes_differ(it->type(), value.type())) {
                                 // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
                                 // then ARRAY[2,3]): a single fixed-ARRAY vector can't hold both, so
@@ -475,8 +561,13 @@ namespace components::sql::transform {
                                 // ARRAY later if needed.
                                 auto elem_type = value.type().child_type();
                                 if (col_type == types::logical_type::ARRAY) {
-                                    chunk.data[column_index] =
-                                        promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
+                                    VALUE_OR_RETURN(auto list_col,
+                                                    promote_array_to_list(resource_,
+                                                                          *it,
+                                                                          chunk_row,
+                                                                          elem_type,
+                                                                          chunk.capacity()));
+                                    chunk.data[column_index] = std::move(list_col);
                                 }
                                 chunk.set_value(column_index, chunk_row, to_list_value(resource_, value, elem_type));
                             } else if (col_type == types::logical_type::NA && !value.is_null()) {
@@ -484,8 +575,10 @@ namespace components::sql::transform {
                                 // a later row now carries a concrete type. Every prior row is NULL,
                                 // so promote the NA column to the concrete type (nulls preserved)
                                 // before storing — otherwise set_value asserts on the type mismatch.
-                                chunk.data[column_index] =
-                                    promote_column(resource_, *it, chunk_row, val_type, chunk.capacity());
+                                VALUE_OR_RETURN(
+                                    auto na_promoted,
+                                    promote_column(resource_, *it, chunk_row, val_type, chunk.capacity()));
+                                chunk.data[column_index] = std::move(na_promoted);
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value));
@@ -517,7 +610,7 @@ namespace components::sql::transform {
                     schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
                     parameter_insert_rows_.emplace_back(std::move(chunk));
                 }
-                conform_param_chunks(resource_, parameter_insert_rows_, schema);
+                RETURN_IF_ERROR(conform_param_chunks(resource_, parameter_insert_rows_, schema));
                 ins = logical_plan::make_node_insert(resource_,
                                                      vector::data_chunk_t(resource_, {}, 0),
                                                      std::move(key_translation));

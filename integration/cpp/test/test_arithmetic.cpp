@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -16,9 +17,8 @@ using namespace components::cursor;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_arithmetic") {
-    auto config = test_create_config("/tmp/test_arithmetic");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -739,9 +739,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::join") {
-    auto config = test_create_config("/tmp/test_arithmetic_join");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -838,9 +837,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::having") {
-    auto config = test_create_config("/tmp/test_arithmetic_having");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_having"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -926,9 +924,8 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::case_when") {
-    auto config = test_create_config("/tmp/test_arithmetic_case");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_case"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1038,9 +1035,8 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
-    auto config = test_create_config("/tmp/test_arithmetic_edge");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_edge"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1119,9 +1115,8 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
-    auto config = test_create_config("/tmp/test_arithmetic_interleaved_gb");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_interleaved_gb"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1229,9 +1224,8 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
 }
 
 TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
-    auto config = test_create_config("/tmp/test_optimizer_folding");
+    auto config = test_create_config(integration_fixture_path("test_optimizer_folding"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1466,9 +1460,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::datetime") {
-    auto config = test_create_config("/tmp/test_arithmetic_datetime");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_datetime"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -2032,8 +2025,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N27. CASE WHEN with temporal arithmetic (exercises arithmetic_eval.cpp
-    //      resolve_row_value, which evaluates arithmetic branch-by-branch)
+    // N27. CASE WHEN with temporal arithmetic (the CASE evaluator resolves the
+    //      arithmetic branch by branch)
     // ================================================================
     INFO("N27. CASE WHEN with DATE + INTERVAL exercises arithmetic_eval.cpp");
     {
@@ -2054,8 +2047,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N28. GROUP BY with temporal expression in SELECT (exercises
-    //      operator_group.cpp post-aggregate resolve lambda)
+    // N28. GROUP BY with temporal expression in SELECT (the group operator's
+    //      post-aggregate resolve)
     // ================================================================
     INFO("N28. SELECT d + INTERVAL '1 month' ... GROUP BY d exercises operator_group.cpp");
     {
@@ -2074,8 +2067,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N29. UPDATE SET with temporal arithmetic (exercises
-    //      update_expression.cpp apply_binary_update_op)
+    // N29. UPDATE SET with temporal arithmetic (the binary update-op path)
     // ================================================================
     INFO("N29. UPDATE SET d = d + INTERVAL '7 days' exercises update_expression.cpp");
     {
@@ -2116,9 +2108,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
 // destination vector unwritten. Such updates must fail with an error and leave
 // the data untouched.
 TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_rejected") {
-    auto config = test_create_config("/tmp/test_arithmetic/update_bitshift_non_integer");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic/update_bitshift_non_integer"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

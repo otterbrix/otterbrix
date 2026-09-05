@@ -13,7 +13,7 @@ namespace components::operators {
     // pg_computed_column.
     //
     // Per column, the operator:
-    //   1. read_rows_by_key on pg_computed_column for (relid, attname).
+    //   1. read_chunks_by_key on pg_computed_column for (relid, attname).
     //   2. Classifies into NEW (no rows), SAME-TYPE (latest atttypid matches),
     //      or TYPE-EVOLUTION (latest atttypid differs).
     //   3. For NEW or TYPE-EVOLUTION: allocate one attoid, build a

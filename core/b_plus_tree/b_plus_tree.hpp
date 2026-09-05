@@ -16,7 +16,22 @@ namespace core::b_plus_tree {
     // idealy DEFAULT_NODE_CAPACITY and MAX_NODE_CAPACITY % 4 == 0
     static constexpr size_t MAX_NODE_CAPACITY = 8192u;
     static constexpr size_t DEFAULT_NODE_CAPACITY = 128u;
-    static constexpr size_t METADATA_SIZE = DEFAULT_BLOCK_SIZE; // will give 2^15 - 1 leaf nodes or 268'435'455 items
+    static constexpr size_t METADATA_SIZE = DEFAULT_BLOCK_SIZE;
+    // HOW MANY LEAVES FIT, SPELLED OUT WHERE SOMETHING CAN COMPARE AGAINST IT. The metadata file
+    // is one METADATA_SIZE region holding two counters and then one uint64 id per leaf -- 32 766
+    // of them, which at MAX_NODE_CAPACITY is 268'435'455 items. Unbounded, flush() writes one id
+    // per leaf into that fixed buffer with nothing stopping it at the end, and load() sizes its
+    // read by a count it takes off the disk without comparing it to anything.
+    static constexpr size_t MAX_LEAF_NODES = (METADATA_SIZE - 2 * sizeof(size_t)) / sizeof(uint64_t);
+
+#ifdef DEV_MODE
+    // THE CEILING IS NOT REACHABLE BY A TEST: 32 766 leaves means 32 766 leaf files and a
+    // half-megabyte header written into each one on every flush. This lowers it so the guard that
+    // watches it can be exercised for real -- the guard is the same code either way, only the
+    // number it compares against changes. 0 restores MAX_LEAF_NODES.
+    void dev_set_max_leaf_nodes(size_t limit) noexcept;
+    [[nodiscard]] size_t max_leaf_nodes() noexcept;
+#endif
 
     class btree_t {
     public:
@@ -40,7 +55,10 @@ namespace core::b_plus_tree {
 
             virtual base_node_t* find_node(const index_t&) = 0;
             virtual void balance(base_node_t* neighbour) = 0;
-            virtual void merge(base_node_t* neighbour) = 0;
+            // False = NOTHING was merged and `neighbour` still holds everything it held. The
+            // caller REMOVES AND DELETES the node it merged from, so a merge that only moved part
+            // of it orphans the rest -- see segment_tree_t::merge().
+            [[nodiscard]] virtual bool merge(base_node_t* neighbour) = 0;
 
             virtual index_t min_index() const = 0;
             virtual index_t max_index() const = 0;
@@ -58,8 +76,13 @@ namespace core::b_plus_tree {
 
         class leaf_node_t : public base_node_t {
         public:
+            // LAZY-MODE LEAF: the segment tree underneath remembers where its
+            // file is and holds no descriptor at rest. This is the only production door;
+            // the pinned-handle segment_tree_t ctor remains as the unit tests' fault
+            // seam and is not reachable through btree_t.
             leaf_node_t(std::pmr::memory_resource* resource,
-                        std::unique_ptr<filesystem::file_handle_t> file,
+                        filesystem::local_file_system_t& fs,
+                        filesystem::path_t file_path,
                         index_t (*func)(const item_data&),
                         uint64_t segment_tree_id,
                         size_t min_node_capacity,
@@ -73,9 +96,9 @@ namespace core::b_plus_tree {
             bool append(const index_t& index, item_data item);
             bool remove(const index_t& index, item_data item);
             bool remove_index(const index_t& index);
-            [[nodiscard]] leaf_node_t* split(std::unique_ptr<filesystem::file_handle_t> file, uint64_t segment_tree_id);
+            [[nodiscard]] leaf_node_t* split(filesystem::path_t file_path, uint64_t segment_tree_id);
             void balance(base_node_t* neighbour) override;
-            void merge(base_node_t* neighbour) override;
+            [[nodiscard]] bool merge(base_node_t* neighbour) override;
 
             bool contains_index(const index_t& index);
             bool contains(const index_t& index, item_data item);
@@ -91,6 +114,12 @@ namespace core::b_plus_tree {
             uint64_t segment_tree_id() const;
             [[nodiscard]] bool flush() const;
             void load();
+            // Point this leaf's segment tree at the tree-wide refusal cell, so one read of
+            // btree_t::load_failure() covers a walk that crossed any number of leaves.
+            void set_failure_channel(failure_channel_t* channel) noexcept {
+                segment_tree_->set_failure_channel(channel);
+            }
+            [[nodiscard]] bool poisoned() const noexcept { return segment_tree_->poisoned(); }
 
             segment_tree_t::iterator begin() const { return segment_tree_->begin(); }
             segment_tree_t::iterator end() const { return segment_tree_->end(); }
@@ -125,7 +154,7 @@ namespace core::b_plus_tree {
             void remove(base_node_t* node);
             [[nodiscard]] inner_node_t* split();
             void balance(base_node_t* neighbour) override;
-            void merge(base_node_t* neighbour) override;
+            [[nodiscard]] bool merge(base_node_t* neighbour) override;
             void build(base_node_t** nodes, size_t count);
 
             size_t count() const override;
@@ -210,6 +239,18 @@ namespace core::b_plus_tree {
         size_t size() const;
         size_t unique_indices_count();
 
+        // THE REFUSAL CHANNEL FOR THE WHOLE TREE, and the answer to "did the walk I just ran read
+        // everything it claimed to read". Every leaf reports into this one cell, so a scan that
+        // crossed a hundred leaves is one question afterwards. Sticky and first-failure-wins: it
+        // is not cleared by the next read, only by take_load_failure() or reset_load_failure().
+        //
+        // A reader that gets anything but `none` must throw its answer away: the tree served
+        // NOTHING out of the blocks it could not read, so the answer is short, and a short answer
+        // from an index is a wrong answer rather than a fast one.
+        [[nodiscard]] load_failure_t load_failure() const noexcept { return failures_.peek(); }
+        [[nodiscard]] load_failure_t take_load_failure() noexcept { return failures_.take(); }
+        void reset_load_failure() noexcept { failures_.clear(); }
+
     private:
         leaf_node_t* find_leaf_node_(const index_t& index);
         void release_locks_(std::deque<base_node_t*>& modified_nodes) const;
@@ -229,6 +270,7 @@ namespace core::b_plus_tree {
         std::atomic<size_t> item_count_{0};
         std::atomic<size_t> leaf_nodes_count_{0};
         std::queue<uint64_t> missed_ids_;
+        failure_channel_t failures_;
         static constexpr std::string_view metadata_file_name_ = "metadata";
     };
 
@@ -249,7 +291,15 @@ namespace core::b_plus_tree {
 
         while (first_leaf) {
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // The allocation-refusal leg: nothing could bring this block into memory,
+                    // out_of_memory is on the tree's channel (load_segment_ reported it), and
+                    // the walk serves the blocks it CAN read -- the same shape a poisoned
+                    // stand-in already gives the two other refusal legs.
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     T t = deserializer(reinterpret_cast<void*>(it->item.data), it->item.size);
                     if (predicate(it->index, t)) {
                         result->emplace_back(std::move(t));
@@ -295,7 +345,13 @@ namespace core::b_plus_tree {
             }
 
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // See full_scan: the allocation-refusal leg leaves an empty slot no walk
+                    // may dereference; the refusal is on the channel.
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     if (it->index > max_index) {
                         tree_mutex_.unlock_shared();
                         return true;
@@ -352,7 +408,13 @@ namespace core::b_plus_tree {
             }
 
             for (auto block = last_leaf->rbegin(); block != last_leaf->rend(); block++) {
-                for (auto it = block->rbegin(); it != block->rend(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // See full_scan: the allocation-refusal leg leaves an empty slot no walk
+                    // may dereference; the refusal is on the channel.
+                    continue;
+                }
+                for (auto it = blk->rbegin(); it != blk->rend(); it++) {
                     if (it->index < min_index) {
                         tree_mutex_.unlock_shared();
                         return true;

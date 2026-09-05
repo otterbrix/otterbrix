@@ -60,7 +60,16 @@ namespace components::table::storage {
         [[nodiscard]] virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_small_memory(memory_tag tag, uint64_t size);
 
-        virtual void reserve_memory(uint64_t size);
+        // Returns true when the reservation was made, out_of_memory when it could not be. A `void`
+        // here would make "the pool granted `size`" and "eviction freed nothing, so the reservation
+        // never happened" the SAME observation, and the caller would spend memory it had not been
+        // given — the defect class of a `void write()` one layer down. <bool> rather than <void>
+        // because result_wrapper_t forbids void. NVI: the customization point is reserve_memory_impl
+        // (private, below); the neighbours predate the idiom.
+        [[nodiscard]] core::result_wrapper_t<bool> reserve_memory(uint64_t size) { return reserve_memory_impl(size); }
+        // Stays void: it releases a reservation this manager already granted, and a decrement
+        // of a counter has nothing to fail at. Call it only after a reserve_memory that
+        // answered true — a refused reservation took nothing to give back.
         virtual void free_reserved_memory(uint64_t size);
         virtual std::vector<memory_info_t> get_memory_usage_info() const = 0;
         // Returns out_of_memory when eviction can't shrink to the new limit; forwards
@@ -84,6 +93,11 @@ namespace components::table::storage {
     protected:
         virtual void purge_queue(const block_handle_t& handle) = 0;
         virtual void add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle);
+
+    private:
+        // reserve_memory's customization point (NVI). Derived managers override here —
+        // privately as well; every caller goes through the public non-virtual face above.
+        [[nodiscard]] virtual core::result_wrapper_t<bool> reserve_memory_impl(uint64_t size);
     };
 
 } // namespace components::table::storage

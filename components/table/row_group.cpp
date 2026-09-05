@@ -49,6 +49,16 @@ namespace components::table {
     }
 #endif
 
+    namespace {
+        // create_column hands back EXCLUSIVE ownership because that is what the nested children
+        // need. A row group's TOP-LEVEL columns are shared with its ALTER successors instead, so
+        // this is the one place the two ownership models meet: the fresh object is released from
+        // the unique_ptr and adopted by its own reference count (0 -> 1).
+        boost::intrusive_ptr<column_data_t> adopt_column(std::unique_ptr<column_data_t> column) {
+            return boost::intrusive_ptr<column_data_t>(column.release());
+        }
+    } // namespace
+
     row_group_t::row_group_t(collection_t* collection, int64_t start, uint64_t count)
         : segment_base_t(start, count)
         , collection_(collection)
@@ -60,9 +70,17 @@ namespace components::table {
         for (auto& column : columns()) {
             column->set_start(new_start);
         }
+        // Version slots are group-local, so a move never re-slots them — but the
+        // manager's start_ feeds fetch()'s absolute→local rebase and the chunk_info
+        // start labels, so it must move with the group. (Only merge_storage reaches
+        // this; without the rebase the manager would keep answering point-fetches
+        // for the group's OLD position.)
+        if (auto* vinfo = version_info_.load()) {
+            vinfo->set_start(new_start);
+        }
     }
 
-    std::vector<std::shared_ptr<column_data_t>>& row_group_t::columns() {
+    std::vector<boost::intrusive_ptr<column_data_t>>& row_group_t::columns() {
         for (uint64_t c = 0; c < get_column_count(); c++) {
             get_column(c);
         }
@@ -101,7 +119,7 @@ namespace components::table {
         for (uint64_t i = 0; i < types.size(); i++) {
             auto column_data =
                 column_data_t::create_column(collection_->resource(), block_manager(), i, start, types[i]);
-            columns_.push_back(std::move(column_data));
+            columns_.push_back(adopt_column(std::move(column_data)));
         }
     }
 
@@ -128,7 +146,8 @@ namespace components::table {
             return false;
         }
         state.max_row_group_row = std::min(start + group_count, state.max_row);
-        assert(!state.column_scans.empty());
+        // No assert on column_scans: a column-less scan (see table_scan_state::column_ids) is
+        // legal and leaves this vector empty, and the loop below then runs zero times.
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             const auto& column = column_ids[i];
             if (!column.is_row_id_column()) {
@@ -149,7 +168,7 @@ namespace components::table {
         if (state.max_row_group_row == 0) {
             return false;
         }
-        assert(!state.column_scans.empty());
+        // Same as initialize_scan_with_offset: an empty column list is a row-count-only scan.
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
             if (!column.is_row_id_column()) {
@@ -162,10 +181,11 @@ namespace components::table {
         return true;
     }
 
-    std::unique_ptr<row_group_t> row_group_t::add_column(collection_t* new_collection,
-                                                         column_definition_t& new_column,
-                                                         const std::optional<types::logical_value_t>& default_value,
-                                                         vector::vector_t& result) {
+    core::result_wrapper_t<std::unique_ptr<row_group_t>>
+    row_group_t::add_column(collection_t* new_collection,
+                            column_definition_t& new_column,
+                            const std::optional<types::logical_value_t>& default_value,
+                            vector::vector_t& result) {
         auto added_column = column_data_t::create_column(collection_->resource(),
                                                          block_manager(),
                                                          get_column_count(),
@@ -178,22 +198,24 @@ namespace components::table {
                 default_value.has_value() ? *default_value
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
-            // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The append
-            // chain reports out_of_memory; this constructor-style caller cannot return a
-            // result_wrapper_t, so assert and stop the backfill on exhaustion. (A graceful DDL abort
-            // would require the data_table ADD COLUMN constructors to be converted to return errors.)
+            // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The
+            // append chain reports out_of_memory; that answer RIDES this function's own channel.
+            // An assert instead would vanish under NDEBUG and let the loop break in silence: the
+            // successor ships with a new column SHORTER than count, and every scan of it reads
+            // past the column's end (rule 6).
             auto init = added_column->initialize_append(state);
-            assert(!init.has_error() && "row_group::add_column: initialize_append OOM");
-            for (uint64_t i = 0; i < rows_to_write && !init.has_error(); i += vector::DEFAULT_VECTOR_CAPACITY) {
+            if (init.has_error()) {
+                return init.convert_error<std::unique_ptr<row_group_t>>();
+            }
+            for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
                 result.reference(fill_value);
                 if (!default_value.has_value()) {
                     result.set_null(true);
                 }
                 auto appended = added_column->append(state, result, rows_in_this_vector);
-                assert(!appended.has_error() && "row_group::add_column: append OOM");
                 if (appended.has_error()) {
-                    break;
+                    return appended.convert_error<std::unique_ptr<row_group_t>>();
                 }
             }
         }
@@ -201,10 +223,14 @@ namespace components::table {
         auto row_group = std::make_unique<row_group_t>(new_collection, start, count);
         row_group->set_version_info(get_or_create_version_info_ptr());
         row_group->current_version_ = current_version_;
+        // Structural sharing, deliberately: the successor's row group points at the SAME column
+        // objects as this one, and the intrusive count in each column keeps them alive until the
+        // last of the two row groups is gone. A deep copy here would double the table's memory and
+        // silently fork the two views of the same rows.
         row_group->columns_ = columns();
-        row_group->columns_.push_back(std::move(added_column));
+        row_group->columns_.push_back(adopt_column(std::move(added_column)));
 
-        return row_group;
+        return std::move(row_group);
     }
 
     std::unique_ptr<row_group_t> row_group_t::remove_column(collection_t* new_collection, uint64_t removed_column) {
@@ -213,6 +239,8 @@ namespace components::table {
         auto row_group = std::make_unique<row_group_t>(new_collection, start, count);
         row_group->set_version_info(get_or_create_version_info_ptr());
         row_group->current_version_ = current_version_;
+        // Same structural sharing as add_column: every surviving column object is SHARED with the
+        // successor's row group, not copied.
         auto& cols = columns();
         for (uint64_t i = 0; i < cols.size(); i++) {
             if (i != removed_column) {
@@ -242,26 +270,70 @@ namespace components::table {
         auto* res = collection_->resource();
         // The chunk presents every bound column at its own storage ordinal, so a bound slot resolves
         // to it; the projected ctor allocates buffers ONLY for those, the rest stay placeholders.
+        //
+        // A BOUND ORDINAL PAST THE LAST MATERIALIZED COLUMN is not a bug and not out of bounds:
+        // the graph was typed against the CATALOG's column list (storage_types), and pg_attribute
+        // can legally name a column this storage has not materialized yet — ALTER TABLE ADD
+        // COLUMN writes the catalog row and stops, the physical column is created by the first
+        // INSERT that carries it. Such a column reads what the catalog published for it, which is
+        // its DEFAULT where the ALTER declared one — fill_published_default (collection.cpp) is
+        // that answer, and the projection leg fills the same ordinals from the same function.
+        // Calling get_column() on it would abort inside row_group_t::get_column.
+        const size_t materialized = get_column_count();
         std::vector<size_t> referenced;
         size_t width = 0;
+        std::pmr::vector<types::complex_logical_type> chunk_types(res);
         for (const auto& binding : filter.graph->input_bindings()) {
             referenced.push_back(binding.column);
             width = std::max(width, binding.column + 1);
+            if (binding.column >= chunk_types.size()) {
+                chunk_types.resize(binding.column + 1, types::complex_logical_type{types::logical_type::BIGINT});
+            }
+            chunk_types[binding.column] = filter.graph->slot_type(binding.slot);
         }
-        std::pmr::vector<types::complex_logical_type> chunk_types(res);
-        chunk_types.reserve(width);
-        for (size_t column = 0; column < width; column++) {
-            chunk_types.push_back(get_column(column).type());
+        // Unbound ordinals below `width` are gaps the graph never reads; they only need a type to
+        // construct a (buffer-less) placeholder with, and the storage's own is the honest one.
+        for (size_t column = 0; column < width && column < materialized; column++) {
+            bool bound = false;
+            for (size_t r : referenced) {
+                if (r == column) {
+                    bound = true;
+                    break;
+                }
+            }
+            if (!bound) {
+                chunk_types[column] = get_column(column).type();
+            }
         }
         vector::data_chunk_t rows{res, chunk_types, referenced, count};
+        // ONE state for the whole function, a CHILD of it per column — the shape
+        // row_group_t::fetch_row already uses, and both halves of it are load-bearing here.
+        //
+        // The child is what stops two bound columns from sharing child_states: a struct
+        // column reads its fields through child(0), so two struct-typed bound columns used
+        // to alias each other's field states. Harmless while handles are keyed by block id
+        // and the flag/error are homogeneous, but an aliasing invariant nobody stated.
+        //
+        // The single OUTER state is what keeps the pins: result_outlives_pins is false here
+        // (this chunk dies inside the call), so a fetched long string is a view into a
+        // pinned block, and `rows` is read by run_graph BELOW this loop. Declaring the state
+        // inside the loop instead would release each column's pins one iteration early —
+        // the same one-line "fix" that looks equivalent and is not.
         column_fetch_state fetch_state;
+        size_t child_slot = 0;
         for (size_t column : referenced) {
+            auto& column_state = fetch_state.child(child_slot++);
+            if (column >= materialized) {
+                fill_published_default(rows.data[column], collection_->published_column(column - materialized), count);
+                continue;
+            }
             for (uint64_t row = 0; row < count; row++) {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
 #endif
-                get_column(column).fetch_row(fetch_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
-                if (fetch_state.fetch_error.contains_error()) {
+                get_column(column)
+                    .fetch_row(column_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
+                if (fetch_state.absorb_error(column_state)) {
                     return fetch_state.fetch_error;
                 }
             }
@@ -274,8 +346,8 @@ namespace components::table {
         return std::move(decided.value().data.front());
     }
 
-    // Pruning is off while a filter is only a graph: it used to read a constant filter's bound
-    // against the segment min/max, and the graph does not expose one yet.
+    // Pruning is off while a filter is only a graph: it needs a constant filter's bound to
+    // compare against the segment min/max, and the graph exposes none.
     bool row_group_t::check_zonemap_segments(collection_scan_state&) { return true; }
 
     void row_group_t::filter_indexing(std::pmr::memory_resource* resource,
@@ -569,9 +641,31 @@ namespace components::table {
                 data[result_idx] = row_id;
             } else {
                 auto& col_data = get_column(column);
-                col_data.fetch_row(state, row_id, result_vector, result_idx);
+                // Per-column child state (not the ONE shared `state`): parking every
+                // struct-typed top-level column's validity in state.child(0) makes two of them
+                // alias each other's children — harmless only because handles are keyed by block
+                // id and the flag/error are homogeneous, but an aliasing invariant nobody states.
+                // child() re-stamps result_outlives_pins on hand-out and absorb_error lifts the
+                // refusal into the state the callers of THIS function actually read; the first
+                // failing column aborts the row, as in the struct's own field walk.
+                auto& column_state = state.child(col_idx);
+                col_data.fetch_row(column_state, row_id, result_vector, result_idx);
+                if (state.absorb_error(column_state)) {
+                    return;
+                }
             }
         }
+    }
+
+    bool row_group_t::is_visible(const transaction_data& txn, int64_t row_id) {
+        auto* versions = version_info();
+        if (!versions) {
+            // No manager == no insert stamp and no tombstone recorded for this group.
+            // Everything in it is committed-and-visible, which is the same answer
+            // row_version_manager_t::fetch gives over a null chunk_info.
+            return true;
+        }
+        return versions->fetch(txn, static_cast<uint64_t>(row_id));
     }
 
     void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
@@ -595,7 +689,7 @@ namespace components::table {
         }
     }
 
-    void row_group_t::revert_append(uint64_t row_group_start) {
+    core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start) {
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->revert_append(row_group_start);
@@ -606,12 +700,25 @@ namespace components::table {
         // Without this the column segments and their count_ keep the reverted rows: a later scan
         // sized by the row group's (reduced) count then over-reads the stale column tail and writes
         // past the result vector (heap-buffer-overflow in fetch_row).
+        //
+        // Best-effort across columns: each column's truncation is independent, so one refusal
+        // must not leave the remaining columns un-truncated (that is the over-read above).
+        // The FIRST refusal is kept and reported after the walk; the count still shrinks —
+        // a stale tail beyond the reduced count is invisible, which is the safe direction.
+        core::error_t first_error = core::error_t::no_error();
         for (uint64_t c = 0; c < get_column_count(); c++) {
-            get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
+            auto reverted = get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
+            if (reverted.has_error() && !first_error.contains_error()) {
+                first_error = reverted.error();
+            }
         }
         if (row_group_start < this->count.load()) {
             this->count = row_group_start;
         }
+        if (first_error.contains_error()) {
+            return first_error;
+        }
+        return true;
     }
 
     core::result_wrapper_t<bool> row_group_t::initialize_append(row_group_append_state& append_state) {
@@ -663,7 +770,7 @@ namespace components::table {
                 return col_data.update(column, update_chunk.data[i], ids, count);
             }();
             if (updated.has_error()) {
-                return updated; // write_conflict / out_of_memory
+                return updated; // out_of_memory / data_corruption / io_error
             }
         }
         return true;
@@ -671,15 +778,31 @@ namespace components::table {
 
     core::result_wrapper_t<bool> row_group_t::update_column(vector::data_chunk_t& updates,
                                                             vector::vector_t& row_ids,
-                                                            const std::vector<uint64_t>& column_path) {
+                                                            const std::vector<uint64_t>& column_path,
+                                                            uint64_t offset,
+                                                            uint64_t count) {
         assert(updates.column_count() == 1);
         auto ids = row_ids.data<int64_t>();
 
+        // The path arrives from the caller's plan/journal, so an impossible ordinal is a loud
+        // refusal on the channel this function already returns, not an assert that vanishes
+        // under NDEBUG and indexes columns_ out of range (rules 2/6).
+        if (column_path.empty() || column_path[0] >= columns_.size()) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("row group update: the column path names no column of this row group",
+                                 collection_->resource()));
+        }
         auto primary_column_idx = column_path[0];
-        assert(primary_column_idx != std::numeric_limits<uint64_t>::max());
-        assert(primary_column_idx < columns_.size());
         auto& col_data = get_column(primary_column_idx);
-        return col_data.update_column(column_path, updates.data[0], ids, updates.size(), 1);
+        // Same slicing contract as update() above: [offset, offset + count) of the caller's
+        // chunk/ids is this row group's share of the statement.
+        if (offset > 0) {
+            vector::vector_t sliced_vector(updates.data[0], offset, count);
+            sliced_vector.flatten(count);
+            return col_data.update_column(column_path, sliced_vector, ids + offset, count, 1);
+        }
+        return col_data.update_column(column_path, updates.data[0], ids, count, 1);
     }
 
     uint64_t row_group_t::committed_row_count() {
@@ -699,13 +822,6 @@ namespace components::table {
         return vi->has_version_above(watermark, count);
     }
 
-    bool row_group_t::has_unloaded_deletes() const {
-        if (deletes_pointers_.empty()) {
-            return false;
-        }
-        return !deletes_is_loaded_;
-    }
-
     void row_group_t::get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result) {
         for (uint64_t col_idx = 0; col_idx < get_column_count(); col_idx++) {
             auto& col_data = get_column(col_idx);
@@ -721,6 +837,17 @@ namespace components::table {
                 column->collect_disk_block_ids(out);
             }
         }
+    }
+
+    void row_group_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) {
+        // Same materialized-only rule as the whole-row-group walk above: a column this row group
+        // never materialized owns no in-memory segments to read block ids off. An index past the
+        // end is a row group that predates the column (dynamic schema growth appends columns to
+        // LATER row groups only), not an error.
+        if (column_index >= columns_.size() || !columns_[column_index]) {
+            return;
+        }
+        columns_[column_index]->collect_disk_block_ids(out);
     }
 
     class version_delete_state {
@@ -762,7 +889,10 @@ namespace components::table {
     }
 
     uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
-        const bool is_txn = transaction_id != 0;
+        // The is_txn == false leg is what gives DIRECT_WRITE_TXN_ID its meaning: it stamps an
+        // immediately-committed version id, so no publish/revert is owed afterwards. Named
+        // rather than re-derived, because two disk-side handlers branch on the same sentinel.
+        const bool is_txn = !is_direct_write_txn(transaction_id);
         version_delete_state del_state(*this, transaction_id, table, start, is_txn);
 
         for (uint64_t i = 0; i < count; i++) {
@@ -811,7 +941,7 @@ namespace components::table {
         return *get_or_create_version_info_internal();
     }
 
-    std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_ptr() {
+    boost::intrusive_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_ptr() {
         auto vinfo = version_info();
         if (vinfo) {
             return owned_version_info_;
@@ -825,7 +955,14 @@ namespace components::table {
         // in_flight set is a see-all snapshot covering every committed row.
         transaction_data td(0, 0);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        return indexing_vector(td, index, temp_indexing, count);
+        // indexing_vector takes the scan state's collection-ABSOLUTE vector index;
+        // this group's first vector sits at start / CAPACITY. (The old `index`
+        // argument — the segment ordinal — only coincided with it while every
+        // group held exactly one vector.)
+        return indexing_vector(td,
+                               static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY,
+                               temp_indexing,
+                               count);
     }
 
     uint64_t row_group_t::indexing_vector(transaction_data txn,
@@ -836,38 +973,70 @@ namespace components::table {
         if (!vinfo) {
             return max_count;
         }
-        return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
+        // `vector_idx` arrives collection-ABSOLUTE (the scan state's convention, see
+        // initialize_scan_with_offset); version slots are GROUP-LOCAL. Convert here,
+        // where `start` is authoritative, so the reader consults the same slot the
+        // append path wrote — for any group past the first the absolute index used
+        // to fall off the end of vector_info_ and every row (committed or not)
+        // scanned as visible.
+        assert(start % static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY) == 0);
+        const uint64_t base_vector_idx = static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY;
+        assert(vector_idx >= base_vector_idx);
+        return vinfo->indexing_vector(txn, vector_idx - base_vector_idx, indexing_vector, max_count);
     }
 
-    std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
+    boost::intrusive_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
         if (!owned_version_info_) {
-            auto new_info = std::make_shared<row_version_manager_t>(start);
+            // Plain `new`, never the pmr resource: the reference count lives inside the manager,
+            // so the counter's `delete` is the matching deallocation. Nothing was lost by giving
+            // up make_shared's single object+control-block allocation — no weak_ptr, aliasing
+            // pointer, custom deleter or shared_from_this was ever taken on a manager, and the
+            // intrusive count is one allocation too, not two.
+            auto new_info = boost::intrusive_ptr<row_version_manager_t>(new row_version_manager_t(start));
             set_version_info(std::move(new_info));
         }
         return owned_version_info_;
     }
 
     row_version_manager_t* row_group_t::version_info() {
-        if (!has_unloaded_deletes()) {
-            return version_info_;
-        }
-        if (!has_unloaded_deletes()) {
-            return version_info_;
-        }
-        set_version_info(nullptr);
-        deletes_is_loaded_ = true;
+        // Deliberately unconditional: there is NO "load delete info from disk" branch here.
+        // Reviving on-disk delete info means writing a real load, not a stub that DISCARDS this
+        // row group's version state (set_version_info(nullptr)) — its only observable behaviour
+        // would be the silent degradation rule 6 forbids.
         return version_info_;
     }
 
-    void row_group_t::set_version_info(std::shared_ptr<row_version_manager_t> version) {
+    void row_group_t::set_version_info(boost::intrusive_ptr<row_version_manager_t> version) {
+        // Own FIRST, publish SECOND — the sole writer of the member pair, and what holds their
+        // invariant (see row_group.hpp).
+        //
+        // Every REACHABLE caller moves this row group from "no manager" to "a manager":
+        // get_or_create_version_info_internal only calls in under `if (!owned_version_info_)`,
+        // and add_column / remove_column call it on a row group they have just constructed, whose
+        // owner is still null and which no other reader can reach yet. So the object is fully
+        // owned and alive before the raw pointer naming it becomes visible, and the seq_cst store
+        // orders the object's construction ahead of the publication for the seq_cst loads on the
+        // read path.
+        //
+        // The order is correct ONLY for that transition. A caller that CLEARED or REPLACED an
+        // existing manager would release the owner on the first line — dropping what may be the
+        // last reference and destroying the object — while version_info_ still named it, so a
+        // reader on the lock-free path could pick up a dangling pointer. Should such a caller
+        // ever be added, the atomic must be stored first. (No clearing caller exists in the
+        // tree today.)
         owned_version_info_ = std::move(version);
         version_info_ = owned_version_info_.get();
     }
 
     void version_delete_state::delete_row(int64_t row_id) {
-        assert(row_id >= 0);
-        uint64_t vector_idx = static_cast<uint64_t>(row_id) / vector::DEFAULT_VECTOR_CAPACITY;
-        uint64_t idx_in_vector = static_cast<uint64_t>(row_id) - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
+        assert(row_id >= base_row);
+        // row_id is collection-ABSOLUTE; row_version_manager_t slots are GROUP-LOCAL
+        // (slot 0 = the group's first vector). Rebase by the group's start (base_row)
+        // before slicing into vectors, so the tombstone lands in the slot the scan
+        // and the committed_deleted_count / has_version_above walks actually read.
+        const uint64_t local_row = static_cast<uint64_t>(row_id - base_row);
+        uint64_t vector_idx = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t idx_in_vector = local_row - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
         if (current_chunk != vector_idx) {
             flush();
 
@@ -891,6 +1060,36 @@ namespace components::table {
         delete_count += actual_delete_count;
         count = 0;
     }
+    namespace {
+        // persistent_column_data_t <-> column_data_pointers_t: the row-group pointer stores
+        // the recursive segment layout (count + own segments + children) of every column
+        // NODE, so nested columns (LIST/STRUCT/ARRAY) round-trip their children. Statistics
+        // are intentionally not part of the row-group pointer (as before).
+        storage::column_data_pointers_t to_column_pointers(const persistent_column_data_t& persistent) {
+            storage::column_data_pointers_t out;
+            out.count = persistent.count;
+            out.segments = persistent.data_pointers;
+            out.children.reserve(persistent.child_columns.size());
+            for (const auto& child : persistent.child_columns) {
+                out.children.push_back(to_column_pointers(*child));
+            }
+            return out;
+        }
+
+        persistent_column_data_t from_column_pointers(std::pmr::memory_resource* resource,
+                                                      const storage::column_data_pointers_t& pointers) {
+            persistent_column_data_t persistent(resource);
+            persistent.count = pointers.count;
+            persistent.data_pointers = pointers.segments;
+            persistent.child_columns.reserve(pointers.children.size());
+            for (const auto& child : pointers.children) {
+                persistent.child_columns.push_back(
+                    std::make_unique<persistent_column_data_t>(from_column_pointers(resource, child)));
+            }
+            return persistent;
+        }
+    } // namespace
+
     core::result_wrapper_t<storage::row_group_pointer_t>
     row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
         storage::row_group_pointer_t pointer;
@@ -898,14 +1097,14 @@ namespace components::table {
         pointer.tuple_count = count;
 
         auto col_count = get_column_count();
-        pointer.data_pointers.resize(col_count);
+        pointer.data_pointers.reserve(col_count);
 
         for (uint64_t i = 0; i < col_count; i++) {
             auto persistent = columns_[i]->checkpoint(partial_block_manager);
             if (persistent.has_error()) {
                 return persistent.convert_error<storage::row_group_pointer_t>(); // out_of_memory
             }
-            pointer.data_pointers[i] = std::move(persistent.value().data_pointers);
+            pointer.data_pointers.push_back(to_column_pointers(persistent.value()));
         }
 
         return pointer;
@@ -914,8 +1113,7 @@ namespace components::table {
     core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
         // Own ONE partial_block_manager for this closed row group: ALL its columns' (and validity children's)
         // segments are PACKED together into shared blocks, so a row group of narrow columns shares a handful
-        // of blocks instead of one block per segment (the ~127x over-allocation B2 fixes). In-memory tables
-        // buffer nothing (transition_segment_to_disk early-returns), so the flush below is a harmless no-op.
+        // of blocks instead of one block per segment (a ~127x over-allocation).
         storage::partial_block_manager_t pbm(block_manager());
         // Only transition columns already materialized in memory (a freshly-appended row group). Disk-loaded /
         // unloaded columns are already disk-backed (block_id < MAXIMUM) -> nothing to do; don't force a load.
@@ -932,21 +1130,67 @@ namespace components::table {
         // so once it returns every re-pointed segment's packed block is durable on disk and a subsequent scan
         // or eviction can safely load() it. THIS is the flush-before-evict point for the per-row-group-close
         // append path (and, transitively, for compact, which rebuilds via this same append path).
-        pbm.flush_partial_blocks();
+        if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
+            return flushed; // io_error: the re-pointed segments' blocks are not on disk
+        }
         return true;
     }
 
-    void row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
+    core::result_wrapper_t<bool> row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
         count = pointer.tuple_count;
         auto col_count = get_column_count();
-        auto ptrs_count = pointer.data_pointers.size();
-        auto min_count = std::min(col_count, static_cast<uint64_t>(ptrs_count));
-
-        for (uint64_t i = 0; i < min_count; i++) {
-            persistent_column_data_t pcd(columns_[i]->resource());
-            pcd.data_pointers = pointer.data_pointers[i];
-            columns_[i]->initialize_column(pcd);
+        // The table was just built from the SAME metadata stream this pointer came from, so
+        // the counts can only diverge on a corrupt stream. The old std::min() silently loaded
+        // a subset — a half-valid table is worse than a loud failure.
+        if (pointer.data_pointers.size() != col_count) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("row group load: column tree count does not match the table's columns",
+                                 collection().resource()));
         }
+
+        for (uint64_t i = 0; i < col_count; i++) {
+            auto pcd = from_column_pointers(columns_[i]->resource(), pointer.data_pointers[i]);
+            auto initialized = columns_[i]->initialize_column(pcd);
+            if (initialized.has_error()) {
+                return initialized; // data_corruption
+            }
+        }
+        return true;
     }
+
+#ifdef DEV_MODE
+    const column_data_t* row_group_t::column_identity(uint64_t c) const {
+        assert(c < columns_.size());
+        // Deliberately does NOT lazily load: identity is asked of a column this row group already
+        // holds, and forcing a load would materialize the very object under test. A null answer
+        // means "this row group has no column object here", which the caller must reject.
+        return columns_[c].get();
+    }
+
+    uint64_t row_group_t::column_owner_count(uint64_t c) const {
+        assert(c < columns_.size());
+        // A live column is owned by at least one row group, so 0 can only mean "no object".
+        return columns_[c] ? columns_[c]->use_count() : 0;
+    }
+
+    const row_version_manager_t* row_group_t::version_manager_identity() const {
+        // The OWNING side. Deliberately does NOT create one on demand: a group that never
+        // appended has no manager, and creating one here would be the gate manufacturing the
+        // object it is meant to observe.
+        return owned_version_info_.get();
+    }
+
+    const row_version_manager_t* row_group_t::version_manager_published() const {
+        // The published side — exactly what the lock-free readers (version_info(),
+        // committed_row_count, has_version_above, move_to_collection) see.
+        return version_info_.load();
+    }
+
+    uint64_t row_group_t::version_manager_owner_count() const {
+        // A live manager is owned by at least one row group, so 0 can only mean "no object".
+        return owned_version_info_ ? static_cast<uint64_t>(owned_version_info_->use_count()) : 0;
+    }
+#endif
 
 } // namespace components::table

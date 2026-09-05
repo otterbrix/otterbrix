@@ -6,6 +6,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_registry.cpp
         test_execution.cpp
         test_aggregate_kernels.cpp
+        test_exec_context_resource.cpp
+        test_output_type_resolver.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

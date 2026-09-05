@@ -7,8 +7,11 @@
 
 namespace otterbrix::benchmark {
 
-inline void checkpoint_if_disk(benchmark_state_t& state, const char* context = nullptr) {
-    if (!state.io.disk_on || state.dispatcher == nullptr) {
+// Unconditional: every table is disk-backed, so a benchmark that never checkpoints is
+// measuring an engine that never flushed. Not gated on `--disk` -- that flag selected a
+// storage mode that no longer exists.
+inline void checkpoint_now(benchmark_state_t& state, const char* context = nullptr) {
+    if (state.dispatcher == nullptr) {
         return;
     }
     auto cursor = state.dispatcher->execute_sql(state.session, "CHECKPOINT");
@@ -35,7 +38,7 @@ inline void csv_load_after_batch(benchmark_state_t& state,
     }
     bytes_since_checkpoint += batch_bytes;
     if (bytes_since_checkpoint >= interval) {
-        checkpoint_if_disk(state, "during CSV load");
+        checkpoint_now(state, "during CSV load");
         if (state.failed) {
             return;
         }

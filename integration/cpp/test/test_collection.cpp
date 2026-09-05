@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -37,7 +38,7 @@ using deleted_unique_ptr = std::unique_ptr<T, std::function<void(T*)>>;
 TEST_CASE("integration::cpp::test_collection") {
     auto resource = core::pmr::otterbrix_resource();
 
-    auto config = test_create_config("/tmp/test_collection");
+    auto config = test_create_config(integration_fixture_path("test_collection"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

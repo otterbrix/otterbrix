@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,9 +16,8 @@
 // names. The relname-only scan survives ONLY for unqualified names.
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/same_name_select");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_select"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -61,9 +61,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/same_name_dml_routing");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_dml_routing"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -135,9 +134,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/same_name_drop");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_drop"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -173,9 +171,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::missing_table_not_aliased") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/missing_table_not_aliased");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/missing_table_not_aliased"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -211,9 +208,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::missing_table_not_aliased
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_errors") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/nonexistent_database_errors");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/nonexistent_database_errors"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -248,9 +244,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_erro
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_database") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/view_resolves_in_own_database");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/view_resolves_in_own_database"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -280,9 +275,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_data
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_to_own_table") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/unique_constraint_binds_to_own_table");
+    auto config =
+        test_create_config(integration_fixture_path("test_multi_db_isolation/unique_constraint_binds_to_own_table"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -326,9 +321,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_t
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/index_isolation");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/index_isolation"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -387,9 +381,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/cross_database_join");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/cross_database_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -419,9 +412,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/alter_column_isolated");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/alter_column_isolated"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -441,10 +433,13 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
     //
     // NOTE: this case asserts ISOLATION only — that the ALTER binds to db2's
     // table and db1 stays untouched. It deliberately does NOT assert that the
-    // rename itself took effect: node_alter_column_t::set_attoid has no
-    // callers anywhere in the pipeline, so operator_alter_column_rename_t
-    // no-ops with attoid_==INVALID_OID and reports success — a pre-existing
-    // defect independent of cross-database isolation, tracked separately.
+    // rename itself took effect; that is now gated by
+    // integration/cpp/test/test_alter_rename_column.cpp, which covers both the
+    // statement and the storage half it is bound to. (The rename is a silent no-op
+    // whenever operator_alter_column_rename_t has to fall back on attoid_:
+    // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so it
+    // would take its early return on INVALID_OID and report success. It resolves by
+    // (attrelid, attname), as DROP COLUMN does.)
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "ALTER TABLE db2.t1 RENAME COLUMN id TO id2;")->is_success());
@@ -469,9 +464,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserved") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/unqualified_names_preserved");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/unqualified_names_preserved"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -499,7 +493,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserv
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::restart_persistence_isolation") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/restart_persistence_isolation");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/restart_persistence_isolation"));
     test_clear_directory(config);
     // disk + WAL ON: isolation must survive checkpoint/recovery.
 

@@ -17,7 +17,6 @@ pub struct Config {
     pub(crate) disk_path: PathBuf,
     pub(crate) main_path: PathBuf,
     pub(crate) wal_on: bool,
-    pub(crate) disk_on: bool,
     pub(crate) sync_to_disk: bool,
 }
 
@@ -34,10 +33,12 @@ impl Config {
     /// | `disk_path`  | `<base_path>/disk`    |
     /// | `main_path`  | `<base_path>/main`    |
     ///
-    /// `wal_on`, `disk_on`, and `sync_to_disk` are all set to `false`. This
-    /// makes the configuration suitable for ephemeral databases (tests,
-    /// benchmarks, in-memory experiments) but **not** for production data.
-    /// For a durable configuration, use [`Config::builder`].
+    /// `wal_on` and `sync_to_disk` are both set to `false`. Tables are still
+    /// written to `disk_path` — there is no mode in which they are not — so this
+    /// makes the configuration suitable for throwaway databases (tests,
+    /// benchmarks, experiments) but **not** for production data: without the WAL
+    /// nothing recovers a crash between checkpoints. For a durable configuration,
+    /// use [`Config::builder`].
     pub fn new(base_path: impl AsRef<Path>) -> Self {
         let base = base_path.as_ref();
         Config {
@@ -47,7 +48,6 @@ impl Config {
             disk_path: base.join("disk"),
             main_path: base.join("main"),
             wal_on: false,
-            disk_on: false,
             sync_to_disk: false,
         }
     }
@@ -76,7 +76,6 @@ impl Config {
 /// | `disk_path`    | `<cwd>/disk`                            |
 /// | `main_path`    | `<cwd>` (current directory)             |
 /// | `wal_on`       | `true`                                  |
-/// | `disk_on`      | `true`                                  |
 /// | `sync_to_disk` | `true`                                  |
 ///
 /// `<cwd>` is the process's current working directory at the moment
@@ -89,7 +88,6 @@ pub struct ConfigBuilder {
     disk_path: Option<PathBuf>,
     main_path: Option<PathBuf>,
     wal_on: bool,
-    disk_on: bool,
     sync_to_disk: bool,
 }
 
@@ -102,7 +100,6 @@ impl Default for ConfigBuilder {
             disk_path: None,
             main_path: None,
             wal_on: true,
-            disk_on: true,
             sync_to_disk: true,
         }
     }
@@ -131,7 +128,7 @@ impl ConfigBuilder {
 
     /// Sets the directory for on-disk storage segments.
     ///
-    /// Has no effect when [`disk_on`](ConfigBuilder::disk_on) is `false`.
+    /// Always in effect: every table is written here.
     pub fn disk_path(mut self, path: impl AsRef<Path>) -> Self {
         self.disk_path = Some(path.as_ref().to_path_buf());
         self
@@ -146,12 +143,6 @@ impl ConfigBuilder {
     /// Enables or disables the write-ahead log.
     pub fn wal_on(mut self, on: bool) -> Self {
         self.wal_on = on;
-        self
-    }
-
-    /// Enables or disables on-disk storage segments.
-    pub fn disk_on(mut self, on: bool) -> Self {
-        self.disk_on = on;
         self
     }
 
@@ -175,7 +166,6 @@ impl ConfigBuilder {
             disk_path: self.disk_path.unwrap_or_else(|| base.join("disk")),
             main_path: self.main_path.unwrap_or_else(|| base.clone()),
             wal_on: self.wal_on,
-            disk_on: self.disk_on,
             sync_to_disk: self.sync_to_disk,
         }
     }

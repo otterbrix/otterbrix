@@ -13,16 +13,14 @@
 namespace components::table::storage {
 
     // Scratch space for buffers the pool has to push out of memory but that have nowhere else to go.
-    //
-    // A column segment being appended into is transient: it has no block in the .otbx yet, so the
-    // pool cannot simply drop it — dropping would lose the rows. Without somewhere to put it, the
-    // only options are to keep it resident (which is what made a load fail at 24M rows holding 9 MiB
-    // on disk) or to lose data. This is that somewhere.
+    // A column segment being appended into is transient — no block in the .otbx yet — so dropping it
+    // would lose the rows, leaving only "keep it resident", which is what made a load fail at 24M
+    // rows holding 9 MiB on disk.
     //
     // Deliberately simple: one file, slots addressed by byte offset, a free list bucketed by exact
-    // allocation size. Slots are only ever reused for a request of the same size, so a slot never
-    // partially covers a later buffer. The file is unlinked when the object dies — nothing in it
-    // survives the process, and nothing may ever be read from it after a restart.
+    // allocation size, so a reused slot never partially covers a later buffer. The file is unlinked
+    // when the object dies — nothing in it survives the process, and nothing may ever be read from
+    // it after a restart.
     class temporary_spill_file_t {
     public:
         static constexpr uint64_t INVALID_SLOT = UINT64_MAX;

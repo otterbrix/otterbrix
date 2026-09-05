@@ -50,7 +50,7 @@ namespace otterbrix {
     }
 
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
-        -> bool {
+        -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
@@ -62,7 +62,8 @@ namespace otterbrix {
         return wait_future(future);
     }
 
-    auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) -> bool {
+    auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
+        -> core::error_t {
         // Host→dispatcher half of the renderer send; the dispatcher→executor fan-out lives in
         // dispatcher.cpp — keep the two send sites in step.
         auto [_, future] =
@@ -76,7 +77,7 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs)
-        -> bool {
+        -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -92,7 +93,7 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
                                              const components::types::complex_logical_type& source,
                                              const components::types::complex_logical_type& target,
-                                             components::casts::cast_entry entry) -> bool {
+                                             components::casts::cast_entry entry) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::register_cast session: {}", session.data());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::register_cast,
@@ -105,7 +106,7 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::unregister_cast(const session_id_t& session,
                                                const components::types::complex_logical_type& source,
-                                               const components::types::complex_logical_type& target) -> bool {
+                                               const components::types::complex_logical_type& target) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::unregister_cast session: {}", session.data());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::unregister_cast,
@@ -132,19 +133,40 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
-        void* parse_result;
+        List* parse_tree;
         try {
-            parse_result = linitial(raw_parser(&parser_arena, query.c_str(), parser_extensions_));
+            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
         } catch (const std::exception& exception) {
             return make_cursor(
                 resource(),
                 core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
         }
 
+        // parser.h's contract on this exact seam: the returned list may be EMPTY —
+        // the grammar accepted the text and found no statement in it — and it may
+        // hold MORE than one statement. linitial() alone answers both with the
+        // FRONT cell: on an empty list that is a read past the end of the pmr::list,
+        // and on a multi-statement query it silently executes the FIRST statement,
+        // drops the rest, and reports success.
+        if (list_length(parse_tree) == 0) {
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"the query contains no statement to execute (empty "
+                                                              "input, a comment, or a bare ';') — nothing was executed",
+                                                              resource()}));
+        }
+        if (list_length(parse_tree) > 1) {
+            std::pmr::string msg{"the query contains ", resource()};
+            msg += std::to_string(list_length(parse_tree));
+            msg += " statements; one statement per call is supported — nothing was executed";
+            return make_cursor(resource(), core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
+        }
+        void* parse_result = linitial(parse_tree);
         if (!parse_result) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"unknown parser error", resource()}));
+                                             std::pmr::string{"the parser produced a statement with no node in it",
+                                                              resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
@@ -168,19 +190,37 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
-        void* parse_result;
+        List* parse_tree;
         try {
-            parse_result = linitial(raw_parser(&parser_arena, query.c_str(), parser_extensions_));
+            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
         } catch (const std::exception& exception) {
             return make_cursor(
                 resource(),
                 core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
         }
 
+        // Same seam and same contract as execute_sql above: an empty list is
+        // success-with-no-statement, a longer list is more statements than this
+        // call can honestly execute. Unguarded, both fall into linitial().
+        if (list_length(parse_tree) == 0) {
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"the query contains no statement to execute (empty "
+                                                              "input, a comment, or a bare ';') — nothing was executed",
+                                                              resource()}));
+        }
+        if (list_length(parse_tree) > 1) {
+            std::pmr::string msg{"the query contains ", resource()};
+            msg += std::to_string(list_length(parse_tree));
+            msg += " statements; one statement per call is supported — nothing was executed";
+            return make_cursor(resource(), core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
+        }
+        void* parse_result = linitial(parse_tree);
         if (!parse_result) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"unknown parser error", resource()}));
+                                             std::pmr::string{"the parser produced a statement with no node in it",
+                                                              resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));

@@ -13,12 +13,19 @@ namespace components::expressions {
 
     namespace {
 
-        // key_t / parameter_id_t are value types — a plain copy suffices (a key
-        // copy carries its own storage/path vectors). A nested expression operand
-        // is cloned recursively so the copy owns its whole subtree.
+        // A clone must own everything it holds ON `resource` — that is the whole reason
+        // clone_expression exists: the clone is meant to outlive the arena it was cloned FROM.
+        // So a key operand is PLACED on `resource` with the allocator-extended copy. A plain
+        // copy would leave it on the process default (safe, but off the arena the caller named),
+        // and copying it with the SOURCE's allocator would bind the clone to the very arena it
+        // was cloned away from. parameter_id_t is a scalar with no arena at all, so it is copied
+        // as is; a nested expression operand is cloned recursively so the copy owns its subtree.
         param_storage clone_param(std::pmr::memory_resource* resource, const param_storage& param) {
             if (is_expr(param)) {
                 return param_storage{clone_expression(resource, as_expr(param))};
+            }
+            if (is_key(param)) {
+                return param_storage{key_t{as_key(param), resource}};
             }
             return param;
         }

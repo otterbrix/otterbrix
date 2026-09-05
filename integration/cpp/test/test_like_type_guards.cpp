@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -36,9 +37,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::like_type_guards::non_string_pattern_is_error") {
-    auto config = test_create_config("/tmp/test_like_type_guards/pattern");
+    auto config = test_create_config(integration_fixture_path("test_like_type_guards/pattern"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -54,9 +54,8 @@ TEST_CASE("integration::cpp::like_type_guards::non_string_pattern_is_error") {
 }
 
 TEST_CASE("integration::cpp::like_type_guards::non_string_pattern_computing_table") {
-    auto config = test_create_config("/tmp/test_like_type_guards/computing");
+    auto config = test_create_config(integration_fixture_path("test_like_type_guards/computing"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -78,9 +77,8 @@ TEST_CASE("integration::cpp::like_type_guards::non_string_pattern_computing_tabl
 }
 
 TEST_CASE("integration::cpp::like_type_guards::string_pattern_still_works") {
-    auto config = test_create_config("/tmp/test_like_type_guards/control");
+    auto config = test_create_config(integration_fixture_path("test_like_type_guards/control"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

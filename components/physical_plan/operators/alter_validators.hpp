@@ -2,23 +2,22 @@
 
 // ALTER atomic validation: async data-gathering layer.
 //
-// The pure validators in components/catalog/alter_column_validators.{hpp,cpp} take
-// pre-materialised inputs by const-reference; this file provides the async
-// helpers that gather those inputs from manager_disk_t. The split keeps the
-// pure validators testable without an actor harness while still letting ALTER
-// operators short-circuit on validation failure BEFORE any pg_catalog mutation.
+// The pure validators in components/catalog/alter_column_validators.{hpp,cpp} take pre-materialised
+// inputs by const-reference; this file provides the async helpers that gather those inputs from
+// manager_disk_t. The split keeps the pure validators testable without an actor harness while still
+// letting ALTER operators short-circuit on validation failure BEFORE any pg_catalog mutation.
 //
-// These helpers are NOT actors: they are coroutine functions invoked from an
-// operator's await_async_and_resume, piggy-backing on its async frame and
-// talking to manager_disk_t only via actor_zeta::send. A scan-side failure is
-// returned as a core::error_t: it used to degrade to an empty result, which the
-// pure validators read as "no visible columns" and "no dependents" — so a failed
-// read let a duplicate column through and made a RESTRICT check pass vacuously.
+// These helpers are NOT actors: they are coroutine functions invoked from an operator's
+// await_async_and_resume, piggy-backing on its async frame and talking to manager_disk_t only via
+// actor_zeta::send. A scan-side failure is returned as a core::error_t and never as an empty result: the
+// pure validators read an empty gather as "no visible columns" and "no dependents", so degrading a failed
+// read would let a duplicate column through and make a RESTRICT check pass vacuously.
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <actor-zeta.hpp>
@@ -26,7 +25,6 @@
 
 #include <memory_resource>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace components::operators::alter_validators {
@@ -42,26 +40,31 @@ namespace components::operators::alter_validators {
                          components::execution_context_t exec_ctx,
                          components::catalog::oid_t table_oid);
 
-    // Async pg_depend scan: (classid, objid) pairs depending on (refclassid,
-    // refobjid, refobjsubid). refobjsubid is the altered column's attnum
-    // (0 = whole-relation). Feeds validate_cascade_dependencies for RESTRICT, or
-    // the cascade loop for CASCADE.
-    // TBD-impl: pg_depend has no refobjsubid yet, so this returns ALL dependents
-    // of the refobj (table); callers must refine once the column-grain id lands.
-    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pair<int, components::catalog::oid_t>>>>
-    scan_cascade_dependents(std::pmr::memory_resource* resource,
-                            actor_zeta::address_t disk_address,
-                            components::execution_context_t exec_ctx,
-                            components::catalog::oid_t ref_classid,
-                            components::catalog::oid_t ref_objid,
-                            std::int32_t ref_objsubid);
+    // Who the relation is, out of the batches a keyed read on pg_class.oid returned: the name a refusal has
+    // to quote ("column x of relation y ..."), and the relkind that decides WHICH true sentence the refusal
+    // is. An empty name means the batches carried no readable pg_class row — a caller on a refusal path
+    // falls back to the oid in its message rather than dropping the refusal — and relkind is then 0, which
+    // matches no kind and so picks the ordinary wording.
+    //
+    // PURE, deliberately: the caller does its own send + co_await on its own frame. An async helper that did
+    // both delivered ALTER refusal messages to the cursor as unreadable bytes. Callers use it on the REFUSAL
+    // path only, so an accepted ALTER pays nothing.
+    struct relation_identity_t {
+        std::string relname;
+        char relkind{0};
+    };
+    relation_identity_t
+    relation_identity_of(const std::pmr::vector<components::vector::data_chunk_t>& pg_class_batches);
+
+    // There is deliberately no pg_depend gatherer here. A helper keyed on
+    // (refclassid, refobjid) that drops pg_depend.deptype is useless to every caller —
+    // deptype is the only field that tells a blocking edge from a cascadable one — so
+    // the operator that needs the answer reads pg_depend itself.
 
     // Re-export the pure validators so callsites reach pure + async helpers
     // through one `using namespace alter_validators;`.
     using components::catalog::alter_column_validators::encode_default_spec_ec;
-    using components::catalog::alter_column_validators::validate_cascade_dependencies;
     using components::catalog::alter_column_validators::validate_column_not_duplicate;
-    using components::catalog::alter_column_validators::validate_default_value_evaluatable;
     using components::catalog::alter_column_validators::validate_default_value_type;
 
 } // namespace components::operators::alter_validators

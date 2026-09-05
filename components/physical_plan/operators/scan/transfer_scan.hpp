@@ -57,6 +57,10 @@ namespace components::operators {
             guard_types_.clear();
         }
 
+        // Same abandoned-cursor hazard as full_scan — see operator_t::release_cursor.
+        [[nodiscard]] actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx) override;
+        [[nodiscard]] bool holds_open_cursor() const noexcept override { return cursor_id_ != 0 && !drained_; }
+
     private:
         void explain_impl(const explain_sink& s) const override {
             explain_begin(s, table_oid_);

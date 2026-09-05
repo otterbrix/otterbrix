@@ -4,7 +4,7 @@
 // operator_create_index_backfill_t STREAMS the table through the
 // storage_fetch_next_batch cursor primitive (the same fetch-next source the
 // streaming scans use), so peak memory = one batch + index state — never the
-// whole table materialized in a single storage_scan_segment(0, total_rows).
+// whole table materialized in a single whole-table reply (that leg is gone).
 //
 // WHAT THESE TESTS ASSERT:
 //   (a) BATCHING — a CREATE INDEX over a table LARGER than one scan batch
@@ -21,6 +21,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_create_index_backfill.hpp>
 
@@ -48,9 +49,8 @@ namespace {
 TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple_batches") {
     // disk ON: the backfill branch only runs when a disk actor is wired, and
     // storage_fetch_next_batch is the disk-backed streaming scan under test.
-    auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_backfill/batched",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_backfill/batched"),
+                                   true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -85,9 +85,8 @@ TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple
 }
 
 TEST_CASE("integration::cpp::create_index_backfill::aborted_create_index_leaves_no_index") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_backfill/abort",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_backfill/abort"),
+                                   true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -128,9 +127,8 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_after_delete_maps_c
     // batches' TRUE row ids; a re-derived contiguous 0..N-1 stamping shifts every
     // entry after the first gap onto the wrong storage row and index-backed
     // lookups return wrong rows.
-    auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_backfill/after_delete",
-                                   /*disk_on=*/true,
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_backfill/after_delete"),
+                                   true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

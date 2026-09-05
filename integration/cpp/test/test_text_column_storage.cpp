@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -50,7 +51,6 @@ namespace {
         measurement_t out;
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = true;
         config.log.level = log_t::level::off;
         test_spaces space(config);
@@ -127,7 +127,7 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
 
     for (const auto& c : cases) {
         const std::filesystem::path root =
-            std::filesystem::path("/tmp/otterbrix/integration/test_text_storage") / std::to_string(c.value_length);
+            integration_fixture_path("test_text_storage") / std::to_string(c.value_length);
         const auto m = load_text_table(root, c.rows, c.value_length, c.every_nth_big, c.big_length);
 
         INFO(c.name);

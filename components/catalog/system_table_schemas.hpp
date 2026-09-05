@@ -22,7 +22,9 @@
 #include <components/table/column_definition.hpp>
 
 #include <components/types/logical_value.hpp>
+#include <core/result_wrapper.hpp>
 
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -49,8 +51,8 @@ namespace components::catalog {
     //                       cardinality stats; no row composite types). Carries an otterbrix-
     //                       specific `relstoragemode` ('d'=disk, 'm'=in-memory) instead.
     //   pg_attribute      — no `attstattarget` (no stats target). `attdefval` (raw default
-    //                       expression text) is replaced by `attdefspec` (flat-text-encoded
-    //                       logical_value_t) — strictly richer round-trip. `atttypspec`
+    //                       expression text) is replaced by `attdefspec` (a hex-armoured
+    //                       binary logical_value_t) — strictly richer round-trip. `atttypspec`
     //                       carries the full complex_logical_type tree for non-scalar types.
     //                       `attisdropped` (PG tombstone) prevents attnum reuse.
     //   pg_proc           — no `proowner` (no roles). `proargtypes` (CSV of input type OIDs)
@@ -64,10 +66,13 @@ namespace components::catalog {
     //                       not yet validated through pg_constraint). Carries FK semantics
     //                       directly: `confrelid`/`conkey`/`confkey`/`confmatchtype`/
     //                       `confdeltype`/`confupdtype`.
-    //   pg_index          — no `indisprimary`/`indisunique`/`indtype` (UNIQUE is recorded via
-    //                       pg_constraint contype='u', and index type isn't read by the
-    //                       planner). Carries `indisvalid` so the planner can hide a
-    //                       not-yet-backfilled index.
+    //   pg_index          — no `indisprimary`/`indisunique` (UNIQUE is recorded via
+    //                       pg_constraint contype='u'). Carries `indisvalid` so the planner
+    //                       can hide a not-yet-backfilled index, and `indtype` — the
+    //                       single-char physical-backend code (catalog_codes.hpp) the
+    //                       restart bootstrap reads to pick the on-disk reader
+    //                       (bitcask vs B+tree). indtype is NOT nullable and has no
+    //                       default; a row without it is a loud bootstrap error.
     //
     // Additional system tables beyond the initial 10 (see catalog_oids.hpp):
     //   pg_sequence (oid=34): sequence start/increment/min/max/cycle/last_value — seqrelid FK
@@ -88,28 +93,40 @@ namespace components::catalog {
         std::vector<table::column_definition_t> columns;
     };
 
-    // Returns the 9 system tables, in bootstrap order (pg_namespace first, since pg_class
-    // and pg_attribute reference namespaces).
-    // Returns the system tables in bootstrap order. Backed by a function-local
-    // `static const std::array<...,12>` populated on first call (C++11 magic-statics
+    // Returns the system tables in bootstrap order (pg_database first — every other
+    // catalog object is conceptually scoped to a database). Backed by a function-local
+    // `static const std::array<...,14>` populated on first call (C++11 magic-statics
     // — thread-safe init). Subsequent calls return a zero-cost `std::span` view.
     std::span<const system_table_def_t> all_system_tables();
 
-    // Convenience: lookup a system table by name (returns nullptr if not a system table).
-    // Useful for routing during DDL — manager_disk_t needs to know which physical
-    // collection ("pg_catalog.<name>") backs a logical pg_<x> reference.
-    const system_table_def_t* find_system_table(std::string_view name);
+    // Lookup a system table by its well-known relation OID (rule 16: system tables are
+    // addressed by oid, never by name). Every system table has a fixed OID below
+    // FIRST_USER_OID (catalog_oids.hpp), so a caller holding `well_known_oid::pg_*_table`
+    // always gets a definition back; nullptr means the OID is not a system table at all.
+    // This is the form production code must use — the schema array is the single place
+    // that still knows the names.
+    const system_table_def_t* find_system_table(oid_t relation_oid);
+
 
     // Type-spec round-trip helpers used by both pg_attribute (atttypspec) and pg_type
     // (typdefspec). For built-in scalar types `encode_type_spec` returns "" — atttypid /
     // typdefspec=NULL is sufficient for round-trip. For complex types (DECIMAL, ARRAY,
     // LIST, ENUM, STRUCT, MAP, UNKNOWN) the full complex_logical_type tree is serialized
-    // as flat-text (e.g. "DECIMAL(18,6)") so readers can reconstruct precision/scale,
+    // as flat-text (e.g. "numeric(18,6)") so readers can reconstruct precision/scale,
     // element types, child fields, enum entries, etc. across restart.
-    // `decode_type_spec` returns logical_type::UNKNOWN on empty/malformed input —
-    // non-throwing best-effort.
+    //
+    // `decode_type_spec` is fail-loud (rule 6): every spec outside the encoder's exact
+    // language — an unrecognised name or keyword, malformed or out-of-window DECIMAL
+    // width/scale, a missing separator, trailing bytes after a complete type, nesting
+    // beyond the depth window shared with the binary codec — is a data_corruption error,
+    // never a guessed type. Two UNKNOWN answers remain LEGITIMATE values, not errors:
+    // the empty spec (builtin scalars store no spec; atttypid alone reconstructs them)
+    // and the explicit "UNKNOWN(name)" form (a named user-type reference the resolver
+    // chases by name). The refusal reaches the reader's statement, where it costs one
+    // resolve; no caller has to read UNKNOWN as a refusal channel.
     std::string encode_type_spec(const types::complex_logical_type& t);
-    types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
+    [[nodiscard]] core::result_wrapper_t<types::complex_logical_type>
+    decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
 
     // Encode the per-arg `parameter_type` to a flat text format suitable for
     // pg_proc.proargmatchers. Format per arg: "e:N" a concrete type, "v:I" a variable with
@@ -121,9 +138,15 @@ namespace components::catalog {
     std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters);
 
     // Encode output_type list to a flat text format. Per output: "f:N" fixed type
-    // (N = logical_type id), "s:N" same_type_at_index N. Multiple outputs are comma-
-    // separated. computed_fn outputs are encoded as "s:0" — lossy but the common case is
-    // identity, and the resolver isn't reproducible across persistence anyway.
+    // (N = logical_type id), "s:N" same_type_at_index N, "c" a custom resolver
+    // (output_type::computed). Multiple outputs are comma-separated. "c" is an EXPLICIT
+    // non-introspectable marker: persisting a custom resolver as "s:0" silently claims a
+    // same-type-as-argument-0 contract the function never declared. A custom resolver
+    // cannot be refused outright either — registering one is pinned legal behaviour
+    // (test_udfs registers computed(same_type_resolver(0))), and its runtime form is
+    // reconstructed through pg_proc.prouid → compute::function_registry, never by
+    // parsing this column — so the honest answer is a truthful tag, not a guessed
+    // contract and not a refusal.
     std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs);
 
     // Return the canonical pg_type.typname for a built-in logical_type (e.g. INTEGER →
@@ -141,11 +164,33 @@ namespace components::catalog {
     // to its canonical logical_type. Returns logical_type::UNKNOWN for user-defined types.
     types::logical_type pg_name_to_logical_type(std::string_view name) noexcept;
 
-    // Encode/decode a column default value (logical_value_t) to flat text for storage in
-    // pg_attribute.attdefspec. Format: "type_name:value" for scalars, "NULL" for null.
-    // Returns "" for complex types (ARRAY/STRUCT/LIST) — treated as no default on decode.
-    std::string encode_default_spec(const types::logical_value_t& v);
-    std::optional<types::logical_value_t> decode_default_spec(std::pmr::memory_resource* resource,
-                                                              const std::string& spec);
+    // Encode/decode a column DEFAULT value for storage in pg_attribute.attdefspec.
+    //
+    // The value is encoded BINARY, by the one binary value codec in the tree
+    // (components/index/logical_value_binary_codec.hpp — the same codec that writes index keys),
+    // then hex-armoured so the column stays printable text like its neighbour atttypspec. The
+    // encoding is type-DIRECTED: the payload SHAPE comes from the column's own type, which sits
+    // one column away in atttypspec, so no width or field layout is stored. That is what makes it
+    // lossless for every type the codec carries, nested types included, rather than only for the
+    // ones somebody remembered to list in a switch. The payload does carry one logical tag byte
+    // per present value, purely as a check: it catches a SAME-WIDTH type divergence, which the
+    // shape alone cannot see.
+    //
+    // Three states, all distinguishable — a flat "type_name:value" form collapses the last two
+    // into "no default" and drops every type outside its switch:
+    //   ""        no default at all
+    //   "N"       an explicit DEFAULT NULL
+    //   "V"<hex>  the encoded value
+    //
+    // Rule 6: a value whose type the codec cannot carry is an ERROR, surfaced at CREATE TABLE /
+    // ALTER SET DEFAULT, never a silent "no default". Symmetrically, a non-empty spec that does
+    // not decode against `column_type` is catalog corruption and is reported as such — `out` is
+    // set to nullopt ONLY for a genuinely absent default.
+    [[nodiscard]] core::error_t
+    encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out);
+    [[nodiscard]] core::error_t decode_default_spec(std::pmr::memory_resource* resource,
+                                                    const types::complex_logical_type& column_type,
+                                                    std::string_view spec,
+                                                    std::optional<types::logical_value_t>& out);
 
 } // namespace components::catalog

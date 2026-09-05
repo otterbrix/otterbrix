@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
@@ -25,9 +26,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_returning::insert") {
-    auto config = test_create_config("/tmp/test_returning/insert");
+    auto config = test_create_config(integration_fixture_path("test_returning/insert"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -87,9 +87,8 @@ TEST_CASE("integration::cpp::test_returning::insert") {
 }
 
 TEST_CASE("integration::cpp::test_returning::update") {
-    auto config = test_create_config("/tmp/test_returning/update");
+    auto config = test_create_config(integration_fixture_path("test_returning/update"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -139,9 +138,8 @@ TEST_CASE("integration::cpp::test_returning::update") {
 }
 
 TEST_CASE("integration::cpp::test_returning::delete") {
-    auto config = test_create_config("/tmp/test_returning/delete");
+    auto config = test_create_config(integration_fixture_path("test_returning/delete"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -188,9 +186,8 @@ TEST_CASE("integration::cpp::test_returning::delete") {
 TEST_CASE("integration::cpp::test_returning::delete_using") {
     // DELETE ... USING ... RETURNING that references columns of BOTH the target
     // (destination) table and the joined (USING) table.
-    auto config = test_create_config("/tmp/test_returning/delete_using");
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_using"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -310,9 +307,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
     // Harness mirrors ::delete_using (Orders/Customers) so the join scan settles
     // identically; the gap is created by a FIRST USING-delete (as in that test's
     // section 2), then a SECOND USING-delete is verified against the table state.
-    auto config = test_create_config("/tmp/test_returning/delete_using_absolute_row_ids");
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_using_absolute_row_ids"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -412,9 +408,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
 TEST_CASE("integration::cpp::test_returning::update_from") {
     // UPDATE ... FROM ... RETURNING that references columns of BOTH the target
     // table and the joined (FROM) table.
-    auto config = test_create_config("/tmp/test_returning/update_from");
+    auto config = test_create_config(integration_fixture_path("test_returning/update_from"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -511,9 +506,8 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
 
 TEST_CASE("integration::cpp::test_returning::roundtrip") {
     // Consume the RETURNING output of one statement to drive the next.
-    auto config = test_create_config("/tmp/test_returning/roundtrip");
+    auto config = test_create_config(integration_fixture_path("test_returning/roundtrip"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -631,9 +625,8 @@ TEST_CASE("integration::cpp::test_returning::batching") {
     // More rows than DEFAULT_VECTOR_CAPACITY (1024) so RETURNING crosses chunk
     // boundaries on all three operators (windowed read-back / split paths).
     constexpr int kRows = 2500;
-    auto config = test_create_config("/tmp/test_returning/batching");
+    auto config = test_create_config(integration_fixture_path("test_returning/batching"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -680,9 +673,8 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
     // the configuration that tells the two apart. Mirrors delete_using_absolute_row_ids
     // but for UPDATE ... FROM, and verifies both the updated value and index
     // consistency after the streaming per-batch join apply.
-    auto config = test_create_config("/tmp/test_returning/update_from_absolute_row_ids");
+    auto config = test_create_config(integration_fixture_path("test_returning/update_from_absolute_row_ids"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -784,9 +776,8 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
     // materialized. Exercises the per-batch match / modified_ / index-old / RETURNING
     // accumulation for both DELETE ... USING and UPDATE ... FROM.
     constexpr int kRows = 2500;
-    auto config = test_create_config("/tmp/test_returning/join_dml_streaming_multibatch");
+    auto config = test_create_config(integration_fixture_path("test_returning/join_dml_streaming_multibatch"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -874,9 +865,8 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
 //     ZERO storage writes (observed via update_storage_update_sends()).
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_append") {
-    auto config = test_create_config("/tmp/test_returning/insert_error_revert");
+    auto config = test_create_config(integration_fixture_path("test_returning/insert_error_revert"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -915,9 +905,8 @@ TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_appe
 }
 
 TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_writes") {
-    auto config = test_create_config("/tmp/test_returning/update_error_clean");
+    auto config = test_create_config(integration_fixture_path("test_returning/update_error_clean"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

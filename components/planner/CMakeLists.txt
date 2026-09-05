@@ -3,6 +3,7 @@ project(planner CXX)
 set(SOURCE_${PROJECT_NAME}
         planner.cpp
         optimizer.cpp
+        view_expansion.cpp
         optimizer/rules/constant_folding.cpp
         optimizer/rules/column_pruning.cpp
         optimizer/rules/drop_redundant_distinct.cpp
@@ -30,6 +31,8 @@ target_link_libraries(
         otterbrix::catalog
         otterbrix::vector
         otterbrix::catalog
+        # view_expansion re-parses + re-transforms a view's stored body SQL
+        otterbrix::sql
 
         absl::int128
         Boost::boost

@@ -23,6 +23,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 
@@ -42,9 +43,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_join::nested_loop_streams_and_is_correct") {
-    auto config = test_create_config("/tmp/test_streaming_join/nested");
+    auto config = test_create_config(integration_fixture_path("test_streaming_join/nested"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -100,9 +100,8 @@ TEST_CASE("integration::cpp::streaming_join::nested_loop_streams_and_is_correct"
 }
 
 TEST_CASE("integration::cpp::streaming_join::left_join_null_padding_content") {
-    auto config = test_create_config("/tmp/test_streaming_join/leftpad");
+    auto config = test_create_config(integration_fixture_path("test_streaming_join/leftpad"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -133,9 +132,8 @@ TEST_CASE("integration::cpp::streaming_join::left_join_null_padding_content") {
 }
 
 TEST_CASE("integration::cpp::streaming_join::cross_join_materialized") {
-    auto config = test_create_config("/tmp/test_streaming_join/cross");
+    auto config = test_create_config(integration_fixture_path("test_streaming_join/cross"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -153,9 +151,8 @@ TEST_CASE("integration::cpp::streaming_join::cross_join_materialized") {
 }
 
 TEST_CASE("integration::cpp::streaming_join::cross_join_streams_multibatch") {
-    auto config = test_create_config("/tmp/test_streaming_join/cross_stream");
+    auto config = test_create_config(integration_fixture_path("test_streaming_join/cross_stream"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -188,9 +185,8 @@ TEST_CASE("integration::cpp::streaming_join::cross_join_streams_multibatch") {
 }
 
 TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
-    auto config = test_create_config("/tmp/test_streaming_join/nofrom");
+    auto config = test_create_config(integration_fixture_path("test_streaming_join/nofrom"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -219,9 +215,8 @@ TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
 }
 
 TEST_CASE("integration::cpp::streaming_join::union_distinct_sinks") {
-    auto config = test_create_config("/tmp/test_streaming_join/uniondistinct");
+    auto config = test_create_config(integration_fixture_path("test_streaming_join/uniondistinct"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

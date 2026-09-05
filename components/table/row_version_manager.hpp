@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <limits>
 
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/vector/indexing_vector.hpp>
 #include <stdexcept>
 #include <vector>
@@ -40,6 +41,50 @@ namespace components::table {
 
     static constexpr uint64_t TRANSACTION_ID_START = uint64_t(4611686018427388000);      // 2^62
     static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1; // 2^64 - 1
+
+    // THE DIRECT-WRITE TRANSACTION ID, a SANCTIONED path rather than a leftover: read as a
+    // "legacy fast path" and deleted, it takes the correctness with it.
+    //
+    // 0 is the identity every write carries that is committed the instant it lands: WAL replay
+    // (transaction_data{0, 0}), bootstrap, and the direct-API write that never opened a
+    // transaction.
+    //
+    // WHAT IT MEANS TO THE VERSION STORE — the contract every branch on this sentinel depends
+    // on: row_group_t::delete_rows routes such a write down its is_txn == false leg, which
+    // stamps deleted[] with an IMMEDIATELY-COMMITTED version id (++current_version_) instead of
+    // a pending transaction id. Nothing is left over for a later publish or revert to finish,
+    // and handing them this id would be actively wrong: chunk_vector_info::commit_all_deletes /
+    // revert_all_deletes both match on `deleted[i] == txn_id`, so passing 0 asks them to rewrite
+    // every slot that happens to hold the value 0 — not a stamp this store ever writes.
+    //
+    // So a publish/revert path that meets this id must SKIP, and the skip is the correct answer
+    // rather than a shortcut. The sentinel is live on the index side for the same reason: the
+    // deferred-delete sweep keys its buckets by transaction id, and bucket 0 is the
+    // direct-write bucket, published with whichever transaction reaches the store first.
+    static constexpr uint64_t DIRECT_WRITE_TXN_ID = 0;
+
+    [[nodiscard]] inline constexpr bool is_direct_write_txn(uint64_t transaction_id) noexcept {
+        return transaction_id == DIRECT_WRITE_TXN_ID;
+    }
+
+    // Which rows a point fetch by row_id is allowed to produce. NO DEFAULT VALUE is
+    // given to any parameter of this type anywhere: every sender names the mode, so
+    // forgetting one is a compile error rather than a silently wrong answer.
+    //
+    //   SNAPSHOT — apply row_version_manager_t::fetch: the row must be visible to the
+    //              accompanying transaction_data. This is what every reader wants.
+    //   RAW      — skip the check and produce the row whatever its version stamps say.
+    //              The ONLY legitimate user is the CREATE INDEX backfill, which reads
+    //              DELETED rows on purpose to recover the old key columns.
+    //
+    // An EMPTY transaction_data is NOT the raw mode and must never be used as one: it
+    // means "see everything COMMITTED" (see snapshot_horizon below), so a committed
+    // delete still hides the row from it. That is why RAW is a separate explicit value.
+    enum class fetch_visibility_t : uint8_t
+    {
+        SNAPSHOT = 0,
+        RAW = 1
+    };
 
     struct transaction_data {
         transaction_data() = default;
@@ -216,11 +261,34 @@ namespace components::table {
         uint16_t rows[1] = {};
     };
 
-    class row_version_manager_t {
+    // Addressing contract: every vector_idx / row-offset parameter below is
+    // GROUP-LOCAL — slot 0 of vector_info_ is the first vector of the owning row
+    // group, and append/commit/revert/cleanup, delete_rows/commit_delete, the
+    // committed_deleted_count / has_version_above walks and indexing_vector all
+    // address the same group-local slots. Callers holding collection-absolute
+    // coordinates rebase at the row_group_t boundary, where `start` is
+    // authoritative (row_group_t::indexing_vector, version_delete_state).
+    // The single exception is fetch(): it takes a collection-ABSOLUTE row (the
+    // disk agent's point-fetch convention) and rebases internally via start_.
+    //
+    // Ownership: SHARED between a row group and the row groups of that group's ALTER
+    // successors. row_group_t::add_column / remove_column hand the successor
+    // set_version_info(get_or_create_version_info_ptr()), so both groups record deletes
+    // in ONE manager and the last of them to die frees it. The reference count therefore
+    // lives inside the object (boost::intrusive_ref_counter; std::shared_ptr is forbidden
+    // — rule 14). `final` is load-bearing: nothing derives from this class, which is why
+    // the counter needs no virtual destructor, and marking it final keeps that true.
+    // row_group_t allocates the manager with plain `new`, never from the pmr resource, so
+    // the counter's `delete` is the matching deallocation.
+    class row_version_manager_t final : public boost::intrusive_ref_counter<row_version_manager_t> {
     public:
         explicit row_version_manager_t(int64_t start) noexcept;
 
         int64_t start() const { return start_; }
+        // Re-anchors start_ (and the chunk_info start labels) when the owning row
+        // group moves — called by row_group_t::move_to_collection. Slot addressing
+        // is group-local and does not change on a move; only fetch()'s
+        // absolute→local rebase and the labels depend on start_.
         void set_start(int64_t start);
         uint64_t committed_deleted_count(uint64_t count);
         // True when any stamp in the first `count` rows is above `watermark`
@@ -251,7 +319,10 @@ namespace components::table {
         chunk_vector_info& vector_info(uint64_t vector_idx);
         void fill_vector_info(uint64_t vector_idx);
 
-        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
+        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp). That is
+        // about these MEMBERS — exactly one manager owns them. The manager object itself is
+        // shared between ALTER-related row groups (see the note on the class); every one of them
+        // is still reached from the single actor the data_table_t proof names.
         int64_t start_;
         std::vector<std::unique_ptr<chunk_info>> vector_info_;
         bool has_changes_;

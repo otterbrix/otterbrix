@@ -1,7 +1,8 @@
 #pragma once
 
 #include "file_handle.hpp"
-#include <functional>
+#include <memory>
+#include <type_traits>
 #include <vector>
 
 namespace core::filesystem {
@@ -29,13 +30,10 @@ namespace core::filesystem {
         path_t home_directory();
         bool set_home_directory(path_t path);
         path_t normalize_path_absolute(const path_t& path);
-        path_t extract_base_name(const path_t& path);
-        path_t extract_name(const path_t& path);
 
         bool set_file_pointer(file_handle_t& handle, uint64_t location);
         uint64_t file_pointer(file_handle_t& handle);
 
-        std::vector<path_t> fetch_file_without_glob(const path_t& path, bool absolute_path);
         const path_t& file_search_path() const { return file_search_path_; }
 
     protected:
@@ -50,7 +48,7 @@ namespace core::filesystem {
     bool read(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     int64_t read(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
     bool write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
-    int64_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
+    write_result_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
 
     int64_t file_size(local_file_system_t&, file_handle_t& handle);
     time_t last_modified_time(local_file_system_t&, file_handle_t& handle);
@@ -61,7 +59,39 @@ namespace core::filesystem {
     bool directory_exists(local_file_system_t&, const path_t& directory);
     bool create_directory(local_file_system_t&, const path_t& directory);
     bool remove_directory(local_file_system_t&, const path_t& directory);
-    bool list_files(local_file_system_t&, path_t directory, const std::function<void(const path_t&, bool)>& callback);
+    // THE PER-ENTRY CALLBACK OF list_files, AS A NON-OWNING VIEW.
+    //
+    // std::function is forbidden (rule 14) and buys nothing on this road: the callback is
+    // used only while the call is on the stack and is never stored, so there is nothing to
+    // own. A view is the caller's callable plus the one function that knows how to call it.
+    // Every caller in the tree hands in a lambda written at the call itself, whose lifetime
+    // covers the whole full-expression and therefore the whole call.
+    //
+    // That is also why this is a named type and not a raw pair: A list_files_callback_t MUST
+    // NOT OUTLIVE THE CALL it was passed to. Keeping one keeps a pointer to a callable that
+    // is already gone.
+    class list_files_callback_t {
+    public:
+        template<typename callable_t,
+                 typename =
+                     std::enable_if_t<!std::is_same_v<std::decay_t<callable_t>, list_files_callback_t>>>
+        list_files_callback_t(const callable_t& callable) noexcept
+            : callable_(std::addressof(callable))
+            , invoke_(+[](const void* erased, const path_t& path, bool is_directory) {
+                  (*static_cast<const callable_t*>(erased))(path, is_directory);
+              }) {}
+
+        void operator()(const path_t& path, bool is_directory) const {
+            invoke_(callable_, path, is_directory);
+        }
+
+    private:
+        const void* callable_;
+        void (*invoke_)(const void*, const path_t&, bool);
+    };
+
+    bool list_files(local_file_system_t&, path_t directory, const list_files_callback_t& callback);
+
     bool move_files(local_file_system_t&, const path_t& source, const path_t& target);
     bool file_exists(local_file_system_t&, const path_t& filename);
 
@@ -73,9 +103,5 @@ namespace core::filesystem {
 
     bool seek(local_file_system_t&, file_handle_t& handle, uint64_t location);
     uint64_t seek_position(local_file_system_t&, file_handle_t& handle);
-
-#ifdef PLATFORM_WINDOWS
-    std::string last_error_as_string(local_file_system_t&);
-#endif
 
 } // namespace core::filesystem

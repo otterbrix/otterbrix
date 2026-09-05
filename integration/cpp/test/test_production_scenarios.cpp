@@ -1,11 +1,45 @@
 #include "test_config.hpp"
 
+#include "integration_fixture_path.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
+#include <unistd.h>
+
+namespace {
+
+    // THE DATA DIRECTORY OF EVERY CASE IN THIS FILE, IN ONE PLACE.
+    // Each case used to spell its own literal "/tmp/otterbrix/production/<leaf>", which is a
+    // path every test binary on the machine shares -- two build directories, a second
+    // checkout, one ctest -j beside another -- and the first thing a case does with it is
+    // test_clear_directory(): remove_all() then create_directories(). One process then
+    // unlinks the segments, WAL and catalog another process has open.
+    //
+    // integration_fixture_path puts the root under a pid, which is what makes the directory
+    // this process's own; the leaf keeps the per-case separation the literals had.
+    std::filesystem::path production_fixture(std::string_view leaf) {
+        return integration_fixture_path("test_production_scenarios") / leaf;
+    }
+
+} // namespace
+
+// The fixture root has to be private to THIS process. Held here rather than in
+// integration_fixture_path.hpp's own suite because this file is where the sharing was
+// measured: with test_otterbrix from two other build directories live, one case in this
+// file failed while it passed 10 runs out of 10 on its own.
+TEST_CASE("integration::cpp::production::the_fixture_root_is_not_shared_between_processes") {
+    const auto directory = production_fixture("compaction_cycle").string();
+    const auto pid = std::to_string(static_cast<long>(::getpid()));
+    INFO("fixture directory: " << directory);
+    REQUIRE(directory.find(pid) != std::string::npos);
+}
 
 // database_name used indirectly via SQL strings
 // static const database_name_t database_name = "testdatabase";
@@ -18,13 +52,71 @@
         REQUIRE(cur->size() == COUNT);                                                                                 \
     } while (false)
 
+// A fixture that could not be built has to come back as a REPORT. The mechanism cannot be
+// staged the way it actually happens (a full disk, a revoked mount, an NFS hiccup), so the
+// stand-in is a directory remove_all() is not allowed to empty: unlinking a child needs write
+// permission on its PARENT, so a parent left at mode 0500 refuses every child. What is under
+// test is the report, not the cause -- before, the same condition escaped test_clear_directory
+// as std::filesystem::filesystem_error into the body of whatever case was running.
+TEST_CASE("integration::cpp::production::a_clear_that_cannot_finish_is_reported_not_thrown") {
+    const auto root = production_fixture("clear_refusal");
+    const auto blocked = root / "blocked";
+    const auto restore = [&blocked]() {
+        std::error_code ignored;
+        std::filesystem::permissions(blocked,
+                                     std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace,
+                                     ignored);
+    };
+
+    std::error_code ec;
+    restore();
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(blocked, ec);
+    REQUIRE_FALSE(ec);
+    {
+        std::ofstream child(blocked / "child.txt");
+        REQUIRE(child.is_open());
+        child << "x";
+    }
+    std::filesystem::permissions(blocked,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace,
+                                 ec);
+    REQUIRE_FALSE(ec);
+
+    // Running as a user the mode does not bind (root) leaves nothing to refuse. Say so
+    // rather than reporting a pass that measured nothing.
+    std::error_code enforced;
+    std::filesystem::remove(blocked / "child.txt", enforced);
+    if (!enforced) {
+        restore();
+        std::filesystem::remove_all(root, ec);
+        SUCCEED("directory permissions are not enforced for this user; there is nothing to refuse");
+        return;
+    }
+
+    const std::error_code refusal = test_try_clear_directory(test_create_config(root));
+
+    restore();
+    std::filesystem::remove_all(root, ec);
+
+    // The contract is the CHANNEL, not the errno: the report came back as a value and named
+    // its reason. The code differs by implementation -- libc++ answers this stand-in with
+    // ENOTEMPTY ("Directory not empty", one of the two signatures the shared-fixture races
+    // produced verbatim), libstdc++ reports the child's own EACCES -- so pinning one of them
+    // would be pinning the standard library, not the helper.
+    INFO("refusal: " << refusal.message());
+    REQUIRE(refusal);
+    REQUIRE_FALSE(refusal.message().empty());
+}
+
 // ---------------------------------------------------------------------------
 // Test 1: Scale test — INSERT 100K rows, GROUP BY, aggregates
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::scale_100k_group_by") {
-    auto config = test_create_config("/tmp/otterbrix/production/scale_100k");
+    auto config = test_create_config(production_fixture("scale_100k"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -91,9 +183,8 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
 // Test 2: Multi-table JOIN + aggregates (2 JOINs)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::multi_table_join") {
-    auto config = test_create_config("/tmp/otterbrix/production/multi_join");
+    auto config = test_create_config(production_fixture("multi_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -201,9 +292,8 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
 // Test 3: NULL in JOIN keys — SQL standard: NULL = NULL → UNKNOWN (false)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::null_join_keys") {
-    auto config = test_create_config("/tmp/otterbrix/production/null_join");
+    auto config = test_create_config(production_fixture("null_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -321,9 +411,8 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
 // Test 4: Unicode strings
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::unicode_strings") {
-    auto config = test_create_config("/tmp/otterbrix/production/unicode");
+    auto config = test_create_config(production_fixture("unicode"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -405,9 +494,8 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
 // Test 5: Concurrent INSERT (2 threads)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::concurrent_insert") {
-    auto config = test_create_config("/tmp/otterbrix/production/concurrent_insert");
+    auto config = test_create_config(production_fixture("concurrent_insert"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -484,9 +572,8 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
 // Test 6: Concurrent read + write
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::concurrent_read_write") {
-    auto config = test_create_config("/tmp/otterbrix/production/concurrent_rw");
+    auto config = test_create_config(production_fixture("concurrent_rw"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -563,7 +650,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
 // Test 7: Large batch checkpoint (100K rows)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
-    auto config = test_create_config("/tmp/otterbrix/production/large_checkpoint");
+    auto config = test_create_config(production_fixture("large_checkpoint"));
     test_clear_directory(config);
 
     // Compute expected sum: sum of i*1.5 for i=0..99999 = 1.5 * (99999*100000/2) = 1.5 * 4999950000 = 7499925000
@@ -582,7 +669,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
         // Insert 100K rows in batches of 1000
@@ -643,9 +730,8 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
 // Test 8: Complex WHERE with nested AND/OR
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::complex_where") {
-    auto config = test_create_config("/tmp/otterbrix/production/complex_where");
+    auto config = test_create_config(production_fixture("complex_where"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -732,7 +818,7 @@ TEST_CASE("integration::cpp::production::complex_where") {
 // Test 9: Corrupted .otbx recovery
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/production/corrupted_otbx");
+    auto config = test_create_config(production_fixture("corrupted_otbx"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert, checkpoint");
@@ -748,7 +834,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, name string) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
         // Insert 50 rows
@@ -850,10 +936,11 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 // Test 10: WAL segment rotation under load
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::wal_segment_rotation") {
-    auto config = test_create_config("/tmp/otterbrix/production/wal_rotation");
+    auto config = test_create_config(production_fixture("wal_rotation"));
     test_clear_directory(config);
-    // disk.on = true for catalog persistence (needed for restart recovery)
-    // Table uses in-memory storage (no WITH storage='disk') so data comes from WAL replay
+    // Tables are always disk-backed. Restart recovery draws from the
+    // table's .otbx checkpoint plus WAL replay above the checkpoint floor; this
+    // test's point — WAL segment rotation under row-by-row load — is unchanged.
     config.wal.max_segment_size = 4 * 1024; // 4 KB — force small segments
 
     INFO("phase 1: insert 500 rows (one by one to force many WAL records)");
@@ -944,7 +1031,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 // Test 11: Compaction + checkpoint cycle (VACUUM + CHECKPOINT + restart)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/production/compaction_cycle");
+    auto config = test_create_config(production_fixture("compaction_cycle"));
     test_clear_directory(config);
 
     INFO("phase 1: insert 1000, delete 80%, vacuum, checkpoint");
@@ -960,7 +1047,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
         // Insert 1000 rows
@@ -1045,9 +1132,9 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 // this must (a) accept every INSERT batch without OOM and (b) complete the large
 // scan with the CORRECT aggregate — prove COMPLETION, not just no-crash.
 //
-// DISK-backed (config.disk.on, storage = 'disk') so write-through is actually
-// exercised — an in-memory table would pin the whole working set and clean-OOM
-// by design, which cannot validate the write-through bound.
+// DISK-backed (every table is) so write-through is actually exercised —
+// an in-memory table would pin the whole working set and clean-OOM by design,
+// which cannot validate the write-through bound.
 //
 // Working-set / pool note: there is NO buffer-pool / memory-limit knob in
 // configuration::config — the pool size is hardcoded (4 GiB) inside the disk
@@ -1060,11 +1147,10 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 // this Debug-build case to a few seconds while still meaningfully driving the
 // disk-backed append + full-scan path end to end.
 TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
-    auto config = test_create_config("/tmp/otterbrix/production/large_scan_segfault");
+    auto config = test_create_config(production_fixture("large_scan_segfault"));
     test_clear_directory(config);
     // DISK-backed so write-through evicts filled segments and large inserts stay
     // bounded.
-    config.disk.on = true;
     config.wal.on = true;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1099,7 +1185,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         {
             // Mirror the SSB lineorder shape: many wide bigint columns plus a few
             // text columns, so a 1024-row row-group is a large working set.
-            // storage = 'disk' enables write-through for this table.
+            // Disk-backed by default, so write-through applies.
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.Lineorder ("
@@ -1120,7 +1206,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
                                     "lo_tax bigint, "
                                     "lo_commitdate bigint, "
                                     "lo_shipmode string) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
     }
 
@@ -1215,9 +1301,8 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
 // WAL stays on so the user rows survive the reopen and the post-reopen
 // aggregate can be value-checked end to end.
 TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoint") {
-    auto config = test_create_config("/tmp/otterbrix/production/reopen_resolve_columns");
+    auto config = test_create_config(production_fixture("reopen_resolve_columns"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = true;
 
     INFO("phase 1: disk-backed CREATE TABLE, INSERT, CHECKPOINT");
@@ -1239,7 +1324,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
                                                "lo_quantity bigint, "
                                                "lo_extendedprice bigint, "
                                                "lo_discount bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {

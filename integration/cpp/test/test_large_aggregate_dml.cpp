@@ -22,6 +22,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <functional>
@@ -80,9 +81,8 @@ namespace {
 // per-group COUNT(*) read trips the defect.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::large_aggregate_dml::group_by_over_1024_distinct_groups") {
-    auto config = test_create_config("/tmp/test_large_aggregate_dml_group_by");
+    auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_group_by"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -118,9 +118,8 @@ TEST_CASE("integration::cpp::large_aggregate_dml::group_by_over_1024_distinct_gr
 // buffers across the 1024 boundary, tripping the aliasing/oversized defect.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::large_aggregate_dml::count_distinct_over_hot_group_over_1024_rows") {
-    auto config = test_create_config("/tmp/test_large_aggregate_dml_count_distinct");
+    auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_count_distinct"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -151,9 +150,8 @@ TEST_CASE("integration::cpp::large_aggregate_dml::count_distinct_over_hot_group_
 // per-batch row_id buffer across the 1024 boundary) trips the defect.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_over_1024_rows") {
-    auto config = test_create_config("/tmp/test_large_aggregate_dml_delete_using");
+    auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_delete_using"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -211,9 +209,8 @@ TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_o
 // child-row buffer trips the aliasing/oversized defect past the 1024 boundary.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::large_aggregate_dml::cascade_delete_over_1024_children") {
-    auto config = test_create_config("/tmp/test_large_aggregate_dml_cascade");
+    auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_cascade"));
     test_clear_directory(config);
-    config.disk.on = true; // FK constraints exercised with disk on, like test_sql_features cascade
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

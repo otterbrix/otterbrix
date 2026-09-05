@@ -5862,6 +5862,10 @@ CreateMatViewStmt:
 				{
 					CreateTableAsStmt *ctas = makeNode(resource, CreateTableAsStmt);
 					ctas->query = $7;
+					ctas->query_location = @7;
+					/* First token after the body: WITH [NO] DATA, else DISTRIBUTED BY,
+					 * else -1 (body runs to the end of the statement). */
+					ctas->query_end_location = (@8 >= 0) ? @8 : @9;
 					ctas->into = $5;
 					ctas->relkind = OBJECT_MATVIEW;
 					ctas->is_select_into = false;
@@ -10792,6 +10796,8 @@ ViewStmt: CREATE OptTemp VIEW qualified_name opt_column_list opt_reloptions
 					n->view->relpersistence = $2;
 					n->aliases = $5;
 					n->query = $8;
+					n->query_location = @8;
+					n->query_end_location = @9;	/* opt_check_option, -1 when absent */
 					n->replace = false;
 					n->options = $6;
 					n->withCheckOption = static_cast<ViewCheckOption>($9);
@@ -10805,6 +10811,8 @@ ViewStmt: CREATE OptTemp VIEW qualified_name opt_column_list opt_reloptions
 					n->view->relpersistence = $4;
 					n->aliases = $7;
 					n->query = $10;
+					n->query_location = @10;
+					n->query_end_location = @11;	/* opt_check_option, -1 when absent */
 					n->replace = true;
 					n->options = $8;
 					n->withCheckOption = static_cast<ViewCheckOption>($11);
@@ -10818,6 +10826,11 @@ ViewStmt: CREATE OptTemp VIEW qualified_name opt_column_list opt_reloptions
 					n->view->relpersistence = $2;
 					n->aliases = $7;
 					n->query = makeRecursiveViewSelect(resource, n->view->relname, n->aliases, $11);
+					/* The stored query is SYNTHESIZED (the WITH RECURSIVE wrapper the user
+					 * did not write), so no slice of the input reproduces it. -1 =
+					 * "body text unavailable"; the transformer refuses loudly rather than
+					 * persisting a body nobody wrote. */
+					n->query_location = -1;
 					n->replace = false;
 					n->options = $9;
 					n->withCheckOption = static_cast<ViewCheckOption>($12);
@@ -10836,6 +10849,8 @@ ViewStmt: CREATE OptTemp VIEW qualified_name opt_column_list opt_reloptions
 					n->view->relpersistence = $4;
 					n->aliases = $9;
 					n->query = makeRecursiveViewSelect(resource, n->view->relname, n->aliases, $13);
+					/* See the non-REPLACE recursive rule above. */
+					n->query_location = -1;
 					n->replace = true;
 					n->options = $11;
 					n->withCheckOption = static_cast<ViewCheckOption>($14);

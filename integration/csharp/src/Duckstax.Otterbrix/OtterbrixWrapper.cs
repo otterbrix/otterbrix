@@ -46,7 +46,6 @@ namespace Duckstax.Otterbrix
         public string diskPath;
         public string mainPath;
         public bool walOn;
-        public bool diskOn;
         public bool syncWalToDisk;
 
         public Config() {
@@ -56,13 +55,15 @@ namespace Duckstax.Otterbrix
             diskPath = System.Environment.CurrentDirectory + "/disk";
             mainPath = System.Environment.CurrentDirectory;
             walOn = true;
-            diskOn = true;
             syncWalToDisk = true;
         }
+        // No `disk` parameter: every table is disk-backed, so there is nothing for it to
+        // select. TransferConfig below must stay field-for-field with the C `config_t` --
+        // LayoutKind.Sequential marshals by position, so a stale field there would shift
+        // walOn/syncWalToDisk onto the wrong bytes.
         public Config(LogLevel level,
                       string path,
                       bool wal,
-                      bool disk,
                       bool walDiskSync) {
             this.level = level;
             logPath = path + "/log";
@@ -70,12 +71,11 @@ namespace Duckstax.Otterbrix
             diskPath = path + "/disk";
             mainPath = path;
             walOn = wal;
-            diskOn = disk;
             syncWalToDisk = walDiskSync;
         }
         public static Config DefaultConfig() { return new Config(); }
         public static Config CreateConfig(string path) {
-            return new Config(LogLevel.Trace, path, true, true, true);
+            return new Config(LogLevel.Trace, path, true, true);
         }
     }
 
@@ -91,7 +91,6 @@ namespace Duckstax.Otterbrix
             public StringPasser diskPath;
             public StringPasser mainPath;
             public bool walOn;
-            public bool diskOn;
             public bool syncWalToDisk;
             public TransferConfig(ref Config config) {
                 this.level = (int) config.level;
@@ -100,7 +99,6 @@ namespace Duckstax.Otterbrix
                 this.diskPath = new StringPasser(ref config.diskPath);
                 this.mainPath = new StringPasser(ref config.mainPath);
                 this.walOn = config.walOn;
-                this.diskOn = config.diskOn;
                 this.syncWalToDisk = config.syncWalToDisk;
             }
         }

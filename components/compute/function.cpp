@@ -2,6 +2,7 @@
 
 #include <core/pmr.hpp>
 
+#include <algorithm>
 #include <optional>
 
 using namespace components::vector;
@@ -162,10 +163,20 @@ namespace components::compute {
     private:
         core::error_t check_init() {
             if (!kernel_ctx_) {
-                // didn't call init, default (i.e. no options/exec_ctx) call
-                if (auto st = init(nullptr, default_exec_context()); st.contains_error()) {
-                    return st;
-                }
+                // NO IMPLICIT INIT (rule 6). Self-initialising against a process-global arena
+                // would let an executor whose caller forgot init() silently run on memory
+                // nobody had asked for. Both
+                // in-tree producers of this object (function::make_executor and the three
+                // function::execute overloads) init it with the caller's context before
+                // handing it out, so reaching this is a caller bug, and it is answered, not
+                // papered over. The message is built on in_types_' own resource: that vector
+                // is moved in from make_executor's caller, so it carries the caller's arena
+                // even on the one path where init() never ran. No process-global resource is
+                // reachable from here, and none is needed.
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"function executor used before init(): "
+                                                      "no execution context was ever supplied",
+                                                      in_types_.get_allocator().resource()});
             }
 
             return core::error_t::no_error();
@@ -218,8 +229,9 @@ namespace components::compute {
     }
 
     core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
-    function::get_best_executor(std::pmr::memory_resource* resource, std::pmr::vector<complex_logical_type>) const {
-        detail::kernel_executor_visitor vis;
+    function::get_best_executor(std::pmr::memory_resource* resource,
+                               const std::pmr::vector<complex_logical_type>&) const {
+        detail::kernel_executor_visitor vis(resource);
         accept_visitor(vis);
 
         if (!vis.result) {
@@ -359,10 +371,13 @@ namespace components::compute {
     }
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
+        if (builtin_error_.contains_error()) {
+            // Poisoned: a broken builtin table must stay empty (see add_builtin).
+            return core::error_on(resource_, builtin_error_);
+        }
         if (!function) {
-            core::error_t(core::error_code_t::function_registry_error,
-
-                          std::pmr::string{"Cannot add null function", resource_});
+            return core::error_t(core::error_code_t::function_registry_error,
+                                 std::pmr::string{"Cannot add null function", resource_});
         }
 
         auto uid = current_uid_++;
@@ -372,6 +387,10 @@ namespace components::compute {
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function_with_uid(function_uid uid,
                                                                                     function_ptr function) {
+        if (builtin_error_.contains_error()) {
+            // Poisoned: a broken builtin table must stay empty (see add_builtin).
+            return core::error_on(resource_, builtin_error_);
+        }
         if (!function) {
             return core::error_t(core::error_code_t::function_registry_error,
                                  std::pmr::string{"Cannot add null function", resource_});
@@ -423,6 +442,51 @@ namespace components::compute {
 
     std::pmr::memory_resource* function_registry_t::resource() const noexcept { return resource_; }
 
+    void function_registry_t::add_builtin(function_ptr function) {
+        if (builtin_error_.contains_error()) {
+            return; // already poisoned; the FIRST failure is the one reported
+        }
+        if (!function) {
+            poison_builtins_(
+                core::error_t(core::error_code_t::function_registry_error,
+                              std::pmr::string{"builtin registration handed a null function", resource_}));
+            return;
+        }
+        const auto& name = function->name();
+        const auto* row = std::find_if(DEFAULT_FUNCTIONS.begin(),
+                                       DEFAULT_FUNCTIONS.end(),
+                                       [&](const auto& entry) { return entry.first == name; });
+        if (row == DEFAULT_FUNCTIONS.end()) {
+            std::pmr::string what{"builtin '", resource_};
+            what += std::pmr::string{name, resource_};
+            what += "' has no DEFAULT_FUNCTIONS row";
+            poison_builtins_(core::error_t(core::error_code_t::function_registry_error, std::move(what)));
+            return;
+        }
+        auto added = add_function(std::move(function));
+        if (added.has_error()) {
+            poison_builtins_(core::error_on(resource_, added.error()));
+            return;
+        }
+        if (added.value() != row->second) {
+            std::pmr::string what{"builtin '", resource_};
+            what += std::pmr::string{name, resource_};
+            what += "' landed on uid ";
+            what += std::pmr::string{std::to_string(added.value()), resource_};
+            what += " instead of ";
+            what += std::pmr::string{std::to_string(row->second), resource_};
+            what += "; the whole uid table is shifted";
+            poison_builtins_(core::error_t(core::error_code_t::function_registry_error, std::move(what)));
+        }
+    }
+
+    const core::error_t& function_registry_t::builtin_registration_error() const noexcept { return builtin_error_; }
+
+    void function_registry_t::poison_builtins_(core::error_t error) {
+        builtin_error_ = std::move(error);
+        functions_.clear();
+    }
+
     void function_registry_t::register_builtin_functions() { register_default_functions(*this); }
 
     namespace detail {
@@ -438,15 +502,16 @@ namespace components::compute {
 
         void kernel_nth_visitor::visit(const expand_function& func) { result = &func.kernels()[nth_].get(); }
 
-        kernel_executor_visitor::kernel_executor_visitor()
-            : function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>>(nullptr) {}
+        kernel_executor_visitor::kernel_executor_visitor(std::pmr::memory_resource* resource)
+            : function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>>(nullptr)
+            , resource_(resource) {}
 
         void kernel_executor_visitor::visit(const compute::vector_function&) {
-            result = detail::kernel_executor_t::make_vector();
+            result = detail::kernel_executor_t::make_vector(resource_);
         }
 
         void kernel_executor_visitor::visit(const compute::aggregate_function&) {
-            result = detail::kernel_executor_t::make_aggregate();
+            result = detail::kernel_executor_t::make_aggregate(resource_);
         }
 
         void kernel_executor_visitor::visit(const expand_function&) {}

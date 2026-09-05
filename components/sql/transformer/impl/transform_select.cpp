@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <limits>
 #include <unordered_set>
 
 #include <components/expressions/aggregate_expression.hpp>
@@ -27,6 +28,23 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     namespace {
+        // The exact int64 an oversize integer literal denotes, for the row-count clauses that
+        // take a plain number rather than a value. False when the text is not an integer at
+        // all, or is one no int64 can hold — both of which the caller reports as the clause's
+        // own "allowed only <integer>" refusal rather than answering with a wrong count.
+        bool exact_int64_literal(Value* value, int64_t& out) {
+            types::int128_t wide{0};
+            if (parse_exact_integer(strVal(value), wide) != integer_text_t::exact) {
+                return false;
+            }
+            if (wide < types::int128_t{std::numeric_limits<int64_t>::min()} ||
+                wide > types::int128_t{std::numeric_limits<int64_t>::max()}) {
+                return false;
+            }
+            out = static_cast<int64_t>(wide);
+            return true;
+        }
+
         expressions::sort_null_order map_sortby_nulls(SortByNulls nulls) {
             switch (nulls) {
                 case SORTBY_NULLS_FIRST:
@@ -391,6 +409,10 @@ namespace components::sql::transform {
         if (!with_clause) {
             return core::error_t::no_error();
         }
+        // Names registered by THIS clause, to tell a duplicate inside one WITH list
+        // (PostgreSQL's own error) apart from a collision with another WITH of the
+        // same statement (unimplemented scoping).
+        std::pmr::unordered_set<std::string_view> this_clause{resource_};
         for (const auto& item : with_clause->ctes->lst) {
             auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
             if (nodeTag(cte->ctequery) != T_SelectStmt) {
@@ -399,6 +421,27 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
             }
+            // Registration is a flat per-statement map, and unordered_map::emplace is a
+            // SILENT NO-OP on a duplicate key: a name written twice keeps the FIRST body
+            // and runs the query against it, reporting success. Both duplicate shapes are
+            // refused — a repeat inside one WITH list gets PostgreSQL's own message, and
+            // a name arriving from another WITH of the same statement (a sub-query's, a
+            // UNION arm's) is refused as unimplemented scoping: with one flat map the
+            // reference would resolve to whichever body registered FIRST, which for a
+            // shadowing inner WITH is exactly the wrong one.
+            if (this_clause.count(cte->ctename) != 0) {
+                std::pmr::string msg{"WITH query name \"", resource_};
+                msg += cte->ctename;
+                msg += "\" specified more than once";
+                return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+            }
+            if (cte_queries_.count(cte->ctename) != 0 || recursive_cte_queries_.count(cte->ctename) != 0) {
+                std::pmr::string msg{"WITH query name \"", resource_};
+                msg += cte->ctename;
+                msg += "\" is already defined in this statement: WITH scoping is not supported yet";
+                return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+            }
+            this_clause.emplace(cte->ctename);
             if (with_clause->recursive) {
                 recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
             } else {
@@ -431,6 +474,21 @@ namespace components::sql::transform {
                         case T_Integer:
                             limit_val = intVal(value);
                             break;
+                        case T_Float:
+                            // An integer literal past int32 does not fit the scanner's `ival`
+                            // and leaves the lexer as a T_Float holding its digits (scan.l,
+                            // process_integer_literal), so `LIMIT 3000000000` lands HERE and
+                            // not in the arm above. Read the digits exactly — truncating them
+                            // on the way through silently limits the answer to a different
+                            // number of rows.
+                            if (!exact_int64_literal(value, limit_val)) {
+                                return core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                        resource_});
+                            }
+                            break;
                         default:
                             return core::error_t(
                                 core::error_code_t::sql_parse_error,
@@ -462,6 +520,16 @@ namespace components::sql::transform {
                             break; // OFFSET NULL — treat as 0
                         case T_Integer:
                             offset_val = intVal(value);
+                            break;
+                        case T_Float:
+                            // Same lexer detour as LIMIT above.
+                            if (!exact_int64_literal(value, offset_val)) {
+                                return core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                        resource_});
+                            }
                             break;
                         default:
                             return core::error_t(
@@ -513,6 +581,35 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_select(SelectStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
+        // Three SelectStmt fields no code below reads, refused before anything else
+        // runs (rule 6). Unrefused, each is a statement that reports success while
+        // answering a different question:
+        //   - intoClause: SELECT ... INTO runs as a plain SELECT — rows come back,
+        //     no table is created, nothing says the INTO half was dropped;
+        //   - lockingClause: FOR UPDATE / FOR SHARE parses and locks nothing;
+        //   - windowClause: WINDOW w AS (...) parses and defines nothing (an OVER
+        //     that references it is refused at the FuncCall, this is the clause
+        //     itself). The checks run in every recursion, so a UNION arm or a
+        //     sub-select carrying one of these is refused the same way.
+        if (node.intoClause) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{
+                    "SELECT ... INTO is not supported yet: rows would have come back and no table would have "
+                    "been created",
+                    resource_});
+        }
+        if (node.lockingClause && !node.lockingClause->lst.empty()) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"the locking clause (FOR UPDATE / FOR SHARE) is not supported yet: rows would "
+                                 "not have been locked",
+                                 resource_});
+        }
+        if (node.windowClause && !node.windowClause->lst.empty()) {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"the WINDOW clause is not supported yet", resource_});
+        }
         // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
         // through the transformer. For a SETOP_* node, node.targetList is
         // null (the column projection lives on the larg / rarg children),
@@ -732,6 +829,7 @@ namespace components::sql::transform {
                     case T_FuncCall: {
                         // Aggregate function in SELECT
                         auto func = pg_ptr_cast<FuncCall>(res->val);
+                        RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
 
                         auto funcname = std::string{strVal(linitial(func->funcname))};
                         std::pmr::vector<param_storage> args{resource_};
@@ -862,6 +960,23 @@ namespace components::sql::transform {
                             auto field_name = std::string(col_ref.field.storage().back());
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
+                            // 'col ::? type' — type-VARIANT selection, not a cast: carry the
+                            // requested type on the key so find_types picks the matching
+                            // multi-type variant column (mirrors the jsonb-chain '::?'
+                            // branch below). A plain cast here leaves the key without its
+                            // variant annotation, and the validator then refuses the name as
+                            // ambiguous on any computed table with several variants.
+                            if (cast->variant_select) {
+                                auto field_key = std::move(col_ref.field);
+                                field_key.set_cast_type(target_type_res);
+                                field_key.set_variant_select(true);
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::get_field,
+                                                           expressions::key_t{resource_, alias},
+                                                           std::move(field_key)));
+                                break;
+                            }
                             auto conversion = make_cast_expression(resource_,
                                                                    param_storage{std::move(col_ref.field)},
                                                                    target_type_res,
@@ -896,6 +1011,28 @@ namespace components::sql::transform {
                                                            std::move(field_key)));
                                 break;
                             }
+                        }
+                        // A cast over any other non-literal operand: lower the operand and
+                        // wrap it. Falling through to the T_A_Const arm below hands the whole
+                        // cast to get_value, which can only fold an A_Const — over an A_Expr
+                        // it reads the operator node's `lexpr` POINTER and projects it as the
+                        // answer, the same value on every row. Same shape as the jsonb arm
+                        // above.
+                        if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
+                            has_non_star = true;
+                            VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));
+                            logical_plan::node_ptr sel_node = select_node;
+                            VALUE_OR_RETURN(auto operand, resolve_select_operand(cast->arg, names, plan, sel_node));
+                            auto conversion = make_cast_expression(resource_,
+                                                                   std::move(operand),
+                                                                   target_type_res,
+                                                                   casts::cast_t{},
+                                                                   cast->try_cast ? casts::cast_kind::try_cast
+                                                                                  : casts::cast_kind::cast);
+                            conversion->key() =
+                                expressions::key_t{resource_, res->name ? std::string{res->name} : std::string{"cast"}};
+                            select_node->append_expression(conversion);
+                            break;
                         }
                         [[fallthrough]];
                     }

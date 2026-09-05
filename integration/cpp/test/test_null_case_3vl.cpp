@@ -1,11 +1,12 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
-// Three-valued logic in the CASE expression evaluator (arithmetic_eval.cpp), used for a CASE in a
-// projection or aggregate. Two independent defects:
+// Three-valued logic in the CASE expression evaluator, used for a CASE in a projection or
+// aggregate. Two independent defects:
 //   1. a NOT inside a WHEN was ignored (union_not was folded like union_or), so `WHEN NOT (p)`
 //      behaved as `WHEN (p)`; and a NULL operand was two-valued (UNKNOWN collapsed to FALSE, then
 //      NOT could resurrect it).
@@ -46,7 +47,7 @@ namespace {
 //  NOT inside a WHEN condition -- must negate, and a NULL operand makes the WHEN UNKNOWN (-> ELSE).
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::case3vl::not_in_when") {
-    auto config = test_helpers::make_test_config("/tmp/case3vl/not_in_when");
+    auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/not_in_when"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -71,7 +72,7 @@ TEST_CASE("integration::cpp::case3vl::not_in_when") {
 //  Projection CASE where the first THEN is NULL at row 0 -- output type must come from a real value.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::case3vl::projection_null_row0") {
-    auto config = test_helpers::make_test_config("/tmp/case3vl/proj");
+    auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/proj"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -93,7 +94,7 @@ TEST_CASE("integration::cpp::case3vl::projection_null_row0") {
 //  CASE inside an aggregate over a NULL row (the SUM(CASE ...) shape) keeps working with NOT.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::case3vl::aggregate_case_not") {
-    auto config = test_helpers::make_test_config("/tmp/case3vl/agg");
+    auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/agg"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));

@@ -36,15 +36,49 @@ namespace components::operators {
         const auto& indices = fk_.child_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
 
-        // An unresolved key column position voids a row's check, but it still counts as
-        // NULL for the MATCH policy below — so a MATCH FULL key that is partially absent
-        // (or partially NULL) is rejected before the row is skipped (constant per FK).
-        bool has_absent = indices.empty();
-        for (auto idx : indices) {
-            if (idx == absent) {
-                has_absent = true;
-                break;
+        // THE TWO COLUMN LISTS MUST BE THE SAME LENGTH. The keys-chunk below carries one column per
+        // child_col_indices entry, while the key column NAMES sent with it are parent_col_names — the two counts
+        // have to agree for the parent-side lookup to mean anything, and nothing on the DDL path makes them
+        // agree: `FOREIGN KEY (a, b) REFERENCES parent (x)` is accepted verbatim and each list is resolved to
+        // attoids independently. Left unchecked, the disk side gets a key chunk it cannot read and answers one
+        // empty bucket per key, which this operator reports as "referenced row not found in parent table" — a
+        // violation message pointing at data that is perfectly fine. Name the actual defect instead.
+        if (indices.size() != fk_.parent_col_names.size()) {
+            std::pmr::string what{"FK constraint: foreign key column count mismatch — ", resource_};
+            what.append(std::to_string(indices.size()).c_str());
+            what.append(" referencing column(s) vs ");
+            what.append(std::to_string(fk_.parent_col_names.size()).c_str());
+            what.append(" referenced column(s)");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
+        }
+
+        // EVERY REFERENCING COLUMN MUST HAVE A POSITION IN THE WRITTEN ROW. A different defect from the arity
+        // mismatch above — the two lists can agree in length and still name a column this write-set does not
+        // expose — and it takes the operator's QUIETEST path: an unresolved position means the row qualifies for
+        // no parent lookup, so every row is skipped, the qualifying count stays 0, and 0 is this operator's
+        // SUCCESS path — an INSERT/UPDATE accepted with its foreign key checked against nothing at all. There is
+        // no reading of an absent column that is a check, so refuse and name the column.
+        // (Constant per FK: the positions are the same for every row.)
+        if (indices.empty()) {
+            set_error(core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"FK constraint: no referencing column resolved to a position in the written row",
+                                 resource_}});
+            mark_failed();
+            co_return;
+        }
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            if (indices[i] != absent) {
+                continue;
             }
+            std::pmr::string what{"FK constraint: referencing column \"", resource_};
+            what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
+            what.append("\" has no position in the written row");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
         }
 
         // Parent key column names are the same for every row; hoist them once.
@@ -54,11 +88,10 @@ namespace components::operators {
             parent_col_names.emplace_back(n);
         }
 
-        // Collect the qualifying child rows as a per-chunk SELECTION, preserving the
-        // MATCH null policy + error path. Each input chunk's qualifying keys become their
-        // own owned keys-chunk, verified by one scan_by_keys call per input chunk (below);
-        // scan_by_keys does ONE single-pass hash semi-join scan of the parent per call, so
-        // the whole verify is O(child_rows + parent_rows), not O(keys * parent_rows).
+        // Collect the qualifying child rows as a per-chunk SELECTION, preserving the MATCH null policy + error
+        // path. Each input chunk's qualifying keys become their own owned keys-chunk, verified by one
+        // scan_by_keys call per input chunk (below); scan_by_keys does ONE single-pass hash semi-join scan of the
+        // parent per call, so the whole verify is O(child_rows + parent_rows), not O(keys * parent_rows).
         // qualifying[c] = selection into in_chunks[c]; counts[c] = its qualifying count.
         std::pmr::vector<components::vector::indexing_vector_t> qualifying(resource_);
         std::pmr::vector<uint64_t> counts(resource_);
@@ -67,15 +100,31 @@ namespace components::operators {
         uint64_t qcount = 0;
 
         for (const auto& chunk : in_chunks) {
+            // The positions come from the plan; the chunk is what was written. A position
+            // past the end of this chunk would be read as a cell, so check it once per
+            // chunk rather than trusting the two to agree.
+            if (chunk.size() > 0) {
+                for (std::size_t i = 0; i < indices.size(); ++i) {
+                    if (indices[i] < chunk.column_count()) {
+                        continue;
+                    }
+                    std::pmr::string what{"FK constraint: referencing column \"", resource_};
+                    what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
+                    what.append("\" is outside the written row");
+                    set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                    mark_failed();
+                    co_return;
+                }
+            }
             components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
             uint64_t chunk_count = 0;
             for (uint64_t row = 0; row < chunk.size(); ++row) {
                 bool any_null = false;
                 bool all_null = true;
                 for (std::size_t i = 0; i < indices.size(); ++i) {
-                    const auto idx = indices[i];
-                    const bool is_null = (idx == absent || !chunk.data[idx].validity().row_is_valid(row));
-                    if (is_null)
+                    // Every position resolved (guarded above), so the validity bit of the
+                    // written cell is the whole question.
+                    if (!chunk.data[indices[i]].validity().row_is_valid(row))
                         any_null = true;
                     else
                         all_null = false;
@@ -97,11 +146,6 @@ namespace components::operators {
                         continue;
                 }
 
-                // Passed the MATCH policy but a key column is unresolved: nothing to look
-                // up in the parent, so the row qualifies for no scan key.
-                if (has_absent)
-                    continue;
-
                 selection.set_index(chunk_count, row);
                 ++chunk_count;
             }
@@ -116,12 +160,11 @@ namespace components::operators {
             co_return;
         }
 
-        // Verify the qualifying keys against the parent table ONE input chunk at a time.
-        // Each input chunk holds <= DEFAULT_VECTOR_CAPACITY rows, so its keys-chunk is bounded;
-        // gathering ALL streamed batches into one carrier would overflow the chunk capacity (the
-        // source can stream many batches). Each keys-chunk is an OWNED copy (it crosses the mailbox;
-        // actors must not share buffers). The per-chunk scans are sequential co_awaits living in
-        // this nested operator coroutine (driven by the executor) — no lost-wakeup.
+        // Verify the qualifying keys against the parent table ONE input chunk at a time. Each input chunk holds
+        // <= DEFAULT_VECTOR_CAPACITY rows, so its keys-chunk is bounded; gathering ALL streamed batches into one
+        // carrier would overflow the chunk capacity. Each keys-chunk is an OWNED copy (it crosses the mailbox;
+        // actors must not share buffers). The per-chunk scans are sequential co_awaits living in this nested
+        // operator coroutine (driven by the executor) — no lost-wakeup.
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(indices.size());
         for (auto idx : indices) {
@@ -148,12 +191,12 @@ namespace components::operators {
             for (const auto& n : parent_col_names) {
                 col_names.emplace_back(n);
             }
-            auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::scan_by_keys,
-                                             exec_ctx,
-                                             fk_.parent_table_oid,
-                                             std::move(col_names),
-                                             std::move(keys));
+            auto [_, fut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::scan_by_keys,
+                                                        exec_ctx,
+                                                        fk_.parent_table_oid,
+                                                        std::move(col_names),
+                                                        std::move(keys));
             auto matches_r = co_await std::move(fut);
             if (matches_r.has_error()) {
                 // A failed parent-key read is not a miss; treating it as one lets the

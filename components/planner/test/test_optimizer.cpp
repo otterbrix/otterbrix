@@ -37,25 +37,25 @@
 
 namespace {
     // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    // No (void)-cast to silence an unused local (rule 14): the registration runs
+    // inside the static's own initializer, so there is nothing left over to ignore.
     const components::casts::cast_registry_t* test_cast_registry() {
-        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
-        static const bool loaded = [] {
-            components::casts::register_default_casts(registry);
-            return true;
+        static const components::casts::cast_registry_t& registry = []() -> components::casts::cast_registry_t& {
+            static components::casts::cast_registry_t r{std::pmr::new_delete_resource()};
+            components::casts::register_default_casts(r);
+            return r;
         }();
-        (void) loaded;
         return &registry;
     }
 
     services::dispatcher::validation::validation_context_t
     test_validation_context(std::pmr::memory_resource* resource) {
-        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
         static const components::graph_execution_context execution_context{};
-        static const bool loaded = [] {
-            components::compute::register_default_functions(functions);
-            return true;
+        static components::compute::function_registry_t& functions = [] () -> components::compute::function_registry_t& {
+            static components::compute::function_registry_t f{std::pmr::new_delete_resource()};
+            components::compute::register_default_functions(f);
+            return f;
         }();
-        (void) loaded;
         return {resource, nullptr, *test_cast_registry(), functions, execution_context};
     }
 } // namespace
@@ -847,12 +847,13 @@ TEST_CASE("optimizer::mirror_compare_symmetric") {
 TEST_CASE("optimizer::has_index_on_positive") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{701};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    ctx.index_info_slot(table_oid).keys.push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "age")) == true);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "age")) == true);
 }
 
 // ================================================================
@@ -861,12 +862,13 @@ TEST_CASE("optimizer::has_index_on_positive") {
 TEST_CASE("optimizer::has_index_on_negative") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{702};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    ctx.index_info_slot(table_oid).keys.push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "name")) == false);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "name")) == false);
 }
 
 // ================================================================
@@ -875,23 +877,25 @@ TEST_CASE("optimizer::has_index_on_negative") {
 TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{703};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "a"));
     keys.push_back(key(&resource, "b"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    ctx.index_info_slot(table_oid).keys.push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "a")) == false);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "a")) == false);
 }
 
 // ================================================================
-// T30. has_index_on: empty indexed_keys
+// T30. has_index_on: no table_indexes entry for the oid
 // ================================================================
 TEST_CASE("optimizer::has_index_on_empty") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{704};
 
-    REQUIRE(ctx.has_index_on(key(&resource, "any")) == false);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "any")) == false);
 }
 
 // ================================================================
@@ -946,18 +950,20 @@ static services::context_storage_t make_context_with_oid(std::pmr::memory_resour
 
 static void add_single_field_index(services::context_storage_t& ctx,
                                    std::pmr::memory_resource* resource,
+                                   components::catalog::oid_t table_oid,
                                    const char* field,
                                    components::logical_plan::index_type type) {
+    auto& info = ctx.index_info_slot(table_oid);
     components::logical_plan::keys_base_storage_t keys(resource);
     keys.push_back(key(resource, field));
-    ctx.indexed_keys.push_back(keys);
+    info.keys.push_back(keys);
 
     components::index::index_description_t desc{
         components::logical_plan::keys_base_storage_t(resource),
         type,
     };
     desc.keys.push_back(key(resource, field));
-    ctx.indexed_descriptions.push_back(std::move(desc));
+    info.descriptions.push_back(std::move(desc));
 }
 
 TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
@@ -967,7 +973,7 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
     constexpr auto table_oid = components::catalog::oid_t{777};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::hashed);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -989,7 +995,7 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
     constexpr auto table_oid = components::catalog::oid_t{778};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -1011,7 +1017,7 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
     constexpr auto table_oid = components::catalog::oid_t{779};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::hashed);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -1030,7 +1036,7 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
     constexpr auto table_oid = components::catalog::oid_t{780};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -1051,7 +1057,7 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     constexpr auto table_oid = components::catalog::oid_t{781};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto union_expr = make_compare_union_expression(&resource, compare_type::union_and);
     union_expr->append_child(make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
@@ -1064,11 +1070,9 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
 }
 
 // ================================================================
-// pushdown_aggregate rule — stamps node_group_t::pushdown() on
-// single-owned-table, fragment-mergeable aggregate sub-plans.
-// Driven through optimize() with can_push_to_agent=true (the hard
-// capability precondition — an owning agent must be reachable); the
-// rule itself is total (no-op on non-match).
+// pushdown_aggregate rule — stamps node_group_t::pushdown() on single-owned-table, fragment-mergeable
+// aggregate sub-plans. Driven through optimize() with can_push_to_agent=true (the hard capability
+// precondition — an owning agent must be reachable); the rule itself is total (no-op on non-match).
 // ================================================================
 namespace {
     constexpr auto pushable_oid = components::catalog::oid_t{4242};
@@ -1246,22 +1250,18 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
 //                match{ union_and[ eq(ak, bk), lt(ap, ?) ] },
 //                group{ SUM(ap) } ].
 //
-// The comma-join uses UNQUALIFIED column names, so validate_schema stamps BOTH
-// equi keys side=left over the merged [ak, ap, bk] schema (the same_schema path)
-// and stamps output_types() on the scan children. Because both keys are side=left,
-// detect_equi_columns cannot accept the cross join as-is.
+// The comma-join uses UNQUALIFIED column names, so validate_schema stamps BOTH equi keys side=left over
+// the merged [ak, ap, bk] schema (the same_schema path) and stamps output_types() on the scan children.
+// Because both keys are side=left, detect_equi_columns cannot accept the cross join as-is.
 //
-// promote_cross_joins classifies the equi keys by PATH RANGE against the intact
-// stamped scans (left_width = scan_a.output_types().size() == 2): ak -> merged
-// idx 0 (left range), bk -> merged idx 2 (right range). It moves the eq onto a
-// fresh INNER join, re-localizes + re-sides the right-range key (merged 2 ->
-// right-local 0, side=right), and keeps the non-join lt filter as the residual
-// match. rewrite_hash_joins (run AFTER, as optimize() orders it) then lowers the
-// promoted inner join to algo()==hash.
+// promote_cross_joins classifies the equi keys by PATH RANGE against the intact stamped scans (left_width
+// = scan_a.output_types().size() == 2): ak -> merged idx 0 (left range), bk -> merged idx 2 (right range).
+// It moves the eq onto a fresh INNER join, re-localizes + re-sides the right-range key (merged 2 ->
+// right-local 0, side=right), and keeps the non-join lt filter as the residual match. rewrite_hash_joins
+// (run AFTER, as optimize() orders it) then lowers the promoted inner join to algo()==hash.
 //
-// The scans are driven through the REAL validate_schema (never hand-stamped) so
-// key.side()/key.path()/output_types() are exactly what the SQL pipeline produces
-// (make_agg 5-arg would stamp the wrapper, not the scans).
+// The scans are driven through the REAL validate_schema (never hand-stamped) so key.side()/key.path()/
+// output_types() are exactly what the SQL pipeline produces.
 // ================================================================
 namespace {
     // A raw BIGINT scan, left UNstamped on purpose: validate_schema derives and
@@ -1367,11 +1367,10 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
 }
 
 // ================================================================
-// NOT folding: union_not over a fully folded single child must fold
-// to the complementary constant. Without this, `WHERE NOT (1=2)`
-// survived folding and reached filter construction, whose all_false /
-// key-shape guards were Release-erased asserts (crash / bad variant
-// access), and `WHERE NOT (1=1)` produced a spurious error.
+// NOT folding: union_not over a fully folded single child must fold to the complementary constant.
+// Without this, `WHERE NOT (1=2)` survived folding and reached filter construction, whose all_false /
+// key-shape guards were Release-erased asserts (crash / bad variant access), and `WHERE NOT (1=1)`
+// produced a spurious error.
 // ================================================================
 TEST_CASE("optimizer::not_fold_all_false_child") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1406,15 +1405,13 @@ TEST_CASE("optimizer::not_fold_all_true_child") {
 }
 
 // ================================================================
-// Column pruning (column_pruning.cpp) — optimize() populates
-// node_aggregate_t::projected_cols() so downstream scans read only the
-// referenced storage columns. The rule is UNGATED (a projection hint,
-// valid in-memory too), so it is exercised through the 3-arg optimize()
-// with no owning agent (can_push_to_agent defaults false).
+// Column pruning (column_pruning.cpp) — optimize() populates node_aggregate_t::projected_cols() so
+// downstream scans read only the referenced storage columns. The rule is UNGATED (a projection hint,
+// valid in-memory too), so it is exercised through the 3-arg optimize() with no owning agent
+// (can_push_to_agent defaults false).
 //
-// Plans are built with paths pre-stamped by hand (validate_schema would
-// stamp key.path()[0] to the storage column index at runtime); the rule
-// reads those paths directly.
+// Plans are built with paths pre-stamped by hand (validate_schema would stamp key.path()[0] to the
+// storage column index at runtime); the rule reads those paths directly.
 // ================================================================
 namespace {
     using components::catalog::oid_t;
@@ -1623,11 +1620,10 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
 // ================================================================
 // Filter pushdown THROUGH a UNION / UNION ALL.
 //
-// A WHERE match above a union_t source is cloned into a node_match above EACH
-// union branch (positional column identity: union output column i == branch
-// column i). The residual (a conjunct a branch does not expose identically)
-// stays above the union. Built through the REAL validate_schema so union +
-// branch output_types()/key paths are exactly what the SQL pipeline stamps.
+// A WHERE match above a union_t source is cloned into a node_match above EACH union branch (positional
+// column identity: union output column i == branch column i). The residual (a conjunct a branch does not
+// expose identically) stays above the union. Built through the REAL validate_schema so union + branch
+// output_types()/key paths are exactly what the SQL pipeline stamps.
 //
 // Helper: return a branch's match child (a node_match_t among children[1..]).
 // ================================================================
@@ -1785,20 +1781,17 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
 }
 
 // ================================================================
-// Filter pushdown below a JOIN when the filtered column NAME collides
-// with a same-named column on the OTHER join side.
+// Filter pushdown below a JOIN when the filtered column NAME collides with a same-named column on the
+// OTHER join side.
 //
-// Both t1 and t2 expose "id" and "k" (merged schema [t1.id=0, t1.k=1,
-// t2.id=2, t2.k=3], left_width=2). `WHERE t1.id=5 AND t2.id=7` — the bare
-// name "id" is on BOTH sides, so NAME-based bucketing (is `id` a
-// subset of one side's alias set?) would put BOTH conjuncts in the residual
-// above the join, never reaching the scans. The validator stamps each
-// key's merged path (t1.id->0, t2.id->2); bucketing by path()[0] vs
-// left_width routes t1.id below t1 and t2.id below t2.
+// Both t1 and t2 expose "id" and "k" (merged schema [t1.id=0, t1.k=1, t2.id=2, t2.k=3], left_width=2).
+// `WHERE t1.id=5 AND t2.id=7` — the bare name "id" is on BOTH sides, so NAME-based bucketing would put
+// BOTH conjuncts in the residual above the join, never reaching the scans. The validator stamps each
+// key's merged path (t1.id->0, t2.id->2); bucketing by path()[0] vs left_width routes t1.id below t1 and
+// t2.id below t2.
 //
-// A scan carries its columns in output_types() (has_output_types() true,
-// so left_width is known); keys carry a stamped merged path (pruned_key),
-// exactly the post-validate_schema shape.
+// A scan carries its columns in output_types() (has_output_types() true, so left_width is known); keys
+// carry a stamped merged path (pruned_key), exactly the post-validate_schema shape.
 // ================================================================
 namespace {
     // aggregate_t{db,rel} scan carrying its columns ONLY in output_types()
@@ -1861,12 +1854,10 @@ TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side")
 }
 
 // ================================================================
-// Outer-join safety under the SAME name collision: a LEFT join null-pads
-// the RIGHT side, so a filter on the right (null-padded) side must STAY in
-// the residual above the join even though its bare name "id" collides. The
-// left-side conjunct still pushes. This proves the side-based classifier
-// does not weaken the row-preserving guard (can_push_right == false for a
-// LEFT join).
+// Outer-join safety under the SAME name collision: a LEFT join null-pads the RIGHT side, so a filter on
+// the right (null-padded) side must STAY in the residual above the join even though its bare name "id"
+// collides. The left-side conjunct still pushes. This proves the side-based classifier does not weaken
+// the row-preserving guard (can_push_right == false for a LEFT join).
 // ================================================================
 TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_residual") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1929,19 +1920,16 @@ TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_r
 // ================================================================
 // TRANSITIVE EQUI-PREDICATE PROPAGATION (inner join).
 //
-// t1 = {a, k}, t2 = {b, k2}, joined `ON t1.k = t2.k2` (an equi-pair). The
-// merged schema is [t1.a=0, t1.k=1, t2.b=2, t2.k2=3], left_width=2. The ON keys
-// are stamped SIDE-LOCAL (validate_key resolves each against its own side: left
-// key path=1, right key path=1), which is what promote_cross_join and the real
+// t1 = {a, k}, t2 = {b, k2}, joined `ON t1.k = t2.k2` (an equi-pair). The merged schema is [t1.a=0,
+// t1.k=1, t2.b=2, t2.k2=3], left_width=2. The ON keys are stamped SIDE-LOCAL (validate_key resolves each
+// against its own side: left key path=1, right key path=1), which is what promote_cross_join and the real
 // validator produce.
 //
-// `WHERE t1.k = 5` filters ONE equi-key column. On a matched inner-join row
-// t1.k == t2.k2, so the same literal holds on the partner: the optimizer
-// SYNTHESIZES `t2.k2 = 5` and routes it (via the existing merged-path bucketer +
-// relocalizer) below t2's scan — in ADDITION to the original t1.k=5 below t1.
-// The synthesized key must NAME the partner column (k2) and localize to t2's
-// right-local index (1). The whole WHERE (t1.k=5 + derived t2.k2=5) pushes, so
-// the bare join is exposed.
+// `WHERE t1.k = 5` filters ONE equi-key column. On a matched inner-join row t1.k == t2.k2, so the same
+// literal holds on the partner: the optimizer SYNTHESIZES `t2.k2 = 5` and routes it (via the existing
+// merged-path bucketer + relocalizer) below t2's scan — in ADDITION to the original t1.k=5 below t1. The
+// synthesized key must NAME the partner column (k2) and localize to t2's right-local index (1). The whole
+// WHERE (t1.k=5 + derived t2.k2=5) pushes, so the bare join is exposed.
 // ================================================================
 TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") {
     auto resource = core::pmr::otterbrix_resource();
@@ -2049,12 +2037,10 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation")
 }
 
 // ================================================================
-// OUTER-join safety: propagation is UNSOUND on the null-padded side. For
-// `t1 LEFT JOIN t2 ON t1.k = t2.k2 WHERE t1.k = 5`, a preserved left row with
-// no t2 match has t2.k2 = NULL; deriving `t2.k2 = 5` and pushing it below t2
-// would wrongly drop such rows. The derivation is gated to INNER/CROSS, so
-// NOTHING is synthesized here — t2's scan stays UNFILTERED. (t1.k=5 still
-// pushes below t1, the row-preserving side.)
+// OUTER-join safety: propagation is UNSOUND on the null-padded side. For `t1 LEFT JOIN t2 ON t1.k =
+// t2.k2 WHERE t1.k = 5`, a preserved left row with no t2 match has t2.k2 = NULL; deriving `t2.k2 = 5`
+// and pushing it below t2 would wrongly drop such rows. The derivation is gated to INNER/CROSS, so
+// NOTHING is synthesized here — t2's scan stays UNFILTERED. (t1.k=5 still pushes below t1.)
 // ================================================================
 TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
     auto resource = core::pmr::otterbrix_resource();
@@ -2091,11 +2077,10 @@ TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
 }
 
 // ================================================================
-// drop_redundant_distinct: clear a DISTINCT a GROUP BY already makes
-// redundant (group keys ⊆ projection / DISTINCT ON columns). These build the
-// post-validate shape directly (group keys as leading group_field entries; select
-// get_field columns carrying their resolved group-output ordinal in key.path()) and
-// call the rule in isolation.
+// drop_redundant_distinct: clear a DISTINCT a GROUP BY already makes redundant (group keys subset of
+// projection / DISTINCT ON columns). These build the post-validate shape directly (group keys as leading
+// group_field entries; select get_field columns carrying their resolved group-output ordinal in
+// key.path()) and call the rule in isolation.
 // ================================================================
 namespace {
     using components::logical_plan::make_node_group;
@@ -2232,12 +2217,10 @@ TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_not_subset") {
 }
 
 // ================================================================
-// eager_aggregation rule — pushes a MIN/MAX partial aggregate onto
-// the single join side that owns every group key + aggregate arg,
-// leaving a FINAL merge above the join. Fires only on the provably-
-// sound (duplication-insensitive) MIN/MAX shape. Built here in the
-// post-rewrite_hash_joins state (equi-key stamped) and driven through
-// the rule directly.
+// eager_aggregation rule — pushes a MIN/MAX partial aggregate onto the single join side that owns every
+// group key + aggregate arg, leaving a FINAL merge above the join. Fires only on the provably-sound
+// (duplication-insensitive) MIN/MAX shape. Built here in the post-rewrite_hash_joins state (equi-key
+// stamped) and driven through the rule directly.
 // ================================================================
 namespace { namespace eag {
     using components::expressions::side_t;
@@ -2407,4 +2390,62 @@ TEST_CASE("optimizer::eager_aggregation::cross_side_reference_is_not_pushed") {
     auto outer = eag::make_join_agg(&resource, "min", /*hash=*/true, /*key_path=*/0, /*agg_arg_path=*/3);
     components::planner::optimizer::eager_aggregation(&resource, outer);
     REQUIRE(eag::pushed_partial(outer) == nullptr);
+}
+
+// ================================================================
+// Constant folding refusals: unfoldable kinds and non-numeric operands.
+//
+// try_fold_compare must SKIP, not assert, when eval_compare answers "this comparison kind is not
+// foldable": that is ordinary plan data (any constant-vs-constant regex/ANY/ALL comparison the
+// transformer emits), so an assert aborts Debug builds and is Release-erased into the very skip it
+// forbids. Not folding is the CORRECT outcome: the runtime evaluator is the canonical answer for such a
+// kind, folding is only an optimization.
+//
+// try_fold_scalar must not box both constants into 1-element vectors either: compute_binary_arithmetic
+// throws std::logic_error on non-numeric operands, so a constant `'a' + 1` aborts plan-time folding
+// instead of being refused by value.
+// ================================================================
+TEST_CASE("optimizer::constant_folding::unfoldable_comparison_kind_is_left_unfolded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(std::string("abc"));
+    auto id1 = params->add_parameter(std::string("b.*"));
+
+    // Both sides constant, kind regex: eval_compare cannot fold it. The rule
+    // must leave the expression for the runtime matcher — no assert, no abort.
+    auto comp = make_compare_expression(&resource, compare_type::regex, id0, id1);
+    auto node = make_match_with_expr(&resource, comp);
+
+    components::planner::optimize(&resource, node, params.get());
+
+    REQUIRE(comp->type() == compare_type::regex);
+    REQUIRE(std::holds_alternative<core::parameter_id_t>(comp->left()));
+    REQUIRE(std::holds_alternative<core::parameter_id_t>(comp->right()));
+}
+
+TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_declined_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(std::string("a"));
+    auto id1 = params->add_parameter(int64_t(1));
+
+    auto scalar = make_scalar_expression(&resource, scalar_type::add);
+    scalar->append_param(id0);
+    scalar->append_param(id1);
+
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(scalar));
+    auto node = make_match_with_expr(&resource, comp);
+
+    // A mixed STRING/BIGINT constant pair: the fold declines (no throw, no
+    // silent NULL constant) and the expression survives for the runtime
+    // evaluator. Boxing the operands into vectors instead folds this to a
+    // constant NULL.
+    components::planner::optimize(&resource, node, params.get());
+
+    auto* s = static_cast<scalar_expression_t*>(scalar.get());
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(s->type() == scalar_type::add);
 }

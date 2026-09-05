@@ -5,7 +5,7 @@
 #include <components/table/column_segment.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/transient_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/vector.hpp>
 #include <core/file/local_file_system.hpp>
@@ -137,7 +137,7 @@ TEST_CASE("zonemap: check_zonemap filters") {
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
-    storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
+    storage::transient_block_manager_t block_manager(buffer_manager, 262144);
 
     // Create a column with data [1..100] and populate stats
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
@@ -195,7 +195,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
-    storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
+    storage::transient_block_manager_t block_manager(buffer_manager, 262144);
 
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
@@ -277,7 +277,7 @@ TEST_CASE("per-segment statistics: populated during append") {
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
-    storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
+    storage::transient_block_manager_t block_manager(buffer_manager, 262144);
 
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 

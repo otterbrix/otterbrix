@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
+#include <core/pmr.hpp>
 
 using namespace components::compute;
 using namespace components::types;
@@ -84,7 +85,8 @@ static core::result_wrapper_t<std::pmr::vector<int>> run_aggregate(std::pmr::mem
                                                                    uint64_t group_count) {
     std::pmr::vector<complex_logical_type> in_types(resource);
     in_types.emplace_back(logical_type::INTEGER);
-    auto executor = fn.make_executor(resource, in_types);
+    exec_context_t ctx(resource);
+    auto executor = fn.make_executor(resource, in_types, nullptr, ctx);
     if (executor.has_error()) {
         return executor.error();
     }
@@ -123,6 +125,7 @@ inline function_doc function_doc_with_options() { return function_doc{"", "", {}
 
 TEST_CASE("components::compute::vector::single") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -138,13 +141,14 @@ TEST_CASE("components::compute::vector::single") {
     chunk.set_value(0, 0, 10);
     chunk.set_cardinality(1);
 
-    auto res = fn->execute(chunk, &opts);
+    auto res = fn->execute(chunk, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
 TEST_CASE("components::compute::vector::batch") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -168,7 +172,7 @@ TEST_CASE("components::compute::vector::batch") {
     batch.emplace_back(std::move(c1));
     batch.emplace_back(std::move(c2));
 
-    auto res = fn->execute(batch, &opts);
+    auto res = fn->execute(batch, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data.size() == 2);
     REQUIRE(res.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER);
@@ -177,6 +181,7 @@ TEST_CASE("components::compute::vector::batch") {
 
 TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_caller") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -193,7 +198,7 @@ TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_call
     vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
-    CHECK(fn->make_executor(&resource, {logical_type::INTEGER}, &opts).has_error());
+    CHECK(fn->make_executor(&resource, {logical_type::INTEGER}, &opts, ctx).has_error());
 }
 
 static data_chunk_t two_ints(std::pmr::memory_resource* resource, int first, int second) {
@@ -261,6 +266,7 @@ TEST_CASE("components::compute::aggregate::per_group") {
 
 TEST_CASE("components::compute::vector::plain::chunk") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = std::make_unique<vector_function>("plain_chunk", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::vector,
@@ -275,7 +281,7 @@ TEST_CASE("components::compute::vector::plain::chunk") {
     chunk.set_value(0, 2, 3);
     chunk.set_cardinality(3);
 
-    auto res = fn->execute(chunk);
+    auto res = fn->execute(chunk, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
     auto& out = res.value();
     REQUIRE(out.size() == 3);
@@ -286,6 +292,7 @@ TEST_CASE("components::compute::vector::plain::chunk") {
 
 TEST_CASE("components::compute::vector::plain::batch") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = std::make_unique<vector_function>("plain_batch", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::vector,
@@ -299,26 +306,34 @@ TEST_CASE("components::compute::vector::plain::batch") {
     c1.set_value(0, 1, 7);
     c1.set_cardinality(2);
 
-    data_chunk_t c2(&resource, {logical_type::INTEGER}, 1);
+    // The two chunks are the SAME height on purpose. The fused result carries one column per
+    // input chunk and ONE row count for all of them, so a ragged batch has no honest count and
+    // is refused -- that refusal has its own case, vector::batch_refuses_chunks_of_unequal_height.
+    // This case is about the fuse, so it feeds the shape the fuse is defined for.
+    data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
     c2.set_value(0, 0, 10);
-    c2.set_cardinality(1);
+    c2.set_value(0, 1, 11);
+    c2.set_cardinality(2);
 
     std::vector<data_chunk_t> batch;
     batch.emplace_back(std::move(c1));
     batch.emplace_back(std::move(c2));
 
-    // One vector per input chunk, fused into the result chunk's columns.
-    auto res = fn->execute(batch);
+    // One vector per input chunk, fused into the result chunk's columns, and the fused chunk
+    // reports the height every input shared.
+    auto res = fn->execute(batch, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
     auto& out = res.value();
     REQUIRE(out.column_count() == 2);
+    REQUIRE(out.size() == 2);
     REQUIRE(out.data[0].data<int>()[0] == 10);
     REQUIRE(out.data[0].data<int>()[1] == 14);
     REQUIRE(out.data[1].data<int>()[0] == 20);
+    REQUIRE(out.data[1].data<int>()[1] == 22);
 }
 
 TEST_CASE("components::compute::expand::generate_series") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto* reg = function_registry_t::get_default();
     function_uid uid = invalid_function_uid;
@@ -367,6 +382,7 @@ TEST_CASE("components::compute::expand::generate_series") {
 
 TEST_CASE("components::compute::options_required") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = std::make_unique<vector_function>("opts", arity::unary(), function_doc_with_options(), 1);
 
     kernel_signature_t sig(function_type_t::vector,
@@ -379,13 +395,14 @@ TEST_CASE("components::compute::options_required") {
     chunk.set_value(0, 0, 1);
     chunk.set_cardinality(1);
 
-    auto res = fn->execute(chunk);
+    auto res = fn->execute(chunk, nullptr, ctx);
     REQUIRE(res.has_error());
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
 }
 
 TEST_CASE("components::compute::errors") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     data_chunk_t chunk(&resource, {logical_type::INTEGER});
 
     SECTION("arity mismatch") {
@@ -411,7 +428,7 @@ TEST_CASE("components::compute::errors") {
         try_chunk.set_value(0, 0, logical_value_t(chunk.resource(), "oops"));
         try_chunk.set_cardinality(1);
 
-        auto res = fn->execute(try_chunk);
+        auto res = fn->execute(try_chunk, nullptr, ctx);
         REQUIRE(res.has_error());
         REQUIRE(res.error().type == core::error_code_t::kernel_error);
     }
@@ -426,7 +443,7 @@ TEST_CASE("components::compute::errors") {
         vector_kernel k(std::move(sig), vector_exec_fail, vector_init, vector_finalize);
         REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
-        auto status = fn->execute(chunk, &opts).error().type;
+        auto status = fn->execute(chunk, &opts, ctx).error().type;
         REQUIRE(status == core::error_code_t::kernel_error);
     }
 
@@ -449,8 +466,16 @@ namespace {
     struct string_registry_fixture {
         core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
+        // Explicit, because function::execute has no defaulted context: without one the calls
+        // below would run on the process-global default resource.
+        exec_context_t ctx{&resource, &registry};
 
-        string_registry_fixture() { register_string_functions(registry); }
+        // The full builtin set, not register_string_functions alone: the
+        // helpers are ORDERED STAGES of register_default_functions ("substring"
+        // must land on uid 5), and a standalone stage now poisons the registry
+        // for shifting the uid table. Lookups here are by name, so the extra
+        // builtins are invisible to these cases.
+        string_registry_fixture() { register_default_functions(registry); }
 
         function* get(const std::string& name) const {
             for (const auto& [n, uid] : registry.get_functions()) {
@@ -524,7 +549,7 @@ TEST_CASE("components::compute::string::substring_basic") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::text("hello world"), arg_t::integer(7), arg_t::integer(5)});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<std::string_view>()[0] == "world");
 }
@@ -536,7 +561,7 @@ TEST_CASE("components::compute::string::substring_omit_len") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::text("abcdefgh"), arg_t::integer(3)});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<std::string_view>()[0] == "cdefgh");
 }
@@ -548,7 +573,7 @@ TEST_CASE("components::compute::string::substring_out_of_range") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::text("abc"), arg_t::integer(99), arg_t::integer(5)});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<std::string_view>()[0].empty());
 }
@@ -560,7 +585,7 @@ TEST_CASE("components::compute::string::substring_null") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::null(), arg_t::integer(1), arg_t::integer(2)});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].is_null(0));
 }
@@ -572,7 +597,7 @@ TEST_CASE("components::compute::string::length_basic") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::text("hello")});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<int64_t>()[0] == 5);
 }
@@ -584,7 +609,7 @@ TEST_CASE("components::compute::string::length_empty") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::text("")});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<int64_t>()[0] == 0);
 }
@@ -596,7 +621,7 @@ TEST_CASE("components::compute::string::length_null") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::null()});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].is_null(0));
 }
@@ -614,7 +639,7 @@ TEST_CASE("components::compute::string::length_null_column") {
     data_chunk_t args(&fx.resource, types, uint64_t{4});
     args.set_cardinality(4);
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     for (uint64_t row = 0; row < 4; ++row) {
         REQUIRE(res.value().data[0].is_null(row));
@@ -629,7 +654,7 @@ TEST_CASE("components::compute::string::regexp_replace_basic") {
     auto args =
         one_row_chunk(&fx.resource, {arg_t::text("hello 123 world 456"), arg_t::text("[0-9]+"), arg_t::text("#")});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<std::string_view>()[0] == "hello # world #");
 }
@@ -641,7 +666,7 @@ TEST_CASE("components::compute::string::regexp_replace_no_match") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::text("abcdef"), arg_t::text("[0-9]+"), arg_t::text("#")});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<std::string_view>()[0] == "abcdef");
 }
@@ -653,7 +678,7 @@ TEST_CASE("components::compute::string::regexp_replace_null") {
 
     auto args = one_row_chunk(&fx.resource, {arg_t::null(), arg_t::text("x"), arg_t::text("y")});
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].is_null(0));
 }
@@ -668,7 +693,7 @@ TEST_CASE("components::compute::string::one_executor_over_several_chunks") {
 
     std::pmr::vector<complex_logical_type> in_types(&fx.resource);
     in_types.emplace_back(logical_type::STRING_LITERAL);
-    auto executor = fn->make_executor(&fx.resource, in_types);
+    auto executor = fn->make_executor(&fx.resource, in_types, nullptr, fx.ctx);
     REQUIRE_FALSE(executor.has_error());
 
     auto chunk_of = [&](std::string_view first, std::string_view second) {
@@ -705,7 +730,7 @@ TEST_CASE("components::compute::string::length_over_a_chunk") {
     args.data[0].set_value(2, std::string_view{"ccc"});
     args.set_cardinality(3);
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<int64_t>()[0] == 1);
     REQUIRE(res.value().data[0].data<int64_t>()[1] == 2);
@@ -726,9 +751,100 @@ TEST_CASE("components::compute::string::length_null_row_within_chunk") {
     args.data[0].set_value(2, std::string_view{"cdef"});
     args.set_cardinality(3);
 
-    auto res = fn->execute(args);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<int64_t>()[0] == 2);
     REQUIRE(res.value().data[0].is_null(1));
     REQUIRE(res.value().data[0].data<int64_t>()[2] == 4);
+}
+
+// Builds the one-slot INTEGER->INTEGER vector function the cases below drive.
+static std::unique_ptr<vector_function> multiplying_vector_function(std::pmr::memory_resource* resource,
+                                                                    const std::string& name) {
+    auto fn = std::make_unique<vector_function>(name, arity::unary(), function_doc_with_options(), 1);
+    kernel_signature_t sig(function_type_t::vector,
+                           {parameter_type::exact(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
+    vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
+    REQUIRE_FALSE(fn->add_kernel(resource, std::move(k)).contains_error());
+    return fn;
+}
+
+static data_chunk_t one_int(std::pmr::memory_resource* resource, int value) {
+    data_chunk_t chunk(resource, {logical_type::INTEGER});
+    chunk.set_value(0, 0, value);
+    chunk.set_cardinality(1);
+    return chunk;
+}
+
+// The batch overload fuses the per-chunk outputs into one chunk and must stamp a row count on
+// it: without one the fused chunk carries the values and reports zero rows to size().
+TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
+    core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = multiplying_vector_function(&resource, "vec_batch_rows");
+
+    std::vector<data_chunk_t> batch;
+    batch.emplace_back(one_int(&resource, 1));
+    batch.emplace_back(one_int(&resource, 10));
+
+    auto res = fn->execute(batch, &opts, ctx);
+    REQUIRE_FALSE(res.has_error());
+    const auto& out = res.value();
+    REQUIRE(out.data.size() == 2);
+    REQUIRE(out.size() == 1);
+}
+
+// Fusing per-chunk outputs side by side only describes a chunk when every input chunk is the
+// same height. Unequal inputs have no honest row count, so the call must refuse rather than
+// pick one and mislabel the rest.
+TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height") {
+    core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = multiplying_vector_function(&resource, "vec_batch_ragged");
+
+    std::vector<data_chunk_t> batch;
+    batch.emplace_back(one_int(&resource, 1));
+    batch.emplace_back(two_ints(&resource, 2, 3));
+
+    auto res = fn->execute(batch, &opts, ctx);
+    REQUIRE(res.has_error());
+    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+}
+
+// The vector executor collected its per-chunk outputs in a member it never cleared, and each
+// call read results_.front(). execution_dag keeps ONE executor per function node and pushes
+// every chunk through it, so the second chunk was answered with the moved-from remains of the
+// first. Both results are held alive on purpose: that keeps the stale read pointing at live
+// memory, so the case fails on the wrong VALUE instead of on freed bytes.
+TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_chunk") {
+    core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = multiplying_vector_function(&resource, "vec_reused");
+
+    std::pmr::vector<complex_logical_type> in_types(&resource);
+    in_types.emplace_back(logical_type::INTEGER);
+    auto executor = fn->make_executor(&resource, in_types, &opts, ctx);
+    REQUIRE_FALSE(executor.has_error());
+
+    auto first_chunk = one_int(&resource, 3);
+    auto first = executor.value()->execute(first_chunk);
+    REQUIRE_FALSE(first.has_error());
+    REQUIRE(first.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER * 3);
+
+    auto second_chunk = one_int(&resource, 7);
+    auto second = executor.value()->execute(second_chunk);
+    REQUIRE_FALSE(second.has_error());
+    const auto& out = second.value();
+    REQUIRE(out.size() == 1);
+    REQUIRE(out.data[0].data<int>()[0] == MAGIC_MULTIPLIER * 7);
 }

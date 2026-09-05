@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -174,9 +175,8 @@ std::unique_ptr<aggregate_function> make_call_counter_func(std::pmr::memory_reso
 }
 
 TEST_CASE("integration::cpp::test_batch_where") {
-    auto config = test_create_config("/tmp/test_batch_where");
+    auto config = test_create_config(integration_fixture_path("test_batch_where"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -217,10 +217,12 @@ TEST_CASE("integration::cpp::test_batch_where") {
     INFO("register UDFs");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_vec_negate_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
+        REQUIRE_FALSE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(dispatcher->register_udf(session, make_vec_negate_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
     }
 
     INFO("WHERE with row UDF (boolean predicate)");
@@ -298,9 +300,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
 
 // in tests below SUM(count + 0) forces compute path (expression arg, not simple key) instead of builtin
 TEST_CASE("integration::cpp::test_batch_aggregate") {
-    auto config = test_create_config("/tmp/test_batch_aggregate");
+    auto config = test_create_config(integration_fixture_path("test_batch_aggregate"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -348,9 +349,11 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     INFO("register UDFs");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
     }
 
     INFO("GROUP BY with compute SUM");
@@ -500,9 +503,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
     // left : id 1..20, category = id % 5 (→ 0,1,2,3,4 repeating), val = id * 10
     // right: cat 0..4, label = "cat_N"
     // Every left row matches exactly one right row, 4 left rows per category.
-    auto config = test_create_config("/tmp/test_batch_join");
+    auto config = test_create_config(integration_fixture_path("test_batch_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -559,9 +561,12 @@ TEST_CASE("integration::cpp::test_batch_join") {
     INFO("register UDFs");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())));
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())).contains_error());
     }
 
     INFO("join with UDF batch predicate in ON clause");
@@ -648,9 +653,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
 }
 
 TEST_CASE("integration::cpp::test_batch_edge_cases") {
-    auto config = test_create_config("/tmp/test_batch_edge");
+    auto config = test_create_config(integration_fixture_path("test_batch_edge"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -758,9 +762,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
 TEST_CASE("integration::cpp::test_batch_boundaries") {
     const auto row_count = GENERATE(1023u, 1024u, 1025u, 1500u, 2048u, 2049u, 3000u);
 
-    auto config = test_create_config("/tmp/test_batch_boundaries_" + std::to_string(row_count));
+    auto config = test_create_config(integration_fixture_path("test_batch_boundaries_" + std::to_string(row_count)));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

@@ -21,7 +21,8 @@ namespace components::operators {
                                              log_t log,
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t attoid,
-                                             std::string column_name);
+                                             std::string column_name,
+                                             bool missing_ok);
 
         // Sourceless SINK leaf (no data pipeline, no children): the executor
         // admits it as a streaming sink-root and drives await_async_and_resume via
@@ -35,6 +36,12 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t attoid_;
         std::string column_name_;
+        // `DROP COLUMN IF EXISTS`, carried from the same node field the regular
+        // (pg_attribute) drop operator reads. A field that is not there is an error
+        // on a document table exactly as it is on a regular one; only IF EXISTS
+        // makes the miss acceptable, and that is the statement's decision, not the
+        // table kind's.
+        bool missing_ok_;
     };
 
 } // namespace components::operators

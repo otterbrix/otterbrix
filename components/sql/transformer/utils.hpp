@@ -2,6 +2,7 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -51,7 +52,22 @@ namespace components::sql::transform {
 
     inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
 
-    std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
+    // Renders an array subscript (`arr[N]`) as the path segment it addresses.
+    // The index is read BY NODE TAG: an int32-sized literal arrives as a
+    // T_Integer in `ival`, a wider one as a T_Float carrying its original
+    // digits in `str` — the same union slot, so reading `ival` unconditionally
+    // renders the BIT PATTERN OF A POINTER into the column path for
+    // arr[3000000000]. A non-literal or fractional subscript, and the slice
+    // form arr[a:b], are refusals: there is no integer to address a segment by.
+    core::result_wrapper_t<std::pmr::string> indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
+
+    // Refuses the FuncCall decorations the transformer reads for NOBODY: an
+    // OVER clause (the call would run as a plain aggregate — one value per
+    // group instead of one per row), VARIADIC (the argument would be passed
+    // unexpanded), and an aggregate-internal ORDER BY / WITHIN GROUP (the
+    // ordering would be dropped). Called by every FuncCall lowering entry
+    // point; answers no_error() for an undecorated call.
+    core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
     // Role-named DTO produced by the transformer when reading a RangeVar
     // (table reference) out of the parser AST. Carries each of the four name
@@ -306,22 +322,73 @@ namespace components::sql::transform {
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
 
-    // Deparse a CHECK constraint raw expression node back to SQL text.
-    // Handles: column refs, integer/float/string constants, comparison operators,
-    // AND/OR/NOT, IS NULL / IS NOT NULL. Returns "" for unsupported node types.
     // The source text of a CHECK constraint's expression, sliced out of the statement it was
     // written in. `check_location` is the Constraint node's own location — the CHECK keyword — and
     // the expression is what sits between the '(' that follows it and the matching ')'.
     //
     // Taking the text the user wrote, rather than rebuilding it from the parse tree, is what makes
     // the round trip exact: the stored bytes parse back to the same expression because they are the
-    // same bytes, and a construct the grammar learns later needs no work here.
+    // same bytes, and a construct the grammar learns later needs no work here. It also replaces a
+    // deparser that could only spell one shape (`column OP constant` and boolean combinations of
+    // it) and had to REFUSE everything else at the declaration, because whatever it could not
+    // spell compiled to the constant TRUE at DML time. That refusal is gone with its cause: a
+    // CHECK is lowered as a general expression now, so `a + b > 0` and `lo <= hi` are enforced
+    // rather than rejected. Every failure below is still a loud refusal, never an empty string.
     core::result_wrapper_t<std::string>
     slice_check_expression(std::pmr::memory_resource* resource, const char* raw_sql, int check_location);
 
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
                                                                                     PGList& list);
+
+    // How a numeric literal's TEXT reads as an integer. An integer literal wider than the
+    // scanner's 32-bit `ival` cannot be carried in the parse node's integer slot, so the
+    // lexer hands it on as a T_Float holding its original digits (process_integer_literal
+    // in components/sql/parser/scan.l). This is the boundary where those digits become a
+    // number again, and it is the only one: reading them with atof would round
+    // 9223372036854775807 to 9223372036854775808.
+    enum class integer_text_t
+    {
+        not_an_integer, // a fraction or an exponent — a real float, atof is correct for it
+        out_of_range,   // plain digits, but more magnitude than the widest integer we store
+        exact           // the out-parameter holds it, digit for digit
+    };
+
+    // Reads `text` (optional sign, then decimal digits, nothing else) as an exact integer.
+    // int128 is the ceiling because it is the widest integer this engine has any storage
+    // for — DECIMAL's scaled payload tops out there too, which is where DECIMAL_MAX_WIDTH
+    // == 38 comes from.
+    integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out);
+
+    // The same reading in the UNSIGNED domain, for the one range the signed reader cannot
+    // reach: 2^127 .. 2^128-1, which is the top half of a UHUGEINT column. A literal with a
+    // '-' sign has no unsigned reading and reports out_of_range rather than a wrapped value.
+    integer_text_t parse_exact_unsigned_integer(std::string_view text, types::uint128_t& out);
+
+    // Reads `text` (optional sign, decimal digits, optional '.' + digits, optional
+    // 'e'/'E' exponent; surrounding spaces allowed) as the EXACT scaled integer of a
+    // DECIMAL(width, scale): the value times 10^scale, digit for digit, rounding only the
+    // digits past `scale` (half away from zero, PostgreSQL's rule). An exponent MOVES THE
+    // POINT through the written digits rather than multiplying, so `1e-5` and `0.00001`
+    // read as the same scaled integer. The integer half reads digits
+    // exactly through parse_exact_integer; this is the fractional half — atof would flatten a
+    // NUMERIC(38,20) literal with more than ~15 significant digits into the nearest
+    // double, a silently different number. A value whose integer part needs more than
+    // (width - scale) digits is a refusal (PostgreSQL's "numeric field overflow"), and
+    // malformed text is a refusal — never a partial parse.
+    core::result_wrapper_t<types::int128_t>
+    parse_exact_decimal(std::pmr::memory_resource* resource, std::string_view text, uint8_t width, uint8_t scale);
+
+    // The value a numeric literal (T_Integer or T_Float Value node) denotes, exactly.
+    // BIGINT when it fits int64, HUGEINT when it needs the full signed 128 bits, UHUGEINT for
+    // the unsigned half above that (a `uhugeint` column's top half is reachable no other way),
+    // DOUBLE only for literals that are genuinely fractional, and a refusal for a plain integer
+    // wider than all of them — silently rounding that one into a double is the wrong answer
+    // this path exists to remove. A fractional literal past the double range is refused for the
+    // same reason: atof answers ±inf without reporting it, and an infinity in a plan is a value
+    // no column holds and no comparison orders.
+    core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
+                                                                         Value* value);
 
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
     core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
@@ -330,10 +397,26 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
                                                                          A_Expr* node);
 
+    // What a DROP clause said about its dependents. gram.y's opt_drop_behavior
+    // yields DROP_RESTRICT for both a written RESTRICT and the empty alternative
+    // — PostgreSQL parity: the unwritten form IS RESTRICT (#638), so both map to
+    // restrict_; DROP_CASCADE maps to cascade_.
+    components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept;
+
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
+    // Constraints written as a separate element of the CREATE TABLE column list
+    // (`PRIMARY KEY (id)`, `UNIQUE (code)`, `CHECK (...)`, `FOREIGN KEY (...) REFERENCES ...`).
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
     extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
+
+    // Constraints written ON a column (`code bigint UNIQUE`, `pid bigint REFERENCES p (id)`).
+    // Same result shape as extract_table_constraints — the two syntaxes differ only in where
+    // the constrained column name comes from, so everything downstream reads one list.
+    // NOT NULL / DEFAULT / PRIMARY-KEY-implies-NOT-NULL stay with get_column_definitions:
+    // they are properties of the column, not rows in pg_constraint.
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
 
     // Transformer catalog-resolve emission.
     //
@@ -349,7 +432,12 @@ namespace components::sql::transform {
     {
         none,
         outgoing,
-        referencing
+        referencing,
+        // (conname, oid) pairs only — no enforcement decode, no enforcement
+        // refusals. DROP CONSTRAINT registers this so the gather cannot refuse
+        // the very catalog state (e.g. a doubled PRIMARY KEY) the statement
+        // exists to repair.
+        names_only
     };
 
     // Name a hand-built plan node's catalog target — what the transform_* functions

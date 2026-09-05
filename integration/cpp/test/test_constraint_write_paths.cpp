@@ -1,10 +1,23 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/vector/indexing_vector.hpp>
 #include <services/collection/executor.hpp>
 #include <sstream>
 #include <string>
+
+namespace {
+    // column_index answers a result_wrapper_t, not a SIZE_MAX sentinel behind an assert: an
+    // embedder asking for a missing column gets a refusal. Unwrap loudly, as example/cpp/main.cpp
+    // does at column_of.
+    inline uint64_t column_of(const components::cursor::cursor_t_ptr& c, std::string_view name) {
+        auto idx = c->column_index(name);
+        REQUIRE_FALSE(idx.has_error());
+        return idx.value();
+    }
+} // namespace
+
 
 // Every constraint must give the SAME answer whichever statement presents the row.
 //
@@ -50,9 +63,8 @@ namespace {
     }
 
     configuration::config config_for(const std::string& name) {
-        auto config = test_create_config("/tmp/otterbrix/integration/test_constraint_write_paths/" + name);
+        auto config = test_create_config(integration_fixture_path("test_constraint_write_paths/" + name));
         test_clear_directory(config);
-        config.disk.on = true;
         config.wal.on = false;
         config.log.level = log_t::level::off;
         return config;
@@ -225,8 +237,8 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_two_columns
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         INFO("a refused UPDATE leaves the stored row alone");
-        CHECK(cur->value(cur->column_index("lo"), 0).value<int64_t>() == 2);
-        CHECK(cur->value(cur->column_index("hi"), 0).value<int64_t>() == 9);
+        CHECK(cur->value(column_of(cur, "lo"), 0).value<int64_t>() == 2);
+        CHECK(cur->value(column_of(cur, "hi"), 0).value<int64_t>() == 9);
     }
 }
 

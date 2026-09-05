@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -7,15 +8,14 @@
 #include <string>
 
 // The dispatcher-loop watchdog pokes executors whenever an in-flight await
-// stays busy past ~2ms — routine for any multi-row DML — and used to log every
-// firing at WARN, flooding logs on perfectly healthy runs (a 14-statement
-// insert workload produced 24 warnings). Routine firings must be trace-level;
+// stays busy past ~2ms — routine for any multi-row DML — so logging every firing
+// at WARN floods the log on perfectly healthy runs (a 14-statement insert
+// workload produced 24 warnings). Routine firings must be trace-level;
 // only a slot stale across hundreds of consecutive poke rounds (a genuine
 // stall) escalates to warn, with a distinct message.
 TEST_CASE("integration::cpp::dispatcher::watchdog_quiet_on_healthy_runs") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_dispatcher_watchdog/healthy");
+    auto config = test_create_config(integration_fixture_path("test_dispatcher_watchdog/healthy"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     config.log.level = log_t::level::warn;
 

@@ -89,13 +89,15 @@ namespace components::compute {
         virtual size_t num_kernels() const = 0;
         virtual void accept_visitor(function_visitor& visitor) const = 0;
 
-        virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& args,
-                                                        const function_options* options = nullptr,
-                                                        exec_context_t& ctx = default_exec_context()) const;
+        // `ctx` is not optional and has no default: it names the memory resource everything
+        // below allocates from. See the note over exec_context_t in kernel_utils.hpp for what
+        // a default would cost.
+        virtual core::result_wrapper_t<datum_t>
+        execute(const vector::data_chunk_t& args, const function_options* options, exec_context_t& ctx) const;
 
         virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& args,
-                                                        const function_options* options = nullptr,
-                                                        exec_context_t& ctx = default_exec_context()) const;
+                                                        const function_options* options,
+                                                        exec_context_t& ctx) const;
 
         const function_options* default_options() const;
 
@@ -103,17 +105,23 @@ namespace components::compute {
         dispatch_exact(std::pmr::memory_resource* resource,
                        const std::pmr::vector<types::complex_logical_type>& types) const;
 
+        // BY REFERENCE, and the reference is what matters: the by-value parameter this
+        // replaced was copy-constructed from the caller's lvalue, and a std::pmr::vector copy
+        // does NOT inherit the source's allocator -- select_on_container_copy_construction
+        // hands back a default-constructed polymorphic_allocator, i.e. the process-global
+        // default resource. One 16-byte allocation per execute() landed there even after the
+        // defaulted exec_context_t was gone, and the value was never read: the body ignores
+        // this argument entirely.
         virtual core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
         get_best_executor(std::pmr::memory_resource* resource,
-                          std::pmr::vector<types::complex_logical_type> types) const;
+                          const std::pmr::vector<types::complex_logical_type>& types) const;
 
-        // When state of kernel has to be accessible
-        // TODO: remove default context
+        // When state of kernel has to be accessible. `ctx` is mandatory, as above.
         [[nodiscard]] core::result_wrapper_t<std::unique_ptr<function_executor>>
         make_executor(std::pmr::memory_resource* resource,
                       std::pmr::vector<types::complex_logical_type> in_types,
-                      const function_options* options = nullptr,
-                      exec_context_t& ctx = default_exec_context()) const;
+                      const function_options* options,
+                      exec_context_t& ctx) const;
 
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 
@@ -214,11 +222,16 @@ namespace components::compute {
         class kernel_executor_visitor
             : public function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>> {
         public:
-            kernel_executor_visitor();
+            // The resource the caller resolved the executor with: the built executor keeps it so
+            // that a refusal raised before init() still has a real resource to word itself with.
+            explicit kernel_executor_visitor(std::pmr::memory_resource* resource);
 
             void visit(const vector_function& func) override;
             void visit(const aggregate_function& func) override;
             void visit(const expand_function& func) override;
+
+        private:
+            std::pmr::memory_resource* resource_;
         };
 
         const compute_kernel* dispatch_exact_impl(const function& func,
@@ -279,6 +292,20 @@ namespace components::compute {
         // cross-registry stable.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
+        // Register one BUILTIN. uids are REGISTRATION ORDER, so the uid this
+        // insert lands on must be exactly the DEFAULT_FUNCTIONS row bearing the
+        // function's name: one missed, extra or misordered registration would
+        // silently SHIFT the whole table and every later lookup would run the
+        // WRONG function. On any failure — a refused add, a name absent from
+        // DEFAULT_FUNCTIONS, a uid mismatch — the registry poisons itself: the
+        // first error is recorded, every function is dropped, and every further
+        // add refuses with that error. A broken builtin table serves NOTHING
+        // (loud "function not found" at every lookup) instead of the wrong
+        // function. The recorded error is the refusal channel of builtin
+        // registration: builtin_registration_error().
+        void add_builtin(function_ptr function);
+        // no_error() when builtin registration succeeded (or has not run).
+        [[nodiscard]] const core::error_t& builtin_registration_error() const noexcept;
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
 
@@ -293,12 +320,16 @@ namespace components::compute {
 
     private:
         void register_builtin_functions();
+        // Record the first builtin-registration failure and drop every function
+        // so a shifted table can never be served. See add_builtin.
+        void poison_builtins_(core::error_t error);
 
         static std::once_flag init_flag_;
         static std::unique_ptr<function_registry_t> default_registry_;
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<function_uid, function_ptr> functions_;
         function_uid current_uid_{0};
+        core::error_t builtin_error_{core::error_t::no_error()};
     };
 
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
@@ -321,7 +352,15 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"cbrt", 13},
         std::pair<std::string, function_uid>{"factorial", 14}};
 
+    // Register the whole builtin set. Every insert goes through
+    // function_registry_t::add_builtin, which pins each function to its
+    // DEFAULT_FUNCTIONS uid and poisons the registry on any mismatch — so a
+    // missed or reordered registration can no longer shift the uid table
+    // silently; interrogate builtin_registration_error() for the outcome.
     void register_default_functions(function_registry_t& registry);
+    // ORDERED STAGES of register_default_functions — never call standalone: on
+    // a fresh registry a stage's functions would land below their table uids
+    // and the add_builtin check would poison the registry.
     void register_string_functions(function_registry_t& registry);
     void register_expand_functions(function_registry_t& registry);
     void register_math_functions(function_registry_t& registry);

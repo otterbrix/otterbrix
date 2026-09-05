@@ -53,17 +53,21 @@ namespace otterbrix {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
+        // Pool-admin API — mirrors manager_dispatcher_t's typed contract. core::error_t, not
+        // bool: a name collision, an overload nobody holds, an unregistered cast type, a refused
+        // catalog write and an executor that would not drop what it was told to drop are
+        // different failures, and the host has to be able to tell them apart.
+        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,
-                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> core::error_t;
         auto register_cast(const session_id_t& session,
                            const components::types::complex_logical_type& source,
                            const components::types::complex_logical_type& target,
-                           components::casts::cast_entry entry) -> bool;
+                           components::casts::cast_entry entry) -> core::error_t;
         auto unregister_cast(const session_id_t& session,
                              const components::types::complex_logical_type& source,
-                             const components::types::complex_logical_type& target) -> bool;
+                             const components::types::complex_logical_type& target) -> core::error_t;
         auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
         // `render_id` selects the per-query EXPLAIN renderer slot (0 = built-in postgres default);
@@ -82,7 +86,7 @@ namespace otterbrix {
         // Register a host EXPLAIN renderer at registry slot `id` for standard `EXPLAIN` / `EXPLAIN
         // ANALYZE` output (fanned out to every executor). No SQL change — a query selects a slot via
         // `execute_sql(..., render_id)` or `execution_plan_t::explain_render_id`. Slot 0 = postgres.
-        auto set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) -> bool;
+        auto set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) -> core::error_t;
 
     private:
         std::pmr::memory_resource* resource_;

@@ -167,7 +167,10 @@ namespace services::dispatcher::validation {
             complex_logical_type column(components::expressions::key_t& key, bool inside_aggregate) {
                 auto resolved = validate_key(context_.resource, key, &context_.schema, context_.schema_right);
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    // error_on, not a plain copy: error_t's copy constructor leaves the message on
+                    // the default resource, and this resolver's own refusals (fail() above) are
+                    // built on context_.resource. One arena for every error the pass reports.
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return invalid_type;
                 }
                 last_cardinality_ = cardinality_of_column(key, inside_aggregate);
@@ -223,7 +226,7 @@ namespace services::dispatcher::validation {
                                                  arguments,
                                                  context_.allowed_functions);
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
                 comparison->add_function_uid(resolved.value().uid);
@@ -401,7 +404,7 @@ namespace services::dispatcher::validation {
                                      argument_types,
                                      components::compute::create_mask(components::compute::function_type_t::aggregate));
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
                 for (size_t index = 0; index < aggregate->params().size() && index < resolved.value().arguments.size();
@@ -447,7 +450,7 @@ namespace services::dispatcher::validation {
                                                  argument_types,
                                                  allowed_functions);
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
                 const bool reduces = resolved.value().function_type == components::compute::function_type_t::aggregate;

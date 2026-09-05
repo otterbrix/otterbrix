@@ -1,21 +1,30 @@
 project(test_disk)
 
 set(${PROJECT_NAME}_SOURCES
+    test_config_layout.cpp
     test_table_storage.cpp
     test_torn_checkpoint.cpp
+    test_checkpoint_update_overlay.cpp
+    test_wal_seal.cpp
     test_system_table_bootstrap.cpp
     test_resolve.cpp
     test_pg_depend.cpp
     test_fk_composite.cpp
     test_fk_scan_by_keys_semijoin.cpp
+    test_fk_semijoin_key_domain.cpp
     test_pushdown_reduce.cpp
     test_ddl_methods.cpp
+    test_cursor_lifetime.cpp
     test_wal_catalog.cpp
     test_mvcc_ddl.cpp
     test_error_handling.cpp
     test_recovery.cpp
     test_d4_lazy_load.cpp
     test_persistence.cpp
+    test_vacuum_footprint.cpp
+    test_checkpoint_dirty.cpp
+    test_open_refusals.cpp
+    test_document_decimal_routing.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

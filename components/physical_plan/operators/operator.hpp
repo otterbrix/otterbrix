@@ -148,7 +148,7 @@ namespace components::operators {
         // RESOLVE_TYPE — leaf operator that scans pg_type by
         // (typname, typnamespace) and emits the matching row as a single-row
         // data_chunk_t (cols mirror pg_type_columns: oid, typname,
-        // typnamespace, typdefspec). Drives read_rows_by_key only.
+        // typnamespace, typdefspec). Drives read_chunks_by_key only.
         // Composite-type reconstruction (pg_class relkind='c' fallback) is
         // out-of-scope; that path stays on the synchronous resolve_type_sync
         // helper until a separate operator covers it.
@@ -244,6 +244,17 @@ namespace components::operators {
         [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx);
 
+        // SOURCE: does this operator currently hold an OPEN, un-drained storage cursor?
+        // Only a scan source that opened one answers true.
+        [[nodiscard]] virtual bool holds_open_cursor() const noexcept { return false; }
+
+        // SOURCE: release an open cursor without draining it. The executor calls this when it
+        // stops pumping a source early — an error mid-pump, a satisfied LIMIT, an abandoned
+        // sub-plan — because nothing agent-side reclaims an abandoned cursor and a live one
+        // permanently gates compact() on its table. Idempotent; default no-op for every
+        // operator that owns no cursor.
+        [[nodiscard]] virtual actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx);
+
         // STREAMING / SINK: consume exactly one input batch. A streaming operator
         // transforms `input` and appends 0+ chunks to `out`; a sink operator folds
         // `input` into bounded internal state and appends nothing. Synchronous: the
@@ -313,8 +324,10 @@ namespace components::operators {
         }
         void clear(); //todo: replace by copy
 
+        // One entry point, by const reference: it rebuilds the message on this operator's
+        // resource (core::error_on), so handing it an rvalue would save nothing and an
+        // &&-overload could only reintroduce the producer-arena adoption it exists to stop.
         void set_error(const core::error_t& error);
-        void set_error(core::error_t&& error);
         bool has_error() const noexcept;
         const core::error_t& get_error() const noexcept;
 
@@ -359,7 +372,7 @@ namespace components::operators {
         operator_data_ptr constraint_input_{nullptr};
 
     private:
-        // NVI customization point (mirrors node_t::to_string_impl, node.hpp:104) — but NON-pure
+        // NVI customization point (mirrors node_t::to_string_impl) — but NON-pure
         // (default body), because operator_t has concrete leaf subclasses that do not override it.
         // Scans override to pass table_oid_; lateral/recursive override to recurse into private subtrees.
         virtual void explain_impl(const explain_sink& s) const {

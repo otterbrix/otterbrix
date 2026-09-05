@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -29,24 +30,22 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::register_cast::duplicate_not_allowed") {
-    auto config = test_create_config("/tmp/test_register_cast_dup");
+    auto config = test_create_config(integration_fixture_path("test_register_cast_dup"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
     // First registration of a novel cast succeeds across every executor registry.
-    CHECK(dispatcher->register_cast(session, kSource, kTarget, make_entry()));
+    CHECK_FALSE(dispatcher->register_cast(session, kSource, kTarget, make_entry()).contains_error());
     // Re-registering the same (source, target) pair is rejected.
-    CHECK_FALSE(dispatcher->register_cast(session, kSource, kTarget, make_entry()));
+    CHECK(dispatcher->register_cast(session, kSource, kTarget, make_entry()).contains_error());
 }
 
 TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
-    auto config = test_create_config("/tmp/test_register_cast_udt");
+    auto config = test_create_config(integration_fixture_path("test_register_cast_udt"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -59,11 +58,11 @@ TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
     // Nothing named cast_udt exists yet, so neither direction can be registered.
     {
         auto session = otterbrix::session_id_t();
-        CHECK_FALSE(dispatcher->register_cast(session, udt, builtin, make_entry()));
+        CHECK(dispatcher->register_cast(session, udt, builtin, make_entry()).contains_error());
     }
     {
         auto session = otterbrix::session_id_t();
-        CHECK_FALSE(dispatcher->register_cast(session, builtin, udt, make_entry()));
+        CHECK(dispatcher->register_cast(session, builtin, udt, make_entry()).contains_error());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -72,26 +71,25 @@ TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
     // The type now resolves, so both directions register.
     {
         auto session = otterbrix::session_id_t();
-        CHECK(dispatcher->register_cast(session, udt, builtin, make_entry()));
+        CHECK_FALSE(dispatcher->register_cast(session, udt, builtin, make_entry()).contains_error());
     }
     {
         auto session = otterbrix::session_id_t();
-        CHECK(dispatcher->register_cast(session, builtin, udt, make_entry()));
+        CHECK_FALSE(dispatcher->register_cast(session, builtin, udt, make_entry()).contains_error());
     }
 }
 
 TEST_CASE("integration::cpp::register_cast::unregister_deletes") {
-    auto config = test_create_config("/tmp/test_register_cast_del");
+    auto config = test_create_config(integration_fixture_path("test_register_cast_del"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    CHECK(dispatcher->register_cast(session, kSource, kTarget, make_entry()));
+    CHECK_FALSE(dispatcher->register_cast(session, kSource, kTarget, make_entry()).contains_error());
     // Unregister removes it everywhere; a fresh registration then succeeds again —
     // which it could not if the cast still existed (it would be a duplicate).
-    CHECK(dispatcher->unregister_cast(session, kSource, kTarget));
-    CHECK(dispatcher->register_cast(session, kSource, kTarget, make_entry()));
+    CHECK_FALSE(dispatcher->unregister_cast(session, kSource, kTarget).contains_error());
+    CHECK_FALSE(dispatcher->register_cast(session, kSource, kTarget, make_entry()).contains_error());
 }

@@ -30,6 +30,7 @@
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
+#include <core/result_wrapper.hpp>
 #include <services/collection/executor.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 
@@ -145,24 +146,34 @@ namespace services::dispatcher {
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
-        unique_future<bool> register_udf(components::session::session_id_t session,
-                                         components::compute::function_ptr function);
-        unique_future<bool> unregister_udf(components::session::session_id_t session,
-                                           std::string function_name,
-                                           std::pmr::vector<components::types::complex_logical_type> inputs);
+
+        // ===== pool-admin API =====
+        // Every entry point below answers core::error_t, never a bare bool. These paths refuse
+        // for reasons that are NOT interchangeable — a name that already exists, an overload
+        // nobody holds, a cast source type the catalog never heard of, a renderer slot out of
+        // range, a catalog write the disk turned down, an executor that would not drop what it
+        // was told to drop — and a bare `false` erases every one of them, including the TYPED error
+        // executor_t::register_udf already produces. no_error() means the operation happened.
+        unique_future<core::error_t> register_udf(components::session::session_id_t session,
+                                                  components::compute::function_ptr function);
+        unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
+                                                    std::string function_name,
+                                                    std::pmr::vector<components::types::complex_logical_type> inputs);
         // Fan a cast out to (register) / remove it from (unregister) every executor's
-        // cast_registry_, then write / delete the pg_cast row via the operator.
-        unique_future<bool> register_cast(components::session::session_id_t session,
-                                          components::types::complex_logical_type source,
-                                          components::types::complex_logical_type target,
-                                          components::casts::cast_entry entry);
-        unique_future<bool> unregister_cast(components::session::session_id_t session,
-                                            components::types::complex_logical_type source,
-                                            components::types::complex_logical_type target);
+        // cast_registry_, then write / delete the pg_cast row via the operator. The catalog step
+        // runs ONLY after every executor confirmed: an executor that kept applying a cast while
+        // pg_cast said the cast was gone is the divergence these two guard.
+        unique_future<core::error_t> register_cast(components::session::session_id_t session,
+                                                   components::types::complex_logical_type source,
+                                                   components::types::complex_logical_type target,
+                                                   components::casts::cast_entry entry);
+        unique_future<core::error_t> unregister_cast(components::session::session_id_t session,
+                                                     components::types::complex_logical_type source,
+                                                     components::types::complex_logical_type target);
         // Fan a host-supplied EXPLAIN renderer out to every executor, registering it at registry
         // slot `id` (each keeps its own POD fn-pointer copy — no shared state). Pool-admin
         // op, like register_udf. Per-query selection then rides execution_plan_t::explain_render_id.
-        unique_future<bool> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
+        unique_future<core::error_t> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
 
         // ===== txn-state mailbox service =====
         // The ONLY way any other actor (executors, the txn operators running
@@ -188,8 +199,14 @@ namespace services::dispatcher {
         // Park executor-produced ranges on the session's transaction_t
         // (explicit-DML statements and the DDL swap-info merge — one message
         // for both; implicit DML never sends it).
-        unique_future<void> txn_accumulate_msg(components::session::session_id_t session,
-                                               txn_accumulate_payload_t payload);
+        //
+        // Answers core::error_t because the no-active-transaction case has nowhere else to go:
+        // the payload is a whole statement's parked work — base insert and delete ranges, the
+        // storage oids a CREATE brought up and a DROP retired, pg_catalog row ranges,
+        // pg_attribute commit-id backfills — and parking it on a transaction that does not
+        // exist is impossible. Behind a `void` it would go on the floor unsaid.
+        unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
+                                                        txn_accumulate_payload_t payload);
         // Abort: executor error-path (after its local revert cascade) and the
         // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);
@@ -200,6 +217,22 @@ namespace services::dispatcher {
         // data_table_t::compact(). Any version stamp above it (another txn's
         // snapshot, an in-flight commit) makes the compact a no-op.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
+        // THE OTHER END OF txn_publish_msg, for the commits that never reach it.
+        // Sent by operator_commit_transaction_t from an early exit that already holds
+        // an allocated commit_id: transaction_manager_t::discard() takes the id out of
+        // in_flight_commits_ WITHOUT advancing published_horizon_, so the horizon stops
+        // being floored at commit_id - 1 for the rest of the process and nothing
+        // becomes visible in the process. The second half is not optional — the DROP-GC
+        // broadcast is event-driven behind `new_lowest > last_broadcast_horizon_`, so
+        // without try_trigger_cleanup_if_horizon_advanced() here the horizon would rise
+        // with nobody told, and the deferred index-delete queue would go on waiting for
+        // a broadcast that never comes.
+        //
+        // The operator has to be the sender: services/collection/executor.cpp lifts
+        // pipeline_context.committed_id into the result only AFTER both of its error
+        // breaks, so a failed commit reaches the dispatcher with commit_id 0 and no
+        // dispatcher-side net can see the id at all.
+        unique_future<void> txn_discard_msg(uint64_t commit_id);
         // Read-only fetch of txn_manager_.compact_watermark() for the
         // checkpoint/vacuum paths (operator_checkpoint, operator_vacuum and the
         // WAL auto-checkpoint), whose compact runs outside the commit pipeline.
@@ -229,11 +262,23 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_accumulate_msg,
                                                             &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
+                                                            &manager_dispatcher_t::txn_discard_msg,
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
+        // register_udf failure unwind: drop the just-registered overload from every
+        // executor that ACKed the fan-out (by the exact uid each answered), so a
+        // CREATE FUNCTION refused AFTER the fan-out — by a sibling executor or by the
+        // operator's catalog half — leaves no per-executor residue. A MEMBER coroutine
+        // (not a lambda) so `this` supplies the frame memory_resource. Two-phase:
+        // send-all, then drain-all. Direct co_await from register_udf only — not a
+        // mailbox handler, not in dispatch_traits.
+        unique_future<void> unwind_udf_fanout_(
+            components::session::session_id_t session,
+            std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
+
         // Reads txn_manager_.lowest_active_snapshot_horizon() (commit-id value
         // space — matches the subscribers' dropped_at_commit_id sweep after
         // the dropped-committed remap); if it advanced past

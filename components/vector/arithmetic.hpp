@@ -4,6 +4,7 @@
 #include <cmath>
 #include <components/types/operations_helper.hpp>
 #include <core/arithmetic_op.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::vector {
 
@@ -85,28 +86,39 @@ namespace components::vector {
         }
     };
 
-    // Compute binary arithmetic on two vectors (element-wise)
-    vector_t compute_binary_arithmetic(std::pmr::memory_resource* resource,
-                                       arithmetic_op op,
-                                       const vector_t& left,
-                                       const vector_t& right,
-                                       uint64_t count);
+    // Compute binary arithmetic on two vectors (element-wise).
+    //
+    // An OPERAND PAIR ARITHMETIC CANNOT TYPE IS A REFUSAL, never a vector of
+    // logical_type::NA with every row NULL — that is a success-shaped NULL for an operation
+    // that has no meaning, and it makes STRING_LITERAL + BIGINT and BOOLEAN + BOOLEAN come
+    // back as "NA, all null", indistinguishable from real SQL NULLs. This is the vector-level
+    // twin of the same refusal in logical_value_t.
+    // An operand whose TYPE is NA is not a mismatch: an NA-typed vector is this engine's
+    // untyped-NULL column, and SQL says NULL + 1 is NULL. That case still answers NA.
+    core::result_wrapper_t<vector_t> compute_binary_arithmetic(std::pmr::memory_resource* resource,
+                                                               arithmetic_op op,
+                                                               const vector_t& left,
+                                                               const vector_t& right,
+                                                               uint64_t count);
 
-    // Compute arithmetic: vector op scalar
-    vector_t compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const vector_t& vec,
-                                              const types::logical_value_t& scalar,
-                                              uint64_t count);
+    // Compute arithmetic: vector op scalar. Same refusal as compute_binary_arithmetic.
+    core::result_wrapper_t<vector_t> compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const vector_t& vec,
+                                                                      const types::logical_value_t& scalar,
+                                                                      uint64_t count);
 
-    // Compute arithmetic: scalar op vector
-    vector_t compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const types::logical_value_t& scalar,
-                                              const vector_t& vec,
-                                              uint64_t count);
+    // Compute arithmetic: scalar op vector. Same refusal as compute_binary_arithmetic.
+    core::result_wrapper_t<vector_t> compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const types::logical_value_t& scalar,
+                                                                      const vector_t& vec,
+                                                                      uint64_t count);
 
-    // Compute unary negation
-    vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count);
+    // Compute unary negation. A non-numeric operand is a REFUSAL: this entry point had no
+    // type guard at all and dispatched straight into unary_neg_wrapper, whose non-numeric
+    // branch THREW std::logic_error — an exception out of a compute path (rule 2).
+    core::result_wrapper_t<vector_t>
+    compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count);
 
 } // namespace components::vector

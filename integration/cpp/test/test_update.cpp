@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
@@ -11,9 +12,8 @@
 // factorial. Unknown operators must error; arithmetic keeps working, including
 // operators that merely share a first character with a rejected one.
 TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unknown_operators");
+    auto config = test_create_config(integration_fixture_path("test_update/set_unknown_operators"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -51,9 +51,8 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
 // prefix spellings had the operand in the wrong slot). Unary operators route
 // the operand to the left slot; binary ones require both operands.
 TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unary_operand_arity");
+    auto config = test_create_config(integration_fixture_path("test_update/set_unary_operand_arity"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -82,9 +81,8 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
 // segfaulted the executor, a top-level one was silently dropped (success
 // reported, nothing updated).
 TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unsupported_expressions");
+    auto config = test_create_config(integration_fixture_path("test_update/set_unsupported_expressions"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -111,9 +109,8 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
 // The executor also had no NA cast kernel, so an NA-typed constant vector
 // crashed cast_vector; nulls are now written directly.
 TEST_CASE("integration::cpp::test_update::set_null") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_null");
+    auto config = test_create_config(integration_fixture_path("test_update/set_null"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -145,9 +142,8 @@ TEST_CASE("integration::cpp::test_update::set_null") {
 // and it dominated the UPDATE operator's profile. The buffered-gather pattern is
 // already used by operator_delete and by join_utils; this pins it for UPDATE.
 TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_update/gather_cost");
+    auto config = test_create_config(integration_fixture_path("test_update/gather_cost"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

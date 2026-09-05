@@ -1,4 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/function_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -313,4 +316,150 @@ TEST_CASE("components::sql::select_with_subquery") {
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE col1 IN (SELECT col2 FROM TestDatabase2.TestCollection2);)_",
         R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
         vec({v(&resource, nullptr)}));
+}
+// The DISTINCT flag of an aggregate call must survive every arm that builds one, not only
+// the select list (transform_select reads func->agg_distinct). Dropped in
+// resolve_having_operand or transform_a_expr_func it costs:
+//   * a HAVING aggregate not present in SELECT minted WITHOUT distinct, so
+//     `HAVING count(DISTINCT x)` silently computes count(x);
+//   * HAVING-to-projection matching that ignores distinct, so `HAVING count(DISTINCT x)`
+//     binds to a projected count(x) (and vice versa) instead of minting its own
+//     aggregate;
+//   * an aggregate nested as a function argument losing the flag.
+TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
+    using components::expressions::aggregate_expression_t;
+    using components::expressions::expression_group;
+    using components::expressions::expression_i;
+    using components::expressions::expression_ptr;
+    using components::expressions::function_expression_t;
+    using components::expressions::param_storage;
+    using components::expressions::scalar_expression_t;
+
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    struct call_t {
+        std::string name;
+        bool distinct;
+    };
+
+    // Collect every named call (function or aggregate) in the tree, depth-first.
+    struct collector_t {
+        std::vector<call_t>* out;
+        void walk(const expression_i* expr) const {
+            if (expr == nullptr) {
+                return;
+            }
+            switch (expr->group()) {
+                case expression_group::aggregate: {
+                    const auto* agg = static_cast<const aggregate_expression_t*>(expr);
+                    out->push_back({agg->function_name(), agg->is_distinct()});
+                    for (const auto& p : agg->params()) {
+                        walk_param(p);
+                    }
+                    break;
+                }
+                case expression_group::function: {
+                    const auto* fn = static_cast<const function_expression_t*>(expr);
+                    out->push_back({fn->name(), fn->is_distinct()});
+                    for (const auto& p : fn->args()) {
+                        walk_param(p);
+                    }
+                    break;
+                }
+                case expression_group::scalar: {
+                    for (const auto& p : static_cast<const scalar_expression_t*>(expr)->params()) {
+                        walk_param(p);
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+        void walk_param(const param_storage& p) const {
+            if (std::holds_alternative<expression_ptr>(p)) {
+                walk(std::get<expression_ptr>(p).get());
+            }
+        }
+    };
+
+    // Transform QUERY and return every named call found in the aggregate sub-tree
+    // (the group node absorbs the select-list expressions, so one walk over the
+    // aggregate's children sees projection and HAVING aggregates alike).
+    auto calls_of = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto wrap = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!wrap.has_error());
+        auto node = wrap.value().sub_queries.back();
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
+        std::vector<call_t> calls;
+        collector_t collector{&calls};
+        struct node_walker_t {
+            const collector_t* collector;
+            void walk(const components::logical_plan::node_ptr& n) const {
+                for (const auto& e : n->expressions()) {
+                    collector->walk(e.get());
+                }
+                for (const auto& child : n->children()) {
+                    walk(child);
+                }
+            }
+        };
+        node_walker_t{&collector}.walk(node);
+        return calls;
+    };
+
+    auto counts_named = [](const std::vector<call_t>& calls, const char* name) {
+        std::vector<call_t> found;
+        for (const auto& c : calls) {
+            if (c.name == name) {
+                found.push_back(c);
+            }
+        }
+        return found;
+    };
+
+    SECTION("HAVING count(DISTINCT x) mints a DISTINCT aggregate") {
+        auto counts = counts_named(
+            calls_of("SELECT k FROM db.t GROUP BY k HAVING count(DISTINCT x) > 1;"),
+            "count");
+        REQUIRE(counts.size() == 1);
+        REQUIRE(counts.front().distinct);
+    }
+
+    SECTION("HAVING count(DISTINCT x) does not bind to a projected count(x)") {
+        auto counts = counts_named(
+            calls_of("SELECT count(x) AS c FROM db.t GROUP BY k HAVING count(DISTINCT x) > 1;"),
+            "count");
+        REQUIRE(counts.size() == 2);
+        REQUIRE(counts[0].distinct != counts[1].distinct);
+    }
+
+    SECTION("HAVING count(x) does not bind to a projected count(DISTINCT x)") {
+        auto counts = counts_named(
+            calls_of("SELECT count(DISTINCT x) AS c FROM db.t GROUP BY k HAVING count(x) > 1;"),
+            "count");
+        REQUIRE(counts.size() == 2);
+        REQUIRE(counts[0].distinct != counts[1].distinct);
+    }
+
+    SECTION("HAVING count(x) still reuses a projected count(x)") {
+        auto counts = counts_named(
+            calls_of("SELECT count(x) AS c FROM db.t GROUP BY k HAVING count(x) > 1;"),
+            "count");
+        REQUIRE(counts.size() == 1);
+        REQUIRE_FALSE(counts.front().distinct);
+    }
+
+    SECTION("an aggregate nested as a function argument keeps DISTINCT") {
+        auto counts = counts_named(
+            calls_of("SELECT abs(count(DISTINCT x)) FROM db.t GROUP BY k;"),
+            "count");
+        REQUIRE(counts.size() == 1);
+        REQUIRE(counts.front().distinct);
+    }
 }

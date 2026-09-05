@@ -30,8 +30,14 @@ namespace components::compute {
         function_registry_t* func_registry_;
     };
 
-    //TODO: remove default version, because it requires a static initialization of memory_resource
-    exec_context_t& default_exec_context();
+    // THERE IS NO default_exec_context(), AND THERE MUST NOT BE ONE. The obvious shape --
+    // a function-local static exec_context_t on std::pmr::get_default_resource() (rule 14
+    // forbids that call outright), handed out as the default argument of every public
+    // function::execute / function::make_executor -- makes every caller that does not spell a
+    // context out allocate from ONE process-wide arena it never named: 134 allocations /
+    // 29 860 bytes for a single one-row execute(), measured in
+    // components/compute/tests/test_exec_context_resource.cpp. A compute caller names its
+    // resource; there is no default to fall back to (rule 6).
 
     struct kernel_init_args {
         const compute_kernel& kernel;

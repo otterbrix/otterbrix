@@ -66,9 +66,17 @@ namespace services::planner::impl {
         using join_algo = components::logical_plan::node_join_t::join_algo;
 
         if (join_node->is_lateral()) {
-            std::pmr::vector<components::logical_plan::node_join_t::correlation_t> correlations(node->resource());
+            // correlation_t is pair<parameter_id_t, key_t>, and this vector is MOVED into the
+            // operator below, which lives on `resource` and is read from during execution — i.e.
+            // after the logical plan (and node->resource()) is gone. Both the vector and the
+            // key inside each pair are therefore placed on `resource`: the vector by its
+            // allocator, the key by the allocator-extended copy. The parameter_id_t half is a
+            // scalar and has no arena.
+            std::pmr::vector<components::logical_plan::node_join_t::correlation_t> correlations(resource);
+            correlations.reserve(join_node->correlations().size());
             for (const auto& correlation : join_node->correlations()) {
-                correlations.emplace_back(correlation);
+                correlations.emplace_back(correlation.first,
+                                          components::expressions::key_t{correlation.second, resource});
             }
             // Filters each inner row against the outer row inside the operator.
             components::expressions::expression_ptr on_expression =

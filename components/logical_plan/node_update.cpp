@@ -11,7 +11,10 @@ namespace components::logical_plan {
                                  const std::pmr::vector<expressions::expression_ptr>& updates,
                                  bool upsert)
         : node_t(resource, node_type::update_t)
-        , update_expressions_(updates)
+        // Allocator-extended copy: a std::pmr::vector's plain copy constructor does NOT propagate
+        // the source's allocator, so `update_expressions_(updates)` would put the node's own
+        // expression list on the default resource instead of the node's arena.
+        , update_expressions_(updates, resource)
         , returning_(resource)
         , upsert_(upsert) {
         append_child(match);

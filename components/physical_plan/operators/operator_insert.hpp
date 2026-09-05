@@ -19,9 +19,10 @@ namespace components::operators {
     public:
         // `returning` holds the RETURNING projection columns (empty when the
         // statement has no RETURNING clause). When non-empty, the operator reads
-        // the appended segment back from storage (so DB-applied DEFAULTs and
-        // generated columns are present) and projects these columns into its
-        // output instead of an empty result chunk.
+        // the appended segment back from storage (so anything the storage layer
+        // derives for itself is present) and projects these columns into its
+        // output instead of an empty result chunk. DEFAULTs are already in the
+        // submitted chunk — push() expands them — so they do not depend on it.
         operator_insert(std::pmr::memory_resource* resource,
                         log_t log,
                         catalog::oid_t table_oid,
@@ -37,18 +38,24 @@ namespace components::operators {
             column_bindings_ = std::move(bindings);
         }
 
+        // The table columns this statement did NOT write, with the value each must be filled with — resolved
+        // by the enrich pass from pg_attribute.attdefspec, which is the ONLY place a default is read on the
+        // write path. push() materialises them, so the chunk that reaches storage, the WAL record and the
+        // constraint operators is FULL WIDTH. That is what removes the second source of truth: the storage
+        // layer no longer substitutes anything, and there is nothing left to diverge from after a restart.
+        // Empty for a dynamic-schema target and for the paths that hand storage ready-made rows (see push()).
+        void set_fill_list(logical_plan::insert_fill_list_t fill) { fill_list_ = std::move(fill); }
+
         // Whether the target table has any index (stamped by enrich onto the plan node).
         // False skips the index mirror entirely. Defaults to true so an unstamped plan
         // behaves exactly as before.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
-        // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds
-        // each input batch into a bounded accumulator and emits nothing; the executor
-        // then drives the async WAL->storage->index commit via await_async_and_resume
-        // after the pump (needs_async_finalize()==true). This streams over BOTH a scan
-        // source (INSERT...SELECT) and a raw_data source (INSERT...VALUES, now that
-        // operator_raw_data_t is role()==source) — the VALUES rows are folded one
-        // chunk at a time instead of adopting left_->output() wholesale.
+        // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds each input batch into a
+        // bounded accumulator and emits nothing; the executor then drives the async WAL->storage->index commit
+        // via await_async_and_resume after the pump (needs_async_finalize()==true). This streams over BOTH a
+        // scan source (INSERT...SELECT) and a raw_data source (INSERT...VALUES, now that operator_raw_data_t
+        // is role()==source) — the VALUES rows are folded one chunk at a time.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
@@ -77,6 +84,7 @@ namespace components::operators {
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
+        logical_plan::insert_fill_list_t fill_list_{resource_};
         bool table_has_indexes_{true};
     };
 

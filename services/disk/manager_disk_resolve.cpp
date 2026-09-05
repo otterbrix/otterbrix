@@ -13,22 +13,29 @@ namespace services::disk {
     // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
     // = "see all committed".
 
-    // The three resolve_* readers below flow through this funnel; the C++-side row
+    // The four resolve_* readers below flow through this funnel; the C++-side row
     // filtering stays in each caller (it differs per table: equality on name,
     // name-match collect, enumerate).
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    //
+    // A READ THAT COULD NOT BE PERFORMED IS AN ERROR, NEVER AN EMPTY ANSWER. An empty batch
+    // list is exactly what "no matching rows" looks like, so returning one from the three legs
+    // below would turn an unreadable catalog into a negative fact about it: no such namespace,
+    // no such function, no such cast. Same shape, same words, as read_chunks_by_key three
+    // functions below.
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
                                std::unique_ptr<components::table::table_filter_t> filter,
                                std::vector<std::size_t> projected_cols,
                                components::table::transaction_data txn) {
-        std::pmr::vector<components::vector::data_chunk_t> empty(resource());
         if (agents_.empty()) {
-            co_return empty;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"scan_table: no disk agents", resource()}};
         }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            co_return empty;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"scan_table: owning disk agent is null", resource()}};
         }
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::storage_scan_inner,
@@ -40,24 +47,30 @@ namespace services::disk {
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
-        // Catalog-read funnel: the agent reply carries the scan_error. A buffer-pool OOM on a
-        // catalog scan degrades to an empty batch set here, matching the no-agent / not-owned
-        // fallbacks above (resolve callers already tolerate empty).
-        auto scan_r = co_await std::move(fut);
-        if (scan_r.has_error()) {
-            co_return empty;
-        }
-        co_return std::move(scan_r.value());
+        // The agent reply carries the scan_error (buffer-pool OOM, data_corruption, a block the
+        // device would not give back). Pass it through untouched — the reader that asked is the
+        // one that has to fail, and it needs the reason, not a synthesized one.
+        co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<resolve_namespace_result_t>
-    manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
+    // ctx.txn, NOT the default snapshot — the same rule resolve_function_by_name and
+    // find_cast_oid below carry. On transaction_data{} this scan sees only committed rows, so a
+    // namespace created inside an open transaction is invisible to ITS OWN resolve and one
+    // dropped in it still answers found=true; any verdict built on the negative ("no such
+    // namespace" collision checks, follow-up DDL in the txn) then reads a lie.
+    // A zero-txn ctx carries transaction_data{0,...}, which sees exactly the committed state.
+    manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
+    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
         resolve_namespace_result_t out(resource());
 
-        auto batches = co_await scan_table(pg_namespace_oid_tbl,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1},
+                                             ctx.txn);
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<resolve_namespace_result_t>();
+        }
+        for (auto& chunk : batches_r.value()) {
             bool stop = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
@@ -76,15 +89,24 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<resolve_function_result_t>>
-    manager_disk_t::resolve_function_by_name(execution_context_t /*ctx*/,
-                                             std::string name,
-                                             std::uint64_t /*since_version*/) {
+    // ctx.txn, NOT the default snapshot. operator_unregister_udf_t reads this answer and then
+    // scrubs each m.oid through delete_pg_catalog_rows_many, treating a spec that deleted
+    // nothing as a refusal — "the function is still in the catalog". That verdict is only sound
+    // while the two see the same pg_proc: the delete's scan carries the caller's transaction
+    // (agent_disk_t::delete_pg_catalog_rows_inner), so a read on transaction_data{} would list
+    // rows this transaction has already deleted, and the scrub of a row that is gone would be
+    // reported as a catalog that refused to give it up.
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
+    manager_disk_t::resolve_function_by_name(execution_context_t ctx, std::string name) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        auto batches = co_await scan_table(pg_proc_oid,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_proc_oid,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6},
+                                             ctx.txn);
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<std::pmr::vector<resolve_function_result_t>>();
+        }
+        for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!str_equals(chunk.value(1, i), name))
                     continue;
@@ -108,14 +130,27 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<components::catalog::oid_t>
-    manager_disk_t::find_cast_oid(execution_context_t /*ctx*/,
+    // INVALID_OID stays the in-band "there is no such cast" INSIDE the wrapper: DROP CAST has
+    // to tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing
+    // the former into an error would destroy exactly that distinction.
+    //
+    // ctx.txn, for the reason given on resolve_function_by_name above: operator_unregister_cast_t
+    // turns THIS oid into a delete spec and reads a zero count as "the cast is still in the
+    // catalog". The delete sees the caller's transaction, so this read has to as well — both so
+    // a cast created in the open transaction can be found at all, and so one already dropped in
+    // it is reported as absent (do_not_exists) instead of as a scrub that was refused.
+    manager_disk_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
+    manager_disk_t::find_cast_oid(execution_context_t ctx,
                                   components::catalog::oid_t source_oid,
                                   components::catalog::oid_t target_oid) {
-        auto batches = co_await scan_table(pg_cast_oid,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1, 2});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_cast_oid,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1, 2},
+                                             ctx.txn);
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<components::catalog::oid_t>();
+        }
+        for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(1, i) || chunk.is_null(2, i)) {
                     continue;
@@ -130,13 +165,20 @@ namespace services::disk {
         co_return components::catalog::INVALID_OID;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<std::string>>
-    manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
+    // ctx.txn, for the reason on resolve_namespace above: the enumeration must show a txn
+    // its own uncommitted namespaces and hide the ones it dropped, or the next verdict
+    // built on this list lies the same way the resolve did.
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
+    manager_disk_t::list_namespaces(execution_context_t ctx) {
         std::pmr::vector<std::string> out(resource());
-        auto batches = co_await scan_table(pg_namespace_oid_tbl,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1},
+                                             ctx.txn);
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<std::pmr::vector<std::string>>();
+        }
+        for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!chunk.is_null(1, i)) {
                     out.emplace_back(std::string(chunk.get_value<std::string_view>(1, i)));
@@ -214,9 +256,9 @@ namespace services::disk {
         // Thin router: the caller passes storage column ORDINALS and the eq-AND filtered
         // scan runs intra-agent in read_chunks_by_key_inner (no row-major flatten, no
         // column-name resolution hop at all). Callers read cells via chunk.value(col, row).
-        // These used to return an empty vector, which the resolve operators read as
-        // "no such row" — a misrouted or agent-less read then surfaced as "Database does
-        // not exist". A read that never ran is an error.
+        // These must not return an empty vector: the resolve operators read that as "no such
+        // row", so a misrouted or agent-less read surfaces as "Database does not exist". A read
+        // that never ran is an error.
         if (key_col_indices.empty()) {
             co_return core::error_t{core::error_code_t::invalid_parameter,
                                     std::pmr::string{"read_chunks_by_key: no key columns given", resource()}};

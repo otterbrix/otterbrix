@@ -113,8 +113,21 @@ namespace otterbrix {
 
     private:
         core::parameter_id_t add_value(components::types::logical_value_t&& value);
+
+        // DECLARATION ORDER IS THE FIX HERE, and it is the same rule relation_factory_t
+        // already writes down next door: `space` FIRST, everything holding memory out of its
+        // arena AFTER it, so members are destroyed before the arena they were allocated from.
+        //
+        // `values` holds the logical_value_t of every ConstantExpression, and since those are
+        // built on space->dispatcher()->resource() a string constant keeps pmr bytes in this
+        // map. With `space` declared last it was destroyed FIRST (members die in reverse
+        // declaration order), and the map then freed its strings into a memory_resource that
+        // no longer existed -- EXC_BAD_ACCESS at address 0x18 inside
+        // memory_resource::deallocate, 10 interpreter runs out of 10. Integer constants store
+        // inline and survived, which is why it looked selective.
+        // Pinned by tests/test_constant_outlives_its_arena.py.
+        boost::intrusive_ptr<otterbrix_t> space;
         std::unordered_map<core::parameter_id_t, components::types::logical_value_t> values;
         uint64_t counter;
-        boost::intrusive_ptr<otterbrix_t> space;
     };
 } // namespace otterbrix

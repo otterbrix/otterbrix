@@ -34,6 +34,25 @@ namespace components::pipeline {
         const compute::function_registry_t* function_registry = nullptr;
         logical_plan::storage_parameters parameters;
 
+        // THREE MAILBOXES THAT DEFAULT TO "NO MAILBOX", AND EVERY READER HAS TO KNOW IT.
+        // Neither constructor takes them, so a context is born fully UNWIRED and each site
+        // fills in only what it happens to need: agent_disk's group-by context sets none of
+        // the three, and the dispatcher's and executor's admin contexts set disk_address and
+        // leave index/wal empty. Those sites are correct today only because the operators they
+        // drive send to nothing else — a property of the operator, not of the context, so
+        // adding one send inside such an operator breaks a caller that never changed.
+        //
+        // The structural fix is to make them constructor arguments (or a type with no default
+        // state), which deletes the partially-wired context as a shape. It is not done here
+        // because it rewrites every construction site, and those live in the dispatcher, the
+        // collection executor, agent_disk and the tests.
+        //
+        // Until then, the containment is that an addressed send goes through
+        // actor_zeta::otterbrix::send (core/executor.hpp), which refuses an empty target with a
+        // message and abort() in every build, rather than walking a null resource into the
+        // mailbox. That turns "silently wrong" into "loudly dead"; it does not make an unwired
+        // context correct. A site that legitimately may be unwired (a WAL manager that was
+        // never spawned) still needs its own `!= empty_address()` check, and ~57 sites have one.
         actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
@@ -97,8 +116,7 @@ namespace components::pipeline {
         bool dml_has_parent_constraint{false};
         // EXPLAIN ANALYZE: when true, execute_pipeline records per-operator time/rows/loops into the
         // operators it drives (zero clock sampling when false). Set in-place in execute_sub_plan_ and
-        // read via this ctx pointer only; the hand-written move ctor (context.cpp) does not copy it —
-        // harmless, a populated context_t is never move-constructed.
+        // read via this ctx pointer only.
         bool analyze{false};
         // DROP back-channel: operator_dynamic_cascade_delete_t records each
         // storage oid it dropped (alongside the mark_storage_dropped_many send). The
@@ -125,16 +143,34 @@ namespace components::pipeline {
         // index commit). 0 = no commit ran in this pipeline.
         uint64_t committed_id{0};
 
-        explicit context_t(logical_plan::storage_parameters init_parameters);
-        context_t(context_t&& context) noexcept;
+        // BY REFERENCE, NOT BY VALUE. storage_parameters wraps a std::pmr::unordered_map and has
+        // no copy constructor of its own, so a by-value parameter copied the caller's map with a
+        // DEFAULT-constructed polymorphic_allocator — std::pmr::get_default_resource() — and the
+        // move into `parameters` then froze the process-global arena into the member. The
+        // executor hands an LVALUE (`*plan_data.parameters`) once per sub-plan, so EVERY
+        // parameterised statement paid that. Both constructors rebuild the map on the arena the
+        // caller's parameters already live on; see parameters_on_their_own_arena in context.cpp.
+        explicit context_t(const logical_plan::storage_parameters& init_parameters);
+        // Defaulted so EVERY member moves. A hand-written one drops whatever it forgets
+        // (txn, the DML range lists, the created/dropped back-channels, committed_id, ...)
+        // and a moved context then publishes nothing and reverts nothing. Defaulting also
+        // keeps future members covered without anyone remembering this ctor.
+        context_t(context_t&& context) noexcept = default;
         context_t(session::session_id_t session,
                   actor_zeta::address_t address,
                   actor_zeta::address_t sender,
                   const compute::function_registry_t* function_registry,
-                  logical_plan::storage_parameters init_parameters);
+                  const logical_plan::storage_parameters& init_parameters);
 
         const actor_zeta::address_t& address() const noexcept { return address_; }
 
+        // NO PRODUCER LEFT IN THE TREE. The only callers of add_pending_disk_future were the
+        // update/delete DML flush legs, which parked the future of manager_disk_t::flush — a
+        // contract method whose body traced and returned without flushing anything. Both the
+        // method and those sends are gone, so the list is now always empty and the four
+        // dispatcher drains plus the two executor drains that read it are inert. The accessors
+        // stay because those drain sites live outside this component and go in their own edit;
+        // do not read the surviving drains as evidence that a disk future is ever parked here.
         void add_pending_disk_future(disk_future_t&& future) { pending_disk_futures_.push_back(std::move(future)); }
 
         std::vector<disk_future_t> take_pending_disk_futures() { return std::move(pending_disk_futures_); }

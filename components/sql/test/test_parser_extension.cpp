@@ -272,3 +272,71 @@ TEST_CASE("components::sql::two_extensions_transform_routing") {
         REQUIRE(result.has_error());
     }
 }
+
+namespace {
+    // Two probes for the raw_parser <-> extension seam. Neither of them ever claims
+    // anything: they answer "not mine". The point is HOW they say it.
+    bool quiet_was_called = false;
+
+    // Says "not mine" the way the contract documents it — the shared NIL sentinel.
+    parse_extension_result_t quiet_parse(std::pmr::memory_resource*, const std::string&) {
+        quiet_was_called = true;
+        return NIL;
+    }
+
+    // Says "not mine" with an empty list it allocated itself. Same meaning, different
+    // pointer — and `!= NIL` is a pointer comparison.
+    parse_extension_result_t own_empty_list_parse(std::pmr::memory_resource* resource, const std::string&) {
+        return new (resource->allocate(sizeof(List))) List{resource};
+    }
+} // namespace
+
+// Answering the shared empty list NIL both when the grammar FAILS and when the text
+// holds no statement at all makes the two outcomes one answer. The consequences, in
+// the order they bite:
+//
+//  * an extension result accepted as a claim on `value() != NIL` — a POINTER test. An
+//    extension that answers "not mine" with an empty list of its own passes it, so
+//    raw_parser returns an EMPTY tree and the core parser's syntax error goes on the
+//    floor: `SELECT FROM` comes back as success-with-no-statement, and the caller's
+//    linitial() reads past the end of that list;
+//  * text the core grammar ACCEPTED and found no statement in (empty input, a lone
+//    comment, a bare `;`) handed to every registered extension as if the parse had
+//    failed, letting an extension reinterpret — or fail on — a query the core had
+//    already answered.
+TEST_CASE("components::sql::empty_parse_is_not_a_failed_parse") {
+    std::pmr::monotonic_buffer_resource arena;
+
+    SECTION("an extension's own empty list is not a claim") {
+        parser_extension_registry_t registry;
+        REQUIRE_FALSE(registry.add(parser_extension_t{"own-empty", &own_empty_list_parse}).has_error());
+        // Under a pointer test: no throw — raw_parser hands back the extension's empty
+        // list and the syntax error the core parser raised is lost.
+        CHECK_THROWS_AS(raw_parser(&arena, "SELECT FROM", registry), parser_exception_t);
+    }
+
+    SECTION("text the core parser accepted is never offered to an extension") {
+        parser_extension_registry_t registry;
+        REQUIRE_FALSE(registry.add(parser_extension_t{"quiet", &quiet_parse}).has_error());
+        for (const char* text : {"", "   ", "-- only a comment", "/* only a comment */", ";"}) {
+            quiet_was_called = false;
+            List* tree = raw_parser(&arena, text, registry);
+            // Nothing to parse: an empty list, and no failure for an extension to rescue.
+            CHECK(list_length(tree) == 0);
+            CHECK_FALSE(quiet_was_called);
+        }
+    }
+
+    SECTION("nothing to parse is an empty list, a failure is a throw") {
+        for (const char* text : {"", "   ", "-- only a comment", ";"}) {
+            // The check parser.h prescribes: list_length() BEFORE any linitial().
+            // Asserting `linitial(empty) == nullptr` instead would lean on an accident:
+            // linitial has no emptiness guard (pg_std_list.h: `lfirst(list_head(l))`,
+            // and list_head of an empty list dereferences the pmr::list end sentinel),
+            // so the null it happens to read is an accident of container layout. A test
+            // must pin the contract, not teach callers to lean on that.
+            CHECK(list_length(raw_parser(&arena, text)) == 0);
+        }
+        CHECK_THROWS_AS(raw_parser(&arena, "SELECT FROM"), parser_exception_t);
+    }
+}

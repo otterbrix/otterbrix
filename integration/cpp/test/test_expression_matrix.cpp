@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -234,9 +235,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::expression_matrix::every_expression_in_every_clause") {
-    auto config = test_create_config("/tmp/test_expression_matrix");
+    auto config = test_create_config(integration_fixture_path("test_expression_matrix"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     matrix_t matrix(space.dispatcher());

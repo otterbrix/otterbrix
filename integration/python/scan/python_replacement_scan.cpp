@@ -1,5 +1,7 @@
 #include "python_replacement_scan.hpp"
 
+#include <cassert>
+
 #include "pandas_arrow_prepare.hpp"
 #include <arrow/arrow_array_stream.hpp>
 #include <arrow/arrow_scan_function.hpp>
@@ -36,14 +38,18 @@ namespace otterbrix {
         //! Build a table_ref_t that routes `arrow_source` through the core arrow path via arrow_scan_function_t.
         //! `arrow_source` must be either an arrow object understood by get_arrow_type (arrow_table_t / Dataset /
         //! Scanner / arrow_record_batch_reader_t / PyCapsule) or expose __arrow_c_stream__.
-        std::unique_ptr<components::tableref::table_ref_t> build_arrow_table_ref(const py::object& arrow_source) {
+        std::unique_ptr<components::tableref::table_ref_t> build_arrow_table_ref(std::pmr::memory_resource* resource,
+                                                                                 const py::object& arrow_source) {
             auto table_function = std::make_unique<components::tableref::table_ref_t>();
             auto dependency = std::make_shared<external_dependency_t>();
             auto factory_dep = std::make_unique<arrow_stream_factory_dependency_t>(arrow_source);
             auto* factory_ptr = factory_dep->get();
 
+            // The pointer value goes on the CALLER's arena, not the process default: this
+            // list is owned by the table_ref_t, which the caller consumes one call later
+            // through fetch_object_data (which is handed the same arena).
             std::vector<components::types::logical_value_t> children;
-            children.emplace_back(std::pmr::get_default_resource(), static_cast<void*>(factory_ptr));
+            children.emplace_back(resource, static_cast<void*>(factory_ptr));
 
             table_function->function = std::make_unique<arrow_scan_function_t>();
             table_function->children = std::move(children);
@@ -54,21 +60,23 @@ namespace otterbrix {
         }
     } // namespace
 
-    std::unique_ptr<components::tableref::table_ref_t> scan_t::try_replacement_object(const py::object& entry,
+    std::unique_ptr<components::tableref::table_ref_t> scan_t::try_replacement_object(std::pmr::memory_resource* resource,
+                                                                                      const py::object& entry,
                                                                                       const std::string& /*name*/) {
+        assert(resource != nullptr && "try_replacement_object needs the caller's arena");
         if (framework_object_detection_t::is_polars_dataframe(entry)) {
             // Polars exposes the Arrow C-stream PyCapsule interface; route through the core arrow path.
-            return build_arrow_table_ref(entry);
+            return build_arrow_table_ref(resource, entry);
         }
         if (framework_object_detection_t::is_pandas_dataframe(entry)) {
             // pandas >= 2.2 exposes __arrow_c_stream__ for every DataFrame (numpy- or arrow-backed).
             // Pre-process object columns (MAP / lenient STRING) then ingest through the arrow path.
-            return build_arrow_table_ref(prepare_dataframe_for_arrow(entry));
+            return build_arrow_table_ref(resource, prepare_dataframe_for_arrow(entry));
         }
         if (get_arrow_type(entry) != py_arrow_object_type_t::Invalid || has_arrow_c_stream(entry)) {
             // Native Arrow objects (pyarrow arrow_table_t / Dataset / Scanner / arrow_record_batch_reader_t /
             // Arrow C-stream capsule) ingest straight through the core arrow path.
-            return build_arrow_table_ref(entry);
+            return build_arrow_table_ref(resource, entry);
         }
         numpy_object_type_t numpy_type = framework_object_detection_t::get_numpy_object_type(entry);
         if (numpy_type != numpy_object_type_t::INVALID) {
@@ -100,15 +108,16 @@ namespace otterbrix {
                     throw std::runtime_error("Unsupported Numpy object");
             }
             py::object df = connection_environment_t::import_cache().pandas.data_frame()(data);
-            return build_arrow_table_ref(prepare_dataframe_for_arrow(df));
+            return build_arrow_table_ref(resource, prepare_dataframe_for_arrow(df));
         }
         // Not suitable for a replacement scan (replacement_object turns this into scan_failure_error).
         return nullptr;
     }
 
-    std::unique_ptr<components::tableref::table_ref_t> scan_t::replacement_object(const py::object& entry,
+    std::unique_ptr<components::tableref::table_ref_t> scan_t::replacement_object(std::pmr::memory_resource* resource,
+                                                                                  const py::object& entry,
                                                                                   const std::string& name) {
-        auto ref = try_replacement_object(entry, name);
+        auto ref = try_replacement_object(resource, entry, name);
         if (!ref) {
             throw_scan_failure_error(entry, name);
         }

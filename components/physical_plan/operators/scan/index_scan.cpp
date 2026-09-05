@@ -16,7 +16,12 @@ namespace components::operators {
                            std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , table_oid_(table_oid)
-        , key_(key)
+        // `key` comes from the LOGICAL node (create_plan_scan hands over node->expressions()'s
+        // key), whose arena is released when the plan is torn down; this operator lives on
+        // `resource` — context.resource for a known table — and is read from during execution,
+        // after that. So the copy is placed on the OPERATOR's arena, the longer-lived of the two.
+        // key_ is const and never re-pointed, so this is the only place its arena is decided.
+        , key_(key, resource)
         , value_(value)
         , compare_type_(compare_type)
         , preferred_index_type_(preferred_index_type)
@@ -27,56 +32,77 @@ namespace components::operators {
     // Run the ONE-SHOT index search and compute the read-cap window [pos_=0, end_) over the matched
     // ids. source_next calls this exactly once (the first call), so the search + windowing logic
     // lives in ONE place.
-    actor_zeta::unique_future<void> index_scan::open_index_window(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            // No index service — empty window (no matched ids).
+            // An index_scan is built ONLY when the planner proved an index exists (can_use_index), so an
+            // unwired index service is the same planner-invariant violation manager_index answers
+            // index_not_exists for — "no engine for the oid", "no index on the predicate key". Handing back an
+            // empty window instead is indistinguishable from "no row matches the predicate": a silently short
+            // result set, the one failure the comment below says must never happen.
             pos_ = 0;
             end_ = 0;
-            co_return;
+            co_return core::error_t{core::error_code_t::index_not_exists,
+                                    std::pmr::string{"index_scan: no index service is wired into this topology; "
+                                                     "a planned index_scan cannot be answered",
+                                                     resource_}};
         }
 
         // Search index for matching row IDs (txn-aware visibility). One-shot: the whole matched
         // set comes back in this single future.
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
-                            ? actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::search,
-                                               ctx->session,
-                                               table_oid_,
-                                               index::keys_base_storage_t{{key_}},
-                                               types::logical_value_t{resource_, value_},
-                                               compare_type_,
-                                               ctx->txn.start_time,
-                                               ctx->txn.transaction_id,
-                                               ctx->execution_context.timezone_offset)
-                            : actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::search_with_preferred_type,
-                                               ctx->session,
-                                               table_oid_,
-                                               index::keys_base_storage_t{{key_}},
-                                               types::logical_value_t{resource_, value_},
-                                               compare_type_,
-                                               preferred_index_type_,
-                                               ctx->txn.start_time,
-                                               ctx->txn.transaction_id,
-                                               ctx->execution_context.timezone_offset);
-        row_ids_vec_ = co_await std::move(sf);
+                            ? actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::search,
+                                                          ctx->session,
+                                                          table_oid_,
+                                                          index::keys_base_storage_t{{key_}},
+                                                          types::logical_value_t{resource_, value_},
+                                                          compare_type_,
+                                                          ctx->txn.start_time,
+                                                          ctx->txn.transaction_id,
+                                                          ctx->execution_context.timezone_offset)
+                            : actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::search_with_preferred_type,
+                                                          ctx->session,
+                                                          table_oid_,
+                                                          index::keys_base_storage_t{{key_}},
+                                                          types::logical_value_t{resource_, value_},
+                                                          compare_type_,
+                                                          preferred_index_type_,
+                                                          ctx->txn.start_time,
+                                                          ctx->txn.transaction_id,
+                                                          ctx->execution_context.timezone_offset);
+        auto matched = co_await std::move(sf);
+        if (matched.has_error()) {
+            // The index manager could not ANSWER — no engine for the oid, no index on
+            // the predicate key, or a failed read in the index's disk agent. An empty
+            // window here would be indistinguishable from "matched nothing" and would
+            // publish a silently short result set.
+            pos_ = 0;
+            end_ = 0;
+            co_return matched.error();
+        }
+        row_ids_vec_ = std::move(matched.value());
 
-        // Apply the read-cap (offset+limit head cap) count to compute the [0, count) window over the
-        // matched ids. SELECT OFFSET is applied by operator_limit above, so the scan receives
-        // offset()==0 and the seek starts at 0 (head_cap() == limit here).
-        const size_t total = row_ids_vec_.size();
-        const int64_t cap = limit_.head_cap();
-        const size_t count = (cap >= 0) ? std::min(total, static_cast<size_t>(cap)) : total;
+        // The whole matched set is the fetch window. The read-cap (offset+limit head cap) is deliberately NOT
+        // applied here: the index answer is a SUPERSET — manager_index says so — and the fetch DROPS the rows this
+        // transaction may not see, so cutting the id list to `limit` before the fetch can cut away the very ids
+        // whose rows survive it and return fewer rows than the LIMIT asked for. The cap rides BELOW that filter, as
+        // the `limit` argument of the storage_fetch below, spent by the agent on rows it has actually produced —
+        // the same shape full_scan uses (its cap travels on storage_fetch_next_batch as a post-filter matched-row
+        // count).
+        // SELECT OFFSET is applied by operator_limit above, so the seek starts at 0.
         pos_ = 0;
-        end_ = count;
-        co_return;
+        end_ = row_ids_vec_.size();
+        co_return core::error_t::no_error();
     }
 
-    // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent windows the
-    // request into ≤ DEFAULT_VECTOR_CAPACITY chunks and stamps each chunk's absolute row_ids (so a
-    // downstream DELETE/UPDATE/index sees the right rows), returning them as a vector that source_next
-    // buffers. An empty window (or an OID this agent does not own) yields an empty vector.
-    actor_zeta::unique_future<std::pmr::vector<vector::data_chunk_t>>
+    // Fetch the matched window [pos_, end_) in ONE storage_fetch, capped at limit_.head_cap() ROWS. The disk
+    // agent windows the request into <= DEFAULT_VECTOR_CAPACITY chunks and stamps each chunk's absolute row_ids
+    // (so a downstream DELETE/UPDATE/index sees the right rows), returning them as a vector that source_next
+    // buffers; with a cap it STOPS as soon as it has produced that many visible rows, so a LIMIT 1 over a
+    // million matched ids reads one window instead of a thousand. An empty window yields an empty vector; an
+    // oid with no storage is a refusal on the wrapper, not an empty vector.
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
     index_scan::fetch_matched_window(pipeline::context_t* ctx) {
         const size_t count = (end_ > pos_) ? (end_ - pos_) : 0;
         if (count == 0) {
@@ -86,13 +112,22 @@ namespace components::operators {
         vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
         std::memcpy(row_ids.data(), row_ids_vec_.data() + pos_, count * sizeof(int64_t));
 
-        auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_fetch,
-                                         ctx->session,
-                                         table_oid_,
-                                         std::move(row_ids),
-                                         count,
-                                         projected_cols_);
+        auto [_f, ff] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    std::move(row_ids),
+                                                    count,
+                                                    projected_cols_,
+                                                    // The reader's own snapshot: the index answered with a
+                                                    // superset of ids and the table decides which of them
+                                                    // this transaction may see.
+                                                    ctx->txn,
+                                                    table::fetch_visibility_t::SNAPSHOT,
+                                                    // POST-VISIBILITY row cap. -1 == uncapped; otherwise the
+                                                    // agent hands back exactly this many visible rows (fewer
+                                                    // if the window runs out first) and reads no further.
+                                                    limit_.head_cap());
         co_return co_await std::move(ff);
     }
 
@@ -115,27 +150,55 @@ namespace components::operators {
 
         if (!opened_) {
             opened_ = true;
-            co_await open_index_window(ctx);
+            if (auto search_error = co_await open_index_window(ctx); search_error.contains_error()) {
+                // Same channel the window fetch below uses: the source reports the
+                // failure instead of draining to zero rows, which would look exactly
+                // like a predicate nothing matched.
+                set_error(search_error);
+                mark_failed();
+                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(search_error));
+            }
             // Cache the table schema for the no-row empty-guard below.
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
-            guard_types_ = co_await std::move(tf);
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_types,
+                                                        ctx->session,
+                                                        table_oid_);
+            auto types_result = co_await std::move(tf);
+            if (types_result.has_error()) {
+                set_error(types_result.error());
+                mark_failed();
+                co_return types_result.convert_error<vector::data_chunk_t>();
+            }
+            guard_types_ = std::move(types_result.value());
         }
 
         // FIRST fetch: pull the whole matched window in ONE storage_fetch; the disk batches it into
         // ≤ DEFAULT_VECTOR_CAPACITY chunks buffered in batch_. Subsequent calls just drain the buffer.
         if (!fetched_) {
             fetched_ = true;
-            batch_ = co_await fetch_matched_window(ctx);
+            auto batch_r = co_await fetch_matched_window(ctx);
+            if (batch_r.has_error()) {
+                // The disk agent's point-fetch failed (buffer-pool OOM / corrupt
+                // overflow block): surface it through the source's own error channel
+                // instead of emitting silently empty rows — same convention as
+                // full_scan's fetch error path.
+                set_error(batch_r.error());
+                mark_failed();
+                co_return batch_r.convert_error<vector::data_chunk_t>();
+            }
+            batch_ = std::move(batch_r.value());
             batch_pos_ = 0;
         }
 
-        // Emit the next buffered chunk.
+        // Emit the next buffered chunk. NO cap is applied here: the agent already spent it on
+        // the rows it produced, below the visibility filter, so batch_ holds at most
+        // limit_.head_cap() rows in total. Re-applying it here would be a second truncation of
+        // an already-truncated answer — harmless but a duplicated rule, and the duplicate is
+        // what rots when only one of the two is changed.
         if (batch_pos_ < batch_.size()) {
+            auto chunk = std::move(batch_[batch_pos_++]);
             emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(batch_[batch_pos_++]));
+            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(chunk));
         }
 
         // Buffer exhausted ⇒ drain.

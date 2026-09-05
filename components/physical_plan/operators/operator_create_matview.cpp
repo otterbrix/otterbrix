@@ -14,43 +14,29 @@ namespace components::operators {
                                                          components::catalog::oid_t mv_oid,
                                                          components::catalog::oid_t namespace_oid,
                                                          std::vector<table::column_definition_t> columns,
-                                                         bool is_disk_storage,
-                                                         std::vector<catalog_write_t> catalog_writes,
-                                                         operator_ptr body_op)
+                                                         std::vector<catalog_write_t> catalog_writes)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , mv_oid_(mv_oid)
         , namespace_oid_(namespace_oid)
         , columns_(std::move(columns))
-        , is_disk_storage_(is_disk_storage)
-        , catalog_writes_(std::move(catalog_writes))
-        , body_op_(std::move(body_op)) {}
+        , catalog_writes_(std::move(catalog_writes)) {}
 
     actor_zeta::unique_future<void> operator_create_matview_t::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        // Create physical heap storage.
-        if (columns_.empty()) {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::create_storage,
-                                           ctx->session,
-                                           mv_oid_,
-                                           namespace_oid_);
-            co_await std::move(f);
-        } else if (is_disk_storage_) {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::create_storage_disk,
-                                           ctx->session,
-                                           mv_oid_,
-                                           namespace_oid_,
-                                           std::move(columns_));
-            co_await std::move(f);
-        } else {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::create_storage_with_columns,
-                                           ctx->session,
-                                           mv_oid_,
-                                           namespace_oid_,
-                                           std::move(columns_));
+        // Create physical heap storage: always disk-backed (plan-gen guarantees
+        // non-empty inferred columns for a matview — create_plan_create_matview
+        // refuses an empty set). A matview is relkind='m', NEVER computed — passed
+        // explicitly so even a degenerate zero-column matview cannot come up as a
+        // dynamic-schema table.
+        {
+            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::create_storage_disk,
+                                                      ctx->session,
+                                                      mv_oid_,
+                                                      namespace_oid_,
+                                                      std::move(columns_),
+                                                      /*is_computed=*/false);
             co_await std::move(f);
         }
 
@@ -62,10 +48,10 @@ namespace components::operators {
         }
 
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_, f] = actor_zeta::send(ctx->index_address,
-                                           &services::index::manager_index_t::register_collection,
-                                           ctx->session,
-                                           mv_oid_);
+            auto [_, f] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                      &services::index::manager_index_t::register_collection,
+                                                      ctx->session,
+                                                      mv_oid_);
             co_await std::move(f);
         }
 
@@ -73,28 +59,41 @@ namespace components::operators {
         // Two-phase: every append is independent (no iteration consumes the
         // previous result), so send all rows first then await in order.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-        std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> append_futures(resource_);
+        std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
+            append_futures(resource_);
         append_futures.reserve(catalog_writes_.size());
         for (auto& [tbl_oid, row] : catalog_writes_) {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::append_pg_catalog_row,
-                                           exec_ctx,
-                                           tbl_oid,
-                                           std::move(row));
+            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                      exec_ctx,
+                                                      tbl_oid,
+                                                      std::move(row));
             append_futures.push_back(std::move(f));
         }
+        // EVERY future is drained before the first refusal is acted on: abandoning the
+        // rest would leave replies for a statement that no longer exists. First error wins.
+        core::error_t append_error = core::error_t::no_error();
         for (auto& f : append_futures) {
-            auto rng = co_await std::move(f);
-            if (rng.count > 0)
-                ctx->pg_catalog_appends.push_back(std::move(rng));
+            auto rng_r = co_await std::move(f);
+            if (rng_r.has_error()) {
+                if (!append_error.contains_error()) {
+                    append_error = rng_r.error();
+                }
+                continue;
+            }
+            if (rng_r.value().count > 0)
+                ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+        }
+        if (append_error.contains_error()) {
+            // A catalog row that never landed leaves the view existing in name only.
+            set_error(std::move(append_error));
+            mark_failed();
+            co_return;
         }
 
-        // Created empty (WITH NO DATA semantics): driving body_op_ here to
-        // populate hits an actor_zeta nested-await bug (full_scan crashes when
-        // driven from inside this operator's outer await). REFRESH MATERIALIZED
-        // VIEW populates later via its own INSERT-SELECT plan. body_op_ holds
-        // the compiled body plan but is intentionally not driven here.
-        (void) body_op_;
+        // Created empty. This operator only ever implements WITH NO DATA — the
+        // transformer refuses the form that would need populating — so there is
+        // nothing left to do here. See operator_create_matview.hpp.
         mark_executed();
     }
 

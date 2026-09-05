@@ -3,10 +3,14 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/table_state.hpp>
+#include <components/table/test/block_reachability_walker.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <filesystem>
+#include <set>
+#include <string>
 #include <unistd.h>
 
 using namespace services::disk;
@@ -51,16 +55,112 @@ namespace {
             offset += batch;
         }
     }
+
+    // ---- drop_column-on-DISK helpers (see the test at the bottom of this file) ----
+
+    // 40 UBIGINTs per row: 40 * 8 B * 2048 rows = 640 KiB of child payload per row group,
+    // past partial_block_manager_t's FULL_THRESHOLD, so the child segments take DEDICATED
+    // blocks. Without that, partial_block_manager_t packs every child segment alongside the
+    // flat column's and the drop can provably free nothing.
+    constexpr uint64_t DROP_LIST_LENGTH = 40;
+
+    complex_logical_type drop_list_type() { return complex_logical_type::create_list(logical_type::UBIGINT); }
+
+    void append_drop_rows(data_table_t& table, std::pmr::memory_resource* resource, uint64_t start, uint64_t count) {
+        auto types = table.copy_types();
+        uint64_t offset = 0;
+        while (offset < count) {
+            uint64_t batch = std::min(count - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            data_chunk_t chunk(resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                const uint64_t row = start + offset + i;
+                chunk.set_value(0, i, static_cast<int64_t>(row));
+                std::vector<uint64_t> list;
+                list.reserve(DROP_LIST_LENGTH);
+                for (uint64_t j = 0; j < DROP_LIST_LENGTH; j++) {
+                    list.emplace_back(row * 100 + j);
+                }
+                chunk.set_value(1, i, list);
+            }
+            table_append_state state(resource);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
+            table.finalize_append(state, transaction_data{0, 0});
+            offset += batch;
+        }
+    }
+
+    // The walker judges the DURABLE file, so it needs the storage's own block manager. The
+    // counted collection copy row_group() hands back is scoped to reading the reference out of
+    // it: a holder kept across a later compact would keep a replaced collection's
+    // block handles alive past their reclaim.
+    otterbrix_test::walk_report_t
+    walk_storage(table_storage_t& ts, const std::string& path, std::pmr::memory_resource* resource) {
+        components::table::storage::single_file_block_manager_t* bm = nullptr;
+        {
+            auto collection = ts.table().row_group();
+            bm = static_cast<components::table::storage::single_file_block_manager_t*>(&collection->block_manager());
+        }
+        return otterbrix_test::walk_blocks(*bm, path, resource);
+    }
+
+    // Content-addressed: every surviving row must still carry its own row number in "a", so a
+    // block that was freed while something still read it shows up as wrong data, not as a
+    // count that happens to match.
+    uint64_t scan_a_column(data_table_t& table, std::pmr::memory_resource* resource) {
+        std::vector<storage_index_t> column_ids{storage_index_t(0)};
+        table_scan_state state(resource);
+        table.initialize_scan(state, column_ids, nullptr);
+        auto types = table.copy_types();
+        data_chunk_t chunk(resource, types, DEFAULT_VECTOR_CAPACITY);
+        uint64_t seen = 0;
+        while (true) {
+            chunk.reset();
+            table.scan(chunk, state);
+            if (chunk.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(seen));
+                seen++;
+            }
+        }
+        return seen;
+    }
+
+    std::string dump_ids(const std::set<uint64_t>& ids) {
+        std::string out = "{";
+        for (auto id : ids) {
+            if (out.size() > 1) {
+                out += ", ";
+            }
+            out += std::to_string(id);
+        }
+        out += "}";
+        return out;
+    }
+
+    uint64_t file_size_or_zero(const std::string& path) {
+        std::error_code ec;
+        auto size = std::filesystem::file_size(path, ec);
+        return ec ? uint64_t{0} : static_cast<uint64_t>(size);
+    }
 } // namespace
 
-TEST_CASE("services::disk::table_storage::in_memory") {
+// table_storage_t is backed by a `.otbx` and nothing else — there is no file-less constructor
+// and no `mode()` to assert. What the case is about — append 100 rows, scan them back in order
+// — reads identically on a file.
+TEST_CASE("services::disk::table_storage::append_and_scan") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("value", logical_type::BIGINT);
-    table_storage_t ts(&resource, std::move(columns));
-
-    REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+    table_storage_t ts(&resource, std::move(columns), std::filesystem::path(test_dir()) / "append_and_scan.otbx");
+    REQUIRE_FALSE(ts.construction_failed());
 
     // Insert data
     append_int64_data(ts.table(), &resource, 100);
@@ -79,6 +179,8 @@ TEST_CASE("services::disk::table_storage::in_memory") {
         auto val = result.data[0].value(i);
         REQUIRE(val.value<int64_t>() == static_cast<int64_t>(i));
     }
+
+    cleanup_test_dir();
 }
 
 TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
@@ -94,7 +196,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
         table_storage_t ts(&resource, std::move(columns), otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
 
         append_int64_data(ts.table(), &resource, NUM_ROWS);
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
@@ -105,8 +207,8 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
 
     // Load and verify
     {
-        table_storage_t ts(&resource, otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        table_storage_t ts(&resource, otbx_path, {});
+        REQUIRE_FALSE(ts.construction_failed());
 
         auto& table = ts.table();
         REQUIRE(table.calculate_size() == NUM_ROWS);
@@ -128,34 +230,45 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
     cleanup_test_dir();
 }
 
-TEST_CASE("services::disk::table_storage::mode_query") {
+// There is one substrate and no storage-mode enum to ask, so what each constructor produces is
+// pinned by its SCHEMA: a schema-less table, a table with columns, and a table reloaded from the
+// file the second one wrote.
+TEST_CASE("services::disk::table_storage::construction_shapes") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
-    // In-memory (schema-less)
+    // Schema-less (computed / relkind='g'): an empty column list is legal on create.
     {
-        table_storage_t ts(&resource);
-        REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+        auto otbx_path = std::filesystem::path(test_dir()) / "shape_schemaless.otbx";
+        table_storage_t ts(&resource, std::vector<column_definition_t>{}, otbx_path);
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 0);
     }
 
-    // In-memory (with columns)
+    // With columns.
     {
-        std::vector<column_definition_t> columns;
-        columns.emplace_back("x", logical_type::DOUBLE);
-        table_storage_t ts(&resource, std::move(columns));
-        REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
-    }
-
-    // Disk (new)
-    {
-        cleanup_test_dir();
-        std::filesystem::create_directories(test_dir());
-        auto otbx_path = std::filesystem::path(test_dir()) / "mode_test.otbx";
+        auto otbx_path = std::filesystem::path(test_dir()) / "shape_columns.otbx";
         std::vector<column_definition_t> columns;
         columns.emplace_back("x", logical_type::DOUBLE);
         table_storage_t ts(&resource, std::move(columns), otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
-        cleanup_test_dir();
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 1);
+        REQUIRE(ts.table().columns()[0].name() == "x");
+        auto cp = ts.checkpoint();
+        REQUIRE_FALSE(cp.has_error());
     }
+
+    // Load the file the previous block checkpointed: the schema comes off the file.
+    {
+        auto otbx_path = std::filesystem::path(test_dir()) / "shape_columns.otbx";
+        table_storage_t ts(&resource, otbx_path, {});
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 1);
+        REQUIRE(ts.table().columns()[0].name() == "x");
+    }
+
+    cleanup_test_dir();
 }
 
 TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
@@ -172,7 +285,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
         columns.emplace_back("id", logical_type::BIGINT);
         columns.emplace_back("score", logical_type::DOUBLE);
         table_storage_t ts(&resource, std::move(columns), otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
 
         auto types = ts.table().copy_types();
         uint64_t offset = 0;
@@ -201,8 +314,8 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
 
     // Load and verify both columns
     {
-        table_storage_t ts(&resource, otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        table_storage_t ts(&resource, otbx_path, {});
+        REQUIRE_FALSE(ts.construction_failed());
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
         REQUIRE(ts.table().column_count() == 2);
 
@@ -225,19 +338,26 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
 }
 
-// Physical column compaction primitive. table_storage_t::drop_column removes
-// the named column from the IN_MEMORY data_table_t via the rebuild
-// constructor (data_table_t(parent, removed_column) backed by
-// collection_t::remove_column per row_group segment). DISK-mode is out of scope.
-TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
+// Physical column compaction primitive, DATA half. table_storage_t::drop_column removes the
+// named column from the data_table_t via the rebuild constructor (data_table_t(parent,
+// removed_column) backed by collection_t::remove_column per row_group segment), and the rows of
+// the SURVIVING columns come through it intact. The other half — the dropped column's blocks
+// coming back through a committed header — is gated by drop_column_disk_frees_blocks at the
+// bottom of this file; the two together are the whole primitive.
+//
+// Runs on a file-backed table like everything else; what it asserts is about the rebuild, not
+// the substrate.
+TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("a", logical_type::BIGINT);
     columns.emplace_back("b", logical_type::BIGINT);
     columns.emplace_back("c", logical_type::BIGINT);
-    table_storage_t ts(&resource, std::move(columns));
-    REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+    table_storage_t ts(&resource, std::move(columns), std::filesystem::path(test_dir()) / "drop_column.otbx");
+    REQUIRE_FALSE(ts.construction_failed());
     REQUIRE(ts.table().column_count() == 3);
 
     // Append 32 rows: a=i, b=i*10, c=i*100.
@@ -288,24 +408,137 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
     // Dropping a non-existent column is a no-op (false).
     REQUIRE(!ts.drop_column("missing"));
     REQUIRE(ts.table().column_count() == 2);
+
+    cleanup_test_dir();
 }
 
-TEST_CASE("services::disk::table_storage::drop_column_disk_is_noop") {
+// Dropping a column from a DISK-backed table must give its physical blocks back.
+//
+// This case inverts the assertions of the pinned test it replaces, with the owner's per-test consent.
+//
+// The gate is deliberately NOT "the column count dropped". A rebuild that merely forgets the column
+// passes that and is the WORSE outcome: the dropped column's `column_data_t` is destroyed with the
+// superseded collection, so its block_handle_t's die and its registry entries go with them — and a
+// block that no root names, no registry holds and no free list publishes is durably orphaned.
+// reclaim_superseded_root cannot find those: it walks the DURABLE ROOT's own data blocks, and every
+// block the column acquired SINCE that root (the write-through at row-group close, the re-pointed
+// tail segments) is invisible to it. So the walker judges the file instead, and the shape below is
+// built to produce exactly those invisible blocks:
+//   * column "b" is a LIST of 40 UBIGINTs — 40 * 8 B * 2048 rows = 640 KiB of child payload per row
+//     group, past partial_block_manager_t's FULL_THRESHOLD, so its child segments take DEDICATED
+//     blocks that column "a" cannot share (block packing would otherwise hand every one of b's ids
+//     to a's walk by accident and hide the whole question);
+//   * the table is REOPENED before the drop, so the loader — not the appender — is what owns b's
+//     blocks (nested children own disk blocks only after a load);
+//   * more rows are appended AFTER that reopen's root, so some of b's blocks are named by no
+//     durable root at all.
+// The last step matters: a leak or a bad free often only shows on a REOPENED file, so the walk is
+// repeated after closing and reopening the .otbx.
+TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
-    auto otbx_path = std::filesystem::path(test_dir()) / "test_drop_disk.otbx";
-    std::vector<column_definition_t> columns;
-    columns.emplace_back("a", logical_type::BIGINT);
-    columns.emplace_back("b", logical_type::BIGINT);
-    table_storage_t ts(&resource, std::move(columns), otbx_path);
-    REQUIRE(ts.mode() == storage_mode_t::DISK);
-    REQUIRE(ts.table().column_count() == 2);
+    const auto otbx_path = std::filesystem::path(test_dir()) / "test_drop_disk.otbx";
+    const std::string path = otbx_path.string();
 
-    // DISK-mode: drop_column returns false (out of scope).
-    REQUIRE(!ts.drop_column("b"));
-    REQUIRE(ts.table().column_count() == 2);
+    constexpr uint64_t FIRST_ROWS = 6000;
+    constexpr uint64_t SECOND_ROWS = 4000;
+    constexpr uint64_t TOTAL_ROWS = FIRST_ROWS + SECOND_ROWS;
+
+    // Round 1: create, fill, checkpoint. Root R1 names both columns' blocks.
+    {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type{logical_type::BIGINT});
+        columns.emplace_back("b", drop_list_type());
+        table_storage_t ts(&resource, std::move(columns), otbx_path);
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 2);
+
+        append_drop_rows(ts.table(), &resource, 0, FIRST_ROWS);
+        REQUIRE_FALSE(ts.checkpoint().has_error());
+    }
+
+    uint64_t blocks_after_drop = 0;
+    uint64_t size_after_drop = 0;
+    {
+        // Reopen: the LOADER owns b's blocks. catalog_columns is ignored for a checkpointed
+        // file — the file's own schema is authoritative.
+        table_storage_t ts(&resource, otbx_path, std::vector<column_definition_t>{});
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 2);
+
+        // Blocks acquired AFTER the durable root: reclaim_superseded_root will never see these.
+        append_drop_rows(ts.table(), &resource, FIRST_ROWS, SECOND_ROWS);
+
+        auto before = walk_storage(ts, path, &resource);
+        REQUIRE(before.ok);
+        CHECK(before.reachable_free_overlap.empty());
+
+        REQUIRE(ts.drop_column("b"));
+        REQUIRE(ts.table().column_count() == 1);
+        REQUIRE(ts.table().columns()[0].name() == "a");
+
+        REQUIRE_FALSE(ts.checkpoint().has_error());
+
+        auto after = walk_storage(ts, path, &resource);
+        REQUIRE(after.ok);
+
+        // The blocks the durable root named before the drop and does not name after it. The
+        // premise is asserted, not assumed: a vacuous set would let every claim below pass.
+        std::set<uint64_t> gone;
+        for (auto id : before.root_data) {
+            if (after.root_data.count(id) == 0) {
+                gone.insert(id);
+            }
+        }
+        INFO("root before=" << before.root_data.size() << " after=" << after.root_data.size()
+                            << " left the root=" << dump_ids(gone) << " unexplained="
+                            << dump_ids(after.unexplained));
+        REQUIRE_FALSE(gone.empty());
+        for (auto id : gone) {
+            INFO("block " << id << " left the durable root when column b was dropped");
+            CHECK((after.free_list_content.count(id) != 0 || after.registry_live.count(id) != 0));
+        }
+        CHECK(after.reachable_free_overlap.empty());
+        CHECK(after.unexplained.empty());
+
+        blocks_after_drop = after.block_count;
+        REQUIRE(scan_a_column(ts.table(), &resource) == TOTAL_ROWS);
+
+        // Round over round the file must not grow: nothing left un-released keeps costing.
+        REQUIRE_FALSE(ts.checkpoint().has_error());
+        REQUIRE_FALSE(ts.checkpoint().has_error());
+        auto settled = walk_storage(ts, path, &resource);
+        REQUIRE(settled.ok);
+        INFO("settled unexplained=" << dump_ids(settled.unexplained));
+        CHECK(settled.reachable_free_overlap.empty());
+        CHECK(settled.unexplained.empty());
+        CHECK(settled.block_count <= blocks_after_drop);
+        size_after_drop = file_size_or_zero(path);
+    }
+
+    // Only a judged REOPENED file tells the truth about a leak.
+    {
+        table_storage_t ts(&resource, otbx_path, std::vector<column_definition_t>{});
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 1);
+        REQUIRE(ts.table().columns()[0].name() == "a");
+        REQUIRE(scan_a_column(ts.table(), &resource) == TOTAL_ROWS);
+
+        auto reopened = walk_storage(ts, path, &resource);
+        REQUIRE(reopened.ok);
+        INFO("reopened unexplained=" << dump_ids(reopened.unexplained));
+        CHECK(reopened.reachable_free_overlap.empty());
+        CHECK(reopened.unexplained.empty());
+
+        REQUIRE_FALSE(ts.checkpoint().has_error());
+        auto reopened_round = walk_storage(ts, path, &resource);
+        REQUIRE(reopened_round.ok);
+        CHECK(reopened_round.unexplained.empty());
+        CHECK(file_size_or_zero(path) <= size_after_drop);
+    }
 
     cleanup_test_dir();
 }

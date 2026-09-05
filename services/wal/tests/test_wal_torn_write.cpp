@@ -34,14 +34,14 @@ namespace {
 } // namespace
 
 // 1. wal::id_t is uint64. Tests in test_torn_checkpoint.cpp rely on this; this is the
-//    type contract reflected in services/wal/base.hpp:9.
+//    type contract reflected in services/wal/base.hpp.
 TEST_CASE("wal::torn::id_t_is_uint64") {
     static_assert(std::is_same_v<wal::id_t, std::uint64_t>, "wal::id_t must be uint64_t");
     REQUIRE(sizeof(wal::id_t) == 8);
 }
 
 // 2. id_t{0} is the conventional "no-op" / "nothing yet" value used by truncate_before
-//    and by the IN_MEMORY-table early-out in checkpoint_all.
+//    and by the "no table checkpointed this round" early-out in checkpoint_all.
 TEST_CASE("wal::torn::id_zero_is_noop_value") {
     REQUIRE(wal::id_t{0} == 0);
     // dispatcher.cpp checks `min_prev_wal_id > 0` before calling truncate_before — id 0
@@ -74,7 +74,8 @@ TEST_CASE("wal::torn::table_storage_tracks_wal_id_chain") {
     REQUIRE(ts.prev_checkpoint_wal_id() == 42);
 
     // Crucial for truncate_before: prev (42) is what bounds safe WAL deletion, not 100.
-    // Truncating ≤ 100 would discard records [43..100] needed if recovery falls back to .prev.
+    // Truncating ≤ 100 would discard records [43..100] needed if a later round dies before
+    // its header commit and the two-slot root reopens the superseded root (floor 42).
     REQUIRE(ts.prev_checkpoint_wal_id() < ts.checkpoint_wal_id());
 
     cleanup();

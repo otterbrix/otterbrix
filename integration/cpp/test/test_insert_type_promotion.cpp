@@ -1,10 +1,23 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <cstdint>
 #include <limits>
 #include <string>
+
+namespace {
+    // column_index answers a result_wrapper_t, not a SIZE_MAX sentinel behind an assert: an
+    // embedder asking for a missing column gets a refusal. Unwrap loudly, as example/cpp/main.cpp
+    // does at column_of.
+    inline uint64_t column_of(const components::cursor::cursor_t_ptr& c, std::string_view name) {
+        auto idx = c->column_index(name);
+        REQUIRE_FALSE(idx.has_error());
+        return idx.value();
+    }
+} // namespace
+
 
 // promote_column rebuilds a whole column, cell by cell through logical_value_t, every time a
 // later row widens that column's type — the shape usually called quadratic promotion. A workload
@@ -33,9 +46,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_insert_type_promotion::growth_is_not_quadratic") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/growth");
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/growth"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
@@ -89,7 +101,7 @@ namespace {
         auto cursor = store_literal(dispatcher, table, std::to_string(expected));
         INFO("literal " << expected);
         REQUIRE(cursor->size() == 1);
-        const auto value = cursor->value(cursor->column_index("v"), 0);
+        const auto value = cursor->value(column_of(cursor, "v"), 0);
         CHECK(value.type().type() == components::types::logical_type::BIGINT);
         CHECK(value.value<int64_t>() == expected);
     }
@@ -105,7 +117,7 @@ namespace {
         auto cursor = store_literal(dispatcher, table, literal);
         INFO("literal " << literal);
         REQUIRE(cursor->size() == 1);
-        CHECK(cursor->value(cursor->column_index("v"), 0).type().type() == expected_type);
+        CHECK(cursor->value(column_of(cursor, "v"), 0).type().type() == expected_type);
 
         auto session = otterbrix::session_id_t();
         auto exact = dispatcher->execute_sql(session, "SELECT v FROM " + table + " WHERE v = " + literal + ";");
@@ -122,9 +134,8 @@ namespace {
 // boundaries either side of that seam are where a literal is most likely to be re-read at
 // the wrong width — as are the ones either side of the widest integer type.
 TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_their_value") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/literal_values");
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/literal_values"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
@@ -189,9 +200,8 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_t
 // A column has a range, and a value outside it is refused — never folded into range and
 // stored as some other number.
 TEST_CASE("integration::cpp::test_insert_type_promotion::literal_outside_the_column_range_is_rejected") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/column_range");
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/column_range"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

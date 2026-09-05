@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_unique_constraint.hpp>
@@ -27,7 +28,7 @@ using namespace test_helpers;
 //     distinct keys are accepted.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/unique_existing_row", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/unique_existing_row"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -58,7 +59,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
 // (B) PRIMARY KEY column: same enforcement via contype 'p'.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_row") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/primary_key_existing_row", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/primary_key_existing_row"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -90,7 +91,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_ro
 //     with EACH OTHER (no pre-existing row) is rejected by the within-batch dedup.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::within_batch_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/within_batch_duplicate", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/within_batch_duplicate"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -121,7 +122,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::within_batch_duplicate"
 //     the UPDATE write-set).
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/update_creates_duplicate", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/update_creates_duplicate"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -154,7 +155,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicat
 //     both against an existing defaulted row and within one batch.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/default_column_duplicate", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/default_column_duplicate"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -199,7 +200,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
 }
 
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_batch_duplicate") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/default_column_within_batch", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/default_column_within_batch"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -223,7 +224,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_b
 //     must reject NULL keys — explicit NULL and an omitted (no-DEFAULT) column.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_null") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/primary_key_rejects_null", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/primary_key_rejects_null"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -279,7 +280,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_nul
 //     chunks path is covered by bounded_dml_flush::error_after_mid_flush_reverts_all.)
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_accepted") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/multi_chunk_straddle", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/multi_chunk_straddle"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -335,15 +336,15 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
 
 // ---------------------------------------------------------------------------
 // An UPDATE that touches NO column of a UNIQUE / PRIMARY KEY group cannot make
-// that group collide: the stored key is unchanged. The existing-row layer used to
-// run anyway, and it costs one FULL pass over the target table per 1024 written
-// rows (manager_disk_t::scan_by_keys). On a 200k-row table an UPDATE of a non-key
-// column measured 519 ms with a PK against 57 ms without one — a 9x tax for a
-// check that cannot fail. The planner now drops such groups before the operator
-// is ever spliced in.
+// that group collide: the stored key is unchanged. Running the existing-row layer
+// anyway costs one FULL pass over the target table per 1024 written rows
+// (manager_disk_t::scan_by_keys) — on a 200k-row table an UPDATE of a non-key
+// column measured 519 ms with a PK against 57 ms without one, a 9x tax for a check
+// that cannot fail. The planner drops such groups before the operator is ever
+// spliced in.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_existing_row_scan") {
-    auto config = make_test_config("/tmp/test_unique_constraint_e2e/update_off_key", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/update_off_key"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -378,5 +379,157 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_ex
         auto cur = exec(dispatcher, "SELECT payload FROM TestDatabase.t WHERE id = 5;");
         REQUIRE(cur->is_success());
         CHECK(cur->value(0, 0).value<int64_t>() == 6);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (J) A DECLARED KEY IS NEVER A NO-OP — asserted on the TABLE CONTENTS, not on
+//     the statement status.
+//
+// A key column the write-set does not carry must be a REFUSAL, never a skipped
+// group: the rows are already written when this operator runs, so skipping leaves
+// the duplicate in the table and the statement reports success — a declared UNIQUE
+// / PRIMARY KEY enforcing nothing. Status alone cannot see that; row COUNT under
+// the key can.
+//
+// This is the sentinel for that condition. No SQL reaches that guard on this tree
+// (see the comment on it in operator_unique_constraint.cpp), so what this test pins
+// is the OTHER half of the contract — the enforced path stays enforced, measured on
+// contents — and its sensitivity to the void condition was proven by injection.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_unique_constraint_e2e::declared_key_never_admits_a_duplicate_row") {
+    auto config = make_test_config(
+        integration_fixture_path("test_unique_constraint_e2e/declared_key_never_admits_a_duplicate_row"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint, kind bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT uq_badges_code UNIQUE (code);")
+                ->is_success());
+    REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT pk_badges PRIMARY KEY (id, kind);")
+                ->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.badges (id, code, kind) VALUES (1, 7, 100);")->is_success());
+
+    INFO("single-column UNIQUE: the duplicate must be refused AND must not be in the table");
+    {
+        auto dup = exec(dispatcher, "INSERT INTO TestDatabase.badges (id, code, kind) VALUES (2, 7, 200);");
+        INFO("duplicate insert: " << (dup->is_error() ? dup->get_error().what : "accepted"));
+        CHECK(dup->is_error());
+        auto rows = exec(dispatcher, "SELECT id FROM TestDatabase.badges WHERE code = 7;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
+    }
+
+    INFO("composite PRIMARY KEY: same, on the pair");
+    {
+        auto dup = exec(dispatcher, "INSERT INTO TestDatabase.badges (id, code, kind) VALUES (1, 8, 100);");
+        INFO("duplicate insert: " << (dup->is_error() ? dup->get_error().what : "accepted"));
+        CHECK(dup->is_error());
+        auto rows = exec(dispatcher, "SELECT code FROM TestDatabase.badges WHERE id = 1 AND kind = 100;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
+    }
+
+    INFO("and a row that violates neither key still goes in");
+    {
+        auto ok = exec(dispatcher, "INSERT INTO TestDatabase.badges (id, code, kind) VALUES (3, 9, 300);");
+        INFO("distinct insert: " << (ok->is_error() ? ok->get_error().what : "accepted"));
+        CHECK_FALSE(ok->is_error());
+        auto rows = exec(dispatcher, "SELECT id FROM TestDatabase.badges WHERE code = 9;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (K) THE WRITE-SET EXPOSES EVERY KEY COLUMN, ON EVERY DML SHAPE THAT REACHES
+//     THE UNIQUE SINK.
+//
+// The write-side guard added with (J) refuses a group whose column has no
+// position in the written row. That refusal is only correct if no ordinary
+// statement can produce such a write-set — otherwise it would brick working SQL.
+// These are the shapes where the written row could plausibly have carried fewer
+// columns than the key names: an UPDATE that SETs only part of a composite key,
+// a key on a column that ALTER TABLE added after the table was created, an
+// INSERT fed from a SELECT rather than a VALUES list, a quoted mixed-case
+// identifier, and an UPDATE with a RETURNING projection over it.
+//
+// Each must behave EXACTLY as if nothing had changed: the duplicate refused and
+// absent from the table, never the guard's "has no position in the written row".
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_unique_constraint_e2e::every_dml_shape_exposes_the_key_columns") {
+    auto config = make_test_config(
+        integration_fixture_path("test_unique_constraint_e2e/every_dml_shape_exposes_the_key_columns"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+
+    INFO("composite key, UPDATE that SETs only its first column");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.pair (a bigint, b bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.pair ADD CONSTRAINT uq_pair UNIQUE (a, b);")->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.pair (a, b) VALUES (1, 1), (2, 1);")->is_success());
+        auto cur = exec(dispatcher, "UPDATE TestDatabase.pair SET a = 1 WHERE a = 2;");
+        INFO("update: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+        CHECK(cur->is_error());
+        auto rows = exec(dispatcher, "SELECT a FROM TestDatabase.pair WHERE a = 1 AND b = 1;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
+    }
+
+    INFO("key on a column ALTER TABLE added after creation");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.late (id bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.late ADD COLUMN code bigint;")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.late ADD CONSTRAINT uq_late UNIQUE (code);")->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.late (id, code) VALUES (1, 7);")->is_success());
+        auto cur = exec(dispatcher, "INSERT INTO TestDatabase.late (id, code) VALUES (2, 7);");
+        INFO("duplicate insert: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+        CHECK(cur->is_error());
+        auto rows = exec(dispatcher, "SELECT id FROM TestDatabase.late WHERE code = 7;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
+    }
+
+    INFO("INSERT ... SELECT: the write-set comes from a scan, not a VALUES list");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.src (id bigint, code bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.dst (id bigint, code bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.dst ADD CONSTRAINT uq_dst UNIQUE (code);")->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.src (id, code) VALUES (1, 7), (2, 7);")->is_success());
+        auto cur = exec(dispatcher, "INSERT INTO TestDatabase.dst SELECT id, code FROM TestDatabase.src;");
+        INFO("insert-select: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+        CHECK(cur->is_error());
+        auto rows = exec(dispatcher, "SELECT id FROM TestDatabase.dst WHERE code = 7;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() <= 1);
+    }
+
+    INFO("quoted mixed-case identifier: pg_attribute.attname and the write-set alias must agree");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.cased (\"Code\" bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.cased ADD CONSTRAINT uq_cased UNIQUE (\"Code\");")
+                    ->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.cased (\"Code\") VALUES (7);")->is_success());
+        auto cur = exec(dispatcher, "INSERT INTO TestDatabase.cased (\"Code\") VALUES (7);");
+        INFO("duplicate insert: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+        CHECK(cur->is_error());
+        auto rows = exec(dispatcher, "SELECT \"Code\" FROM TestDatabase.cased WHERE \"Code\" = 7;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
+    }
+
+    INFO("UPDATE with a RETURNING projection over the key column");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.ret (a bigint, b bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.ret ADD CONSTRAINT uq_ret UNIQUE (a);")->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.ret (a, b) VALUES (1, 1), (2, 1);")->is_success());
+        auto cur = exec(dispatcher, "UPDATE TestDatabase.ret SET a = 1 WHERE a = 2 RETURNING b;");
+        INFO("update-returning: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+        CHECK(cur->is_error());
+        auto rows = exec(dispatcher, "SELECT b FROM TestDatabase.ret WHERE a = 1;");
+        REQUIRE(rows->is_success());
+        CHECK(rows->size() == 1);
     }
 }

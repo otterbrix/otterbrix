@@ -27,10 +27,12 @@ namespace components::table {
         uint64_t lowest_active_start_time() const;
         bool has_active_transactions() const;
 
-        // Oldest snapshot_horizon among active transactions (published_horizon_
-        // when none are active). Commit-id value space — feeds the DROP-GC
-        // horizon broadcast whose sweep compares dropped_at_commit_id (also
-        // commit-id space after the dropped-committed remap) against it.
+        // Horizon broadcast to the DROP-GC / deferred-index-delete sweeps.
+        // Commit-id value space, so the agents' `dropped_at_commit_id < horizon`
+        // and `entry->commit_id <= horizon` sweeps compare like with like.
+        // Same value as compact_watermark() — both ask "what is visible to
+        // EVERY snapshot, present and future"; the two names are kept because
+        // they carry different consumer contracts.
         uint64_t lowest_active_snapshot_horizon() const;
 
         // Visible-to-all horizon for data_table_t::compact(): every commit_id at
@@ -50,6 +52,30 @@ namespace components::table {
         // the end of the commit pipeline (after WAL fsync + storage_publish_*),
         // so a fresh snapshot captures the txn as visible.
         void publish(uint64_t commit_id);
+
+        // publish() MINUS THE CAS — and the missing CAS is the whole of it.
+        //
+        // A commit pipeline that dies after commit() allocated the id but before the barrier
+        // leaves that id in in_flight_commits_ with nobody left to remove it: commit() has
+        // already erased the txn from active_, so find_transaction() answers nullptr and
+        // neither ROLLBACK nor the dispatcher's failure-release net can reach it. The id then
+        // floors visible_to_all_locked() at commit_id - 1 for the life of the process, which
+        // stops data_table_t::compact(), the DROP-GC tombstone sweep and the deferred
+        // index-delete sweep — all three read that one number and none of them sees a snapshot.
+        //
+        // WHY IT CANNOT PUBLISH ANYTHING. published_horizon_ is NOT advanced here, so no commit
+        // becomes visible by being forgotten. What makes the erase itself safe is an ordering
+        // rule enforced by operator_commit_transaction_t — no step that can fail may run after
+        // the first step that stamps the commit_id — so a discarded id is stamped on nothing:
+        // no row version, no pg_attribute column, no deferred index-delete entry, no WAL
+        // marker. There is nothing left for a reader to have to hide, which is why the id may
+        // leave the set outright instead of moving into a second "discarded" set that the floor
+        // would then have to honour anyway (that set gives back exactly what it took).
+        //
+        // Monotone in the safe direction, the property every horizon reader rests on: erasing a
+        // member of in_flight_commits_ only RAISES min(), never lowers it. Idempotent, and a
+        // no-op for an id that was never in flight.
+        void discard(uint64_t commit_id);
 
         // Capture an MVCC snapshot atomically. Caller supplies the resource for
         // the in_flight_snapshot vector so the result can be moved without dangling.
@@ -93,7 +119,34 @@ namespace components::table {
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     private:
+        // The ONE computation of "visible to all": the greatest commit_id that
+        // every live snapshot AND every future snapshot already sees. Requires
+        // lock_ to be held by the caller (it does not take it — lock_ is not
+        // recursive). Both public horizon readers are thin wrappers over this.
+        uint64_t visible_to_all_locked() const;
+
         std::pmr::memory_resource* resource_;
+        // NOT SEEDED FROM THE JOURNAL, UNLIKE THE COMMIT CLOCK ABOVE — the asymmetry is
+        // deliberate, not obvious, and has already cost one durability bug.
+        //
+        // A pending txn id is a WITHIN-PROCESS name: row_version_manager reads it only as
+        // "id >= TRANSACTION_ID_START ⇒ somebody's uncommitted write", never as an ordering, and
+        // no reopened row carries one (replay stamps transaction_data{0,0}; a loaded row group
+        // starts with null version_info). So restarting the counter at TRANSACTION_ID_START every
+        // process is sound IN MEMORY. restore_commit_clock exists because COMMIT ids are the
+        // opposite: they are stamped into pg_attribute and compared across restarts.
+        //
+        // The one place a pending txn id DOES cross a restart is the journal, where the same id is
+        // handed out again to a different transaction. A seeding entry point IS constructible —
+        // the max txn id over the replayed records, the way base_spaces already derives the
+        // commit-id frontier from the replayed COMMIT markers — but it does not exist, and it
+        // would live in the bootstrap, not here. What carries the burden today is the place the
+        // ids are actually compared: the replay filter pairs a physical record with a COMMIT
+        // marker at a STRICTLY GREATER wal id (services::wal::filter_committed_records,
+        // services/wal/wal.hpp), which recycling cannot forge because wal ids are re-derived from
+        // the segment files and keep growing. A seeding entry point added here must agree with
+        // that filter, and the filter stays needed regardless — it also fixes journals already on
+        // disk.
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;

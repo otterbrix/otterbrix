@@ -156,7 +156,7 @@ TEST_CASE("components::sql::sequence") {
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
         REQUIRE(node->type() == node_type::create_sequence_t);
-        // CREATE SEQUENCE no longer carries db name in its to_string (namespace resolution is sibling-OID).
+        // to_string carries no db name: namespace resolution is by sibling OID.
         REQUIRE(node->to_string() == "$create_sequence: my_seq");
     }
 
@@ -193,8 +193,12 @@ TEST_CASE("components::sql::view") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     SECTION("CREATE VIEW") {
-        transform::transformer transformer(&resource);
-        auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
+        // The statement text is passed in, as every production entry point does.
+        // Omitted, the transformer answers by INVENTING a body ("SELECT *") — and the
+        // stored body is re-parsed on every read of the view.
+        const char* sql = "CREATE VIEW db.my_view AS SELECT * FROM db.tbl";
+        transform::transformer transformer(&resource, sql);
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -202,6 +206,51 @@ TEST_CASE("components::sql::view") {
         auto node = result.sub_queries.back();
         REQUIRE(node->type() == node_type::create_view_t);
         REQUIRE(result.catalog_resolves.namespaces->entries().size() == 1);
+    }
+
+    SECTION("CREATE VIEW without the statement text is refused, not guessed") {
+        transform::transformer transformer(&resource);
+        auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
+        auto wrapped = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(wrapped.has_error());
+    }
+
+    SECTION("CREATE VIEW body is the text that was written, whatever the spacing") {
+        // A newline after AS, and `AS(SELECT ...)` with no space: both defeat an
+        // " AS " substring search, which then falls back to "SELECT *".
+        for (const char* sql : {"CREATE VIEW db.my_view AS\nSELECT id FROM db.tbl WHERE id > 10",
+                                "CREATE VIEW db.my_view AS(SELECT id FROM db.tbl WHERE id > 10)"}) {
+            transform::transformer transformer(&resource, sql);
+            auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+            auto result = ([](auto _w) {
+                REQUIRE_FALSE(_w.has_error());
+                return _w.value();
+            }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+            auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back());
+            INFO(sql);
+            REQUIRE(view_node->query_sql().find("SELECT id FROM db.tbl WHERE id > 10") != std::string::npos);
+        }
+    }
+
+    SECTION("CREATE VIEW keeps WITH CHECK OPTION out of the stored body") {
+        const char* sql = "CREATE VIEW db.my_view AS SELECT id FROM db.tbl WITH CHECK OPTION";
+        transform::transformer transformer(&resource, sql);
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back());
+        REQUIRE(view_node->query_sql() == "SELECT id FROM db.tbl");
+    }
+
+    SECTION("CREATE VIEW with a column alias list is refused") {
+        // The aliases rename the body's output columns and are carried nowhere, so
+        // the view would promise names its stored body does not produce.
+        const char* sql = "CREATE VIEW db.my_view (x) AS SELECT id FROM db.tbl";
+        transform::transformer transformer(&resource, sql);
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        REQUIRE(transformer.transform(pg_cell_to_node_cast(stmt)).finalize().has_error());
     }
 
     SECTION("CREATE VIEW with raw_sql extracts query") {
@@ -236,8 +285,8 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
-    // What the catalog stores for a table-level CHECK is the expression as written, taken out of
-    // the statement text — so each case has to transform its own statement, with that text.
+    // What the catalog stores for a CHECK is the expression as written, taken out of the
+    // statement text — so each case has to transform its own statement, with that text.
     auto stored_check = [&](const char* sql) -> core::result_wrapper_t<std::string> {
         auto stmt = linitial(raw_parser(&arena_resource, sql));
         transform::transformer local(&resource, sql);
@@ -269,6 +318,29 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(NOT (x > 0)))") == "NOT (x > 0)");
         CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(abs(x) > 0))") == "abs(x) > 0");
         CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x * -1 > 0))") == "x * -1 > 0");
+    }
+
+    // Written ON the column rather than as its own list element, the constraint reaches
+    // extract_column_constraints instead of extract_table_constraints. Both syntaxes feed
+    // ONE list on the create node, and gram.y stamps Constraint::location with the CHECK
+    // keyword for both, so the stored text must come out identical.
+    SECTION("a column-level CHECK is stored the same way") {
+        CHECK(stored("CREATE TABLE t (x INTEGER CHECK(x > 0))") == "x > 0");
+        CHECK(stored("CREATE TABLE t (x INTEGER CONSTRAINT ck CHECK(x > 0 AND x < 100))") == "x > 0 AND x < 100");
+    }
+
+    // BETWEEN is not a node kind of its own here — the grammar desugars it into an AND of
+    // two comparisons (gram.y, a_expr BETWEEN) — but the stored text is the SOURCE, so it
+    // comes back spelled the way the user wrote it, not the way the tree holds it.
+    SECTION("BETWEEN keeps its written spelling") {
+        CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x BETWEEN 1 AND 10))") == "x BETWEEN 1 AND 10");
+    }
+
+    // A ')' inside a string literal must not close the CHECK, and an operator inside one
+    // must not be read as punctuation: the slice steps over whole lexical regions.
+    SECTION("parens and operators inside a string literal are not punctuation") {
+        CHECK(stored("CREATE TABLE t (s TEXT, CHECK(s = 'a > b'))") == "s = 'a > b'");
+        CHECK(stored("CREATE TABLE t (s TEXT, CHECK(s <> ')'))") == "s <> ')'");
     }
 
     // Without the statement text there is nothing to read the expression out of.
@@ -368,5 +440,73 @@ TEST_CASE("components::sql::if_not_exists") {
         auto node = ddl_consumer(result.sub_queries.back());
         auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE_FALSE(cc->if_not_exists());
+    }
+}
+
+// A sequence bound is an int64, but the parse tree does not always keep it in the
+// integer slot. `NumericOnly` builds a T_Float for FCONST, and scan.l's
+// process_integer_literal sends EVERY literal outside int32 out as FCONST carrying
+// the original digits — so `MAXVALUE 9223372036854775807` arrives as a T_Float too.
+// intVal() without a tag check reads the `char*` half of the Value union AS A NUMBER,
+// so the bound persisted into the catalog is the bit pattern of a pointer, different
+// on every run.
+TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+    auto sequence_of = [&](const char* query) {
+        auto result = plan_of(query);
+        REQUIRE_FALSE(result.has_error());
+        auto node = ddl_consumer(result.value().sub_queries.back());
+        REQUIRE(node->type() == node_type::create_sequence_t);
+        return reinterpret_cast<node_create_sequence_ptr&>(node);
+    };
+
+    SECTION("a bound outside int32 is the value that was written, not a pointer") {
+        // Read through a bare intVal(): the bit pattern of the char* holding "5000000000".
+        auto seq = sequence_of("CREATE SEQUENCE db.big_seq START WITH 5000000000");
+        CHECK(seq->start() == 5000000000LL);
+    }
+
+    SECTION("the int64 ceiling round-trips exactly") {
+        auto seq = sequence_of("CREATE SEQUENCE db.max_seq MAXVALUE 9223372036854775807");
+        CHECK(seq->max_value() == std::numeric_limits<int64_t>::max());
+    }
+
+    SECTION("a negative bound outside int32 keeps its sign") {
+        auto seq = sequence_of("CREATE SEQUENCE db.neg_seq MINVALUE -5000000000 START WITH -4000000000");
+        CHECK(seq->min_value() == -5000000000LL);
+        CHECK(seq->start() == -4000000000LL);
+    }
+
+    SECTION("a fractional bound is refused, not rounded or read as a pointer") {
+        // PostgreSQL runs the FCONST text through int8in and rejects "1.5"; so do we.
+        auto result = plan_of("CREATE SEQUENCE db.frac_seq START WITH 1.5");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("1.5") != std::string::npos);
+        CHECK(std::string{result.error().what}.find("start") != std::string::npos);
+    }
+
+    SECTION("every bound option is checked, not just START") {
+        REQUIRE(plan_of("CREATE SEQUENCE db.s1 INCREMENT BY 2.5").has_error());
+        REQUIRE(plan_of("CREATE SEQUENCE db.s2 MINVALUE 0.5").has_error());
+        REQUIRE(plan_of("CREATE SEQUENCE db.s3 MAXVALUE 1e6").has_error());
+    }
+
+    SECTION("a bound wider than int64 is refused rather than truncated") {
+        REQUIRE(plan_of("CREATE SEQUENCE db.huge_seq MAXVALUE 99999999999999999999").has_error());
+    }
+
+    SECTION("plain int32 bounds are unchanged") {
+        auto seq = sequence_of("CREATE SEQUENCE db.small_seq START 10 INCREMENT 2 MINVALUE 5 MAXVALUE 100");
+        CHECK(seq->start() == 10);
+        CHECK(seq->increment() == 2);
+        CHECK(seq->min_value() == 5);
+        CHECK(seq->max_value() == 100);
     }
 }

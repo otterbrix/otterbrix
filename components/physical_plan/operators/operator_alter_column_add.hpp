@@ -9,7 +9,7 @@ namespace components::operators {
     // ALTER TABLE ... ADD COLUMN — single clause.
     //
     // Steps (in await_async_and_resume):
-    //   1. read_rows_by_key on pg_attribute (attrelid=table_oid) to compute next attnum.
+    //   1. read_chunks_by_key on pg_attribute (attrelid=table_oid) to compute next attnum.
     //   2. allocate_oids_batch(1) for the new attoid.
     //   3. build_pg_attribute_row + append_pg_catalog_row.
     // resolve_table reads columns from pg_attribute on every call.

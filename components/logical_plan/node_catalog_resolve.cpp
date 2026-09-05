@@ -8,7 +8,7 @@ namespace components::logical_plan {
 
     bool resolve_entry_t::operator==(const resolve_entry_t& other) const noexcept {
         return dbname == other.dbname && relname == other.relname && type_name == other.type_name &&
-               direction == other.direction && target == other.target;
+               direction == other.direction && target == other.target && names_only == other.names_only;
     }
 
     node_catalog_resolve_t::node_catalog_resolve_t(std::pmr::memory_resource* resource, resolve_kind kind)
@@ -184,7 +184,24 @@ namespace components::logical_plan {
             return nullptr;
         }
         for (const auto& entry : constraints->entries()) {
-            if (entry.direction != direction || entry.target >= tables->entries().size()) {
+            if (entry.direction != direction || entry.names_only || entry.target >= tables->entries().size()) {
+                continue;
+            }
+            const auto& target_md = tables->entries()[entry.target].table_md;
+            if (target_md.has_value() && target_md->table_oid == table_oid) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    const resolve_entry_t*
+    catalog_resolves_t::constraint_names_for(components::catalog::oid_t table_oid) const noexcept {
+        if (!constraints || !tables || table_oid == components::catalog::INVALID_OID) {
+            return nullptr;
+        }
+        for (const auto& entry : constraints->entries()) {
+            if (entry.direction != resolve_direction::outgoing || entry.target >= tables->entries().size()) {
                 continue;
             }
             const auto& target_md = tables->entries()[entry.target].table_md;

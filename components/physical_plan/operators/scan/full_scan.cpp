@@ -118,11 +118,20 @@ namespace components::operators {
             }
 
             // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
-            guard_types_ = co_await std::move(tf);
+            // A refusal here is a schema read that never reached a storage. Answering it as
+            // an empty type list instead would build the filter against a table with no
+            // columns and then shape the 0-row guard chunk with it.
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_types,
+                                                        ctx->session,
+                                                        table_oid_);
+            auto types_result = co_await std::move(tf);
+            if (types_result.has_error()) {
+                set_error(types_result.error());
+                mark_failed();
+                co_return types_result.convert_error<vector::data_chunk_t>();
+            }
+            guard_types_ = std::move(types_result.value());
 
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {
@@ -141,15 +150,15 @@ namespace components::operators {
             // so every scan receives offset()==0 and head_cap() == limit here.
             const int64_t scan_limit = limit_.head_cap();
 
-            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                             ctx->session,
-                                             table_oid_,
-                                             cursor_id_, // 0 == OPEN
-                                             std::move(filter),
-                                             scan_limit,
-                                             projected_cols_,
-                                             ctx->txn);
+            auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                        ctx->session,
+                                                        table_oid_,
+                                                        cursor_id_, // 0 == OPEN
+                                                        std::move(filter),
+                                                        scan_limit,
+                                                        projected_cols_,
+                                                        ctx->txn);
             auto fetch_result = co_await std::move(sf);
             if (fetch_result.has_error()) {
                 set_error(fetch_result.error());
@@ -162,15 +171,15 @@ namespace components::operators {
         }
 
         // ADVANCE: read one more batch from the open cursor (filter dropped — the agent owns it).
-        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                         ctx->session,
-                                         table_oid_,
-                                         cursor_id_,
-                                         std::unique_ptr<table::table_filter_t>(nullptr),
-                                         int64_t{-1},
-                                         projected_cols_,
-                                         ctx->txn);
+        auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    cursor_id_,
+                                                    std::unique_ptr<table::table_filter_t>(nullptr),
+                                                    int64_t{-1},
+                                                    projected_cols_,
+                                                    ctx->txn);
         auto fetch_result = co_await std::move(sf);
         if (fetch_result.has_error()) {
             set_error(fetch_result.error());
@@ -179,6 +188,26 @@ namespace components::operators {
         }
         auto reply = std::move(fetch_result.value());
         co_return co_await emit_or_skip(ctx, std::move(reply.batch));
+    }
+
+    actor_zeta::unique_future<void> full_scan::release_cursor(pipeline::context_t* ctx) {
+        // Nothing to release: never opened, already drained (the agent erased its own entry),
+        // or already released.
+        if (cursor_id_ == 0 || drained_) {
+            co_return;
+        }
+        const uint64_t id = cursor_id_;
+        // Clear FIRST so a re-entry cannot double-send, and so the operator cannot be left
+        // pointing at a cursor the agent has dropped.
+        cursor_id_ = 0;
+        drained_ = true;
+        auto [_s, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_close_cursor,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    id);
+        co_await std::move(cf);
+        co_return;
     }
 
     // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit

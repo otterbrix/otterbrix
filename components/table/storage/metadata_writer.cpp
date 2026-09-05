@@ -60,6 +60,6 @@ namespace components::table::storage {
         }
     }
 
-    void metadata_writer_t::flush() { manager_.flush(); }
+    core::result_wrapper_t<bool> metadata_writer_t::flush() { return manager_.flush(); }
 
 } // namespace components::table::storage

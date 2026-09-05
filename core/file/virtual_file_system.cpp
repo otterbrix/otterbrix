@@ -95,7 +95,7 @@ namespace core::filesystem {
         return write(vfs.default_file_system(), handle, buffer, nr_bytes, location);
     }
 
-    int64_t write(virtual_file_system_t& vfs, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
+    write_result_t write(virtual_file_system_t& vfs, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
         return write(vfs.default_file_system(), handle, buffer, nr_bytes);
     }
 
@@ -135,7 +135,7 @@ namespace core::filesystem {
 
     bool list_files(virtual_file_system_t& vfs,
                     const path_t& directory,
-                    const std::function<void(const path_t&, bool)>& callback) {
+                    const list_files_callback_t& callback) {
         return list_files(vfs.find_file_system(directory), directory, callback);
     }
 

@@ -109,7 +109,7 @@ namespace components::operators {
                 } else {
                     std::pmr::vector<std::uint64_t> ns_keys(resource_);
                     ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
-                    auto [_ns, nsf] = actor_zeta::send(
+                    auto [_ns, nsf] = actor_zeta::otterbrix::send(
                         ctx->disk_address,
                         &services::disk::manager_disk_t::read_chunks_by_key,
                         exec_ctx,
@@ -153,16 +153,16 @@ namespace components::operators {
                 }
                 return components::operators::make_key_chunk(resource_, std::string_view{entry.relname});
             }();
-            auto [_lookup, lookup_f] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::read_chunks_by_key,
-                                                        exec_ctx,
-                                                        kPgClass,
-                                                        std::move(key_cols),
-                                                        std::move(keys_chunk),
-                                                        // Only the oid is read from this lookup
-                                                        // (see the get_value below); the key
-                                                        // columns are added by the agent.
-                                                        pg_class_oid_only(resource_));
+            auto [_lookup, lookup_f] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                                   exec_ctx,
+                                                                   kPgClass,
+                                                                   std::move(key_cols),
+                                                                   std::move(keys_chunk),
+                                                                   // Only the oid is read from this lookup
+                                                                   // (see the get_value below); the key
+                                                                   // columns are added by the agent.
+                                                                   pg_class_oid_only(resource_));
             auto lookup_batches_r = co_await std::move(lookup_f);
             if (lookup_batches_r.has_error()) {
                 set_error(lookup_batches_r.error());
@@ -184,17 +184,18 @@ namespace components::operators {
             {
                 std::pmr::vector<std::uint64_t> pc_keys(resource_);
                 pc_keys.emplace_back(catalog::pg_class_col::oid);
-                auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgClass,
-                                                   std::move(pc_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   // Exactly the two columns read below; the key
-                                                   // column is added by the agent. Non-projected
-                                                   // columns stay ordinal-stable placeholders,
-                                                   // which is why the reads still address 2 and 3.
-                                                   pg_class_namespace_and_kind(resource_));
+                auto [_pc, pcf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgClass,
+                                                std::move(pc_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                // Exactly the two columns read below; the key
+                                                // column is added by the agent. Non-projected
+                                                // columns stay ordinal-stable placeholders,
+                                                // which is why the reads still address 2 and 3.
+                                                pg_class_namespace_and_kind(resource_));
                 auto pc_batches_r = co_await std::move(pcf);
                 if (pc_batches_r.has_error()) {
                     set_error(pc_batches_r.error());
@@ -230,14 +231,15 @@ namespace components::operators {
             if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
                 std::pmr::vector<std::uint64_t> pr_keys(resource_);
                 pr_keys.emplace_back(catalog::pg_rewrite_col::ev_class);
-                auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgRewrite,
-                                                   std::move(pr_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   // Only ev_action is read below.
-                                                   pg_rewrite_action_only(resource_));
+                auto [_pr, prf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgRewrite,
+                                                std::move(pr_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                // Only ev_action is read below.
+                                                pg_rewrite_action_only(resource_));
                 auto pr_batches_r = co_await std::move(prf);
                 if (pr_batches_r.has_error()) {
                     set_error(pr_batches_r.error());
@@ -257,13 +259,14 @@ namespace components::operators {
                 // 2=attname, 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
                 std::pmr::vector<std::uint64_t> cc_keys(resource_);
                 cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
-                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgComputedColumn,
-                                                   std::move(cc_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto [_cc, ccf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgComputedColumn,
+                                                std::move(cc_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
                 auto cc_batches_r = co_await std::move(ccf);
                 if (cc_batches_r.has_error()) {
                     set_error(cc_batches_r.error());
@@ -286,8 +289,24 @@ namespace components::operators {
                 std::unordered_map<std::string, cc_candidate_t> latest_any;
 
                 for (auto& chunk : cc_batches) {
-                    if (chunk.column_count() < 7) {
-                        continue;
+                    // A CHUNK NARROWER THAN pg_computed_column'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The
+                    // read above was issued with an empty projection ("all columns"), so the reply's width is the
+                    // width of the pg_computed_column storage itself; every row this build writes has all 7
+                    // columns (build_pg_computed_column_row). Skipping a narrow chunk drops EVERY variant it
+                    // carries — the fields simply vanish from the resolved schema, silently. The threshold is the
+                    // largest ordinal read below: attrefcount (6).
+                    if (chunk.column_count() <= catalog::pg_computed_column_col::attrefcount) {
+                        std::string msg = "table resolution: pg_computed_column answered with ";
+                        msg += std::to_string(chunk.column_count());
+                        msg += " column(s), fewer than the ";
+                        msg += std::to_string(
+                            static_cast<std::size_t>(catalog::pg_computed_column_col::attrefcount) + 1);
+                        msg += " this build reads — the columns of table \"";
+                        msg += entry.relname;
+                        msg += "\" cannot be decoded";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         if (chunk.is_null(2, i) || chunk.is_null(5, i)) {
@@ -336,58 +355,136 @@ namespace components::operators {
                 // scan_batched output may differ from attoid ordering. Probe storage
                 // for its current types() list (aliases set at append time) and look
                 // up each row's attname linearly — N is small (column count).
-                auto [_st, stf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_types,
-                                                   ctx->session,
-                                                   table_oid);
-                auto storage_types = co_await std::move(stf);
-                // Map each resolved variant to its physical storage column by
-                // (name, type): with multi-type fields several storage columns share
-                // a name, so the type disambiguates. `claimed` prevents two variants
-                // from binding to the same physical column. Falls back to the first
-                // unclaimed same-name column when types don't compare exactly.
+                auto [_st, stf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_types,
+                                                              ctx->session,
+                                                              table_oid);
+                auto storage_types_r = co_await std::move(stf);
+                if (storage_types_r.has_error()) {
+                    // Every column below is bound to a physical slot BY NAME against this
+                    // list. A refused read arriving as an EMPTY list would bind nothing and
+                    // leave every chunk_position at -1 — a resolved schema that describes no
+                    // storage at all, published as this table's shape.
+                    set_error(storage_types_r.error());
+                    co_return;
+                }
+                auto& storage_types = storage_types_r.value();
+                // Map each resolved variant to its physical storage column by (name, type): with multi-type
+                // fields several storage columns share a name, so the type disambiguates. `claimed` prevents two
+                // variants from binding to the same physical column.
+                //
+                // NO first-unclaimed GUESS UNDER AMBIGUITY — and the type comparison is a ladder, because "the
+                // type" has two precisions. The variant key in pg_computed_column is (attname, atttypid,
+                // atttypspec): two variants of one name may share the OUTER type enum and differ only in the
+                // extension (a DECIMAL's width/scale, a STRUCT's shape), and attoid order does not have to match
+                // storage column order — so an enum-only comparison could bind variant A to variant B's bytes in
+                // silence. The ladder, per variant:
+                //   1. exactly ONE unclaimed column matches the FULL type (extension included) — bind it.
+                //   2. several match the full type — indistinguishable duplicates (storage keeps tombstoned
+                //      columns until VACUUM); refuse.
+                //   3. none match fully but exactly ONE shares the outer enum — the two sides merely normalised
+                //      the extension differently (measured: a NUMERIC-typed field registers the encoded spec
+                //      while the storage column materialises under its own reading of the same value); bind it.
+                //   4. several share the outer enum and none the full type — the extension was the only thing
+                //      that could say which one is meant, and it said none; taking the FIRST by storage order
+                //      would reinterpret the stored bytes in silence on every read through that binding. Refuse.
+                //   5. no type overlap at all: a SOLE name candidate is bound (it was written by the same
+                //      statement that wrote the catalog row — refusing it makes the column unreadable one
+                //      statement after a successful INSERT); several name candidates refuse; none keeps
+                //      chunk_position = -1, the legal not-yet-materialised window the readers answer NULL for.
                 std::vector<bool> claimed(storage_types.size(), false);
                 for (auto& row : rows) {
-                    const types::complex_logical_type row_type =
-                        row.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid))
-                                               : catalog::decode_type_spec(resource_, row.atttypspec);
-                    std::int32_t name_only = -1;
+                    types::complex_logical_type row_type{types::logical_type::UNKNOWN};
+                    if (row.atttypspec.empty()) {
+                        row_type = types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid));
+                    } else {
+                        auto row_type_r = catalog::decode_type_spec(resource_, row.atttypspec);
+                        if (row_type_r.has_error()) {
+                            // An unreadable atttypspec is catalog corruption; binding the
+                            // column by guesswork would reinterpret stored bytes silently.
+                            set_error(row_type_r.error());
+                            co_return;
+                        }
+                        row_type = std::move(row_type_r.value());
+                    }
+                    std::int32_t sole_name_candidate = -1;
+                    std::size_t name_candidates = 0;
+                    std::int32_t exact_candidate = -1;
+                    std::size_t exact_matches = 0;
+                    std::int32_t enum_candidate = -1;
+                    std::size_t enum_matches = 0;
                     for (std::size_t i = 0; i < storage_types.size(); ++i) {
                         if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != row.attname) {
                             continue;
                         }
-                        if (name_only < 0) {
-                            name_only = static_cast<std::int32_t>(i);
+                        ++name_candidates;
+                        if (name_candidates == 1) {
+                            sole_name_candidate = static_cast<std::int32_t>(i);
                         }
-                        if (storage_types[i].type() == row_type.type()) {
-                            row.chunk_position = static_cast<std::int32_t>(i);
-                            claimed[i] = true;
-                            break;
+                        if (storage_types[i] == row_type) {
+                            ++exact_matches;
+                            if (exact_matches == 1) {
+                                exact_candidate = static_cast<std::int32_t>(i);
+                            }
+                        } else if (storage_types[i].type() == row_type.type()) {
+                            ++enum_matches;
+                            if (enum_matches == 1) {
+                                enum_candidate = static_cast<std::int32_t>(i);
+                            }
                         }
                     }
-                    if (row.chunk_position < 0 && name_only >= 0) {
-                        row.chunk_position = name_only;
-                        claimed[static_cast<std::size_t>(name_only)] = true;
+                    const auto refuse_ambiguous = [&](std::size_t candidates, const char* how) {
+                        std::string msg = "table resolution: column \"";
+                        msg += row.attname;
+                        msg += "\" of computed table \"";
+                        msg += entry.relname;
+                        msg += "\" is typed ";
+                        msg += row_type.type_name();
+                        msg += " in pg_computed_column, and ";
+                        msg += std::to_string(candidates);
+                        msg += " storage columns of that name ";
+                        msg += how;
+                        msg += " — picking one by storage order would misread its data";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                    };
+                    if (exact_matches == 1) {
+                        row.chunk_position = exact_candidate;
+                        claimed[static_cast<std::size_t>(exact_candidate)] = true;
+                    } else if (exact_matches > 1) {
+                        refuse_ambiguous(exact_matches, "hold that exact type");
+                        co_return;
+                    } else if (enum_matches == 1) {
+                        row.chunk_position = enum_candidate;
+                        claimed[static_cast<std::size_t>(enum_candidate)] = true;
+                    } else if (enum_matches > 1) {
+                        refuse_ambiguous(enum_matches, "share its outer type while none matches its exact shape");
+                        co_return;
+                    } else if (name_candidates == 1) {
+                        row.chunk_position = sole_name_candidate;
+                        claimed[static_cast<std::size_t>(sole_name_candidate)] = true;
+                    } else if (name_candidates > 1) {
+                        refuse_ambiguous(name_candidates, "hold neither that type nor its outer type");
+                        co_return;
                     }
                 }
             } else if (relkind != catalog::relkind::view) {
-                // relkind='r', 'm' (matview), and other static-schema kinds: scan
-                // pg_attribute. Layout: [0=attoid, 1=attrelid, 2=attname, 3=atttypid,
-                // 4=attnum, 5=attnotnull, 6=atthasdefault, 7=attisdropped,
-                // 8=atttypspec, 9=attdefspec].
+                // relkind='r', 'm' (matview), and other static-schema kinds: scan pg_attribute. Layout:
+                // [0=attoid, 1=attrelid, 2=attname, 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
+                // 7=attisdropped, 8=atttypspec, 9=attdefspec].
                 //
-                // A view has no pg_attribute (its schema is derived from the body SQL
-                // on expansion), so `rows` stays empty there; view_sql carries the
-                // body for the view-rewrite step.
+                // A view has no pg_attribute (its schema is derived from the body SQL on expansion), so `rows`
+                // stays empty there; view_sql carries the body for the view-rewrite step.
                 std::pmr::vector<std::uint64_t> pa_keys(resource_);
                 pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
-                auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgAttribute,
-                                                   std::move(pa_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto [_pa, paf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgAttribute,
+                                                std::move(pa_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
                 auto pa_batches_r = co_await std::move(paf);
                 if (pa_batches_r.has_error()) {
                     set_error(pa_batches_r.error());
@@ -396,21 +493,42 @@ namespace components::operators {
                 auto& pa_batches = pa_batches_r.value();
 
                 for (auto& chunk : pa_batches) {
-                    if (chunk.column_count() < 8) {
-                        continue;
+                    // A CHUNK NARROWER THAN pg_attribute'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The read
+                    // above was issued with an empty projection ("all columns"), so the reply's width is the width
+                    // of the pg_attribute storage itself; every row this build writes has all 12 columns
+                    // (build_pg_attribute_row). Tolerating a narrow chunk does worse than dropping rows: the reads
+                    // below stay inside the chunk, but the two MVCC visibility gates are SKIPPED — a column added
+                    // after this snapshot, or dropped before it, resolves as visible, silently. The threshold is
+                    // the largest ordinal read below: dropped_at_commit_id (11).
+                    if (chunk.column_count() <= catalog::pg_attribute_col::dropped_at_commit_id) {
+                        std::string msg = "table resolution: pg_attribute answered with ";
+                        msg += std::to_string(chunk.column_count());
+                        msg += " column(s), fewer than the ";
+                        msg +=
+                            std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::dropped_at_commit_id) +
+                                           1);
+                        msg += " this build reads — the columns of table \"";
+                        msg += entry.relname;
+                        msg += "\" cannot be decoded";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         // Drop tombstones (attisdropped=true).
                         if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i)) {
                             continue;
                         }
-                        if (chunk.column_count() > 10 && !chunk.is_null(10, i)) {
+                        // MVCC visibility gates — unconditional, the width being guaranteed
+                        // above; only a NULL cell (a pre-backfill row, whose insert_id
+                        // already filtered it correctly) is passed through.
+                        if (!chunk.is_null(10, i)) {
                             auto added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(10, i));
                             if (added_at > snapshot_start_time) {
                                 continue; // column added after our snapshot — invisible
                             }
                         }
-                        if (chunk.column_count() > 11 && !chunk.is_null(11, i)) {
+                        if (!chunk.is_null(11, i)) {
                             auto dropped_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(11, i));
                             if (dropped_at != 0 && dropped_at <= snapshot_start_time) {
                                 continue; // column dropped before our snapshot
@@ -432,10 +550,10 @@ namespace components::operators {
                         row.chunk_position = row.attnum > 0 ? row.attnum - 1 : -1;
                         row.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
                         row.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
-                        if (chunk.column_count() > 8 && !chunk.is_null(8, i)) {
+                        if (!chunk.is_null(8, i)) {
                             row.atttypspec.assign(chunk.get_value<std::string_view>(8, i));
                         }
-                        if (chunk.column_count() > 9 && !chunk.is_null(9, i)) {
+                        if (!chunk.is_null(9, i)) {
                             row.attdefspec.assign(chunk.get_value<std::string_view>(9, i));
                         }
                         rows.push_back(std::move(row));
@@ -469,7 +587,12 @@ namespace components::operators {
                 cm.attdefspec = row.attdefspec;
                 cm.atttypspec = row.atttypspec;
                 if (!row.atttypspec.empty()) {
-                    cm.type = catalog::decode_type_spec(resource_, row.atttypspec);
+                    auto cm_type_r = catalog::decode_type_spec(resource_, row.atttypspec);
+                    if (cm_type_r.has_error()) {
+                        set_error(cm_type_r.error());
+                        co_return;
+                    }
+                    cm.type = std::move(cm_type_r.value());
                 } else if (row.atttypid != catalog::INVALID_OID) {
                     cm.type = types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid));
                 }

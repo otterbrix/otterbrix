@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -11,9 +12,8 @@
 // (INTEGER, BOOLEAN) and poisons the column vector, aborting in set_value.
 #if 0
 TEST_CASE("integration::cpp::arithmetic_type_guards::mixed_bool_int_insert_survives") {
-    auto config = test_create_config("/tmp/test_arithmetic_type_guards/mixed_insert");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/mixed_insert"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -69,9 +69,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::arithmetic_type_guards::where_arithmetic_rejects_non_numeric") {
-    auto config = test_create_config("/tmp/test_arithmetic_type_guards/where_guards");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/where_guards"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -106,9 +105,8 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_arithmetic_rejects_no
 }
 
 TEST_CASE("integration::cpp::arithmetic_type_guards::where_null_3vl_preserved") {
-    auto config = test_create_config("/tmp/test_arithmetic_type_guards/where_3vl");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/where_3vl"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -146,9 +144,8 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_null_3vl_preserved") 
 }
 
 TEST_CASE("integration::cpp::arithmetic_type_guards::update_rejects_non_numeric_arithmetic") {
-    auto config = test_create_config("/tmp/test_arithmetic_type_guards/update_guard");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/update_guard"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

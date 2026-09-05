@@ -512,10 +512,16 @@ namespace components::casts {
                                                      right_decimal->width() - right_decimal->scale());
         uint32_t width = integer_digits + scale;
         if (width <= max_decimal_width) {
-            return common_via(
-                left,
-                right,
-                types::complex_logical_type::create_decimal(static_cast<uint8_t>(width), static_cast<uint8_t>(scale)));
+            // width = integer_digits + scale >= scale >= 1 whenever both operands are
+            // in-window decimals, so the deduced pair is in-window too; a refusal here
+            // would mean an operand that create_decimal could never have built.
+            auto deduced = types::complex_logical_type::create_decimal(resource_,
+                                                                       static_cast<uint8_t>(width),
+                                                                       static_cast<uint8_t>(scale));
+            if (deduced.has_error()) {
+                return std::nullopt;
+            }
+            return common_via(left, right, std::move(deduced.value()));
         }
         return common_via(left, right, types::complex_logical_type{types::logical_type::DOUBLE});
     }

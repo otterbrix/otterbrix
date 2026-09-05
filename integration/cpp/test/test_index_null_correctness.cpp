@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <sstream>
 #include <string>
@@ -12,7 +13,9 @@
 //               falling into `default: throw`). The throw escapes an actor coroutine whose
 //               unhandled_exception() is empty under NDEBUG, so the insert loop dies mid-batch and
 //               the caller is told it succeeded. Every row after the NULL is missing from the index.
-//   * INVENT  — if the NULL is the FIRST key, single_field_index_t latches stored_type_ = NA, the
+//   * INVENT  — if the NULL is the FIRST key, the ordered in-memory index of the day latched
+//               stored_type_ = NA (that class no longer exists; the mode is recorded because it is
+//               what the invariant below was written against), the
 //               cast becomes a no-op, and the b-tree fills with mixed NA/typed keys. operator< then
 //               switches on the left operand's type and returns false for NA, so NA compares
 //               "equivalent" to every value while the values are ordered among themselves — not a
@@ -85,7 +88,7 @@ namespace {
 // --- A: index created BEFORE the rows; NULL position and batching vary -------------------
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_middle_separate_inserts") {
-    auto config = test_create_config("/tmp/test_idx_null/a1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/a1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -102,7 +105,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_middle_separate_inserts"
 }
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_middle_one_batch") {
-    auto config = test_create_config("/tmp/test_idx_null/a2");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/a2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -118,7 +121,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_middle_one_batch") {
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_is_first_key") {
     // The INVENT mode: a leading NULL latches stored_type_ = NA and poisons the ordering.
-    auto config = test_create_config("/tmp/test_idx_null/a3");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/a3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -133,7 +136,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_is_first_key") {
 }
 
 TEST_CASE("integration::cpp::idx_null::index_first_null_last") {
-    auto config = test_create_config("/tmp/test_idx_null/a4");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/a4"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -151,7 +154,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_last") {
 
 TEST_CASE("integration::cpp::idx_null::backfill_null_middle") {
     // The originally reported bug.
-    auto config = test_create_config("/tmp/test_idx_null/b2");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/b2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -166,7 +169,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_null_middle") {
 }
 
 TEST_CASE("integration::cpp::idx_null::backfill_null_first") {
-    auto config = test_create_config("/tmp/test_idx_null/b3");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/b3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -181,7 +184,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_null_first") {
 }
 
 TEST_CASE("integration::cpp::idx_null::backfill_separate_inserts_null_middle") {
-    auto config = test_create_config("/tmp/test_idx_null/b1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/b1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -201,7 +204,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_separate_inserts_null_middle") {
 
 TEST_CASE("integration::cpp::idx_null::all_rows_null") {
     // The sharpest form of INVENT: with every key NULL, `WHERE x = 0` returned every row.
-    auto config = test_create_config("/tmp/test_idx_null/d2");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/d2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -220,7 +223,7 @@ TEST_CASE("integration::cpp::idx_null::all_rows_null") {
 }
 
 TEST_CASE("integration::cpp::idx_null::null_only_then_values") {
-    auto config = test_create_config("/tmp/test_idx_null/d3");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/d3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -241,7 +244,7 @@ TEST_CASE("integration::cpp::idx_null::null_only_then_values") {
 
 TEST_CASE("integration::cpp::idx_null::no_nulls_baseline") {
     // Sanity: an index over a NULL-free column must keep working exactly as before.
-    auto config = test_create_config("/tmp/test_idx_null/d1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/d1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -262,7 +265,7 @@ TEST_CASE("integration::cpp::idx_null::no_nulls_baseline") {
 // --- D: index maintenance under UPDATE / DELETE -----------------------------------------
 
 TEST_CASE("integration::cpp::idx_null::update_null_to_value_adds_index_entry") {
-    auto config = test_create_config("/tmp/test_idx_null/e1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/e1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -282,7 +285,7 @@ TEST_CASE("integration::cpp::idx_null::update_null_to_value_adds_index_entry") {
 }
 
 TEST_CASE("integration::cpp::idx_null::update_value_to_null_removes_index_entry") {
-    auto config = test_create_config("/tmp/test_idx_null/e2");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/e2"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -301,7 +304,7 @@ TEST_CASE("integration::cpp::idx_null::update_value_to_null_removes_index_entry"
 }
 
 TEST_CASE("integration::cpp::idx_null::delete_null_and_value_rows") {
-    auto config = test_create_config("/tmp/test_idx_null/e3");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/e3"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -330,7 +333,7 @@ TEST_CASE("integration::cpp::idx_null::delete_null_and_value_rows") {
 
 TEST_CASE("integration::cpp::idx_null::text_column_with_null") {
     // The CRASH mode: comparing a typed string against an NA dereferenced a null string pointer.
-    auto config = test_create_config("/tmp/test_idx_null/f1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/f1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -353,7 +356,7 @@ TEST_CASE("integration::cpp::idx_null::null_constant_predicates") {
     // Regression guard for the ordering change: a NULL *constant* makes every comparison UNKNOWN,
     // so all of these must return 0 rows — with and without an index. If the zonemap or the
     // per-row compare ever starts treating a NULL constant as an ordinary value, this catches it.
-    auto config = test_create_config("/tmp/test_idx_null/g1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/g1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -377,7 +380,7 @@ TEST_CASE("integration::cpp::idx_null::null_constant_predicates") {
 TEST_CASE("integration::cpp::idx_null::sibling_index_survives_null_column") {
     // insert_row loops over every index of the table in one coroutine, so a throw on the NULL
     // column's index used to kill the sibling index's entries for the same batch too.
-    auto config = test_create_config("/tmp/test_idx_null/h1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/h1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -399,7 +402,7 @@ TEST_CASE("integration::cpp::idx_null::sibling_index_survives_null_column") {
 // --- H: a batch larger than one vector (1024 rows) ---------------------------------------
 
 TEST_CASE("integration::cpp::idx_null::large_batch_with_scattered_nulls") {
-    auto config = test_create_config("/tmp/test_idx_null/i1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/i1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -442,7 +445,7 @@ TEST_CASE("integration::cpp::idx_null::large_batch_with_scattered_nulls") {
 // --- I: persistence — the index must be rebuilt correctly across a restart ---------------
 
 TEST_CASE("integration::cpp::idx_null::survives_restart") {
-    auto config = test_create_config("/tmp/test_idx_null/j1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/j1"));
     test_clear_directory(config);
     {
         test_spaces space(config);
@@ -469,7 +472,7 @@ TEST_CASE("integration::cpp::idx_null::survives_restart") {
 // --- J: an absent jsonb key on a computing table -----------------------------------------
 
 TEST_CASE("integration::cpp::idx_null::computing_table_absent_key") {
-    auto config = test_create_config("/tmp/test_idx_null/k1");
+    auto config = test_create_config(integration_fixture_path("test_idx_null/k1"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();

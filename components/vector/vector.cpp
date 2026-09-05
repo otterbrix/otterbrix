@@ -1,6 +1,7 @@
 #include "vector.hpp"
 
 #include <components/types/logical_value.hpp>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector/vector_operations.hpp>
@@ -72,10 +73,10 @@ namespace components::vector {
         , type_(std::move(type))
         , data_(nullptr)
         // A mask is only built when it will be kept: with create_data the body calls
-        // validity_.reset() a few lines down, so building one here allocated and filled a buffer
-        // that is thrown away — on every vector the query path makes. reset() still runs and still
-        // establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY); only the
-        // allocation nobody ever read is skipped.
+        // validity_.reset() a few lines down, so building one here would allocate and fill a
+        // buffer that is thrown away — on every vector the query path makes. reset() still runs
+        // and still establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY);
+        // only the allocation nobody ever reads is skipped.
         , validity_(type_.type() == types::logical_type::NA || create_data ? validity_mask_t{resource, nullptr}
                                                                            : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
@@ -479,8 +480,14 @@ namespace components::vector {
                     break;
                 }
                 default:
-                    assert(false);
-                    break;
+                    // A path step through a type that has no sub-elements is a planner bug: the
+                    // paths walked here are built from the type tree. A bare assert vanishes
+                    // under NDEBUG and the walk then STAYS on the parent vector, answering a
+                    // WRONG leaf/index as a valid element. An invariant violation must not throw
+                    // through the noexcept executor coroutine either, so it refuses identically
+                    // in both builds.
+                    assert(false && "resolve_nested_element: path step through a non-container type");
+                    std::abort();
             }
         }
 
@@ -638,8 +645,14 @@ namespace components::vector {
             index = 0;
         }
         if (!val.is_null() && val.type() != type_) {
+            // A mistyped value here IS a caller bug (validation splices the cast in before any
+            // write reaches this point). A bare assert-then-return vanishes under NDEBUG and
+            // makes the write a silent no-op: the row keeps its old payload AND its old validity
+            // while the caller reports success -- a wrong type turned into data corruption. An
+            // invariant must not throw through the noexcept executor coroutine either: refuse
+            // loudly and identically in both builds.
             assert(false && "value has to be casted to vector's type before set_value");
-            return;
+            std::abort();
         }
 
         validity_.set(index, !val.is_null());
@@ -862,9 +875,11 @@ namespace components::vector {
             }
         }
 
-        if (!vector->validity_.row_is_valid(index)) {
-            return types::logical_value_t(vector->resource(), vector->type_);
-        }
+        // NULL rows never reach here: value() screens them with is_null(), which walks the very
+        // same DICTIONARY/CONSTANT chain this loop just walked. Answering a null row here with
+        // logical_value_t(resource, type_) would hand back a DEFAULT-CONSTRUCTED value of the
+        // declared type, whose is_null() is false -- a zero in place of a NULL, not a null.
+        assert(vector->validity_.row_is_valid(index) && "value_internal reached a NULL row");
 
         switch (vector->type_.type()) {
             case types::logical_type::BOOLEAN:
@@ -978,8 +993,13 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
+                // The cell's type is the column's DECLARED type, never a type inferred from the
+                // field values: a NULL field carries logical_type::NA (that is how logical_value_t
+                // spells "no value"), so deriving the struct type from the children would answer
+                // STRUCT<BIGINT, NA> for a declared STRUCT<BIGINT, BIGINT>. The MAP leg above
+                // already passes vector->type_ through for the same reason.
                 return types::logical_value_t::create_struct(vector->resource(),
-                                                             vector->type_.type_name(),
+                                                             vector->type_,
                                                              std::move(children));
             }
             case types::logical_type::LIST: {
@@ -989,9 +1009,13 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_list(vector->resource(),
-                                                           vector->type_.child_type(),
-                                                           std::move(children));
+                // Pass the DECLARED list type through, extension included: create_list(child)
+                // would rebuild it with a fresh default list_logical_type_extension and drop the
+                // declared field_id/required. This was the LAST leg that rebuilt the type instead
+                // of passing it through (the MAP and STRUCT legs above already do).
+                return types::logical_value_t::create_list_from_type(vector->resource(),
+                                                                     vector->type_,
+                                                                     std::move(children));
             }
             case types::logical_type::ARRAY: {
                 auto stride =
@@ -1019,10 +1043,19 @@ namespace components::vector {
                 uint8_t tag;
                 if (try_get_union_tag(*vector, index, tag)) {
                     auto value = vector->entries()[static_cast<size_t>(tag) + 1]->value(index);
-                    auto members = vector->type().child_types();
+                    // The tag has to go, so this copy is real -- and it is handed straight to
+                    // create_union, which keeps it. `auto members = ...child_types()` would copy the
+                    // std::pmr::vector without propagating its allocator, so the member list inside a
+                    // UNION value would sit on the default resource while the value itself lives on
+                    // vector->resource(). Naming the resource is the only way a pmr copy inherits one.
+                    std::pmr::vector<types::complex_logical_type> members(vector->type().child_types(),
+                                                                          vector->resource());
                     // remove tag
                     members.erase(members.begin());
-                    return types::logical_value_t::create_union(vector->resource(), members, tag, std::move(value));
+                    return types::logical_value_t::create_union(vector->resource(),
+                                                                std::move(members),
+                                                                tag,
+                                                                std::move(value));
                 } else {
                     return types::logical_value_t(vector->resource(), vector->type());
                 }
@@ -1159,7 +1192,11 @@ namespace components::vector {
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {
-        if (type_.type() == types::logical_type::NA || !validity_.row_is_valid(index)) {
+        // is_null(), not validity_ directly: on a DICTIONARY vector the caller's index addresses
+        // the indexing vector, while this vector's own validity_ is still the pre-slice mask, and
+        // on a CONSTANT vector every index resolves to row 0. Reading validity_[index] there
+        // answers about a different row than the one value_internal is about to read.
+        if (is_null(index)) {
             types::logical_value_t null_val(resource(), types::complex_logical_type{types::logical_type::NA});
             if (type_.has_alias()) {
                 null_val.set_alias(type_.alias());

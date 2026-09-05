@@ -112,6 +112,113 @@ namespace components::table {
             }
         }
 
+        // DECIMAL zone-map leg (entry: wide DECIMAL columns got only null counts). The vector
+        // stores SCALED integers whose width follows the decimal's precision
+        // (decimal_storage_for_width); min/max are collected in that raw space and carried as
+        // DECIMAL-typed logical values of the COLUMN's own type, so ordering below (set_min /
+        // merge) compares scaled integers of one and the same (width, scale).
+        template<typename T>
+        void update_decimal_stats_typed(base_statistics_t& stats,
+                                        std::pmr::memory_resource* resource,
+                                        vector::vector_t& vec,
+                                        uint64_t count) {
+            vector::unified_vector_format uvf(vec.resource(), count);
+            vec.to_unified_format(count, uvf);
+            const auto* data = uvf.get_data<T>();
+            const auto& validity = uvf.validity;
+            const auto* indexing = uvf.referenced_indexing;
+            bool found_valid = false;
+            T local_min{};
+            T local_max{};
+            uint64_t null_count = 0;
+
+            for (uint64_t i = 0; i < count; i++) {
+                uint64_t idx = indexing->get_index(i);
+                if (!validity.row_is_valid(idx)) {
+                    null_count++;
+                    continue;
+                }
+                T val = data[idx];
+                if (!found_valid) {
+                    local_min = val;
+                    local_max = val;
+                    found_valid = true;
+                } else {
+                    if (val < local_min)
+                        local_min = val;
+                    if (val > local_max)
+                        local_max = val;
+                }
+            }
+
+            stats.set_null_count(stats.null_count() + null_count);
+            if (found_valid) {
+                auto batch_min =
+                    types::logical_value_t::create_decimal(resource, vec.type(), types::int128_t(local_min));
+                auto batch_max =
+                    types::logical_value_t::create_decimal(resource, vec.type(), types::int128_t(local_max));
+                if (!stats.has_stats()) {
+                    stats.set_min(std::move(batch_min));
+                    stats.set_max(std::move(batch_max));
+                } else {
+                    if (batch_min < stats.min_value()) {
+                        stats.set_min(std::move(batch_min));
+                    }
+                    if (batch_max > stats.max_value()) {
+                        stats.set_max(std::move(batch_max));
+                    }
+                }
+            }
+        }
+
+        void update_decimal_stats(base_statistics_t& stats,
+                                  std::pmr::memory_resource* resource,
+                                  vector::vector_t& vec,
+                                  uint64_t count) {
+            switch (vec.type().to_physical_type()) {
+                case types::physical_type::INT16:
+                    update_decimal_stats_typed<int16_t>(stats, resource, vec, count);
+                    break;
+                case types::physical_type::INT32:
+                    update_decimal_stats_typed<int32_t>(stats, resource, vec, count);
+                    break;
+                case types::physical_type::INT64:
+                    update_decimal_stats_typed<int64_t>(stats, resource, vec, count);
+                    break;
+                case types::physical_type::INT128:
+                    update_decimal_stats_typed<types::int128_t>(stats, resource, vec, count);
+                    break;
+                default: {
+                    // An impossible storage width for a DECIMAL: no bounds are fabricated,
+                    // only nulls are counted (min/max stay absent -> no pruning claim).
+                    const auto& validity = vec.validity();
+                    uint64_t null_count = 0;
+                    if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
+                        null_count = validity.row_is_valid(0) ? 0 : count;
+                    } else {
+                        for (uint64_t i = 0; i < count; i++) {
+                            if (!validity.row_is_valid(i)) {
+                                null_count++;
+                            }
+                        }
+                    }
+                    stats.set_null_count(stats.null_count() + null_count);
+                    break;
+                }
+            }
+        }
+
+        // The raw scaled integer of a DECIMAL-typed value, whatever its storage width.
+        // create_decimal parks narrow widths in data_ (read back via value<int64_t>) and only
+        // INT128-wide decimals in data128_ — reading value<int128_t>() on a narrow one answers
+        // the WRONG union member.
+        types::int128_t decimal_raw(const types::logical_value_t& val) {
+            if (val.type().to_physical_type() == types::physical_type::INT128) {
+                return val.value<types::int128_t>();
+            }
+            return types::int128_t(val.value<int64_t>());
+        }
+
         void serialize_logical_value(const types::logical_value_t& val, storage::metadata_writer_t& writer) {
             auto type = val.type().type();
             switch (type) {
@@ -148,6 +255,22 @@ namespace components::table {
                 case types::logical_type::DOUBLE:
                     writer.write<double>(val.value<double>());
                     break;
+                case types::logical_type::HUGEINT:
+                    writer.write<types::int128_t>(val.value<types::int128_t>());
+                    break;
+                case types::logical_type::UHUGEINT:
+                    writer.write<types::uint128_t>(val.value<types::uint128_t>());
+                    break;
+                case types::logical_type::DECIMAL: {
+                    // (width, scale) travel with the bound: the reader has only this stream to
+                    // rebuild the column's decimal type from.
+                    const auto* ext =
+                        reinterpret_cast<const types::decimal_logical_type_extension*>(val.type().extension());
+                    writer.write<uint8_t>(ext->width());
+                    writer.write<uint8_t>(ext->scale());
+                    writer.write<types::int128_t>(decimal_raw(val));
+                    break;
+                }
                 case types::logical_type::STRING_LITERAL:
                     writer.write_string(std::string(val.value<std::string_view>()));
                     break;
@@ -182,6 +305,24 @@ namespace components::table {
                     return types::logical_value_t(resource, reader.read<float>());
                 case types::logical_type::DOUBLE:
                     return types::logical_value_t(resource, reader.read<double>());
+                case types::logical_type::HUGEINT:
+                    return types::logical_value_t(resource, reader.read<types::int128_t>());
+                case types::logical_type::UHUGEINT:
+                    return types::logical_value_t(resource, reader.read<types::uint128_t>());
+                case types::logical_type::DECIMAL: {
+                    auto width = reader.read<uint8_t>();
+                    auto scale = reader.read<uint8_t>();
+                    auto raw = reader.read<types::int128_t>();
+                    auto dec_type = types::complex_logical_type::create_decimal(resource, width, scale);
+                    if (dec_type.has_error()) {
+                        // A (width, scale) outside the window can only come from a corrupt
+                        // stream. This helper has no error channel; answering NA leaves min/max
+                        // ABSENT (the zone map claims nothing) rather than fabricating a bound.
+                        return types::logical_value_t(resource,
+                                                      types::complex_logical_type{types::logical_type::NA});
+                    }
+                    return types::logical_value_t::create_decimal(resource, dec_type.value(), raw);
+                }
                 case types::logical_type::STRING_LITERAL: {
                     auto str = reader.read_string();
                     return types::logical_value_t(resource, str);
@@ -204,6 +345,9 @@ namespace components::table {
                 case types::logical_type::UBIGINT:
                 case types::logical_type::FLOAT:
                 case types::logical_type::DOUBLE:
+                case types::logical_type::HUGEINT:
+                case types::logical_type::UHUGEINT:
+                case types::logical_type::DECIMAL:
                 case types::logical_type::STRING_LITERAL:
                     return true;
                 default:
@@ -304,6 +448,15 @@ namespace components::table {
                 break;
             case types::logical_type::DOUBLE:
                 update_numeric_stats<double>(*this, resource_, vec, count);
+                break;
+            case types::logical_type::HUGEINT:
+                update_numeric_stats<types::int128_t>(*this, resource_, vec, count);
+                break;
+            case types::logical_type::UHUGEINT:
+                update_numeric_stats<types::uint128_t>(*this, resource_, vec, count);
+                break;
+            case types::logical_type::DECIMAL:
+                update_decimal_stats(*this, resource_, vec, count);
                 break;
             case types::logical_type::STRING_LITERAL:
                 update_string_stats(*this, resource_, vec, count);

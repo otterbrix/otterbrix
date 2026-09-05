@@ -42,14 +42,14 @@ namespace components::operators {
                 // Look up pg_database by datname.
                 std::pmr::vector<std::uint64_t> db_keys(resource_);
                 db_keys.emplace_back(catalog::pg_database_col::datname);
-                auto [_db, dbf] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::read_chunks_by_key,
-                                     exec_ctx,
-                                     kPgDatabase,
-                                     std::move(db_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
-                                     std::pmr::vector<std::uint64_t>{resource_});
+                auto [_db, dbf] = actor_zeta::otterbrix::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::read_chunks_by_key,
+                    exec_ctx,
+                    kPgDatabase,
+                    std::move(db_keys),
+                    components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
+                    std::pmr::vector<std::uint64_t>{resource_});
                 auto db_batches_r = co_await std::move(dbf);
                 if (db_batches_r.has_error()) {
                     // A failed pg_database read is not a miss; saying "not found" here hides it.

@@ -175,30 +175,33 @@ namespace components::vector::arrow {
                     core::error_code_t::conversion_failure,
                     std::pmr::string("Decimal format of Arrow object has invalid bit-width", resource));
             }
-            if (width > 38 || bitwidth > 128) {
+            if (width > types::DECIMAL_MAX_WIDTH || bitwidth > 128) {
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string("Unsupported Internal Arrow Type for Decimal", resource));
             }
+            // width/scale come from an EXTERNAL schema string, so they get the same window
+            // check every other origin does — a foreign decimal outside it would otherwise
+            // land in a column the checkpoint can write and never read back.
+            VALUE_OR_RETURN(auto decimal_type,
+                            types::complex_logical_type::create_decimal(resource,
+                                                                        static_cast<uint8_t>(width),
+                                                                        static_cast<uint8_t>(scale)));
             switch (bitwidth) {
                 case 32:
                     return std::make_unique<arrow_type>(
-                        types::complex_logical_type::create_decimal(static_cast<uint8_t>(width),
-                                                                    static_cast<uint8_t>(scale)),
+                        decimal_type,
                         std::make_unique<arrow_decimal_info>(decimal_bit_width::DECIMAL_32));
                 case 64:
                     return std::make_unique<arrow_type>(
-                        types::complex_logical_type::create_decimal(static_cast<uint8_t>(width),
-                                                                    static_cast<uint8_t>(scale)),
+                        decimal_type,
                         std::make_unique<arrow_decimal_info>(decimal_bit_width::DECIMAL_64));
                 case 128:
                     return std::make_unique<arrow_type>(
-                        types::complex_logical_type::create_decimal(static_cast<uint8_t>(width),
-                                                                    static_cast<uint8_t>(scale)),
+                        decimal_type,
                         std::make_unique<arrow_decimal_info>(decimal_bit_width::DECIMAL_128));
                 case 256:
                     return std::make_unique<arrow_type>(
-                        types::complex_logical_type::create_decimal(static_cast<uint8_t>(width),
-                                                                    static_cast<uint8_t>(scale)),
+                        decimal_type,
                         std::make_unique<arrow_decimal_info>(decimal_bit_width::DECIMAL_256));
                 default:
                     return core::error_t(

@@ -15,6 +15,7 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
+#include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 // Differential test scaffold: same SQL fixture, drive dispatcher::execute_plan
@@ -60,15 +61,36 @@ namespace {
                 c.on = false;
                 return c;
             }())
-            , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
+            , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
+            // A REAL index manager, not empty_address(). This slot used to hold
+            // empty_address() and the CREATE INDEX case below still REQUIREd success,
+            // which pinned a quiet no-op in operator_create_index_backfill: with no
+            // index actor wired it marked itself executed and reported success without
+            // registering, creating, backfilling, or flipping indisvalid. Every
+            // production topology spawns the index manager UNCONDITIONALLY
+            // (integration/cpp/base_spaces.cpp), so an empty slot was a harness
+            // artefact pinning behaviour no deployment can reach — and the operator
+            // now refuses on it. Same construction as base_spaces: the disk path and
+            // the same three thresholds.
+            , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
+                                                                                 scheduler_,
+                                                                                 log_,
+                                                                                 disk_config_.path,
+                                                                                 disk_config_.bitcask_flush_threshold,
+                                                                                 disk_config_.bitcask_segment_record_limit,
+                                                                                 disk_config_.btree_flush_threshold)) {
             manager_dispatcher_->sync(
                 services::dispatcher::manager_dispatcher_t::sync_pack{manager_wal_->address(),
                                                                       manager_disk_->address(),
-                                                                      actor_zeta::address_t::empty_address()});
+                                                                      manager_index_->address()});
             manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
                                                               manager_dispatcher_->address(),
-                                                              actor_zeta::address_t::empty_address()});
+                                                              manager_index_->address()});
             manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
+            manager_index_->sync(services::index::index_sync_pack_t{manager_disk_->address()});
+            // The DROP-GC ack path (manager_index → dispatcher) has a destination, as
+            // in base_spaces. Sync, pre-scheduler-start.
+            manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
 
             manager_disk_->bootstrap_system_tables_sync();
         }
@@ -76,9 +98,11 @@ namespace {
         ~differential_fixture() {
             // Destroy managers (self-driving on internal threads) before the
             // scheduler to avoid use-after-free, in reverse dependency order:
-            // dispatcher, then wal, then disk.
+            // dispatcher, then wal, then index, then disk. Index BEFORE disk: it
+            // holds manager_disk_'s address and addresses it during teardown.
             manager_dispatcher_.reset();
             manager_wal_.reset();
+            manager_index_.reset();
             manager_disk_.reset();
             scheduler_->stop();
             std::filesystem::remove_all(disk_path_);
@@ -139,20 +163,27 @@ namespace {
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
                                                         &manager_disk_t::resolve_namespace,
                                                         ctx,
-                                                        name,
-                                                        std::uint64_t{0});
+                                                        name);
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler_->run(1000);
                 std::this_thread::yield();
             }
             REQUIRE(fut.is_ready());
-            return std::move(fut).take_ready();
+            // The reader carries an error channel ("the catalog could not be READ" is not
+            // "the catalog does not have it"); no case here expects a failed read, and letting
+            // one through as {found=false} would conflate the two.
+            auto r = std::move(fut).take_ready();
+            REQUIRE_FALSE(r.has_error());
+            return std::move(r.value());
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
+            // probe_see_all_txn, not transaction_data{0, 0}: column visibility is judged
+            // against start_time, so a 0 there means "a snapshot from before the first commit"
+            // and hides every ALTER-added column now that added_at_commit_id carries a real id.
             components::execution_context_t ctx{components::session::session_id_t{},
-                                                components::table::transaction_data{0, 0},
+                                                test_probe::probe_see_all_txn(),
                                                 {}};
             auto adapter = probe_fx();
             return test_probe::probe_table(adapter, ctx, ns_oid, tname);
@@ -162,6 +193,10 @@ namespace {
         void execute_sql(const std::string& query) {
             parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
             auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+            // The statement text is handed to the transformer, as every production
+            // entry point does (wrapper_dispatcher_t::execute_sql). CREATE VIEW /
+            // CREATE MATERIALIZED VIEW store their body verbatim by slicing it out of
+            // this string; without it the transformer has no body to store and says so.
             components::sql::transform::transformer local_transformer(resource_, query.c_str());
             auto _wrap =
                 local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
@@ -185,6 +220,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
         configuration::config_wal wal_config_;
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
+        std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
         std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
         std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
     };
@@ -629,8 +665,11 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
 
 // CREATE TABLE → CREATE MATERIALIZED VIEW mv AS SELECT ... FROM table. Unlike a
 // view, a matview lands a real physical heap plus a pg_class relkind='m' row and
-// a pg_rewrite ev_action row (WITH NO DATA default, so it is empty until
-// REFRESH). operator_create_matview_t lowers to a composite sequence that aborts
+// a pg_rewrite ev_action row. WITH NO DATA is written out: nothing populates a
+// matview at CREATE time, so the implicit (PostgreSQL default WITH DATA) form is
+// refused rather than silently producing an empty matview — see
+// integration/cpp/test/test_view_expansion.cpp. The proxy below is unchanged.
+// operator_create_matview_t lowers to a composite sequence that aborts
 // the whole CREATE if any step fails. Proxy: cursor success + resolve_table(mv)
 // relkind=='m' + parent still resolvable.
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
@@ -652,7 +691,8 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql("CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10;");
+    fx.execute_sql(
+        "CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10 WITH NO DATA;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());

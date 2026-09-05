@@ -56,9 +56,9 @@ namespace {
 } // namespace
 
 TEST_CASE("group operator contracts: unresolved column key surfaces operator error", "[group_contracts]") {
-    // Pre-fix this aborted in Debug via assert(!key.full_path.empty()) in
-    // extract_key_value (operator_group.cpp); in Release the assert is compiled
-    // out and chunk.value(empty_path, row) is UB.
+    // A key with an empty full_path must surface as an operator ERROR: asserting on it
+    // aborts Debug builds and is compiled out in Release, where reading the chunk at an
+    // empty path is UB.
     auto resource = core::pmr::otterbrix_resource();
 
     std::pmr::vector<types::complex_logical_type> cols(&resource);

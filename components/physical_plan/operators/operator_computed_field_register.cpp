@@ -3,12 +3,15 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -29,25 +32,19 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_computed_field_register_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Concurrent INSERTs registering the same field can produce
-        // duplicate (relid, attname) rows in pg_computed_column. MVCC
-        // isolation hides uncommitted writes from other sessions, so each
-        // session sees the field as unregistered and proceeds to allocate a
-        // fresh attoid + append a register row. After both commit,
-        // pg_computed_column holds two rows for the same (relid, attname)
-        // with different attoids.
+        // Concurrent INSERTs registering the same field can produce duplicate (relid, attname) rows in
+        // pg_computed_column: MVCC isolation hides uncommitted writes from other sessions, so each session
+        // sees the field as unregistered and proceeds to allocate a fresh attoid + append a register row.
+        // After both commit, two rows share (relid, attname) with different attoids.
         //
         // Tolerance path (current):
-        //   - Resolver picks max(attversion); ties broken by lowest attoid.
-        //   - VACUUM aggressive eventually GCs stale (refcount=0) versions,
-        //     so duplicates are short-lived.
-        //   - Storage-side add_column (schema-extension) is idempotent: the
-        //     second concurrent INSERT either no-ops (column already
-        //     extended) or fails benignly — caller path is unaffected.
+        //   - the resolver picks max(attversion), ties broken by lowest attoid;
+        //   - VACUUM aggressive eventually GCs stale (refcount=0) versions, so duplicates are short-lived;
+        //   - storage-side add_column (schema-extension) is idempotent: the second concurrent INSERT either
+        //     no-ops (column already extended) or fails benignly — the caller path is unaffected.
         //
-        // TODO Strict-serialization path (deferred until benchmark proves
-        // the race causes user-visible problems): introduce per-table_oid
-        // lock via a disk-actor message pair held across the
+        // TODO Strict-serialization path (deferred until a benchmark proves the race causes user-visible
+        // problems): a per-table_oid lock via a disk-actor message pair, held across the
         // read/classify/allocate/append/depend sequence below.
 
         // Propagate the INSERT's output up. The bottom-up async-finalize drive runs
@@ -71,7 +68,7 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> r_keys(resource_);
             r_keys.emplace_back(catalog::pg_computed_column_col::relid);
             r_keys.emplace_back(catalog::pg_computed_column_col::attname);
-            auto [_r, rf] = actor_zeta::send(
+            auto [_r, rf] = actor_zeta::otterbrix::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_chunks_by_key,
                 exec_ctx,
@@ -130,14 +127,14 @@ namespace components::operators {
                 if (!lookup.empty()) {
                     std::pmr::vector<std::uint64_t> t_keys(resource_);
                     t_keys.emplace_back(catalog::pg_type_col::typname);
-                    auto [_t, tf] =
-                        actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                         exec_ctx,
-                                         pg_type,
-                                         std::move(t_keys),
-                                         components::operators::make_key_chunk(resource_, std::string_view{lookup}),
-                                         std::pmr::vector<std::uint64_t>{resource_});
+                    auto [_t, tf] = actor_zeta::otterbrix::send(
+                        ctx->disk_address,
+                        &services::disk::manager_disk_t::read_chunks_by_key,
+                        exec_ctx,
+                        pg_type,
+                        std::move(t_keys),
+                        components::operators::make_key_chunk(resource_, std::string_view{lookup}),
+                        std::pmr::vector<std::uint64_t>{resource_});
                     auto type_batches_r = co_await std::move(tf);
                     if (type_batches_r.has_error()) {
                         set_error(type_batches_r.error());
@@ -152,12 +149,30 @@ namespace components::operators {
                 }
             }
 
-            // Encode complex types into atttypspec so resolve_table for
-            // relkind='g' can reconstruct ARRAY/STRUCT/UNION/DECIMAL etc.
-            // exactly. Builtin scalars leave atttypspec empty — atttypid
-            // alone reconstructs them via oid_to_builtin_type.
+            // Encode complex types into atttypspec so resolve_table for relkind='g' can reconstruct
+            // ARRAY/STRUCT/UNION/DECIMAL etc. exactly. Builtin scalars leave atttypspec empty — atttypid alone
+            // reconstructs them via oid_to_builtin_type.
+            //
+            // THE WRITER VALIDATES THE READER'S WINDOW. Plan-level DDL runs every column type through the binary
+            // codec (gate_persistable_type) before anything durable is written, but this registration is fed by an
+            // INSERT into a computing table and encodes the flat atttypspec PAST that gate — while its reader,
+            // decode_type_spec in resolve_table, refuses nesting beyond the depth window shared with the binary
+            // codec (data_corruption, permanently). Probing the binary codec here — the real encoder, not a copy of
+            // its rules — keeps the two windows the same window: a type it refuses would register a spec that
+            // unresolves the whole table one statement after a successful INSERT.
             std::string atttypspec;
             if (atttypid == catalog::INVALID_OID && col.type().type() != types::logical_type::UNKNOWN) {
+                std::pmr::vector<std::byte> persist_probe(resource_);
+                auto persistable = types::encode_type_spec(col.type(), persist_probe);
+                if (persistable.has_error()) {
+                    std::string msg = "computed field \"";
+                    msg += col.name();
+                    msg += "\" cannot be persisted: ";
+                    msg += persistable.error().what.c_str();
+                    set_error(core::error_t{core::error_code_t::schema_error,
+                                            std::pmr::string{std::move(msg), resource_}});
+                    co_return;
+                }
                 atttypspec = catalog::encode_type_spec(col.type());
             }
 
@@ -176,9 +191,9 @@ namespace components::operators {
             }
 
             // allocate a fresh attoid for the new (or evolved) column row.
-            auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::allocate_oids_batch,
-                                               std::size_t{1});
+            auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::allocate_oids_batch,
+                                                          std::size_t{1});
             auto oid_batch = co_await std::move(oaf);
             if (oid_batch.empty()) {
                 set_error(core::error_t{
@@ -198,14 +213,11 @@ namespace components::operators {
             // dynamic_schema_re_add_after_drop pins this.
             const std::int64_t new_version = (max_version < 0) ? std::int64_t{0} : (max_version + 1);
 
-            // Two-phase within this column: the pg_computed_column row append and
-            // the (optional) pg_type + pg_class pg_depend appends are mutually
-            // independent (no append consumes another's await result), so send
-            // them all first then await in order. All three target disk_address;
-            // FIFO on that single mailbox preserves their relative order, so
-            // awaiting is completion-sync only. The next loop iteration's reads
-            // do not consume these appends, but its allocate/append chain depends
-            // on that iteration's own reads, so the batch stays per-column.
+            // Two-phase within this column: the pg_computed_column row append and the (optional) pg_type +
+            // pg_class pg_depend appends are mutually independent (no append consumes another's await result),
+            // so send them all first then await in order. All three target disk_address; FIFO on that single
+            // mailbox preserves their relative order, so awaiting is completion-sync only. The next loop
+            // iteration's allocate/append chain depends on its own reads, so the batch stays per-column.
             auto cc_row = catalog::build_pg_computed_column_row(resource_,
                                                                 table_oid_,
                                                                 attoid,
@@ -214,30 +226,38 @@ namespace components::operators {
                                                                 new_version,
                                                                 /*attrefcount=*/std::int64_t{1},
                                                                 atttypspec);
-            std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> append_futures(
-                resource_);
+            std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
+                append_futures(resource_);
             {
-                auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                 exec_ctx,
-                                                 pg_computed_column,
-                                                 std::move(cc_row));
+                auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                            exec_ctx,
+                                                            pg_computed_column,
+                                                            std::move(cc_row));
                 append_futures.push_back(std::move(wf));
             }
 
-            // Emit pg_depend rows so the dynamic computed-column mirrors
-            // the static ALTER ADD COLUMN dependency graph:
-            //   1) (pg_computed_column, attoid) → (pg_type, atttypid) 'n'
-            //      lets DROP TYPE refuse to drop a type still used by a dynamic
-            //      column (relkind='g').
-            //   2) (pg_computed_column, attoid) → (pg_class, table_oid) 'n'
-            //      lets DROP TABLE cascade sweep dynamic-column rows alongside
-            //      the parent. Existing cascade in operator_dynamic_cascade_delete
-            //      already discovers these via the pg_depend reverse index, so
-            //      no extra cascade wiring is needed here.
-            // Unregister side intentionally does NOT remove these rows: the
-            // parent DROP TABLE cascade or namespace VACUUM will sweep them
-            // later, and a stale pg_depend row to a still-live oid is harmless
+            // Emit pg_depend rows so the dynamic computed-column mirrors the static ALTER ADD COLUMN dependency
+            // graph:
+            //   1) (pg_computed_column, attoid) → (pg_type, atttypid) 'n' lets DROP TYPE refuse to drop a type
+            //      still used by a dynamic column (relkind='g'). 'n' matches what a DECLARED column gets:
+            //      build_create_table_writes writes (pg_attribute, attoid) → (pg_type, atttypid) "n"
+            //      (components/catalog/ddl_metadata_builder.cpp, the per-column dep chunk).
+            //   2) (pg_computed_column, attoid) → (pg_class, table_oid) 'a' lets DROP TABLE cascade sweep
+            //      dynamic-column rows alongside the parent — operator_dynamic_cascade_delete already discovers
+            //      these via the pg_depend reverse index, so no extra cascade wiring is needed here.
+            //
+            // WHY 'a' AND NOT 'n' ON EDGE 2. This edge points AT the table, so it makes the table's own columns
+            // read as dependents OF the table — and catalog::deptype::blocks_restrict is exactly `dt == 'n'`
+            // (components/catalog/dependency_walker.hpp), so with 'n' a computing table was refused a
+            // `DROP TABLE ... RESTRICT` by its own columns and could not be dropped under RESTRICT at all. 'a'
+            // is the deptype this tree already uses for "owned by the parent, torn down with it": the
+            // index→table edge in ddl_metadata_builder.cpp's build_create_index_writes writes 'a' for exactly
+            // that relationship. CASCADE is unaffected — cascade_planner does not filter on deptype, so an 'a'
+            // edge is walked and dropped just as an 'n' one was.
+            //
+            // The unregister side intentionally does NOT remove these rows: the parent DROP TABLE cascade or
+            // namespace VACUUM sweeps them later, and a stale pg_depend row to a still-live oid is harmless
             // (refcount=0 columns simply remain undiscoverable via attname).
             if (atttypid != catalog::INVALID_OID) {
                 auto dep_row =
@@ -247,11 +267,11 @@ namespace components::operators {
                                                  catalog::well_known_oid::pg_type_table,            // refclassid
                                                  atttypid,                                          // refobjid
                                                  /*deptype=*/'n');
-                auto [_dt, dtf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                   exec_ctx,
-                                                   pg_depend,
-                                                   std::move(dep_row));
+                auto [_dt, dtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                              exec_ctx,
+                                                              pg_depend,
+                                                              std::move(dep_row));
                 append_futures.push_back(std::move(dtf));
             }
             {
@@ -261,18 +281,32 @@ namespace components::operators {
                                                  attoid,                                            // objid
                                                  catalog::well_known_oid::pg_class_table,           // refclassid
                                                  table_oid_,                                        // refobjid
-                                                 /*deptype=*/'n');
-                auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                   exec_ctx,
-                                                   pg_depend,
-                                                   std::move(dep_row));
+                                                 /*deptype=*/catalog::deptype::auto_dep);
+                auto [_dc, dcf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                              exec_ctx,
+                                                              pg_depend,
+                                                              std::move(dep_row));
                 append_futures.push_back(std::move(dcf));
             }
+            // Drain all, first error wins: the pg_computed_column row IS the registration.
+            core::error_t append_error = core::error_t::no_error();
             for (auto& af : append_futures) {
-                if (auto rng = co_await std::move(af); rng.count > 0) {
-                    ctx->pg_catalog_appends.push_back(std::move(rng));
+                auto rng_r = co_await std::move(af);
+                if (rng_r.has_error()) {
+                    if (!append_error.contains_error()) {
+                        append_error = rng_r.error();
+                    }
+                    continue;
                 }
+                if (rng_r.value().count > 0) {
+                    ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+                }
+            }
+            if (append_error.contains_error()) {
+                set_error(std::move(append_error));
+                mark_failed();
+                co_return;
             }
         }
 

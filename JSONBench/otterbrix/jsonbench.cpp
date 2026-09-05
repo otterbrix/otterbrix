@@ -220,7 +220,6 @@ int main() {
     std::filesystem::create_directories("/tmp/jsonbench_otterbrix");
 
     auto cfg      = configuration::config::create_config("/tmp/jsonbench_otterbrix");
-    cfg.disk.on   = false;
     cfg.wal.on    = false;
     cfg.log.level = log_t::level::warn; // suppress trace/info noise
 

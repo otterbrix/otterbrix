@@ -1,20 +1,61 @@
 #pragma once
 
 #include "storage.hpp"
+#include <cstdio>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/table_state.hpp>
 
 namespace components::storage {
 
+    // COLUMNS THE CATALOG HAS AND THE STORAGE DOES NOT.
+    //
+    // ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the physical column is
+    // materialized later, by the first INSERT that carries it (agent_disk stage 1b). Between the
+    // two the catalog names a column no row group holds — a legal, durable, and after a restart
+    // re-entered state, pinned by test_alter_rename_column's
+    // rename_and_unmaterialized_add_column_are_distinguishable.
+    //
+    // This adapter is the seam where that gap is closed for EVERY reader at once: the storage
+    // scan, the pushed-down filter, the aggregate-pushdown reduce (which reads through
+    // fetch_next_batch) and the row-id gather all take their column count and their column
+    // ordinals from here. The unmaterialized columns are presented as trailing CONSTANT columns —
+    // the column's published DEFAULT in every row, or NULL where the ALTER declared none — that
+    // constant being exactly what row_group_t::add_column will backfill into the rows that predate
+    // the column when the materializing INSERT finally arrives, so the answer does not change
+    // across that boundary. PostgreSQL answers the same window the same way and out of the same
+    // pair of facts (pg_attribute.atttypid + attmissingval); see fill_unmaterialized.
+    //
+    // They are NOT added to columns()/has_schema(): those describe the PHYSICAL schema and drive
+    // the append path's schema-growth and column-expansion stages, which must go on seeing the
+    // column as absent so the next carrying INSERT materializes it.
     class table_storage_adapter_t final : public storage_t {
     public:
-        explicit table_storage_adapter_t(table::data_table_t& table, std::pmr::memory_resource* resource)
+        // `unmaterialized` is BORROWED and may be null; it is owned by the storage entry, which
+        // outlives every adapter it builds (the adapter is rebuilt on add_column / drop_column).
+        explicit table_storage_adapter_t(table::data_table_t& table,
+                                         std::pmr::memory_resource* resource,
+                                         const std::vector<table::column_definition_t>* unmaterialized = nullptr)
             : table_(table)
-            , resource_(resource) {}
+            , resource_(resource)
+            , unmaterialized_(unmaterialized) {}
 
-        std::pmr::vector<types::complex_logical_type> types() const override { return table_.copy_types(); }
+        // The CATALOG's width: the materialized columns at their storage ordinals, then the
+        // columns pg_attribute has published and no INSERT has materialized yet. Every chunk this
+        // adapter fills is built from this list, so a projected ordinal past the physical schema
+        // addresses a real column (all-NULL, or all-DEFAULT) instead of falling off the end.
+        std::pmr::vector<types::complex_logical_type> types() const override {
+            auto t = table_.copy_types();
+            for (const auto& col : unmaterialized_columns()) {
+                t.push_back(col.type());
+            }
+            return t;
+        }
 
+        // PHYSICAL schema, deliberately NOT widened by the unmaterialized columns. These three
+        // drive the append path (schema growth, column expansion, NOT NULL) and the keyed catalog
+        // reads, all of which must go on seeing an unmaterialized column as absent — that is what
+        // makes the next INSERT that carries it materialize it.
         const std::vector<table::column_definition_t>& columns() const override { return table_.columns(); }
 
         size_t column_count() const override { return table_.column_count(); }
@@ -23,35 +64,27 @@ namespace components::storage {
 
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override { table_.adopt_schema(t); }
 
-        void overlay_not_null(const std::string& col_name) override { table_.overlay_not_null(col_name); }
 
         uint64_t total_rows() const override { return table_.row_group()->total_rows(); }
 
         uint64_t calculate_size() override { return table_.calculate_size(); }
 
         void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) override {
-            std::vector<table::storage_index_t> column_indices;
-            column_indices.reserve(table_.column_count());
-            for (size_t i = 0; i < table_.column_count(); i++) {
-                column_indices.emplace_back(static_cast<int64_t>(i));
-            }
+            auto column_indices = begin_read(nullptr);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
+            fill_unmaterialized(output, output.size());
         }
 
         void scan(vector::data_chunk_t& output,
                   const table::table_filter_t* filter,
                   int64_t limit,
                   table::transaction_data txn) override {
-            std::vector<table::storage_index_t> column_indices;
-            column_indices.reserve(table_.column_count());
-            for (size_t i = 0; i < table_.column_count(); i++) {
-                column_indices.emplace_back(static_cast<int64_t>(i));
-            }
+            auto column_indices = begin_read(nullptr);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             state.table_state.txn = txn;
@@ -60,25 +93,21 @@ namespace components::storage {
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
+            fill_unmaterialized(output, output.size());
         }
 
         void scan_projected(vector::data_chunk_t& output,
                             const table::table_filter_t* filter,
                             int limit,
                             const std::vector<size_t>& projected_cols) override {
-            std::vector<table::storage_index_t> column_indices;
-            column_indices.reserve(projected_cols.size());
-            for (size_t idx : projected_cols) {
-                if (idx < table_.column_count()) {
-                    column_indices.emplace_back(static_cast<int64_t>(idx));
-                }
-            }
+            auto column_indices = begin_read(&projected_cols);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
+            fill_unmaterialized(output, output.size());
         }
 
         void scan_projected(vector::data_chunk_t& output,
@@ -86,13 +115,7 @@ namespace components::storage {
                             int limit,
                             const std::vector<size_t>& projected_cols,
                             table::transaction_data txn) override {
-            std::vector<table::storage_index_t> column_indices;
-            column_indices.reserve(projected_cols.size());
-            for (size_t idx : projected_cols) {
-                if (idx < table_.column_count()) {
-                    column_indices.emplace_back(static_cast<int64_t>(idx));
-                }
-            }
+            auto column_indices = begin_read(&projected_cols);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             state.table_state.txn = txn;
@@ -101,6 +124,7 @@ namespace components::storage {
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
+            fill_unmaterialized(output, output.size());
         }
 
         [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
@@ -108,26 +132,15 @@ namespace components::storage {
                                                                 int64_t limit,
                                                                 const std::vector<size_t>* projected_cols,
                                                                 table::transaction_data txn) override {
-            std::vector<table::storage_index_t> column_indices;
-            if (projected_cols) {
-                column_indices.reserve(projected_cols->size());
-                for (size_t idx : *projected_cols) {
-                    if (idx < table_.column_count()) {
-                        column_indices.emplace_back(static_cast<int64_t>(idx));
-                    }
-                }
-            } else {
-                column_indices.reserve(table_.column_count());
-                for (size_t i = 0; i < table_.column_count(); i++) {
-                    column_indices.emplace_back(static_cast<int64_t>(i));
-                }
-            }
+            auto column_indices = begin_read(projected_cols);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             state.table_state.txn = txn;
             state.local_state.txn = txn;
-            auto types = table_.copy_types();
-            table_.scan_batched(types, projected_cols, batches, state, resource_);
+            // CATALOG width, not the physical one: the chunks are addressed by the caller's
+            // (catalog) ordinals, and an unmaterialized column must be a real column in them.
+            auto chunk_types = types();
+            table_.scan_batched(chunk_types, projected_cols, batches, state, resource_);
             // data_table_t::scan_batched keeps its void shape and leaves any buffer-pool OOM /
             // data_corruption in state.table_state.scan_error; surface it here as a value so the
             // agent_disk scan reply can carry it across the mailbox. On error the partially-filled
@@ -139,9 +152,9 @@ namespace components::storage {
             // can read types/column_count from chunks.front().
             if (batches.empty()) {
                 if (projected_cols) {
-                    batches.emplace_back(resource_, types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY);
+                    batches.emplace_back(resource_, chunk_types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY);
                 } else {
-                    batches.emplace_back(resource_, types, vector::DEFAULT_VECTOR_CAPACITY);
+                    batches.emplace_back(resource_, chunk_types, vector::DEFAULT_VECTOR_CAPACITY);
                 }
                 batches.back().set_cardinality(0);
             }
@@ -163,6 +176,9 @@ namespace components::storage {
                 // resize() doesn't compile.
                 batches.erase(batches.begin() + static_cast<std::ptrdiff_t>(keep), batches.end());
             }
+            for (auto& batch : batches) {
+                fill_unmaterialized(batch, batch.size());
+            }
             return true;
         }
 
@@ -180,30 +196,25 @@ namespace components::storage {
                 pos.drained = true;
                 return true;
             }
-            std::vector<table::storage_index_t> column_indices;
-            if (projected_cols) {
-                column_indices.reserve(projected_cols->size());
-                for (size_t idx : *projected_cols) {
-                    if (idx < table_.column_count()) {
-                        column_indices.emplace_back(static_cast<int64_t>(idx));
-                    }
-                }
-            } else {
-                column_indices.reserve(table_.column_count());
-                for (size_t i = 0; i < table_.column_count(); i++) {
-                    column_indices.emplace_back(static_cast<int64_t>(i));
-                }
-            }
+            auto column_indices = begin_read(projected_cols);
             // data_table_t owns the transient-scan-state seek + single-batch read + position
             // advance (it has row_group.hpp; the scan state and its pins live and die inside that
             // call, so nothing pinned survives this round-trip).
-            return table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
+            auto read =
+                table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
+            if (read.has_error()) {
+                return read;
+            }
+            fill_unmaterialized(output, output.size());
+            return read;
         }
 
-        void fetch(vector::data_chunk_t& output,
-                   const vector::vector_t& row_ids,
-                   uint64_t count,
-                   const std::vector<size_t>& projected_cols) override {
+        [[nodiscard]] core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
+                                                         const vector::vector_t& row_ids,
+                                                         uint64_t count,
+                                                         const std::vector<size_t>& projected_cols,
+                                                         const table::transaction_data& txn,
+                                                         table::fetch_visibility_t visibility) override {
             table::column_fetch_state state;
             // The chunk we fill is returned to the caller and then moved across a mailbox; the pins
             // taken below die with `state` when this function returns. Without this flag the string
@@ -233,34 +244,28 @@ namespace components::storage {
             // The list stays FULL WIDTH and the projection is applied as a skip below it, because the
             // fetch mapping is positional: a shorter list would compact the chunk and shift every
             // column a consumer addresses by ordinal.
-            table_.fetch(output, column_indices, row_ids, count, state, projected_cols);
-        }
-
-        void scan_segment(int64_t start,
-                          uint64_t count,
-                          const std::function<void(vector::data_chunk_t& chunk)>& callback) override {
-            table_.scan_table_segment(start, count, callback);
-        }
-
-        // Replay/legacy path (no txn). The table-layer append chain returns result_wrapper_t
-        // (write_conflict / out_of_memory); replay records are already schema-aligned and
-        // single-threaded, so a failure here is a hard bug — bind the wrappers and assert success.
-        uint64_t append(vector::data_chunk_t& data) override {
-            table::table_append_state append_state(resource_);
-            [[maybe_unused]] auto lock_r = table_.append_lock(append_state);
-            assert(!lock_r.has_error() && "replay append_lock conflict");
-            [[maybe_unused]] auto init_r = table_.initialize_append(append_state);
-            assert(!init_r.has_error() && "replay initialize_append OOM");
-            auto start_row = static_cast<uint64_t>(append_state.current_row);
-            [[maybe_unused]] auto app_r = table_.append(data, append_state);
-            assert(!app_r.has_error() && "replay append OOM");
-            table_.finalize_append(append_state, table::transaction_data{0, 0});
-            return start_row;
+            table_.fetch(output, column_indices, row_ids, count, state, projected_cols, txn, visibility);
+            // The string leg records buffer-pool OOM / data_corruption in
+            // state.fetch_error; surface it as a value so the agent_disk fetch
+            // reply can carry it across the mailbox (same shape as
+            // fetch_next_batch's scan_error above). On error the partially
+            // filled chunk is meaningless — the caller must not ship it.
+            if (state.fetch_error.contains_error()) {
+                return state.fetch_error;
+            }
+            fill_unmaterialized(output, output.size());
+            return true;
         }
 
         // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
+        //
+        // THIS IS ALSO THE REPLAY APPEND, and it reports for replay too. "Replay records are
+        // already schema-aligned and single-threaded, so a failure here is a hard bug" does not
+        // justify asserting instead of returning: out_of_memory is not a bug, and under NDEBUG
+        // an assert is not there at all, so the caller would get the start_row of an append
+        // that never happened. The direct-write caller passes transaction_data{0, 0}.
         [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
                                                               table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
@@ -281,10 +286,54 @@ namespace components::storage {
             return start_row;
         }
 
-        void update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
+        // Replay leg — an IN-PLACE update, unlike the MVCC delete+append below it. The
+        // journalled payload was written by the txn update below, which already refused any
+        // value in an unmaterialized column, so the trim here SHOULD only be dropping all-NULL
+        // columns — but it still has to happen: the WAL record carries the CATALOG-wide chunk,
+        // and at replay time the storage is narrower still.
+        //
+        // "SHOULD" IS NOT A CHANNEL. As asserts — absent entirely under NDEBUG — both refusals
+        // would report a replayed committed row this leg declined to write to
+        // agent_disk_t::direct_update_sync as written, and from there to base_spaces' replay
+        // loop as restored. Recovery cannot tell "there was nothing to do" from "I could not do
+        // it" unless this says so.
+        //
+        // AND ON THIS PATH THE ANSWER IS RECOVER-THEN-REPORT, NOT REFUSE-UP-FRONT. A value in
+        // an unmaterialized column at REPLAY time means the column's materialising INSERT was
+        // itself refused earlier in the replay (and logged) — the value has no column to land
+        // in either way. The row's materialized columns are still addressable, and a silent
+        // trim DOES restore them (data_table_t::update builds its column list from its own
+        // column_count() and never reads the chunk's trailing columns), so refusing before
+        // table_.update would restore LESS than saying nothing at all would. The trim is
+        // applied unconditionally, the materialized part is written
+        // IN PLACE, and the answer names the value that could not be restored — the txn
+        // overload below keeps the up-front refusal, because there the statement can still
+        // be refused BEFORE anything is journalled.
+        [[nodiscard]] core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
+            core::error_t lost = trim_unmaterialized_payload_for_replay(data);
+            const auto requested = data.size();
             auto update_state = table_.initialize_update({});
-            [[maybe_unused]] auto upd_r = table_.update(*update_state, row_ids, data);
-            assert(!upd_r.has_error() && "replay update conflict/OOM");
+            auto upd_r = table_.update(*update_state, row_ids, data);
+            if (upd_r.has_error()) {
+                return core::error_on(resource_, upd_r.error());
+            }
+            // {0, applied-count} is the half of the answer a void signature cannot carry:
+            // data_table_t::update filters row ids at or past MAX_ROW_ID, so "applied to 0 of
+            // them" would otherwise read exactly like "applied to all of them".
+            const uint64_t applied = upd_r.value().second;
+            if (applied != requested) {
+                std::pmr::string what{"replay update applied ", resource_};
+                what.append(std::to_string(applied).c_str());
+                what.append(" of ");
+                what.append(std::to_string(requested).c_str());
+                what.append(" journalled row update(s); the rest named rows this storage cannot hold");
+                if (lost.contains_error()) {
+                    what.append("; additionally: ");
+                    what.append(lost.what.c_str());
+                }
+                return core::error_t{core::error_code_t::io_error, std::move(what)};
+            }
+            return lost;
         }
 
         // Returns {start_row, count} on success, or write_conflict / out_of_memory surfaced by
@@ -294,6 +343,10 @@ namespace components::storage {
             auto count = static_cast<uint64_t>(data.size());
             if (count == 0)
                 return std::pair<int64_t, uint64_t>{0, 0};
+
+            if (auto trimmed = trim_unmaterialized_payload(data); trimmed.contains_error()) {
+                return trimmed;
+            }
 
             // Step 1: Mark old rows as deleted with txn_id
             auto delete_state = table_.initialize_delete({});
@@ -333,7 +386,22 @@ namespace components::storage {
             table_.commit_append(commit_id, row_start, count);
         }
 
-        void revert_append(int64_t row_start, uint64_t count) override { table_.revert_append(row_start, count); }
+        void revert_append(int64_t row_start, uint64_t count) override {
+            // data_table_t::revert_append reports the first column-truncation refusal
+            // (out_of_memory / data_corruption). This virtual's contract is void, so the
+            // refusal cannot travel further up — but it must not be swallowed either
+            // (rule 6; and result_wrapper_t is [[nodiscard]] at the CLASS, so a bare call
+            // is a -Werror break in every TU that includes this header).
+            auto reverted = table_.revert_append(row_start, count);
+            if (reverted.has_error()) {
+                std::fprintf(stderr,
+                             "components::storage::table_storage_adapter_t::revert_append: rollback of rows "
+                             "[%lld, +%llu) could not complete: %s\n",
+                             static_cast<long long>(row_start),
+                             static_cast<unsigned long long>(count),
+                             reverted.error().what.c_str());
+            }
+        }
 
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id) override {
             table_.commit_all_deletes(txn_id, commit_id);
@@ -346,8 +414,209 @@ namespace components::storage {
         table::data_table_t& table() { return table_; }
 
     private:
+        // Empty stand-in for a null `unmaterialized_` so every reader below can take a reference
+        // and never branch on the pointer.
+        static inline const std::vector<table::column_definition_t> no_unmaterialized_columns_{};
+
+        const std::vector<table::column_definition_t>& unmaterialized_columns() const noexcept {
+            return unmaterialized_ != nullptr ? *unmaterialized_ : no_unmaterialized_columns_;
+        }
+
+        // WRITE-SIDE MIRROR OF types(). An update payload is shaped by the READ that produced it,
+        // so it arrives at the CATALOG's width — one column per pg_attribute column, including the
+        // ones no row group holds. data_table_t can only write the PHYSICAL schema, so those
+        // trailing columns are dropped here.
+        //
+        // Dropping them is sound only while they carry NOTHING NEW, and that is checked rather
+        // than assumed: a value in one of them is an UPDATE that would first have to materialize
+        // the column, which only the append path's schema-growth stage can do (it owns the
+        // PHYSICAL_ADD_COLUMN WAL record that keeps replay in schema-then-rows order). Writing the
+        // row and silently losing that value is exactly what rule 6 forbids, so the statement is
+        // refused instead. The refusal reaches the agent before any WAL record is written for the
+        // update (operator_update journals only after storage_update succeeds), so a refused
+        // statement leaves nothing behind.
+        //
+        // "NOTHING NEW", not "NOTHING", and the difference is the column's own DEFAULT. Since
+        // fill_unmaterialized answers a published column with its default, the payload an UPDATE
+        // that merely FILTERS on such a column carries back is a column full of that default —
+        // non-null, and written by the READ, not by the statement. Dropping it loses nothing (the
+        // column reads the same constant for every row that predates it, before and after this
+        // write), so refusing there would turn `UPDATE t SET a = 9 WHERE extra IS NOT NULL` into
+        // an error on a table whose only sin is having a DEFAULT. A value that DIFFERS from the
+        // default is still the statement's own and still refused.
+        //
+        // THE REFUSAL IS THE SANCTIONED CONTRACT, not a gap left open by accident:
+        // integration/cpp/test/test_alter_add_column_unmaterialized.cpp pins
+        // `UPDATE ... SET extra = 42` to an error cursor with the rows unchanged and the column
+        // still NULL. Teaching UPDATE the schema growth INSERT's stage 1b does (it owns the
+        // PHYSICAL_ADD_COLUMN record that keeps replay in schema-then-rows order) would flip that
+        // assertion, so it is a decision for the owner of that test and not a bug fix.
+        [[nodiscard]] core::error_t trim_unmaterialized_payload(vector::data_chunk_t& data) const {
+            const size_t physical = table_.column_count();
+            if (data.column_count() <= physical) {
+                return core::error_t::no_error();
+            }
+            const auto& declared = unmaterialized_columns();
+            for (size_t i = physical; i < data.column_count(); i++) {
+                const size_t declared_idx = i - physical;
+                const auto* published =
+                    declared_idx < declared.size() ? &declared[declared_idx].default_value_opt() : nullptr;
+                for (uint64_t row = 0; row < data.size(); row++) {
+                    if (data.is_null(i, row)) {
+                        continue;
+                    }
+                    if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
+                        continue; // the READ's own fill, echoed back — see the note above
+                    }
+                    std::pmr::string what{"UPDATE writes column '", resource_};
+                    what.append(declared_idx < declared.size() ? declared[declared_idx].name().c_str() : "?");
+                    what.append("', which ALTER TABLE ADD COLUMN has published in the catalog and no INSERT "
+                                "has materialized in the storage yet; insert a row carrying it first");
+                    return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
+                }
+            }
+            // erase, not resize: vector_t is not default-constructible, so resize() does not compile.
+            data.data.erase(data.data.begin() + static_cast<std::ptrdiff_t>(physical), data.data.end());
+            return core::error_t::no_error();
+        }
+
+        // REPLAY-SIDE MIRROR of the trim above, with the refusal turned into a report: the
+        // trailing columns are dropped UNCONDITIONALLY (recovery goes on to restore the
+        // materialized part of the row), and the answer names any journalled value that had
+        // to be dropped with them, so the replay loop can say what was lost instead of
+        // either losing it silently or refusing the whole row (which restores less than
+        // saying nothing would). See the replay `update` for the full reasoning.
+        [[nodiscard]] core::error_t trim_unmaterialized_payload_for_replay(vector::data_chunk_t& data) const {
+            const size_t physical = table_.column_count();
+            if (data.column_count() <= physical) {
+                return core::error_t::no_error();
+            }
+            const auto& declared = unmaterialized_columns();
+            std::pmr::string lost_columns{resource_};
+            for (size_t i = physical; i < data.column_count(); i++) {
+                const size_t published_idx = i - physical;
+                const auto* published =
+                    published_idx < declared.size() ? &declared[published_idx].default_value_opt() : nullptr;
+                for (uint64_t row = 0; row < data.size(); row++) {
+                    if (data.is_null(i, row)) {
+                        continue;
+                    }
+                    // Mirrors the live trim: a cell equal to the column's published DEFAULT is the
+                    // READ's own fill travelling back through the journal, not a value the update
+                    // wrote, so nothing is lost by dropping it and naming it here would be a false
+                    // report of data loss.
+                    if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
+                        continue;
+                    }
+                    if (!lost_columns.empty()) {
+                        lost_columns.append(", ");
+                    }
+                    lost_columns.append("'");
+                    // The payload's own alias is the WAL record's name for the column and is
+                    // always present on a replayed chunk; the declared list only knows columns
+                    // pg_attribute has published to THIS entry, which a failed upstream replay
+                    // may never have done.
+                    const size_t declared_idx = i - physical;
+                    if (data.data[i].type().has_alias()) {
+                        lost_columns.append(data.data[i].type().alias().c_str());
+                    } else if (declared_idx < declared.size()) {
+                        lost_columns.append(declared[declared_idx].name().c_str());
+                    } else {
+                        lost_columns.append("?");
+                    }
+                    lost_columns.append("'");
+                    break;
+                }
+            }
+            // erase, not resize: vector_t is not default-constructible, so resize() does not compile.
+            data.data.erase(data.data.begin() + static_cast<std::ptrdiff_t>(physical), data.data.end());
+            if (lost_columns.empty()) {
+                return core::error_t::no_error();
+            }
+            std::pmr::string what{"replay update restored the row's materialized columns, but the journalled "
+                                  "value(s) for unmaterialized column(s) ",
+                                  resource_};
+            what.append(lost_columns.c_str());
+            what.append(" were dropped — the column's materialising INSERT did not replay");
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
+        }
+
+        // EVERY read entry point starts here, and it does two things that only look unrelated.
+        //
+        // It drops the ordinals no row group can read (storage_indices, below) — which is what
+        // leaves those columns for fill_unmaterialized to answer AFTER the scan. And it hands the
+        // published list to the collection the scan is about to walk, because the pushed-down
+        // filter reads those same columns DURING the scan (row_group_t::evaluate_predicate), one
+        // layer below the fill. Do only the first and the projection answers the DEFAULT while
+        // the predicate answers NULL — the split
+        // integration/cpp/test/test_alter_add_column_unmaterialized.cpp's
+        // default_answers_the_predicate_leg pins.
+        //
+        // Bound per read rather than once here: data_table_t::compact installs a new collection
+        // under this adapter without rebuilding it.
+        std::vector<table::storage_index_t> begin_read(const std::vector<size_t>* projected_cols) const {
+            table_.row_group()->publish_unmaterialized_columns(&unmaterialized_columns());
+            return storage_indices(projected_cols);
+        }
+
+        // The caller's (catalog) ordinals reduced to the ones a row group can actually read.
+        // `projected_cols == nullptr` means "every materialized column".
+        //
+        // An ordinal at or past the physical schema is DROPPED here on purpose: it names a column
+        // pg_attribute has and no INSERT has materialized, which fill_unmaterialized answers.
+        // The result may legitimately be EMPTY — a projection naming only such columns — and that
+        // is a row-count-only scan, not an error (see table_scan_state::column_ids) — the scan
+        // must not assert on an empty column list.
+        std::vector<table::storage_index_t> storage_indices(const std::vector<size_t>* projected_cols) const {
+            std::vector<table::storage_index_t> out;
+            const size_t physical = table_.column_count();
+            if (projected_cols != nullptr) {
+                out.reserve(projected_cols->size());
+                for (size_t idx : *projected_cols) {
+                    if (idx < physical) {
+                        out.emplace_back(static_cast<int64_t>(idx));
+                    }
+                }
+                return out;
+            }
+            out.reserve(physical);
+            for (size_t i = 0; i < physical; i++) {
+                out.emplace_back(static_cast<int64_t>(i));
+            }
+            return out;
+        }
+
+        // The PROJECTION leg's half of the answer; the predicate leg's half is
+        // row_group_t::evaluate_predicate, and both write it through fill_published_default. The
+        // constant is the one row_group_t::add_column backfills into these same rows when the
+        // materializing INSERT arrives, so the answer does not move across that boundary — the
+        // same device PostgreSQL 11+ uses (pg_attribute.attmissingval, no heap rewrite).
+        //
+        // A column the projected chunk ctor left as a buffer-less placeholder is skipped: nothing
+        // reads it, and it is dropped at the cursor boundary.
+        void fill_unmaterialized(vector::data_chunk_t& chunk, uint64_t rows) const {
+            const auto& declared = unmaterialized_columns();
+            if (declared.empty() || rows == 0) {
+                return;
+            }
+            const size_t physical = table_.column_count();
+            for (size_t i = 0; i < declared.size(); i++) {
+                const size_t idx = physical + i;
+                if (idx >= chunk.column_count()) {
+                    break;
+                }
+                auto& column = chunk.data[idx];
+                if (column.data() == nullptr && column.auxiliary() == nullptr) {
+                    continue;
+                }
+                table::fill_published_default(column, &declared[i], rows);
+            }
+        }
+
         table::data_table_t& table_;
         std::pmr::memory_resource* resource_;
+        // BORROWED, may be null. See the note on the class.
+        const std::vector<table::column_definition_t>* unmaterialized_;
     };
 
 } // namespace components::storage

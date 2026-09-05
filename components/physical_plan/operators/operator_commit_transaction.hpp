@@ -9,15 +9,23 @@ namespace components::operators {
 
     // COMMIT TRANSACTION operator.
     //
-    // RPC mode (default): one txn_commit_drain_msg round-trip to the dispatcher
-    // (sole owner of transaction_manager_t) returns the snapshotted txn_data,
-    // the drained swap-info and the allocated commit_id; then
-    // storage_publish_commits / storage_publish_deletes flip MVCC state, and a
-    // final txn_publish_msg advances the ProcArray barrier.
+    // RPC mode (default): one txn_commit_drain_msg round-trip to the dispatcher (sole owner of
+    // transaction_manager_t) returns the snapshotted txn_data, the drained swap-info and the allocated
+    // commit_id; then storage_publish_commits / storage_publish_deletes flip MVCC state, and a final
+    // txn_publish_msg advances the ProcArray barrier.
     //
-    // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier and
-    // a WAL commit_txn record (with commit_id=0, since it isn't allocated yet)
-    // before the RPC-mode body.
+    // THE BODY'S STEP ORDER IS AN INVARIANT: no step that can fail may run after the first step that
+    // stamps the commit_id. The two failure-capable steps (the index insert-commit and the WAL commit
+    // marker) come first; the four stamping steps (DROP-GC remap, pg_attribute backfill, deferred
+    // index-delete queueing and the storage publishes) follow. That is what lets an early exit release the
+    // allocated commit_id with txn_discard_msg instead of pinning the horizon at commit_id - 1 for the life
+    // of the process. The full argument is at the head of that block in the .cpp.
+    //
+    // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier before the RPC-mode body. The
+    // WAL commit_txn marker is NOT part of the prefix: it is emitted in STEP 2 with the real commit_id,
+    // below the drain and the index insert-commit — a marker durable before the last refusable step would
+    // let a restart resurrect a commit the live process rejected (replay keys committed txns off the
+    // marker's transaction_id).
     //
     // commit_id() exposes the result for the dispatcher's unique_future API.
     class operator_commit_transaction_t final : public read_write_operator_t {

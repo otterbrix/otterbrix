@@ -17,12 +17,13 @@
 //   * Functions in WHERE (pruning should disable itself here — semantics preserved)
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace test_helpers;
 
-// Disk-backed (disk.on=true) end-to-end coverage: the column_pruning optimizer rule
+// Disk-backed end-to-end coverage: the column_pruning optimizer rule
 // populates node_aggregate_t::projected_cols, so the owning disk agent's
 // storage_fetch_next_batch reads ONLY the projected storage columns (a WIDE chunk
 // whose non-projected slots are placeholders, indexed by original storage position).
@@ -30,7 +31,7 @@ using namespace test_helpers;
 // validates the on-disk projection path end to end — the path the in-memory tests
 // below do NOT exercise.
 TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
-    auto config = make_test_config("/tmp/col_proj/disk_backed", /*disk_on=*/true, /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("col_proj/disk_backed"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -99,7 +100,7 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
 }
 
 TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
-    auto config = make_test_config("/tmp/col_proj/disk_backed_join", /*disk_on=*/true, /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("col_proj/disk_backed_join"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -145,9 +146,8 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
 }
 
 TEST_CASE("integration::cpp::column_projection::plain_select") {
-    auto config = test_create_config("/tmp/col_proj/plain_select");
+    auto config = test_create_config(integration_fixture_path("col_proj/plain_select"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -212,9 +212,8 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
 }
 
 TEST_CASE("integration::cpp::column_projection::select_with_where") {
-    auto config = test_create_config("/tmp/col_proj/select_where");
+    auto config = test_create_config(integration_fixture_path("col_proj/select_where"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -278,9 +277,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
 }
 
 TEST_CASE("integration::cpp::column_projection::group_by") {
-    auto config = test_create_config("/tmp/col_proj/group_by");
+    auto config = test_create_config(integration_fixture_path("col_proj/group_by"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -343,9 +341,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
 }
 
 TEST_CASE("integration::cpp::column_projection::inner_join") {
-    auto config = test_create_config("/tmp/col_proj/inner_join");
+    auto config = test_create_config(integration_fixture_path("col_proj/inner_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -447,9 +444,8 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
 }
 
 TEST_CASE("integration::cpp::column_projection::three_table_join") {
-    auto config = test_create_config("/tmp/col_proj/three_table_join");
+    auto config = test_create_config(integration_fixture_path("col_proj/three_table_join"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -508,9 +504,8 @@ TEST_CASE("integration::cpp::column_projection::three_table_join") {
 }
 
 TEST_CASE("integration::cpp::column_projection::subquery") {
-    auto config = test_create_config("/tmp/col_proj/subquery");
+    auto config = test_create_config(integration_fixture_path("col_proj/subquery"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -544,9 +539,8 @@ TEST_CASE("integration::cpp::column_projection::subquery") {
 }
 
 TEST_CASE("integration::cpp::column_projection::case_when") {
-    auto config = test_create_config("/tmp/col_proj/case_when");
+    auto config = test_create_config(integration_fixture_path("col_proj/case_when"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -580,9 +574,8 @@ TEST_CASE("integration::cpp::column_projection::case_when") {
 }
 
 TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
-    auto config = test_create_config("/tmp/col_proj/order_by");
+    auto config = test_create_config(integration_fixture_path("col_proj/order_by"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -614,9 +607,8 @@ TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
 }
 
 TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection") {
-    auto config = test_create_config("/tmp/col_proj/limit");
+    auto config = test_create_config(integration_fixture_path("col_proj/limit"));
     test_clear_directory(config);
-    config.disk.on = false;
     config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -657,7 +649,7 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
 // pre-fix in non-ASAN builds; their job is to lock the guard-chunk shape and act
 // as the ASAN tripwire.
 TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_guard") {
-    auto config = make_test_config("/tmp/col_proj/empty_guard", /*disk_on=*/true, /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("col_proj/empty_guard"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

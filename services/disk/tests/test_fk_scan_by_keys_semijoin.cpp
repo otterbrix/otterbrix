@@ -19,6 +19,7 @@
 //   * COMPOSITE key: multi-column key-tuples match on the full tuple only.
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 #include <services/disk/agent_disk.hpp>   // services::disk::fk_hash_semijoin
 #include <services/disk/manager_disk.hpp> // services::disk::table_storage_t
@@ -30,9 +31,13 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <memory_resource>
 #include <set>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace components::table;
@@ -61,28 +66,35 @@ namespace {
         // here — the tests never reach them through this wrapper); without the
         // using-declarations the derived overrides HIDE them and gcc's
         // -Woverloaded-virtual fails the -Werror build.
-        using storage_t::append;
+        // (no `using storage_t::append;` and no `using storage_t::update;` — the base declares
+        // no default bodies for those; both overloads of update are overridden below,
+        // forwarding to the inner storage like everything else. A defaulted update on the base
+        // would be a fallback living in the production interface for this double's sake.)
         using storage_t::delete_rows;
         using storage_t::scan;
-        using storage_t::update;
 
         std::pmr::vector<complex_logical_type> types() const override { return inner_.types(); }
         const std::vector<column_definition_t>& columns() const override { return inner_.columns(); }
         size_t column_count() const override { return inner_.column_count(); }
         bool has_schema() const override { return inner_.has_schema(); }
         void adopt_schema(const std::pmr::vector<complex_logical_type>& t) override { inner_.adopt_schema(t); }
-        void overlay_not_null(const std::string& c) override { inner_.overlay_not_null(c); }
         uint64_t total_rows() const override { return inner_.total_rows(); }
         uint64_t calculate_size() override { return inner_.calculate_size(); }
         void scan(data_chunk_t& o, const table_filter_t* f, int64_t l) override { inner_.scan(o, f, l); }
-        void fetch(data_chunk_t& o, const vector_t& ids, uint64_t c, const std::vector<size_t>& p) override {
-            inner_.fetch(o, ids, c, p);
+        [[nodiscard]] core::result_wrapper_t<bool> fetch(data_chunk_t& o,
+                                                         const vector_t& ids,
+                                                         uint64_t c,
+                                                         const std::vector<size_t>& p,
+                                                         const transaction_data& txn,
+                                                         fetch_visibility_t visibility) override {
+            return inner_.fetch(o, ids, c, p, txn, visibility);
         }
-        void scan_segment(int64_t s, uint64_t c, const std::function<void(data_chunk_t&)>& cb) override {
-            inner_.scan_segment(s, c, cb);
+        core::result_wrapper_t<uint64_t> append(data_chunk_t& d, transaction_data txn) override {
+            return inner_.append(d, txn);
         }
-        uint64_t append(data_chunk_t& d) override { return inner_.append(d); }
-        void update(vector_t& ids, data_chunk_t& d) override { inner_.update(ids, d); }
+        core::error_t update(vector_t& ids, data_chunk_t& d) override { return inner_.update(ids, d); }
+        core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        update(vector_t& ids, data_chunk_t& d, transaction_data txn) override { return inner_.update(ids, d, txn); }
         uint64_t delete_rows(vector_t& ids, uint64_t c) override { return inner_.delete_rows(ids, c); }
         std::pmr::memory_resource* resource() const override { return inner_.resource(); }
 
@@ -131,16 +143,37 @@ namespace {
 
     std::set<int64_t> as_set(const std::pmr::vector<int64_t>& v) { return std::set<int64_t>(v.begin(), v.end()); }
 
+    // table_storage_t is backed by a `.otbx` and nothing else — there is no file-less
+    // constructor. Each case gets a fresh file; the semi-join under test reads the table
+    // through the same storage adapter either way.
+    std::filesystem::path semijoin_otbx() {
+        static const std::filesystem::path path =
+            std::filesystem::path("/tmp") /
+            ("test_otterbrix_fk_semijoin_" + std::to_string(::getpid()) + ".otbx");
+        return path;
+    }
+
+    // Returns the path after removing any file at it, so the caller's manager creates a new one.
+    const std::filesystem::path& fresh_semijoin_otbx() {
+        static const std::filesystem::path path = [] {
+            std::filesystem::remove(semijoin_otbx());
+            return semijoin_otbx();
+        }();
+        std::filesystem::remove(path);
+        return path;
+    }
+
 } // namespace
 
 TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     // Parent: id BIGINT (key), tag BIGINT (non-key). Rows (row_ids 0..4): id = 10,20,30,40,20.
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT);
     cols.emplace_back("tag", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     const int64_t ids[] = {10, 20, 30, 40, 20};
     {
@@ -184,11 +217,12 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
 }
 
 TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT); // stored physical INT64
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     const int64_t ids[] = {10, 20, 30, 40, 20};
     {
@@ -227,11 +261,12 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
 }
 
 TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     const int64_t ids[] = {10, 20, 30, 40};
     {
@@ -269,12 +304,13 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
 }
 
 TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("a", logical_type::BIGINT);
     cols.emplace_back("b", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     // Rows (a,b) row_ids 0..3: (1,100),(2,200),(1,200),(2,100).
     const int64_t a_vals[] = {1, 2, 1, 2};

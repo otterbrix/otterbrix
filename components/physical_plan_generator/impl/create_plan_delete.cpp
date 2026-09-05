@@ -43,16 +43,20 @@ namespace services::planner::impl {
             }
 
             std::vector<size_t> required;
-            for (const auto& keys : context.indexed_keys) {
-                for (const auto& key : keys) {
-                    const auto name = key.as_string();
-                    const auto column = std::find_if(metadata->columns.begin(),
-                                                     metadata->columns.end(),
-                                                     [&](const auto& c) { return c.attname == name; });
-                    if (column == metadata->columns.end() || column->chunk_position < 0) {
-                        return {};
+            // Only the DELETE target's OWN indexes pin columns (index info is
+            // per-oid); no entry means the target has no indexes to feed.
+            if (const auto* index_info = context.index_info_for(node_delete->table_oid())) {
+                for (const auto& keys : index_info->keys) {
+                    for (const auto& key : keys) {
+                        const auto name = key.as_string();
+                        const auto column = std::find_if(metadata->columns.begin(),
+                                                         metadata->columns.end(),
+                                                         [&](const auto& c) { return c.attname == name; });
+                        if (column == metadata->columns.end() || column->chunk_position < 0) {
+                            return {};
+                        }
+                        required.push_back(static_cast<size_t>(column->chunk_position));
                     }
-                    required.push_back(static_cast<size_t>(column->chunk_position));
                 }
             }
             for (const auto& fk : node_delete->referencing_fks()) {

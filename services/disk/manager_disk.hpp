@@ -29,7 +29,6 @@
 #include <components/storage/table_storage_adapter.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
@@ -45,6 +44,7 @@
 #include <services/wal/base.hpp>
 #include <set>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -52,93 +52,278 @@ namespace services::disk {
 
     using session_id_t = ::components::session::session_id_t;
 
-    enum class storage_mode_t : uint8_t
-    {
-        IN_MEMORY = 0,
-        DISK = 1
-    };
-
-    /// Owns data_table_t + its supporting storage infrastructure.
-    /// Supports both in-memory (schema-less computing tables) and disk-backed (table.otbx) storage.
+    /// Owns data_table_t + its supporting storage infrastructure. Every table is backed by a
+    /// `table.otbx` — the file is the only substrate, there is no mode enum selecting an
+    /// alternative — so the two constructors below differ only in whether the file is created
+    /// or opened.
     class table_storage_t {
     public:
-        /// In-memory mode: computing tables (schema-less)
-        explicit table_storage_t(std::pmr::memory_resource* resource);
-
-        /// In-memory mode with explicit columns
-        explicit table_storage_t(std::pmr::memory_resource* resource,
-                                 std::vector<components::table::column_definition_t> columns);
-
-        /// Disk mode: create new table.otbx
+        /// Create new table.otbx
         table_storage_t(std::pmr::memory_resource* resource,
                         std::vector<components::table::column_definition_t> columns,
                         const std::filesystem::path& otbx_path);
 
-        /// Disk mode: load existing table.otbx
-        table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path);
+        /// Load existing table.otbx.
+        ///
+        /// `catalog_columns` is the schema overlay for a NEVER-CHECKPOINTED file (meta_block ==
+        /// INVALID_INDEX, size exactly BLOCK_START; see load_existing_database): it carries no
+        /// serialized schema of its own, so the table constructs as legitimately EMPTY with these
+        /// columns. Ignored for a checkpointed file — the file's own schema is authoritative. A
+        /// proven-young file with an EMPTY overlay is a construction error (guessing a 0-column
+        /// schema would make every INSERT fail later and further away) — UNLESS the caller passes
+        /// `allow_schemaless`, the contract for computed (relkind='g') tables whose catalog schema
+        /// is legitimately empty: their columns are adopted from appended chunks and serialized by
+        /// the first checkpoint.
+        table_storage_t(std::pmr::memory_resource* resource,
+                        const std::filesystem::path& otbx_path,
+                        std::vector<components::table::column_definition_t> catalog_columns,
+                        bool allow_schemaless = false);
 
         components::table::data_table_t& table() { return *table_; }
-        storage_mode_t mode() const { return mode_; }
 
-        // DISK ctors do file I/O (create/open/header read) + metadata-chain deserialize, all of which can
-        // fail with io_error/data_corruption. A constructor cannot return a result_wrapper_t and MUST NOT
-        // throw -- the DISK ctors run on the agent thread via bootstrap_create_disk_inner_sync (noexcept),
-        // so a throw would std::terminate. Instead the ctor records the error here; the caller
-        // (bootstrap_*_inner_sync / the manager probe) checks construction_failed() and drops the entry /
-        // drives .prev corrupt-recovery. IN_MEMORY ctors never set this.
+        /// True when the load ctor opened a proven-young .otbx (no checkpointed content;
+        /// schema overlaid from the catalog). Used by the manager to cross-check the `.wal_id`
+        /// sidecar in the REFUSING direction: a sidecar claiming a checkpoint over a young
+        /// file is a contradiction, never grounds to guess.
+        [[nodiscard]] bool never_checkpointed() const noexcept { return never_checkpointed_; }
+
+        // Both ctors do file I/O (create/open/header read) + metadata-chain deserialize, all of which
+        // can fail with io_error/data_corruption. A constructor cannot return a result_wrapper_t and
+        // MUST NOT throw -- it runs on the agent thread via bootstrap_create_disk_inner_sync
+        // (noexcept), so a throw would std::terminate. The ctor records the error here instead; the
+        // caller checks construction_failed(), drops the entry and reports the refusal loudly. The
+        // file is left byte-identical — the two-slot root inside the .otbx is the only recovery
+        // mechanism, there is no external backup.
         bool construction_failed() const noexcept { return construction_error_.contains_error(); }
         [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
-        /// Checkpoint (disk mode only, no-op/success for in-memory).
+        /// Has the underlying block manager latched a failure it cannot recover from? Both of its
+        /// latches (a write/fsync that never reached the device; a free list proven corrupt) are
+        /// STICKY by design, and both make write_header refuse to commit -- so the manager never
+        /// promotes its pending free pool again, and a caller that keeps compacting such a table
+        /// pays a full extra copy of it every round for the life of the process.
+        /// agent_disk_t::checkpoint_inner reads this and defers the entry instead — which still
+        /// feeds its unchanged prev_checkpoint_wal_id into the WAL floor, so nothing is sealed away
+        /// from a degraded table.
+        [[nodiscard]] bool storage_degraded() const noexcept;
+
+        /// Did the LAST checkpoint attempt on this table fail? Distinct from storage_degraded():
+        /// a failed header write whose previous root still stands deliberately does NOT latch,
+        /// because the retry is meant to reach the same slot again and recover a transient error.
+        /// The cost is that a PERSISTENT error there is retried forever, and each retry runs
+        /// compact() first — which, under the split free pool, can only SPEND space while no header
+        /// commits. So the entry keeps attempting its checkpoint but stops REBUILDING until one
+        /// succeeds.
+        [[nodiscard]] bool last_checkpoint_failed() const noexcept { return last_checkpoint_failed_; }
+
+        /// Does any column of this table hold a committed-update OVERLAY that only a rebuild can
+        /// fold into its segments?
+        ///
+        /// The overlay (column_data_t::updates_, written by data_table_t::update — the WAL-replay
+        /// PHYSICAL_UPDATE path) is not a segment, and the checkpoint serializes segments;
+        /// column_data_checkpointer_t::checkpoint refuses rather than write the pre-update bytes.
+        /// So the answer decides one thing only: whether the failed-round retry above may skip its
+        /// compact(). It may not while this is true — the space the gate exists to save is not
+        /// worth a committed value, and skipping the rebuild here would refuse the round anyway.
+        ///
+        /// Read through data_table_t::get_column_segment_info(), which is the only PUBLIC route
+        /// from a table to its columns' has_updates(), and which walks every segment of every
+        /// column (nested children included) building a description string per segment. That cost
+        /// is why this is asked ONLY on the failed-round path — a state one transient I/O error
+        /// wide — and never in the ordinary round.
+        ///
+        /// Over-reports in the SAFE direction: column_data_t::has_updates() answers "an
+        /// update_segment_t exists", so a column whose only update was rolled back reports true and
+        /// buys one rebuild it did not need. Under-reporting would cost a value.
+        [[nodiscard]] bool has_pending_update_overlay();
+
+        /// Does any row of this table still carry a version stamp ABOVE the watermark — an
+        /// uncommitted write, or a commit no older snapshot may see yet?
+        ///
+        /// THE SAME PREDICATE data_table_t::compact GATES ITSELF ON, asked separately because the
+        /// round has a path that does not call compact() at all. A .otbx stores no version
+        /// metadata: every row it holds reads back as plain committed. So a checkpoint taken over
+        /// a stamp above the watermark resurrects an uncommitted or deleted row at the next start,
+        /// and the failed-round retry (which deliberately skips the rebuild, see
+        /// last_checkpoint_failed) would do exactly that with the gate never consulted.
+        ///
+        /// Costs a walk of the row groups' version_info — no rebuild, no allocation — and is read
+        /// through the public data_table_t::row_group() / collection_t::has_version_above.
+        [[nodiscard]] bool has_versions_above(uint64_t watermark) const;
+
+        /// Checkpoint.
         /// W-TORN: writes data blocks + fsync, then header + fsync (2 fsync — durability before header swap).
         /// Returns out_of_memory when a column flush pin fails in
-        /// data_table_t::checkpoint; true on success (or IN_MEMORY no-op).
+        /// data_table_t::checkpoint, and unimplemented_yet when a column still carries a
+        /// committed-update overlay no rebuild folded into its segments
+        /// (column_data_checkpointer_t::checkpoint); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint();
         /// Same as checkpoint() + tracks W-TORN per-table wal_id snapshot.
         /// prev_checkpoint_wal_id_ ← old checkpoint_wal_id_; checkpoint_wal_id_ ← new_wal_id.
         /// Propagates the checkpoint() error; on error the wal_id fields stay unchanged.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(wal::id_t new_wal_id);
 
-        /// W-TORN: latest committed checkpoint wal_id for this DISK table (0 if never checkpointed / IN_MEMORY).
+        /// DOES THIS ROUND HAVE ANY PHYSICAL WORK TO DO FOR THIS TABLE?
+        ///
+        /// False means the .otbx on the device already describes this table exactly, so compacting
+        /// and rewriting it would produce the same table in different blocks at the cost of a full
+        /// copy and two fsyncs. Measured: 100 tables x 100 rows, an EMPTY round took 205.7 ms
+        /// against 124.4 ms for the round that had actually written them all.
+        ///
+        /// Everything that changes what a checkpoint would serialize counts as changed — appends
+        /// (committed or not), deletes, updates, reverts, schema growth, the ALTER rebuilds, a
+        /// compact, and a table never written at all — and that set is enforced one level down, by
+        /// data_table_t::modified_since_checkpoint. Only pending_released_blocks_ lives up HERE: a
+        /// dropped column's block ids that only checkpoint() can release. A drop also rebuilds the
+        /// data_table_t today, so the conjunct never fires on its own, but it is the ONLY durable
+        /// effect a round owes that is not derivable from the table, and a skip that dropped it
+        /// would leak the blocks silently. A failed previous checkpoint needs no conjunct: the flag
+        /// is cleared only by a COMMITTED header. A failed construction has no table to write and
+        /// answers false; its caller drops the entry (see construction_failed()).
+        ///
+        /// Answering false does NOT take the entry out of the round: it still advances its wal-id
+        /// chain (advance_wal_id_without_rewrite), persists its sidecar and contributes its
+        /// prev_checkpoint_wal_id to the round's min. Only the rebuild is skipped.
+        [[nodiscard]] bool needs_checkpoint() const noexcept;
+
+        /// The wal-id bookkeeping of a round that had nothing to write for this table: exactly what
+        /// checkpoint(wal::id_t) does on success, minus the writing.
+        ///
+        /// Both halves are literally true of a skipped entry, which is why the skip is invisible to
+        /// WAL sealing. `prev` is the root a lost commit this round would fall back to — no commit
+        /// happened, so that root is the one already on the device. `current` says every WAL record
+        /// at or below this id is already in the file: true up to the round's id, because the table
+        /// is unchanged since the last one. Recovery filters on exactly that
+        /// (integration/cpp/base_spaces.cpp: `record.id <= cp_id` -> skip) and skips nothing it
+        /// would have needed.
+        void advance_wal_id_without_rewrite(wal::id_t new_wal_id) noexcept;
+
+        /// W-TORN: latest committed checkpoint wal_id for this table (0 if never checkpointed).
+        /// Only meaningful while checkpoint_wal_id_known() is true -- see below.
         wal::id_t checkpoint_wal_id() const noexcept { return checkpoint_wal_id_; }
         /// Used by load path to seed checkpoint_wal_id_ from sidecar before WAL replay
         /// decides which records this storage already includes.
-        void set_checkpoint_wal_id(wal::id_t v) noexcept { checkpoint_wal_id_ = v; }
-        /// W-TORN: previous checkpoint wal_id (the state in the .prev backup); 0 before first overwrite.
+        void set_checkpoint_wal_id(wal::id_t v) noexcept {
+            checkpoint_wal_id_ = v;
+            checkpoint_wal_id_known_ = true;
+        }
+
+        /// THE THIRD ANSWER THIS FLOOR NEEDS, AND THE ONE A wal::id_t CANNOT CARRY.
+        ///
+        /// 0 is not a spare value here: it is the replay filter's word for "never checkpointed,
+        /// replay every record this table has". A `.otbx.wal_id` sidecar that EXISTS but could not
+        /// be read is not that — answering 0 for it re-applies records already absorbed into the
+        /// checkpointed file — and neither is it a reason to refuse the table: the .otbx opened
+        /// perfectly, and refusing a SYSTEM table's open takes the whole database with it
+        /// (bootstrap_one throws and base_spaces has no catch) with nothing in-process able to
+        /// repair it. So the entry comes up carrying "the floor is unknown", which
+        /// peek_checkpoint_wal_id_from_disk reports and the replay filter already knows how to act
+        /// on: it drops that table's records, loudly, rather than duplicating them. The state is
+        /// self-healing — the next committed checkpoint writes a real sidecar and clears it.
+        [[nodiscard]] bool checkpoint_wal_id_known() const noexcept { return checkpoint_wal_id_known_; }
+        void set_checkpoint_wal_id_unreadable() noexcept {
+            checkpoint_wal_id_ = wal::id_t{0};
+            checkpoint_wal_id_known_ = false;
+        }
+        /// W-TORN: previous checkpoint wal_id (the state of the superseded root, i.e. the root the
+        /// two-slot header still recovers if the current round's commit is lost); 0 before first overwrite.
         /// Used by checkpoint_all to compute min(prev) for safe WAL truncation.
         wal::id_t prev_checkpoint_wal_id() const noexcept { return prev_checkpoint_wal_id_; }
 
-        /// Add a new column to the live in-memory table. Replaces table_ with a new data_table_t
-        /// constructed from the current one + col. Retained as a primitive for tests and
-        /// future in-memory-sync paths; the SQL ALTER TABLE ADD COLUMN flow no longer calls
-        /// it (resolve_table reads columns from pg_attribute on every lookup).
+        /// Add a new column to the live table. Replaces table_ with a new data_table_t
+        /// constructed from the current one + col. Retained as a primitive for tests and for
+        /// the WAL-replay schema-growth path; the SQL ALTER TABLE ADD COLUMN flow no longer
+        /// calls it (resolve_table reads columns from pg_attribute on every lookup).
         void add_column(components::table::column_definition_t& col);
 
-        /// Physical column compaction. Drops the column whose name matches
-        /// `attname` from the IN_MEMORY data_table_t, reclaiming its physical storage.
-        /// Implemented via the data_table_t(parent, removed_column) rebuild constructor —
-        /// row_groups are rebuilt without the dropped column (collection_t::remove_column
-        /// per-segment). Used by VACUUM after pg_computed_column GC: columns that no
-        /// longer have any live attrefcount>0 row are physically dead and can be reclaimed.
+        /// Physical column compaction. Drops the column whose name matches `attname` from the live
+        /// data_table_t, via the data_table_t(parent, removed_column) rebuild constructor
+        /// (collection_t::remove_column per-segment). Used by VACUUM after pg_computed_column GC:
+        /// columns with no live attrefcount>0 row left are physically dead and can be reclaimed.
         ///
-        /// No-op for DISK-backed storages (would require segment rewrites + checkpoint
-        /// coordination). No-op if the column is missing.
+        /// The rebuild itself costs nothing: it SHARES every surviving column with the successor
+        /// collection and simply forgets the dropped one, so not a single block is allocated.
+        /// Returning the dropped column's blocks does NOT run here, because outside a checkpoint
+        /// round it could only SPEND space and never return it — the split free pool drains
+        /// pending_free_ into reusable_ in exactly one place, promote_durable_root, reached only
+        /// once a header naming the new root is on the device. (See the long note at
+        /// agent_disk_t::maybe_cleanup_inner; measured at +2.9 MB per VACUUM call for the sibling
+        /// case.) So the ids are NAMED here — the last moment they are knowable, since the rebuild
+        /// destroys the column object that holds them — and released by checkpoint().
         ///
-        /// Returns true if the column was found and removed; false otherwise (column
-        /// missing OR storage is DISK-mode).
+        /// Returns true if the column was found and removed; false (no-op) if it was missing.
         bool drop_column(const std::string& attname);
 
+        /// Rename ONE column of the live table — the storage half of ALTER TABLE RENAME COLUMN.
+        ///
+        /// The storage's name for a column is a CACHE of the catalog's; the identity is the
+        /// column's pg_attribute.attoid, which a rename does not move. Keeping the two in step here
+        /// is what lets the append path's column expansion and drop_column — both of which still
+        /// address columns by name — go on working straight after the statement, without waiting
+        /// for a restart. Nothing is allocated, moved or released, and no successor data_table_t is
+        /// built (a name is part of no segment or block), so unlike drop_column there are no ids to
+        /// park in pending_released_blocks_ and no adapter to rebuild.
+        ///
+        /// CRASH WINDOW, stated rather than hidden: the rename is in memory until this table's next
+        /// checkpoint serializes the schema, while the catalog half is durable at the WAL commit
+        /// marker, so a crash in between reloads a storage carrying the OLD name against a catalog
+        /// carrying the NEW one. A NAME-keyed bootstrap walk would read that as a drop and COST THE
+        /// COLUMN; the walk compares attoids instead, sees no drop, and repairs the stale name from
+        /// the catalog (rearm_dropped_column_blocks_sync). The window is closed by IDENTITY, not by
+        /// making this call replayable.
+        ///
+        /// true = renamed; false = this storage never carried `old_attname`;
+        /// error = `new_attname` is already a column here, or no table is loaded.
+        [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_attname,
+                                                                 const std::string& new_attname);
+
     private:
-        storage_mode_t mode_;
+        /// The deferred half of drop_column, run from checkpoint() once the new root's
+        /// pointer stream is on the device and immediately before the free list that the
+        /// committing header will name is serialized. Frees only the blocks it can PROVE the
+        /// dropped column owned alone; anything else is left to its owner. See the definition.
+        void release_dropped_column_blocks();
+
         core::filesystem::local_file_system_t fs_;
         components::table::storage::buffer_pool_t buffer_pool_;
         components::table::storage::standard_buffer_manager_t buffer_manager_;
         std::unique_ptr<components::table::storage::block_manager_t> block_manager_;
         std::unique_ptr<components::table::data_table_t> table_;
+        // Block ids named by a column that drop_column has already removed from table_, still to be
+        // released. Filled by drop_column (the only moment they can be enumerated — the rebuild
+        // destroys the column object that knows them) and drained by release_dropped_column_blocks()
+        // inside the checkpoint that can commit the release. Not durable, and deliberately so: a
+        // crash before that checkpoint leaves the durable root still naming those blocks and the
+        // catalog tombstone still hiding the column. Space leaks until something re-derives the
+        // drop; nothing is corrupt and nothing is lost.
+        std::pmr::vector<uint64_t> pending_released_blocks_;
         wal::id_t checkpoint_wal_id_{0};
+        // A storage built by the CREATE ctor has never been checkpointed and knows it; only a
+        // LOAD whose sidecar could not be read clears this (see checkpoint_wal_id_known()).
+        bool checkpoint_wal_id_known_{true};
         wal::id_t prev_checkpoint_wal_id_{0};
+        // See last_checkpoint_failed(). Cleared by a successful checkpoint, so a transient
+        // failure costs exactly one un-compacted round.
+        bool last_checkpoint_failed_{false};
         // Set by the DISK ctors on file/metadata failure instead of throwing (see construction_failed()).
         core::error_t construction_error_{core::error_t::no_error()};
+        // Set by the DISK load ctor when the .otbx was proven young (never checkpointed)
+        // and constructed empty with the catalog's schema. See never_checkpointed().
+        bool never_checkpointed_{false};
+#ifdef DEV_MODE
+        // The DEV_MODE safety net for a hand-maintained flag, in the shape segment_tree_t::flush
+        // uses: a cheap description of what the durable root was written from, captured whenever the
+        // table is known clean and re-checked every time needs_checkpoint() is about to answer
+        // false. A mutation path that forgot to mark would otherwise never reach the disk and be
+        // lost at restart, silently; this aborts on the spot. See capture_clean_fingerprint().
+        struct clean_fingerprint_t {
+            uint64_t total_rows = 0;
+            uint64_t committed_rows = 0;
+            uint64_t column_count = 0;
+        };
+        clean_fingerprint_t clean_fingerprint_{};
+        void capture_clean_fingerprint() noexcept;
+#endif
     };
 
     // Storage entry per collection. Namespace-scope so agent_disk_t can own a
@@ -146,63 +331,245 @@ namespace services::disk {
     // Ownership migrates across actors by rvalue unique_ptr move only.
     struct collection_storage_entry_t {
         table_storage_t table_storage;
+        // Columns pg_attribute publishes that this storage has not materialised yet. Declared
+        // BEFORE `storage` because every adapter built below borrows it; see the long note at
+        // note_column_identity for who fills it and why the list is authoritative rather than a
+        // hint. Owned here, so it survives every add_column / drop_column adapter rebuild.
+        std::vector<components::table::column_definition_t> unmaterialized_columns;
         std::unique_ptr<components::storage::storage_t> storage;
-        // Actual on-disk path for DISK-mode tables. Empty for IN_MEMORY entries.
-        // Used by checkpoint_all (sidecar lands next to .otbx) and
-        // drop_storage_one_local (physical file removal).
+        // Actual on-disk path of this table's .otbx. Used by checkpoint_all (sidecar
+        // lands next to .otbx) and drop_storage_one_local (physical file removal).
         std::filesystem::path otbx_path;
         // Computing (relkind='g', dynamic-schema) table, created schema-less. Only
         // these may hold several columns with the same name but different types
         // (multi-type fields); regular tables coerce.
         bool is_computed = false;
 
-        /// In-memory: schema-less (computing / relkind='g' dynamic schema)
-        explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
-            : table_storage(resource)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , is_computed(true) {}
-
-        /// In-memory: with columns
-        explicit collection_storage_entry_t(std::pmr::memory_resource* resource,
-                                            std::vector<components::table::column_definition_t> columns)
-            : table_storage(resource, std::move(columns))
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource)) {
-        }
-
-        /// Disk: create new table.otbx
+        /// Create new table.otbx. The computed (relkind='g') flag is passed EXPLICITLY by
+        /// every caller: a "zero columns ⇒ computed" inference is wrong here because this ctor
+        /// also serves WAL-replay synthesis, where a computed table's storage is rebuilt from a
+        /// WAL chunk's NON-empty column list — the inference would drop the flag there and the
+        /// next type-variant insert would be glued into the wrong column. Callers derive the
+        /// flag from the fact: pg_class.relkind where the row exists (replay synthesis), the
+        /// planner's own relkind derivation where it does not yet (runtime CREATE).
         collection_storage_entry_t(std::pmr::memory_resource* resource,
                                    std::vector<components::table::column_definition_t> columns,
-                                   const std::filesystem::path& otbx_path_in)
+                                   const std::filesystem::path& otbx_path_in,
+                                   bool is_computed_create)
             : table_storage(resource, std::move(columns), otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , otbx_path(otbx_path_in) {}
+            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     resource,
+                                                                                     &unmaterialized_columns))
+            , otbx_path(otbx_path_in)
+            , is_computed(is_computed_create) {}
 
-        /// Disk: load existing table.otbx
-        collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path_in)
-            : table_storage(resource, otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , otbx_path(otbx_path_in) {}
+        /// Load existing table.otbx. `catalog_columns` is the schema overlay for a
+        /// proven-young (never-checkpointed) file; ignored for a checkpointed one.
+        /// `is_computed_load` marks a computed (relkind='g') table: the empty catalog
+        /// schema is legal for it (allow_schemaless) and the entry keeps its dynamic-schema
+        /// append semantics across restarts.
+        collection_storage_entry_t(std::pmr::memory_resource* resource,
+                                   const std::filesystem::path& otbx_path_in,
+                                   std::vector<components::table::column_definition_t> catalog_columns,
+                                   bool is_computed_load = false)
+            : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
+            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     resource,
+                                                                                     &unmaterialized_columns))
+            , otbx_path(otbx_path_in)
+            , is_computed(is_computed_load) {}
 
-        /// Update live in-memory schema: add new column to table_ and recreate the storage adapter.
+        /// Update the live schema: add new column to table_ and recreate the storage adapter.
         void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {
             table_storage.add_column(col);
-            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
+            // The column now HAS rows; it must stop being answered with NULLs. take_column_identity
+            // already drops it on the materialising path, but the erase belongs next to the
+            // materialisation itself so no future caller can add a column and leave the claim behind.
+            drop_unmaterialized(col.name());
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     res,
+                                                                                     &unmaterialized_columns);
         }
 
-        /// Physical column compaction: drop column from in-memory table_ and
+        /// Physical column compaction: drop the column from the live table_ and
         /// recreate the storage adapter (the adapter holds a data_table_t& that becomes
         /// dangling after the rebuild). Returns true if the column was found and removed.
         bool drop_column(const std::string& attname, std::pmr::memory_resource* res) {
             if (!table_storage.drop_column(attname)) {
                 return false;
             }
-            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     res,
+                                                                                     &unmaterialized_columns);
             return true;
+        }
+
+        /// Rename a column of the live table_. Deliberately does NOT recreate the storage
+        /// adapter, and that is not an omission: drop_column has to because its rebuild
+        /// move-assigns a NEW data_table_t over table_ and leaves the adapter's data_table_t&
+        /// dangling. A rename mutates the SAME object in place, and the adapter reads columns()
+        /// straight through that reference, so it already answers with the new name.
+        [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_attname,
+                                                                 const std::string& new_attname) {
+            return table_storage.rename_column(old_attname, new_attname);
+        }
+
+        // IDENTITY FOR A COLUMN THAT DOES NOT EXIST YET.
+        //
+        // Every storage column must carry its pg_attribute.attoid, because that is what the
+        // bootstrap reconciliation compares on (see rearm_dropped_column_blocks_sync). Three of the
+        // four ways a storage column comes into being are handed the catalog row that created it —
+        // CREATE TABLE / CREATE MATERIALIZED VIEW through build_create_table_writes, and both
+        // catalog-driven load paths through collect_catalog_columns_sync. ALTER TABLE ADD COLUMN is
+        // not: it writes only pg_attribute, and the storage column is materialised LATER, by the
+        // schema-growth stage of storage_append_inner, out of an INSERT chunk carrying nothing but
+        // an alias-tagged type — a stage with no catalog to ask, since pg_attribute is agent 0's
+        // and an append handler may not take a second cross-actor await.
+        //
+        // So the identity is DELIVERED AHEAD OF THE COLUMN and parked here, keyed by the only thing
+        // that future chunk will carry — the name. Two publishers cover the live case and every
+        // crash: the ALTER's own commit (manager_disk_t::update_pg_attribute_commit_id_fields
+        // routes each added_at marker to the owning agent), reaching this entry before the client's
+        // next statement by mailbox FIFO; and bootstrap (rearm_dropped_column_blocks_sync), by
+        // OID-set difference rather than name match, which re-publishes whatever a crash discarded
+        // before any INSERT can run. A pending entry is consumed on use and is NOT durable: it
+        // describes a column that does not exist yet, and bootstrap re-derives it from the two
+        // durable facts every time.
+        //
+        // THE SAME LIST ALSO ANSWERS THE READS. Until it materialises, the column is one
+        // pg_attribute SHOWS and no row group holds, so the entry carries its TYPE and its DEFAULT
+        // alongside its identity and the storage adapter presents those columns as trailing
+        // constant ones — the default in every row where the ALTER declared one, NULL where it did
+        // not (see table_storage_adapter_t). Publishing therefore has to be complete, not
+        // best-effort: adopt_catalog_columns() re-derives the set on EVERY load, bootstrap and
+        // lazy alike.
+        //
+        // THE DEFAULT IS PART OF THE PUBLICATION, not a decoration on it. PostgreSQL 11+ answers
+        // ALTER TABLE ADD COLUMN ... DEFAULT out of pg_attribute.attmissingval without rewriting
+        // the table, and this list is the same device: the read below it and the backfill
+        // row_group_t::add_column performs when the column finally materialises BOTH take the
+        // constant from here, which is what makes the answer identical on either side of the
+        // materialisation. A publication that dropped it would make the column read NULL and then
+        // flip to the default the moment some INSERT carried it.
+        void note_column_identity(std::string attname,
+                                  std::uint32_t attoid,
+                                  const components::types::complex_logical_type& type,
+                                  const std::optional<components::types::logical_value_t>& default_value = {}) {
+            if (attname.empty() || attoid == 0) {
+                return;
+            }
+            // A column the storage already carries is materialised, whatever a stale note says.
+            // Claiming it here would give every chunk a second, all-NULL copy of a column that
+            // has data.
+            for (const auto& column : table_storage.table().columns()) {
+                if (column.name() == attname) {
+                    return;
+                }
+            }
+            for (auto& p : unmaterialized_columns) {
+                if (p.name() == attname) {
+                    if (p.attoid() == 0) {
+                        p.set_attoid(attoid);
+                    }
+                    // Same rule as the attoid: a publisher that KNOWS the default completes a
+                    // parked entry that does not, and none overwrites one that already has it.
+                    // The two publishers see different halves — the ALTER's own commit carries
+                    // the default it just encoded, a re-derivation from pg_attribute carries
+                    // whatever that scan read — so first-writer-wins would lose it whenever the
+                    // poorer publisher happened to run first.
+                    if (!p.has_default_value() && default_value.has_value()) {
+                        p.set_default_value(default_value);
+                    }
+                    return;
+                }
+            }
+            components::table::column_definition_t def(std::move(attname), type);
+            def.set_attoid(attoid);
+            def.set_default_value(default_value);
+            unmaterialized_columns.push_back(std::move(def));
+        }
+
+        // The parked publication for `attname`, or nullptr. Distinct from take_column_identity:
+        // that one CONSUMES the entry, and the materialising caller needs to read the DEFAULT out
+        // of it (the constant row_group_t::add_column backfills into every pre-existing row)
+        // before the consumption drops it.
+        [[nodiscard]] const components::table::column_definition_t*
+        find_unmaterialized(const std::string& attname) const noexcept {
+            for (const auto& p : unmaterialized_columns) {
+                if (p.name() == attname) {
+                    return &p;
+                }
+            }
+            return nullptr;
+        }
+
+        // 0 = nothing published for this name. The caller is the one materialising the column,
+        // so the entry is dropped on the way out: it has served its single purpose — and dropping
+        // it is also what stops the adapter answering NULLs for a column that now has rows.
+        std::uint32_t take_column_identity(const std::string& attname) {
+            for (auto it = unmaterialized_columns.begin(); it != unmaterialized_columns.end(); ++it) {
+                if (it->name() == attname) {
+                    const auto attoid = it->attoid();
+                    unmaterialized_columns.erase(it);
+                    return attoid;
+                }
+            }
+            return 0;
+        }
+
+        void drop_unmaterialized(const std::string& attname) {
+            for (auto it = unmaterialized_columns.begin(); it != unmaterialized_columns.end(); ++it) {
+                if (it->name() == attname) {
+                    unmaterialized_columns.erase(it);
+                    return;
+                }
+            }
+        }
+
+        // Re-derive the published set from a catalog column list, by the SAME oid-set difference
+        // rearm_dropped_column_blocks_sync uses. Called on every LOAD (bootstrap and lazy), which is
+        // what makes the set complete after a restart — the pg_attribute row is durable, the parked
+        // note is not.
+        //
+        // The NAME is checked alongside the oid as a guard, not as a second identity: a storage
+        // whose columns carry attoid 0 would match nothing on the oid alone, and the whole catalog
+        // would be published as unmaterialised, doubling every column in every chunk this adapter
+        // fills. A name collision means the column is physically there whatever its identity says.
+        void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns) {
+            for (const auto& def : catalog_columns) {
+                if (def.attoid() == 0) {
+                    continue; // relkind='g' columns live in pg_computed_column and carry none
+                }
+                bool in_storage = false;
+                for (const auto& column : table_storage.table().columns()) {
+                    if (column.attoid() == def.attoid() || column.name() == def.name()) {
+                        in_storage = true;
+                        break;
+                    }
+                }
+                if (!in_storage) {
+                    // The DEFAULT travels with the type here for the same reason it travels on the
+                    // ALTER's marker: it is what the adapter answers and what the materialisation
+                    // backfills. A catalog column list that carries none publishes none and the
+                    // column reads NULL — so collect_catalog_columns_sync decodes attdefspec on
+                    // the MANAGER's resource, not on its scan arena: a logical_value_t copy keeps
+                    // its source resource pointer and this value outlives that scan.
+                    note_column_identity(def.name(), def.attoid(), def.type(), def.default_value_opt());
+                }
+            }
         }
     };
 
+    // One tombstoned pg_class row, as scan_dropped_oids_sync reports it: the table's own oid,
+    // the namespace oid its `.otbx` directory is keyed by, and the sentinel delete_id.
+    struct dropped_class_row_t {
+        components::catalog::oid_t oid;
+        components::catalog::oid_t namespace_oid;
+        std::uint64_t delete_id;
+    };
+
     // Deferred DROP TABLE GC entry: file path + commit_id of the DROP plus the
-    // standard sidecars (`.wal_id`, `.prev`). on_horizon_advanced iterates the
+    // standard sidecar (`.wal_id`). on_horizon_advanced iterates the
     // per-agent slice and physically removes entries whose
     // dropped_at_commit_id < new_horizon (no live snapshot can reference them).
     // Passed by-value across the actor boundary.
@@ -213,20 +580,33 @@ namespace services::disk {
         std::pmr::vector<std::filesystem::path> sidecar_paths;
     };
 
+    // The engine owns the `<table>.otbx.*` sidecar namespace and this build writes exactly one
+    // sidecar (`.wal_id`, staged via `.wal_id.tmp`). Any other name in that namespace — including
+    // the whole-file backup / quarantine sidecars of builds predating shadow paging — makes the
+    // on-disk state ambiguous: returns data_corruption naming the stray file, and touches NOTHING
+    // (the stray is the operator's evidence; guessing is forbidden). no_error() when the namespace
+    // is clean. Called by load_storage_disk_sync before any probe open; free-standing so tests can
+    // assert the refusal's error value directly.
+    [[nodiscard]] core::error_t verify_otbx_sidecars(const std::filesystem::path& otbx_path,
+                                                     std::pmr::memory_resource* resource);
+
     // Index-bootstrap row: one entry per live pg_index row, populated by
     // scan_alive_pg_index_sync() and consumed by base_spaces to spawn
-    // index_agent_disk_t actors. Non-1:1 mappings from pg_index:
+    // index agent actors. Non-1:1 mappings from pg_index:
     //   keys        ← indkey, a CSV of attoids resolved to attnames via pg_attribute.
     //   ready_since ← indisvalid sentinel: 1 if valid, 0 if backfill uncommitted
     //                 (base_spaces skips ready_since==0 as an unfinished build).
-    //   name        ← pg_class.relname for indexrelid (no pg_index column).
-    //   type        — pg_index has no indtype column; defaults to index_type::single,
-    //                 which base_spaces uses to pick the on-disk extension
-    //                 (.bitcask vs .btree) when reconstructing the agent.
+    //   type        ← indtype, decoded via index_type_from_indtype_code. NOT
+    //                 defaulted: a pg_index row whose indtype is missing or
+    //                 outside the alphabet is catalog corruption — the scan
+    //                 fails LOUDLY (error log + abort) instead of guessing a
+    //                 backend and handing a bitcask directory to a B+tree reader.
+    // No name field: the on-disk index layout and every layer below the planner
+    // are keyed by (table_oid, indexrelid); the human-readable name lives only
+    // in pg_class.
     struct pg_index_row_t {
         components::catalog::oid_t oid;
         components::catalog::oid_t table_oid;
-        std::pmr::string name;
         components::logical_plan::index_type type;
         components::logical_plan::keys_base_storage_t keys;
         std::uint64_t ready_since;
@@ -234,8 +614,7 @@ namespace services::disk {
         explicit pg_index_row_t(std::pmr::memory_resource* resource)
             : oid(components::catalog::INVALID_OID)
             , table_oid(components::catalog::INVALID_OID)
-            , name(resource)
-            , type(components::logical_plan::index_type::single)
+            , type(components::logical_plan::index_type::no_valid)
             , keys(resource)
             , ready_since(0) {}
     };
@@ -264,8 +643,8 @@ namespace services::disk {
                        log_t& log);
         ~manager_disk_t();
 
-        // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
-        // create in-memory storages on the first PHYSICAL_INSERT for tables without an .otbx).
+        // True if a storage entry is registered for `table_oid` (used by WAL replay to decide
+        // whether the first PHYSICAL_INSERT for a table has to synthesise its .otbx).
         // The sync probe into the agent slice is only safe single-threaded: callers must
         // be pre-scheduler-start bootstrap or already inside the manager's mailbox lock.
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
@@ -276,45 +655,132 @@ namespace services::disk {
                 return false;
             return agents_[idx]->has_storage_sync(table_oid);
         }
-        // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
-        wal::id_t peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
-                                                   components::catalog::oid_t database_oid) const noexcept;
+        // Observability: does any OPEN fetch-next cursor still target `table_oid`? A live
+        // cursor gates compact() on that oid, so this is how a test observes the gate going up
+        // and coming back down. Same single-threaded constraint as has_storage above.
+        bool has_active_scan_for_oid_sync(components::catalog::oid_t table_oid) const noexcept {
+            if (agents_.empty())
+                return false;
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (idx >= agents_.size() || agents_[idx] == nullptr)
+                return false;
+            return agents_[idx]->has_active_scan_for_oid(table_oid);
+        }
+        // Read the .otbx.wal_id sidecar directly from disk without loading the storage, or the
+        // reason it could not be read.
+        //
+        // THE WRAPPER IS THE WHOLE POINT. wal::id_t{0} is the replay filter's word for "this table
+        // has never been checkpointed, replay every record it has", so answering an unreadable
+        // sidecar with 0 does not lose a diagnostic — it re-applies records already absorbed into
+        // the checkpointed .otbx. Here 0 means only "no sidecar exists, so no checkpoint ever
+        // committed"; every other way of not getting an answer (a short or zero-length sidecar, an
+        // unnamed namespace, no configured path, a loaded entry whose floor came up unknown)
+        // travels the error side.
+        //
+        // "PRESENT BUT SHORT" IS A CRASH IMAGE, not corruption: even with the atomic writer
+        // (stage_checkpoint_sidecar + publish_checkpoint_sidecar in agent_disk.cpp) a crash
+        // between the staging write and the rename is legitimate. That is why an unreadable
+        // sidecar is reported rather than made fatal to the table's open — see
+        // table_storage_t::checkpoint_wal_id_known().
+        core::result_wrapper_t<wal::id_t>
+        peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
+                                         components::catalog::oid_t database_oid) const;
 
         // Load a user-table storage from its .otbx file on demand. Called by WAL replay
         // when it encounters a record for a disk-backed table that hasn't been loaded yet.
-        void load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
-                                              components::catalog::oid_t database_oid);
+        //
+        // NO FILE IS no_error(): replay legitimately runs ahead of a table's first checkpoint
+        // and synthesises the storage from the record's own chunk. A FILE THAT DID NOT LOAD is
+        // the error, and the two must not arrive as the same answer — the caller's next move
+        // after "no storage" is to CREATE one at that very path, which over a file that exists
+        // but did not open is how a table that could still be repaired stops being one.
+        [[nodiscard]] core::error_t load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
+                                                                     components::catalog::oid_t database_oid);
 
-        // Synchronous storage creation for initialization (before schedulers start).
-        void create_storage_with_columns_sync(components::catalog::oid_t table_oid,
-                                              components::catalog::oid_t database_oid,
-                                              std::vector<components::table::column_definition_t> columns);
+        // Synchronous DISK storage creation (before schedulers start): new .otbx at `otbx_path`.
+        // Used by bootstrap (system tables), rehydrate, and base_spaces' WAL-replay synthesis.
+        // `is_computed` is the pg_class.relkind='g' fact, resolved by the caller — replay synthesis
+        // reads it via relkind_for_oid_sync (pg_class is final by then); bootstrap and rehydrate
+        // pass false (system tables are never computed; rehydrate's scan is filtered to 'r'/'m').
+        //
+        // AND IT REPORTS. The agent answers a create with one bool covering two unrelated outcomes
+        // — "this agent already owns the oid" and "the .otbx could not be built at all". The manager
+        // tells them apart without changing that contract: after a false, the owning agent either
+        // holds the oid (a legitimate skip, no_error) or does not (the create failed, io_error). Its
+        // callers are recovery walks that go on to append into whatever came up, so the difference
+        // is the difference between a no-op and rows written nowhere.
+        [[nodiscard]] core::error_t create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                                             components::catalog::oid_t database_oid,
+                                                             std::vector<components::table::column_definition_t> columns,
+                                                             const std::filesystem::path& otbx_path,
+                                                             bool is_computed);
         // System catalog (pg_*) bootstrap. Called from base_spaces during PHASE 1
         // before any actor is spawned. Creates the system-table .otbx files on a fresh
         // start and picks up existing ones on subsequent starts; idempotent w.r.t. the
         // resulting `storages_` map — collections are keyed by `pg_catalog.<name>`.
         void bootstrap_system_tables_sync();
-        // Walk config_.path looking for user-table .otbx files
-        // (${db_oid}/${tbl_oid}/table.otbx where tbl_oid >= FIRST_USER_OID) and
-        // load each into storages_ via load_storage_disk_sync. Called by
-        // base_spaces after bootstrap_system_tables_sync so that subsequent
-        // WAL replay can (1) read each user table's checkpoint_wal_id sidecar
-        // for filtering and (2) avoid synthesising phantom storages with
-        // possibly-wrong schemas from a single WAL chunk.
+        // Walk config_.path for user-table .otbx files (${db_oid}/${tbl_oid}/table.otbx with
+        // tbl_oid >= FIRST_USER_OID) and load each into storages_ via load_storage_disk_sync.
+        // Called by base_spaces after bootstrap_system_tables_sync so that WAL replay can read each
+        // table's checkpoint_wal_id sidecar for filtering, instead of synthesising phantom storages
+        // with possibly-wrong schemas from a single WAL chunk.
         void load_user_table_storages_sync();
-        // Rehydrate the in-memory storage SHELL for every alive user table that
-        // is present in the persisted pg_class catalog but whose row storage was
-        // not loaded by load_user_table_storages_sync (no .otbx on disk — the
-        // IN_MEMORY relstoragemode case). pg_class persists unconditionally, so on
-        // reopen a CREATE TABLE IF NOT EXISTS sees the table "exists" and skips
-        // storage creation, and resolve_table returns the schema, yet the disk
-        // agent owns no storage at that oid — so storage_append no-ops (returns
-        // 0,0) and scans see nothing. Reconstructs each missing storage from its
-        // pg_attribute column definitions so the catalog and the storage layer
-        // agree. Pre-scheduler-start, single-threaded (same window as
-        // load_user_table_storages_sync). Skips relkinds without row storage
-        // (views, computed/virtual tables) and any oid already loaded.
-        void rehydrate_in_memory_user_storages_sync();
+        // Recreate the missing .otbx for every alive user table present in the persisted pg_class
+        // catalog but whose storage load_user_table_storages_sync did not load: a freshly created
+        // .otbx's directory entry is not fsynced, so a crash can durably keep the catalog row while
+        // losing the file. pg_class persists unconditionally, so on reopen a CREATE TABLE IF NOT
+        // EXISTS sees the table "exists" and skips storage creation, and resolve_table returns the
+        // schema, yet the disk agent owns no storage at that oid — so storage_append REFUSES and
+        // every scan refuses with it: answering (0,0) and an empty result would make the state
+        // reachable AND silent, with nothing above the storage layer able to notice. Each missing
+        // storage is rebuilt from its pg_attribute column definitions. Pre-scheduler-start,
+        // single-threaded (same window as load_user_table_storages_sync). Skips relkinds without
+        // pg_attribute row storage (views, sequences; computed tables are recovered by WAL replay
+        // synthesis, their schema is not in pg_attribute) and any oid already loaded.
+        //
+        // ANSWERS WITH THE NUMBER OF DIVERGENCES IT COULD NOT CLOSE. A table whose pg_attribute
+        // columns do not resolve cannot be rebuilt — a zero-column storage is worse than none, and
+        // refusing the start would repeat on every start over a catalog nothing inside this process
+        // can repair — so the skip is right and stays; what was wrong is that it was SILENT, in the
+        // one walk written specifically to notice this state. Four legs return before a single table
+        // is examined (no disk agents, an empty config path, pg_class not loaded, pg_class too short
+        // to scan) and a count of 0 from any of them is byte-for-byte the answer a healthy start
+        // gives, while the one production caller reads "> 0"; those four travel the error side, so 0
+        // means only "every alive table has storage behind it".
+        [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
+        // Re-derive a column drop whose physical release a crash discarded.
+        //
+        // The commit path drops the column from the live table and NAMES its blocks into
+        // table_storage_t::pending_released_blocks_; the checkpoint releases them. That set lives
+        // only in memory, so a crash in between loses it while the disk keeps the pg_attribute
+        // tombstone (durable through the WAL commit marker) AND the physically present column. The
+        // table then reloads with the column back in its collection and nothing downstream can
+        // re-derive the drop — compact() least of all, since after the reload the column is
+        // genuinely part of the collection. The space leaks forever.
+        //
+        // This is the one place that can notice: it compares each loaded user table's own
+        // (checkpointed) column names against the LIVE pg_attribute set and hands every
+        // storage-only column to table_storage_t::drop_column — the same primitive the commit path
+        // calls. The rebuild allocates nothing (every surviving column is SHARED with the
+        // successor); the bytes move at the next checkpoint, exactly as on the live path. Re-arming
+        // WITHOUT dropping would be a no-op: the release proves non-ownership by asking whether the
+        // live collection still names the id, and a column left in place answers yes to all of them.
+        // The measurement behind that no-op, and why the key is the attoid and NOT the column name,
+        // are at the definition in manager_disk_bootstrap.cpp.
+        //
+        // ORDERING (base_spaces): after BOTH user-table walks — the storage half must be loaded —
+        // and after WAL replay, since the catalog half is not final until the tombstone is replayed
+        // and running it earlier would read an un-replayed ADD COLUMN as a drop and physically
+        // remove a surviving column. Before bootstrap_indexes_sync. Pre-scheduler-start and
+        // single-threaded, which is why the comparison lives here and not in the checkpoint round,
+        // where the disk agent holds no catalog.
+        //
+        // Computed (relkind='g') tables are excluded at the source (scan_live_table_oids_sync yields
+        // only 'r'/'m'): their schema is in pg_computed_column, so an empty pg_attribute set would
+        // read as "every column dropped". An unreadable or contradictory catalog is reported at
+        // error level and NOTHING is dropped — a leak is recoverable on the next start, an emptied
+        // table is not.
+        void rearm_dropped_column_blocks_sync();
         // Synchronous scan of pg_class.oid column, returning the set
         // of user-table OIDs (oid >= FIRST_USER_OID) currently alive in the
         // catalog. Called by base_spaces between system-record replay and
@@ -322,18 +788,39 @@ namespace services::disk {
         // (whose .otbx and pg_class row are gone) are skipped instead of
         // resurrecting a phantom storage.
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
-
-        // Index-bootstrap helper: scan pg_class for every live user-OID whose
-        // relkind is 'r' (regular table) or 'm' (materialized view). These are
-        // the OIDs for which manager_index_t needs an empty engine populated
-        // at startup (before any CREATE INDEX-driven rebuild can populate
-        // per-index data). Called by base_spaces between
-        // load_user_table_storages_sync and bootstrap_indexes_sync, pre-
-        // scheduler-start (single-threaded).
+        // Resolve a single table's pg_class.relkind (single-threaded bootstrap scan of pg_class cols
+        // {0=oid, 3=relkind} on agents_[0]). Answers '\0' when the catalog does not know the oid —
+        // callers read that as "not computed", which is right for a table pg_class carries no row
+        // for. load_storage_disk_sync uses it to recognise computed (relkind='g') tables, whose
+        // catalog schema is legitimately empty and whose entries keep dynamic-schema semantics.
         //
-        // Excludes system OIDs (oid < FIRST_USER_OID) and tombstoned rows.
-        // Independent of (but consistent with) alive_user_oids_sync() which
-        // has no relkind filter and is used by WAL replay.
+        // '\0' STAYS IN BAND FOR "NO SUCH ROW" AND ONLY THAT. "pg_class is not loaded, or is too
+        // short to carry a relkind column" is not an answer at all: every consumer turns '\0' into
+        // is_computed = false, so a DOCUMENT table recovered through such a path would come back as
+        // an ordinary row-storage table with its dynamic-schema semantics silently gone. That leg
+        // travels the wrapper. It should be unreachable in production — bootstrap_system_tables_sync
+        // refuses to start unless every system table came up — and an unreachable state that
+        // reports is exactly what makes the claim checkable.
+        core::result_wrapper_t<char> relkind_for_oid_sync(components::catalog::oid_t table_oid) const;
+
+        // Resolve a single table's pg_class.relnamespace (same single-threaded bootstrap scan shape,
+        // cols {0=oid, 2=relnamespace}). Returns INVALID_OID when the catalog does not know the oid.
+        //
+        // This is what names the directory a table's `.otbx` lives in:
+        // `${db_root}/${relnamespace}/${table_oid}/table.otbx`. Every recovery path that has to
+        // REBUILD that path — WAL-replay synthesis, the deferred-DROP GC sweep, the rehydrate of a
+        // lost file — must resolve it here rather than substitute well_known_oid::main_database (4),
+        // which is not a namespace oid at all and is one no user table can carry (CREATE DATABASE
+        // allocates its namespace from FIRST_USER_OID upward), so such a path misses the real file
+        // every time.
+        components::catalog::oid_t relnamespace_for_oid_sync(components::catalog::oid_t table_oid) const;
+
+        // Index-bootstrap helper: scan pg_class for every live user-OID whose relkind is 'r'
+        // (regular table) or 'm' (materialized view) — the OIDs for which manager_index_t needs an
+        // empty engine populated at startup. Called by base_spaces between
+        // load_user_table_storages_sync and bootstrap_indexes_sync, pre-scheduler-start. Excludes
+        // system OIDs and tombstoned rows; independent of (but consistent with) alive_user_oids_sync,
+        // which has no relkind filter and is used by WAL replay.
         std::pmr::vector<components::catalog::oid_t> scan_live_table_oids_sync() const;
 
         // Index-bootstrap helper: one pg_index_row_t per live pg_index row (see
@@ -342,37 +829,53 @@ namespace services::disk {
         // them with manager_index_t.
         std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
 
-        // Sync full-storage scan for post-bootstrap index rebuild. CHECKPOINT
-        // compaction renumbers physical row_ids contiguously from 0 (see
-        // data_table_t::compact), so pre-compact row_ids persisted in on-disk
-        // index btrees go stale; base_spaces feeds this scan into
-        // manager_index_t::bootstrap_repopulate_sync to rebuild against current
-        // row_ids. Single-threaded bootstrap only. Returns the storage as a batch of
-        // ≤DEFAULT_VECTOR_CAPACITY chunks (empty when the oid is unknown or its storage
-        // is empty).
+        // Sync full-storage scan for post-bootstrap index rebuild. CHECKPOINT compaction renumbers
+        // physical row_ids contiguously from 0 (see data_table_t::compact), so pre-compact row_ids
+        // persisted in on-disk indexes go stale; this hands a table's live rows back so an index can
+        // be rebuilt against current ids. Single-threaded bootstrap only. Returns the storage as a
+        // batch of <=DEFAULT_VECTOR_CAPACITY chunks (empty when the oid is unknown or its storage is
+        // empty).
+        //
+        // NO CALLER TODAY: the bootstrap index rebuild this fed was provably a no-op (it refilled a
+        // per-transaction buffer and then erased it, having no in-memory index left to rebuild).
+        // Repairing the stale ids for real means clearing and refilling the index AGENT's store,
+        // which is a mailbox round trip and cannot happen in this pre-scheduler-start window.
         std::pmr::vector<components::vector::data_chunk_t>
         scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 
-        // Catalog scan returning (oid, delete_id) for every tombstoned pg_class
-        // row. base_spaces calls it after WAL replay to rebuild the per-agent
-        // dropped_storages_ slices (via register_dropped_storage_sync) so
-        // on_horizon_advanced can finish GC of .otbx files left by a crash mid-DROP.
+        // Catalog scan returning (oid, relnamespace, delete_id) for every tombstoned pg_class row.
+        // base_spaces calls it after WAL replay to rebuild the per-agent dropped_storages_ slices
+        // (via register_dropped_storage_sync) so on_horizon_advanced can finish GC of .otbx files
+        // left by a crash mid-DROP.
         //
-        // pg_class has no dropped_at_commit_id column, so the tombstone is the
-        // row-version delete_id (no public API). Returned delete_id is sentinel 1:
-        // at boot lowest_active_start_time=1, so anything > 1 is already GC-eligible
-        // and sentinel 1 means "GC on the first horizon advance past 1".
-        std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> scan_dropped_oids_sync();
+        // pg_class has no dropped_at_commit_id column, so the tombstone is the row-version delete_id
+        // (no public API). Returned delete_id is sentinel 1: at boot lowest_active_start_time=1, so
+        // anything > 1 is already GC-eligible and sentinel 1 means "GC on the first horizon advance
+        // past 1".
+        //
+        // `relnamespace` (col 2) comes back with it because the caller has to rebuild
+        // `${db_root}/${relnamespace}/${oid}/`, and well_known_oid::main_database (4) is not a value
+        // any user table carries. It has to be read here rather than looked up afterwards: the row
+        // is a TOMBSTONE, and every ordinary catalog read omits permanently-deleted rows.
+        std::pmr::vector<dropped_class_row_t> scan_dropped_oids_sync();
 
         // Index-bootstrap alias for scan_dropped_oids_sync — identical body because
         // pg_class is the only relation whose tombstones matter for index GC.
-        std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> scan_dropped_table_oids_sync() {
-            return scan_dropped_oids_sync();
-        }
+        std::pmr::vector<dropped_class_row_t> scan_dropped_table_oids_sync() { return scan_dropped_oids_sync(); }
 
         // Read-only accessor for the on-disk root directory.
         // base_spaces uses this to derive dropped storage paths.
         const std::filesystem::path& path_db() const noexcept { return config_.path; }
+
+        // The directory oid every SYSTEM table's `.otbx` sits under:
+        // `${path_db()}/${system_dir_oid()}/${tbl_oid}/table.otbx`. bootstrap_system_tables_sync
+        // both writes and reads that layout, and it is a fixed convention rather than a
+        // resolved namespace — a system table has no pg_class row of its own to carry a
+        // `relnamespace` (bootstrap seeds self-descriptions for a handful of tables only).
+        // Exposed so recovery paths can name the layout instead of repeating the constant.
+        static constexpr components::catalog::oid_t system_dir_oid() noexcept {
+            return components::catalog::well_known_oid::main_database;
+        }
         // Scans pg_class/pg_attribute/pg_type/pg_proc/pg_constraint/pg_index for the max
         // OID across all system tables, then seeds oid_gen_ to max+1 so future allocate()
         // never collides with on-disk OIDs.
@@ -387,36 +890,43 @@ namespace services::disk {
         std::uint64_t max_persisted_commit_id_sync() const;
 
         // Read the value of a named setting from pg_settings. Returns the most recently
-        // appended value for the given name, or empty string if not found.
+        // appended value for the given name, or empty string ONLY when no row with that
+        // name exists. An unloaded or malformed pg_settings throws the pre-scheduler
+        // std::runtime_error startup refusal instead of masquerading as "setting absent"
+        // (bootstrap_system_tables_sync seeds pg_settings first, so those states are
+        // sequencing bugs or corruption, never a legitimate empty).
         // Synchronous — called at startup before actor schedulers start.
         std::string read_setting_sync(std::string_view name);
 
         // Per-item resolve methods. Each method scans the corresponding pg_* table
         // on the disk actor thread and returns the found object (or {found=false}).
-        // The since_version parameter is kept for message-dispatch compatibility
-        // (always ignored — versioning is no longer used).
-        unique_future<resolve_namespace_result_t>
-        resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
+        //
+        // All four carry core::result_wrapper_t because the SCAN can fail, and "the read
+        // failed" is not "the catalog does not have it". {found=false} / an empty vector /
+        // INVALID_OID stay the honest NEGATIVE answers, inside the wrapper.
+        unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
+        resolve_namespace(execution_context_t ctx, std::string name);
 
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
         // register_udf needs to detect cross-namespace conflicts; drop_udf needs to purge
         // every row sharing the name. Admin-scope (register/drop UDF); may return an empty vector.
-        unique_future<std::pmr::vector<resolve_function_result_t>>
-        resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
+        unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
+        resolve_function_by_name(execution_context_t ctx, std::string name);
 
         // Bookkeeping lookup (NOT query-time cast resolution — that is the in-memory
         // cast_registry_). Finds the pg_cast row identified by its (castsource,
         // casttarget) pair and returns the cast's own oid (col 0), or INVALID_OID if
         // absent. Admin path only: unregister-cast uses it to find the row to delete.
-        unique_future<components::catalog::oid_t> find_cast_oid(execution_context_t ctx,
-                                                                components::catalog::oid_t source_oid,
-                                                                components::catalog::oid_t target_oid);
+        unique_future<core::result_wrapper_t<components::catalog::oid_t>>
+        find_cast_oid(execution_context_t ctx,
+                      components::catalog::oid_t source_oid,
+                      components::catalog::oid_t target_oid);
 
-        // V4 admin-path enumerators. Bypass the per-name cache (cache is per-(name, ns_oid)
+        // Admin-path enumerators. Bypass the per-name cache (cache is per-(name, ns_oid)
         // keyed; enumeration of "all namespaces" / "all tables in ns" cannot be served by
         // it). Used by catalog-resolve enumeration paths and the UDF namespace pick.
-        unique_future<std::pmr::vector<std::string>> list_namespaces(execution_context_t ctx);
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>> list_namespaces(execution_context_t ctx);
 
         // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
         // dispatcher before invoking planner_t::create_plan for DDL statements, so that
@@ -425,8 +935,11 @@ namespace services::disk {
         // same trade-off as PostgreSQL's pre-allocation approach.
         unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
-        // WAL-safe append of a single pre-built row into a pg_catalog table.
-        unique_future<components::pg_catalog_append_range_t>
+        // WAL-safe append of a single pre-built row into a pg_catalog table, or the reason
+        // the row was not written. The wrapper is what separates "appended nothing" from
+        // "could not append": a zero-count range reads as a no-op at every call site, so
+        // without it a refused catalog write left the DDL statement reporting success.
+        unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row(execution_context_t ctx,
                               components::catalog::oid_t table_oid,
                               components::vector::data_chunk_t row);
@@ -437,10 +950,13 @@ namespace services::disk {
                                                    std::int64_t oid_col_idx,
                                                    components::catalog::oid_t target_oid);
 
-        // Batched delete_pg_catalog_rows: loops the singular inner logic per spec,
-        // emitting the same WAL records as N singular calls.
-        unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
-                                                        std::pmr::vector<pg_catalog_delete_spec_t> specs);
+        // Batched delete_pg_catalog_rows: loops the singular inner logic per spec, emitting the
+        // same WAL records as N singular calls, and reports how many rows EACH spec deleted (in
+        // spec order) or the reason the scrub did not happen. See disk_contract.hpp: a zero
+        // count is an honest "nothing carried that oid" and the caller decides whether that is
+        // legitimate; every refusal travels the wrapper instead of being reported as a no-op.
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
+        delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
         // Patch each backfill's pg_attribute row keyed by `attoid` (col 0): write the
         // shared `commit_id` into col 10 (added_at_commit_id) when kind==added_at, else
@@ -452,7 +968,12 @@ namespace services::disk {
         // insert_id == txn_id, so each is a metadata-only write nobody else can
         // observe. Emits one physical_update WAL record per backfill so replay
         // re-applies each after the matching physical_insert.
-        unique_future<void>
+        //
+        // Answers with the FIRST refusal any marker met, after attempting them all: one
+        // unpatchable marker must not cost the others their stamp, and a backfill that did not
+        // happen must not be a log line under a COMMIT that says success. See agent_disk.hpp
+        // for why the caller reports rather than refuses.
+        unique_future<core::error_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
@@ -492,34 +1013,78 @@ namespace services::disk {
                             components::vector::data_chunk_t keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
 
-        // Physical column compaction. For an IN_MEMORY relkind='g' storage,
-        // drop every physical column whose name is NOT in `live_attnames`. Called by
-        // operator_vacuum_t after pg_computed_column GC: columns whose
-        // attrefcount<=0 rows have been deleted are physically dead and can be
-        // reclaimed. Returns the number of columns physically dropped (0 if storage
-        // is DISK-mode, missing, or already compact). DISK-backed storages would
-        // need segment rewrites + checkpoint coordination.
+        // Physical column compaction for a relkind='g' storage: drop every physical column
+        // whose name is NOT in `live_attnames`. Called by operator_vacuum_t after
+        // pg_computed_column GC: columns whose attrefcount<=0 rows have been deleted are
+        // physically dead and can be reclaimed. Returns the number of columns physically
+        // dropped (0 if the storage is missing or already compact).
+        //
+        // Acts unconditionally — see the long note at
+        // agent_disk_t::compact_relkind_g_storage_inner for why that is the safe reading and
+        // what a refusal would cost. The leg is SUBTRACTIVE (it drops the complement of
+        // `live_attnames`); ALTER TABLE DROP COLUMN, which names its column, has its own leg —
+        // see drop_storage_column below.
         unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
                                                                components::catalog::oid_t table_oid,
                                                                std::set<std::string> live_attnames);
+
+        // ALTER TABLE DROP COLUMN's physical half: release the ONE column `attname`
+        // from the storage of `table_oid`. Thin router to the owning agent; see the contract
+        // in disk_contract.hpp for why this is a sibling of compact_relkind_g_storage rather
+        // than a flag on it, and for the three-way answer (true / false / error).
+        //
+        // ORDERING, and it is the whole safety argument: this is driven by
+        // operator_commit_transaction_t AFTER the txn's WAL commit marker and the ProcArray
+        // publish barrier, in the same place the commit-time physical DROP TABLE runs. The
+        // pg_attribute tombstone is the durable record of the drop; the physical release must
+        // never be able to outlive a tombstone that a ROLLBACK or a crashed txn takes away.
+        unique_future<core::result_wrapper_t<bool>>
+        drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
+
+        // ALTER TABLE RENAME COLUMN's physical half: rename ONE column of `table_oid`'s
+        // storage. Thin router to the owning agent; the three-way answer and the reason this
+        // leg has to exist at all are in disk_contract.hpp.
+        //
+        // ORDERING mirrors drop_storage_column and for the same reason in the ROLLBACK
+        // direction: operator_commit_transaction_t drives it only after the WAL commit marker
+        // and the publish barrier, so a reverted ALTER can never leave the storage renamed
+        // against a catalog that took the rename back — and the bootstrap walk would read that
+        // divergence as a DROP of a surviving column.
+        unique_future<core::result_wrapper_t<bool>> rename_storage_column(session_id_t session,
+                                                                          components::catalog::oid_t table_oid,
+                                                                          std::string old_attname,
+                                                                          std::string new_attname);
 
         // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
         // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
-        uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data);
-        void direct_delete_sync(components::catalog::oid_t table_oid,
-                                const std::pmr::vector<int64_t>& row_ids,
-                                uint64_t count);
-        void direct_update_sync(components::catalog::oid_t table_oid,
-                                const std::pmr::vector<int64_t>& row_ids,
-                                components::vector::data_chunk_t& new_data);
+        //
+        // The append answers with the START ROW of what it wrote, or the reason it wrote nothing.
+        // The value alone cannot carry that: 0 is simultaneously "the owning agent holds no storage
+        // for this oid", "the chunk was empty", "the append was refused" and "the first row of a
+        // fresh table landed at row 0" — so a record of COMMITTED rows replayed into a table with no
+        // storage would disappear with nothing above the storage layer able to notice. Same refusal
+        // the three routers below make; an EMPTY chunk stays the one legitimate no-op and answers 0
+        // without an error.
+        core::result_wrapper_t<uint64_t> direct_append_sync(components::catalog::oid_t table_oid,
+                                                            components::vector::data_chunk_t& data);
+        // These three REFUSE rather than no-op when the table has no storage on its owning
+        // agent: they run on the WAL-replay path, where a dropped mutation is a journalled
+        // change that recovery declined to restore and nothing re-derives later. See
+        // agent_disk_t's declarations for the full reasoning.
+        [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
+                                                       const std::pmr::vector<int64_t>& row_ids,
+                                                       uint64_t count);
+        [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
+                                                       const std::pmr::vector<int64_t>& row_ids,
+                                                       components::vector::data_chunk_t& new_data);
         // WAL-replay of a PHYSICAL_ADD_COLUMN record: re-apply each schema column to
         // the owned storage ahead of the dependent PHYSICAL_INSERT. `schema_chunk` is
         // a 0-row chunk whose columns ARE the new columns (alias-tagged types).
         // Idempotent: columns already present (by name) are skipped.
-        void direct_add_column_sync(components::catalog::oid_t table_oid,
-                                    const components::vector::data_chunk_t& schema_chunk);
+        [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
+                                                           const components::vector::data_chunk_t& schema_chunk);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
@@ -535,7 +1100,16 @@ namespace services::disk {
 
         void sync(disk_sync_pack_t pack);
 
-        unique_future<void> flush(session_id_t session, wal::id_t wal_id);
+        // `flush` USED TO SIT HERE AND IS GONE. It was a registered contract method whose body
+        // traced and returned: no buffer flushed, no file synced, no entry touched — a name that
+        // promised durability and delivered nothing. Durability of a table is checkpoint_all's,
+        // and only its. The three call sites that named it (operator_commit_transaction.cpp,
+        // operator_update.cpp, operator_delete.cpp) are gone with it in the same edit, which is
+        // what removal always needed: it renumbers every method below it in dispatch_traits, so
+        // contract, actor, behavior() and senders move as ONE change.
+        //
+        // Do not reintroduce a no-op under this name. If a caller needs "the writes are on the
+        // device now", it has to say WHAT it wants durable and the answer is checkpoint_all.
 
         // compact_watermark (here and below): the dispatcher's visible-to-all
         // horizon (txn_compact_watermark_msg / txn_publish_msg return) handed to
@@ -543,8 +1117,10 @@ namespace services::disk {
         // a no-op, and checkpoint_inner then skips that entry for the round.
         unique_future<wal::id_t>
         checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
-        unique_future<void>
-        vacuum_all(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
+        // Answers how many storages this VACUUM RENUMBERED — see agent_disk_t::vacuum_inner,
+        // which produces the count where a renumbering would happen. The VACUUM statement
+        // rebuilds indexes only on a non-zero answer, instead of assuming one.
+        unique_future<uint64_t> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         // Batched GC-threshold check + compact. Routes each table_oid to its owning
         // agent's maybe_cleanup_inner with the shared compact_watermark, grouped per
         // agent and dispatched two-phase (send all, then await all).
@@ -569,17 +1145,14 @@ namespace services::disk {
                                            std::filesystem::path path,
                                            std::pmr::vector<std::filesystem::path> sidecar_paths);
 
-        /// Runtime DROP TABLE path — sent from operator_dynamic_cascade_delete
-        /// BEFORE the drop_storage_many send, so the owning agents can still read the
-        /// live storage entries to derive the .otbx path + sidecars (wal_id, prev) and
-        /// record them via register_dropped_storage_inner_sync. Touches no files
-        /// (drop_storage_many does the removal); the GC entry lets on_horizon_advanced
-        /// reconcile leftovers and flips dispatcher disk_has_dropped_ via
-        /// on_drop_resource_marked. Batched: a single cascade DROP marks every storage
-        /// with the SAME dropped_at_commit_id, so we partition the oids per owning
-        /// agent (pool_idx_for_oid) and fan out one mark_storage_dropped_many_inner per
-        /// agent in parallel — N per-oid manager round-trips collapse to one (at most
-        /// num_agents parallel sends), mirroring drop_storage_many.
+        /// Runtime DROP TABLE path — sent from operator_dynamic_cascade_delete BEFORE the
+        /// drop_storage_many send, so the owning agents can still read the live storage entries to
+        /// derive the .otbx path + sidecars (wal_id, prev) and record them via
+        /// register_dropped_storage_inner_sync. Touches no files (drop_storage_many does the
+        /// removal); the GC entry lets on_horizon_advanced reconcile leftovers and flips dispatcher
+        /// disk_has_dropped_ via on_drop_resource_marked. Batched: one cascade DROP marks every
+        /// storage with the SAME dropped_at_commit_id, so the oids are partitioned per owning agent
+        /// (pool_idx_for_oid) and fanned out as one mark_storage_dropped_many_inner per agent.
         unique_future<void> mark_storage_dropped_many(session_id_t session,
                                                       std::pmr::vector<components::catalog::oid_t> table_oids,
                                                       uint64_t dropped_at_commit_id);
@@ -610,17 +1183,17 @@ namespace services::disk {
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         // Storage management
-        unique_future<void> create_storage(session_id_t session,
-                                           components::catalog::oid_t table_oid,
-                                           components::catalog::oid_t database_oid);
-        unique_future<void> create_storage_with_columns(session_id_t session,
-                                                        components::catalog::oid_t table_oid,
-                                                        components::catalog::oid_t database_oid,
-                                                        std::vector<components::table::column_definition_t> columns);
+        // `is_computed` marks a computed (relkind='g') table. It is derived by the
+        // caller from the fact that DEFINES relkind — the CREATE TABLE operator passes the
+        // planner's own derivation (planner.cpp rewrite_create_table: relkind='g' ⇔ empty
+        // column list, applied to the same list), the matview operator passes false
+        // (relkind='m'; plan-gen refuses an empty inferred column set). The pg_class row
+        // does not exist yet at storage-create time, so it cannot be scanned here.
         unique_future<void> create_storage_disk(session_id_t session,
                                                 components::catalog::oid_t table_oid,
                                                 components::catalog::oid_t database_oid,
-                                                std::vector<components::table::column_definition_t> columns);
+                                                std::vector<components::table::column_definition_t> columns,
+                                                bool is_computed);
         // Batched DROP: partition the oids per owning agent (pool_idx_for_oid) and
         // fan out one drop_storage_many_inner per agent in parallel — N per-oid
         // manager round-trips collapse to one (at most num_agents parallel sends).
@@ -629,26 +1202,16 @@ namespace services::disk {
         unique_future<void> drop_storage_many(session_id_t session,
                                               std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Storage queries
-        unique_future<std::pmr::vector<components::types::complex_logical_type>>
+        // Storage queries. Both wrap: an empty type list and a zero row count are real answers
+        // about a real table, so they cannot double as the answer for an oid no agent owns. See
+        // the contract note on disk_contract::storage_types.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
-        unique_future<uint64_t> storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<core::result_wrapper_t<uint64_t>> storage_total_rows(session_id_t session,
+                                                                           components::catalog::oid_t table_oid);
 
         // Storage data operations.
-        // Returns a vector of chunks and applies index-based column projection at the
-        // storage layer. Empty `projected_cols` means "read all columns" (pass-through).
-        // Returns a vector of chunks and applies index-based column projection at the
-        // storage layer. Empty `projected_cols` means "read all columns" (pass-through). The
-        // reply wraps the batches so a buffer-pool OOM / data_corruption from the table-layer
-        // scan reaches the scan operators as a value rather than a throw across the mailbox.
-        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan(session_id_t session,
-                     components::catalog::oid_t table_oid,
-                     std::unique_ptr<components::table::table_filter_t> filter,
-                     int64_t limit,
-                     std::vector<size_t> projected_cols,
-                     components::table::transaction_data txn);
-        // Streaming fetch-next scan source (STEP 3 / phase B). Transparent router:
+        // Streaming fetch-next scan source. Transparent router:
         // pool_idx_for_oid -> owning agent's storage_fetch_next_batch_inner, forwarding
         // the reply (batch + minted/advanced cursor_id) unchanged. The agent holds the
         // LIVE per-cursor scan state; this manager only routes. cursor_id==0 OPENs,
@@ -661,6 +1224,11 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
+        // Release an abandoned fetch-next cursor. Transparent router to the owning agent's
+        // storage_close_cursor_inner.
+        unique_future<void> storage_close_cursor(session_id_t session,
+                                                 components::catalog::oid_t table_oid,
+                                                 uint64_t cursor_id);
         // Aggregate-pushdown REDUCE: transparent router to the owning agent's
         // storage_reduce_inner — one reply carrying ALL final aggregated rows (see
         // disk_contract for the protocol + the single-owner invariant).
@@ -672,18 +1240,29 @@ namespace services::disk {
                        components::table::transaction_data txn,
                        components::operators::pushed_aggregate_spec_t spec);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // The wrapper forwards the owning agent's buffer-pool OOM / data_corruption
+        // unchanged, and its routing refusal (an oid no agent has a storage for); callers
+        // read has_error() before .value().
+        // `txn` + `visibility` ride this same message and neither has a default: under
+        // SNAPSHOT rows invisible to `txn` are dropped, so the reply is SHORTER than the
+        // request and is paired with it through each chunk's row_ids, never by position.
+        // `limit` is the POST-VISIBILITY row cap (-1 == uncapped) the index scan pushes down,
+        // the counterpart of storage_fetch_next_batch's post-filter matched-row cap.
+        // See the contract note on disk_contract::storage_fetch.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count,
-                      std::vector<size_t> projected_cols);
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-        storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
+                      std::vector<size_t> projected_cols,
+                      components::table::transaction_data txn,
+                      components::table::fetch_visibility_t visibility,
+                      int64_t limit);
         // Appends every chunk in order. Appends within one txn are contiguous, so the
         // result is the single coalesced range [range_start, range_start + total_count).
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
-        // table-layer append chain reaches operator_insert as a value.
+        // table-layer append chain — and the routing refusal, which a zero-length range
+        // could not be told apart from — reaches operator_insert as a value.
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
@@ -693,16 +1272,20 @@ namespace services::disk {
         // (the two vectors are positionally aligned and must have equal length). Returns
         // the coalesced new-row range [range_start, range_start + total_count).
         // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
-        // table-layer MVCC update reaches operator_update / fk_cascade as a value.
+        // table-layer MVCC update — and the routing refusal — reaches operator_update /
+        // fk_cascade as a value.
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
                        std::pmr::vector<components::vector::data_chunk_t> data);
-        unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
-                                                    components::catalog::oid_t table_oid,
-                                                    components::vector::vector_t row_ids,
-                                                    uint64_t count);
+        // Marks rows deleted under ctx.txn; the reply wraps the count so a refusal (no
+        // agent owns the oid) is distinguishable from "0 marks set", which is a legitimate
+        // outcome for already-deleted or duplicate ids. See disk_contract.
+        unique_future<core::result_wrapper_t<uint64_t>> storage_delete_rows(execution_context_t ctx,
+                                                                            components::catalog::oid_t table_oid,
+                                                                            components::vector::vector_t row_ids,
+                                                                            uint64_t count);
         // Batched MVCC swap. Each range carries its own table_oid.
         unique_future<void> storage_publish_commits(execution_context_t ctx,
                                                     uint64_t commit_id,
@@ -719,24 +1302,20 @@ namespace services::disk {
                                                    std::vector<components::catalog::oid_t> tables);
 
         using dispatch_traits = actor_zeta::implements<disk_contract,
-                                                       &manager_disk_t::flush,
                                                        &manager_disk_t::checkpoint_all,
                                                        &manager_disk_t::vacuum_all,
                                                        &manager_disk_t::maybe_cleanup_many,
                                                        // Storage management
-                                                       &manager_disk_t::create_storage,
-                                                       &manager_disk_t::create_storage_with_columns,
                                                        &manager_disk_t::create_storage_disk,
                                                        &manager_disk_t::drop_storage_many,
                                                        // Storage queries
                                                        &manager_disk_t::storage_types,
                                                        &manager_disk_t::storage_total_rows,
                                                        // Storage data operations
-                                                       &manager_disk_t::storage_scan,
                                                        &manager_disk_t::storage_fetch_next_batch,
+                                                       &manager_disk_t::storage_close_cursor,
                                                        &manager_disk_t::storage_reduce,
                                                        &manager_disk_t::storage_fetch,
-                                                       &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,
                                                        &manager_disk_t::storage_update,
                                                        &manager_disk_t::storage_delete_rows,
@@ -759,26 +1338,41 @@ namespace services::disk {
                                                        &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::read_chunks_by_keys,
                                                        &manager_disk_t::compact_relkind_g_storage,
+                                                       &manager_disk_t::drop_storage_column,
+                                                       &manager_disk_t::rename_storage_column,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,
                                                        &manager_disk_t::storage_drop_aborted>;
 
     private:
-        // Disk storage helpers — used only by bootstrap / io / recovery paths
-        // inside services/disk/. Not part of the actor's public interface.
-        void create_storage_disk_sync(components::catalog::oid_t table_oid,
-                                      components::catalog::oid_t database_oid,
-                                      std::vector<components::table::column_definition_t> columns,
-                                      const std::filesystem::path& otbx_path);
-        // Returns no_error() on success (incl. successful .prev corrupt-recovery). Returns an
-        // io_error/data_corruption on the terminal "corrupt .otbx + no recoverable .prev" / failed
-        // W-TORN promote-move case instead of throwing: this runs on the single-threaded
+        // Returns no_error() on success. Returns data_corruption/io_error — instead of throwing —
+        // when the .otbx is missing, refuses to open (both header slots unusable), or sits next to
+        // a stray legacy sidecar (verify_otbx_sidecars): this runs on the single-threaded
         // bootstrap/recovery path whose callers (bootstrap_system_tables_sync,
         // load_user_table_storages_sync, load_storage_for_wal_replay_sync) propagate / log the error.
-        [[nodiscard]] core::error_t load_storage_disk_sync(components::catalog::oid_t table_oid,
-                                                           components::catalog::oid_t database_oid,
-                                                           const std::filesystem::path& otbx_path);
+        // On every refusal the file set is left byte-identical — recovery is the two-slot root
+        // inside the .otbx, and there is no external backup to fall back to.
+        //
+        // `catalog_columns` is the schema overlay for a never-checkpointed .otbx (see
+        // table_storage_t's load ctor). System-table callers pass the builtin schema; user-table
+        // callers pass {} and the columns are resolved from pg_attribute here. When the file is
+        // young and no columns can be resolved yet (bootstrap walk runs before WAL replay has
+        // repopulated the catalog), the load is DEFERRED — no_error, no storage — and the
+        // post-replay walk picks the table up once the catalog knows it.
+        [[nodiscard]] core::error_t
+        load_storage_disk_sync(components::catalog::oid_t table_oid,
+                               components::catalog::oid_t database_oid,
+                               const std::filesystem::path& otbx_path,
+                               std::vector<components::table::column_definition_t> catalog_columns);
+
+        // One scan of pg_attribute (agents_[0], bootstrap thread) grouping live columns of
+        // every `wanted` relid into attnum-ordered column_definition_t lists. Shared by
+        // rehydrate_missing_user_storages_sync and the young-.otbx schema overlay; oids with no
+        // live columns are absent from the result.
+        [[nodiscard]] std::unordered_map<components::catalog::oid_t,
+                                         std::vector<components::table::column_definition_t>>
+        collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const;
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -803,7 +1397,7 @@ namespace services::disk {
         configuration::config_disk config_;
         // Storage ownership shape (manager has NO storages_ map — pure router):
         //   - agent_disk_0 (CATALOG): all pg_* system tables, oid_gen_,
-        //     stored_catalog_, file_wal_id_.
+        //     stored_catalog_.
         //   - agents_[1..N-1] (USER_POOL): user tables hash-routed by table_oid.
         // Routing via pool_idx_for_oid below.
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
@@ -817,14 +1411,15 @@ namespace services::disk {
         // `agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)`; all other
         // access goes through agent storage_*_inner mailbox handlers.
         void create_agent(int count_agents);
-        auto agent() -> actor_zeta::address_t;
 
         // Single manager-side scan funnel over the owning agent's
         // storage_scan_inner, so there is ONE place that issues a catalog
         // scan. `filter` null = "see all rows"; `projected_cols` empty = "all
-        // columns"; returns an empty batch vector when there is no owning agent.
-        // txn defaults to transaction_data{} = "see all committed".
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // columns"; txn defaults to transaction_data{} = "see all committed".
+        // REFUSES (io_error) when there is no owning agent and passes the agent's
+        // scan error through: an empty batch vector means "no matching rows" and
+        // nothing else.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         scan_table(components::catalog::oid_t table_oid,
                    std::unique_ptr<components::table::table_filter_t> filter,
                    std::vector<std::size_t> projected_cols,
@@ -853,8 +1448,13 @@ namespace services::disk {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        auto enqueue_status = enqueue_impl(std::move(msg));
-        static_cast<void>(enqueue_status);
+        // The status is read, not (void)-discarded (rule 14). A refused enqueue already
+        // destroyed the message in the .cpp overload (logged there), so `future` is
+        // completed as abandoned and returning it hands the caller a readable failure
+        // instead of a silent hang; a successful enqueue returns the same future live.
+        if (enqueue_impl(std::move(msg)).second != actor_zeta::detail::enqueue_result::success) {
+            assert(future.is_ready() && "a refused enqueue must complete the future as abandoned");
+        }
 
         return std::move(future);
     }

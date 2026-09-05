@@ -15,9 +15,10 @@ namespace components::operators {
         // reused, and a stray BEGIN inside an open txn must not restart it
         // (Postgres semantics).
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_m, mf] = actor_zeta::send(ctx->current_message_sender,
-                                             &services::dispatcher::manager_dispatcher_t::txn_mark_explicit_msg,
-                                             ctx->session);
+            auto [_m, mf] =
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::txn_mark_explicit_msg,
+                                            ctx->session);
             co_await std::move(mf);
         }
 

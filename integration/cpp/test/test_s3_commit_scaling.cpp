@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -18,7 +19,7 @@
 //     checkpoint, not the delete; only a counter can tell the two apart.
 //
 // A profile taken over a sustained delete loop put ~100% of the index agent's samples in
-// remove_many -> btree_index_disk_t::force_flush -> btree_t::flush, which fsynced EVERY leaf of
+// the delete-commit leg -> btree_index_disk_t::force_flush -> btree_t::flush, which fsynced EVERY leaf of
 // the disk B+tree: one deleted row fsynced the whole index. That is where the growth came from.
 //
 // Hidden by default ([.]): it fills a million rows, which no ordinary suite run should pay for.
@@ -46,9 +47,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_size", "[.][s3probe]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/scaling");
+    auto config = test_create_config(integration_fixture_path("test_s3/scaling"));
     test_clear_directory(config);
-    config.disk.on = true;
     config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);

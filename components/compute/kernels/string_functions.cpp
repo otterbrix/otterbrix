@@ -228,7 +228,12 @@ namespace {
             {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
             {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k2(std::move(sig2), vector_substring_2);
-        (void) fn->add_kernel(resource, std::move(k2));
+        // BOUND, not (void)-cast: rule 14 bans the cast, and add_kernel is [[nodiscard]] because it
+        // refuses on a full slot table or an arity that does not match the function's
+        // (function.hpp:172-190). Both are compile-time constants at these registration sites, so
+        // the assert states an invariant of this file rather than screening runtime input.
+        [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
+        assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::vector,
                                 {parameter_type::exact(logical_type::STRING_LITERAL),
@@ -236,7 +241,8 @@ namespace {
                                  parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k3(std::move(sig3), vector_substring_3);
-        (void) fn->add_kernel(resource, std::move(k3));
+        [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));
+        assert(!added_k3.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -253,7 +259,8 @@ namespace {
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::BIGINT)});
         vector_kernel k(std::move(sig), vector_length);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -272,7 +279,8 @@ namespace {
                                 parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k(std::move(sig), vector_regexp_replace, init_regexp_replace);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -290,7 +298,8 @@ namespace {
             {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
             {output_type::fixed(logical_type::BOOLEAN)});
         vector_kernel k2(std::move(sig2), vector_regexp_like, init_regexp_like);
-        (void) fn->add_kernel(resource, std::move(k2));
+        [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
+        assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::vector,
                                 {parameter_type::exact(logical_type::STRING_LITERAL),
@@ -298,7 +307,8 @@ namespace {
                                  parameter_type::exact(logical_type::STRING_LITERAL)},
                                 {output_type::fixed(logical_type::BOOLEAN)});
         vector_kernel k3(std::move(sig3), vector_regexp_like, init_regexp_like);
-        (void) fn->add_kernel(resource, std::move(k3));
+        [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));
+        assert(!added_k3.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -310,17 +320,17 @@ namespace components::compute {
     // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..8 in function.hpp —
     // a uid is the REGISTRATION ORDER, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
-        (void) r.add_function(make_substring_func(r.resource(),
+        r.add_builtin(make_substring_func(r.resource(),
                                                   "substring",
                                                   "Returns substring",
                                                   "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
-        (void) r.add_function(
+        r.add_builtin(
             make_length_func(r.resource(), "length", "Returns byte length", "LENGTH(s) -> int64 (bytes, not chars)"));
-        (void) r.add_function(make_regexp_replace_func(r.resource(),
+        r.add_builtin(make_regexp_replace_func(r.resource(),
                                                        "regexp_replace",
                                                        "Regex substitution",
                                                        "REGEXP_REPLACE(s, pattern, replacement)"));
-        (void) r.add_function(
+        r.add_builtin(
             make_regexp_like_func(r.resource(),
                                   "regexp_like",
                                   "Regex match test",

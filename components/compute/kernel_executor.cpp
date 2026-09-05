@@ -1,6 +1,7 @@
 #include "kernel_executor.hpp"
 
 #include <optional>
+#include <string>
 
 using namespace components::types;
 using namespace components::vector;
@@ -10,7 +11,10 @@ namespace components::compute::detail {
     template<typename KernelType>
     class kernel_executor_impl : public kernel_executor_t {
     public:
-        kernel_executor_impl() = default;
+        explicit kernel_executor_impl(std::pmr::memory_resource* resource)
+            : resource_(resource) {
+            assert(resource_);
+        }
 
         core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) override {
             kernel_ctx_ = &kernel_ctx;
@@ -36,11 +40,17 @@ namespace components::compute::detail {
         }
 
     protected:
+        // A refusal raised before init() has run has no kernel_context to borrow a resource
+        // from, so it words itself with the resource the executor was built with rather than
+        // reaching for the process-wide default.
+        [[nodiscard]] std::pmr::memory_resource* error_resource() const {
+            return kernel_ctx_ ? kernel_ctx_->exec_context().resource() : resource_;
+        }
+
         [[nodiscard]] core::error_t not_accumulating() const {
-            return core::error_t(core::error_code_t::kernel_error,
-                                 std::pmr::string{"this kernel does not accumulate across chunks",
-                                                  kernel_ctx_ ? kernel_ctx_->exec_context().resource()
-                                                              : std::pmr::get_default_resource()});
+            return core::error_t(
+                core::error_code_t::kernel_error,
+                std::pmr::string{"this kernel does not accumulate across chunks", error_resource()});
         }
 
         vector_t prepare_vector_output(size_t length) {
@@ -50,11 +60,10 @@ namespace components::compute::detail {
 
         [[nodiscard]] core::error_t check_kernel() const {
             if (!kernel_ctx_) {
-                // TODO: find another way to get memory_resource
                 return core::error_t(core::error_code_t::kernel_error,
 
                                      std::pmr::string{"Kernel context is null, init() method must be called first!",
-                                                      std::pmr::get_default_resource()});
+                                                      error_resource()});
             }
 
             if (!kernel_) {
@@ -81,6 +90,7 @@ namespace components::compute::detail {
 
         inline kernel_state* state() const { return kernel_ctx().state(); }
 
+        std::pmr::memory_resource* resource_ = nullptr;
         kernel_context* kernel_ctx_ = nullptr;
         const KernelType* kernel_ = nullptr;
         complex_logical_type output_type_;
@@ -88,6 +98,8 @@ namespace components::compute::detail {
 
     class vector_executor final : public kernel_executor_impl<vector_kernel> {
     public:
+        using kernel_executor_impl<vector_kernel>::kernel_executor_impl;
+
         [[nodiscard]] core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
             if (auto st = check_kernel(); st.contains_error()) {
                 return st;
@@ -113,10 +125,33 @@ namespace components::compute::detail {
                 return merged;
             }
 
+            // The per-chunk outputs are fused side by side, one column each, so the fused chunk
+            // has a row count only when every input chunk is the same height. Ragged input has no
+            // honest count to report, so refuse rather than stamp one and mislabel the rest.
+            //
+            // The refusal is deliberately narrow, not a claim about what batching SHOULD mean:
+            // set_cardinality below is not optional (a chunk with no count reports zero rows to
+            // everyone who asks size()), and a count has to be defensible. It rejects exactly the
+            // inputs for which the fuse-as-columns shape has no correct answer, so whenever that
+            // shape is revisited the refusal goes away with the code it guards.
+            const uint64_t rows = inputs.front().size();
+            for (const auto& in : inputs) {
+                if (in.size() != rows) {
+                    return core::error_t(
+                        core::error_code_t::kernel_error,
+                        std::pmr::string{"a fused vector batch needs every chunk to hold the same number of rows",
+                                         exec_ctx().resource()});
+                }
+            }
+
+            // Refused above BEFORE a single kernel call, so a ragged batch cannot leave the
+            // kernel half-driven: the check runs over every chunk first, and only then does the
+            // fuse loop start.
             for (const auto& in : inputs) {
                 VALUE_OR_RETURN(auto produced, execute_batch(in));
                 merged.data.emplace_back(std::move(produced));
             }
+            merged.set_cardinality(rows);
 
             if (auto st = kernel().finalize(kernel_ctx(), merged); st.contains_error()) {
                 return st;
@@ -126,6 +161,12 @@ namespace components::compute::detail {
         }
 
     private:
+        // The produced vector is a scratch buffer of ONE call and is HANDED to the caller: it
+        // must not live in a member. An executor is cached per function node and driven chunk
+        // after chunk, so a member nothing clears answers the second chunk with the moved-from
+        // remains of the first -- and vector_t's move constructor copies the raw data pointer
+        // while moving the buffer, so that read is a read of freed memory, invisible to ASAN
+        // inside a pmr pool.
         core::result_wrapper_t<vector_t> execute_batch(const data_chunk_t& inputs) {
             auto output = prepare_vector_output(inputs.size());
             if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
@@ -137,6 +178,8 @@ namespace components::compute::detail {
 
     class aggregate_executor final : public kernel_executor_impl<aggregate_kernel> {
     public:
+        using kernel_executor_impl<aggregate_kernel>::kernel_executor_impl;
+
         core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) override {
             if (auto st = kernel_executor_impl<aggregate_kernel>::init(kernel_ctx, args); st.contains_error()) {
                 return st;
@@ -182,18 +225,19 @@ namespace components::compute::detail {
         // An aggregate reduces many rows into per-group accumulators, so it is driven by
         // update()/finalize() and never produces a value straight out of one call.
         [[nodiscard]] core::error_t not_directly_executable() const {
-            return core::error_t(core::error_code_t::kernel_error,
-                                 std::pmr::string{"an aggregate is driven by update()/finalize(), not execute()",
-                                                  kernel_ctx_ ? kernel_ctx_->exec_context().resource()
-                                                              : std::pmr::get_default_resource()});
+            return core::error_t(
+                core::error_code_t::kernel_error,
+                std::pmr::string{"an aggregate is driven by update()/finalize(), not execute()", error_resource()});
         }
 
         const std::pmr::vector<types::complex_logical_type>* input_types_ = nullptr;
     };
 
-    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_vector() { return std::make_unique<vector_executor>(); }
+    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_vector(std::pmr::memory_resource* resource) {
+        return std::make_unique<vector_executor>(resource);
+    }
 
-    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_aggregate() {
-        return std::make_unique<aggregate_executor>();
+    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_aggregate(std::pmr::memory_resource* resource) {
+        return std::make_unique<aggregate_executor>(resource);
     }
 } // namespace components::compute::detail

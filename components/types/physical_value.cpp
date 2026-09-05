@@ -86,10 +86,15 @@ namespace components::types {
             return data_ < other.data_;
         }
 
-        assert(!(type_ == physical_type::INT128 || type_ == physical_type::UINT128) &&
-               "physical value does not support int128 for now");
-        assert(!(other.type_ == physical_type::INT128 || other.type_ == physical_type::UINT128) &&
-               "physical value does not support int128 for now");
+        // handle the 16-byte family: INT128 / UINT128. (DECIMAL has no tag of its own:
+        // its physical representation is the storage integer, INT64 or INT128.)
+        {
+            const bool lhs128 = type_ == physical_type::INT128 || type_ == physical_type::UINT128;
+            const bool rhs128 = other.type_ == physical_type::INT128 || other.type_ == physical_type::UINT128;
+            if (lhs128 || rhs128) {
+                return less_128_(other);
+            }
+        }
 
         // handle strings
 
@@ -182,6 +187,80 @@ namespace components::types {
         }
     }
 
+    bool physical_value::less_128_(const physical_value& other) const noexcept {
+        // INT128/UINT128 join the numeric family. Promote the narrow side; sign-aware for
+        // the mixed signed/unsigned pairing; floating pairings go through double (lossy for
+        // >2^53 — the documented cross-domain semantics, covered by the int128<->double
+        // matrix test).
+        auto as_int128 = [](const physical_value& v) -> int128_t {
+            switch (v.type_) {
+                case physical_type::UINT8:
+                    return int128_t(v.value<physical_type::UINT8>());
+                case physical_type::INT8:
+                    return int128_t(v.value<physical_type::INT8>());
+                case physical_type::UINT16:
+                    return int128_t(v.value<physical_type::UINT16>());
+                case physical_type::INT16:
+                    return int128_t(v.value<physical_type::INT16>());
+                case physical_type::UINT32:
+                    return int128_t(v.value<physical_type::UINT32>());
+                case physical_type::INT32:
+                    return int128_t(v.value<physical_type::INT32>());
+                case physical_type::UINT64:
+                    return int128_t(v.value<physical_type::UINT64>());
+                case physical_type::INT64:
+                    return int128_t(v.value<physical_type::INT64>());
+                case physical_type::INT128:
+                    return v.value<physical_type::INT128>();
+                default:
+                    assert(false && "not promotable to int128");
+                    return int128_t(0);
+            }
+        };
+        auto is_float = [](physical_type t) { return t == physical_type::FLOAT || t == physical_type::DOUBLE; };
+        auto as_double = [&](const physical_value& v) -> double {
+            if (v.type_ == physical_type::FLOAT) {
+                return static_cast<double>(v.value<physical_type::FLOAT>());
+            }
+            if (v.type_ == physical_type::DOUBLE) {
+                return v.value<physical_type::DOUBLE>();
+            }
+            if (v.type_ == physical_type::UINT128) {
+                return static_cast<double>(v.value<physical_type::UINT128>());
+            }
+            return static_cast<double>(as_int128(v));
+        };
+
+        // Non-numeric other side (STRING / NA already handled upstream / BOOL handled
+        // upstream): stable type-order.
+        auto numeric = [&](const physical_value& v) {
+            return is_integral_type(v.type_) || v.type_ == physical_type::INT128 ||
+                   v.type_ == physical_type::UINT128;
+        };
+        if (!numeric(*this) || !numeric(other)) {
+            return type_ < other.type_;
+        }
+
+        if (is_float(type_) || is_float(other.type_)) {
+            return as_double(*this) < as_double(other);
+        }
+
+        const bool lhs_u128 = type_ == physical_type::UINT128;
+        const bool rhs_u128 = other.type_ == physical_type::UINT128;
+        if (lhs_u128 && rhs_u128) {
+            return value<physical_type::UINT128>() < other.value<physical_type::UINT128>();
+        }
+        if (lhs_u128) {
+            auto rhs = as_int128(other);
+            return rhs >= 0 && value<physical_type::UINT128>() < uint128_t(rhs);
+        }
+        if (rhs_u128) {
+            auto lhs = as_int128(*this);
+            return lhs < 0 || uint128_t(lhs) < other.value<physical_type::UINT128>();
+        }
+        return as_int128(*this) < as_int128(other);
+    }
+
     bool physical_value::operator>(const physical_value& other) const noexcept { return other < *this; }
 
     bool physical_value::operator==(const physical_value& other) const noexcept {
@@ -194,7 +273,7 @@ namespace components::types {
 
     bool physical_value::operator>=(const physical_value& other) const noexcept { return !(*this < other); }
 
-    physical_value::operator bool() const noexcept { return data_; }
+    physical_value::operator bool() const noexcept { return data_ != 0 || data_hi_ != 0; }
 
     physical_type physical_value::type() const noexcept { return type_; }
 
@@ -256,6 +335,22 @@ namespace components::types {
     double physical_value::value_(std::integral_constant<physical_type, physical_type::DOUBLE>) const noexcept {
         assert(type_ == physical_type::DOUBLE);
         return core::bit_cast<double>(data_);
+    }
+
+    int128_t physical_value::value_(std::integral_constant<physical_type, physical_type::INT128>) const noexcept {
+        assert(type_ == physical_type::INT128);
+        int128_t out;
+        std::memcpy(&out, &data_, sizeof(data_));
+        std::memcpy(reinterpret_cast<char*>(&out) + sizeof(data_), &data_hi_, sizeof(data_hi_));
+        return out;
+    }
+
+    uint128_t physical_value::value_(std::integral_constant<physical_type, physical_type::UINT128>) const noexcept {
+        assert(type_ == physical_type::UINT128);
+        uint128_t out;
+        std::memcpy(&out, &data_, sizeof(data_));
+        std::memcpy(reinterpret_cast<char*>(&out) + sizeof(data_), &data_hi_, sizeof(data_hi_));
+        return out;
     }
 
     std::string_view

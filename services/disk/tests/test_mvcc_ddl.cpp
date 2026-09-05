@@ -105,7 +105,9 @@ namespace {
 TEST_CASE("services::disk::mvcc::auto_commit_create_namespace_visible") {
     fixture fx;
     disk_test_helpers::test_create_namespace(fx, std::string("ns_a"));
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"));
+    REQUIRE_FALSE(rr.has_error());
+    auto& r = rr.value();
     REQUIRE(r.found);
 }
 
@@ -121,13 +123,16 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
         auto writes =
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_uncommitted"), ns_oid);
         for (auto& w : writes)
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(uncommitted), w.table_oid, std::move(w.row));
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   fx.txn_ctx(uncommitted),
+                                                   w.table_oid,
+                                                   std::move(w.row)));
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
     // auto_ctx() uses transaction_id=0, so it must NOT see the uncommitted row.
-    auto r =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"), std::uint64_t{0});
-    REQUIRE_FALSE(r.found);
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"));
+    REQUIRE_FALSE(r.has_error());
+    REQUIRE_FALSE(r.value().found);
 }
 
 // 3. DROP TABLE at txn=0 (auto-commit) immediately hides the row.
@@ -208,11 +213,13 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
 
-    auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"), std::uint64_t{0});
-    REQUIRE(kept.found);
+    auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"));
+    REQUIRE_FALSE(kept.has_error());
+    REQUIRE(kept.value().found);
     auto dropped =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"), std::uint64_t{0});
-    REQUIRE(dropped.found);
+        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"));
+    REQUIRE_FALSE(dropped.has_error());
+    REQUIRE(dropped.value().found);
 }
 
 // version_monotonic test deleted: catalog_version_ infrastructure removed.
@@ -288,13 +295,12 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
                                                                      std::string("public"),
                                                                      std::string("ephemeral"),
                                                                      cols,
-                                                                     false,
                                                                      ns_oid,
                                                                      batch,
                                                                      catalog::relkind::regular);
         for (auto& w : writes) {
-            auto rng =
-                fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn), w.table_oid, std::move(w.row));
+            auto rng = disk_test_helpers::append_ok(
+                fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn), w.table_oid, std::move(w.row)));
             appends_for_test.push_back(std::move(rng));
         }
         // Do NOT call storage_publish_commits — rows are pending under txn.
@@ -370,7 +376,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
                                                                      components::catalog::well_known_oid::int64_type,
                                                                      std::int64_t{0},
                                                                      std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
+        auto rng = disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row)));
         pending_ranges.push_back(std::move(rng));
         // Intentionally NO storage_publish_commits — row stays uncommitted.
     }
@@ -416,7 +423,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
                                                                      components::catalog::well_known_oid::int64_type,
                                                                      std::int64_t{0},
                                                                      std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
+        auto rng = disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row)));
         pending_ranges.push_back(std::move(rng));
     }
 
@@ -469,7 +477,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
                                                                      std::int64_t{0},
                                                                      std::int64_t{1});
         // Append under txn1 — no commit yet.
-        fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
+        disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row)));
     }
 
     // Resolve from the SAME txn using PRODUCTION semantics: operator_resolve_table issues
@@ -531,4 +540,158 @@ TEST_CASE("services::disk::mvcc::vacuum_insert_concurrent_TODO") {
     WARN("TODO: requires multi-session concurrent test fixture; race is "
          "handled by VACUUM's lowest_active_start_time horizon — uncommitted "
          "INSERTs invisible to VACUUM, fully-committed rows are stable.");
+}
+
+// ===========================================================================
+// THE PER-SPEC COUNT ITSELF: WHAT delete_pg_catalog_rows_many ANSWERS WITH.
+//
+// Six operators now decide whether a DDL statement succeeded by indexing into this vector —
+// "spec i deleted 0 rows" is a refusal for the specs that name a row the operator had already
+// read, and a healthy no-op for the specs that are a scrub template. That reading needs two
+// things from this reply and had a test for neither: the counts must be POSITIONAL (one entry
+// per spec, in spec order, so deleted[i] really is about specs[i]) and a zero must be an
+// honest count rather than an error.
+// ===========================================================================
+TEST_CASE("services::disk::mvcc::delete_many_counts_each_spec_in_order") {
+    fixture fx;
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("counted_ns"));
+    constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
+
+    // Spec 0 names a row that is there, spec 1 an oid no pg_namespace row carries, spec 2 the
+    // same row as spec 0 — which spec 0 has already taken, so it can only answer zero. The
+    // middle one is what makes the answer positional rather than "a count per row deleted".
+    const catalog::oid_t absent_oid = ns_oid + 100000;
+    std::pmr::vector<pg_catalog_delete_spec_t> specs(&fx.resource);
+    specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
+    specs.push_back({pg_ns, std::int64_t{0}, absent_oid});
+    specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
+
+    auto deleted = fx.invoke(&manager_disk_t::delete_pg_catalog_rows_many, fx.auto_ctx(), std::move(specs));
+    REQUIRE_FALSE(deleted.has_error());
+    REQUIRE(deleted.value().size() == 3);
+    CHECK(deleted.value()[0] == 1);
+    CHECK(deleted.value()[1] == 0);
+    CHECK(deleted.value()[2] == 0);
+}
+
+// ===========================================================================
+// THE DELETE SEES WHAT ITS OWN TRANSACTION SEES — the floor under the "zero is a refusal"
+// verdicts, and the defect that made them fire on legal statements.
+//
+// agent_disk_t::delete_pg_catalog_rows_inner must scan under ctx.txn. Scanning with no
+// transaction leaves collection_scan_state::txn at {0, 0}, so rows written INSIDE a transaction
+// (insert_id == transaction_id) are invisible to the very transaction that wrote them. Every
+// caller that reads a zero here as "the row I just read is still in the catalog" — ALTER TABLE
+// DROP COLUMN on its live pg_attribute row, DROP INDEX on its identity rows, DROP FUNCTION on
+// pg_proc, DROP CAST on pg_cast — would then refuse whenever the row it named had been created
+// in the open transaction, while its own read routes (read_chunks_by_key and the resolve
+// funnel) carry ctx.txn and see the row perfectly well.
+//
+// The count of 1 here IS the guard those verdicts stand on: 0 is the value they turn into
+// "the catalog would not give the row up".
+// ===========================================================================
+TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
+    fixture fx;
+    const uint64_t txn1 = TRANSACTION_ID_START + 555;
+    constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
+
+    // A pg_namespace row appended by txn1 and NOT published: exactly the state a catalog row
+    // written earlier in an explicit transaction is in when a later statement of the same
+    // transaction comes to delete it.
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    const components::catalog::oid_t ns_oid = oids[0];
+    auto writes = components::catalog::build_create_namespace_writes(&fx.resource, std::string("own_ns"), ns_oid);
+    for (auto& w : writes) {
+        disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), w.table_oid, std::move(w.row)));
+    }
+
+    // Another transaction must NOT see it — that half was never broken, and it is what keeps
+    // this case from passing by "the scan sees everything".
+    {
+        std::pmr::vector<pg_catalog_delete_spec_t> other(&fx.resource);
+        other.push_back({pg_ns, std::int64_t{0}, ns_oid});
+        auto by_other = fx.invoke(&manager_disk_t::delete_pg_catalog_rows_many,
+                                  fx.txn_ctx(TRANSACTION_ID_START + 556),
+                                  std::move(other));
+        REQUIRE_FALSE(by_other.has_error());
+        REQUIRE(by_other.value().size() == 1);
+        CHECK(by_other.value()[0] == 0);
+    }
+
+    std::pmr::vector<pg_catalog_delete_spec_t> specs(&fx.resource);
+    specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
+    auto deleted = fx.invoke(&manager_disk_t::delete_pg_catalog_rows_many, fx.txn_ctx(txn1), std::move(specs));
+    REQUIRE_FALSE(deleted.has_error());
+    REQUIRE(deleted.value().size() == 1);
+    CHECK(deleted.value()[0] == 1);
+}
+
+// resolve_namespace scans on the caller's ctx.txn, not the DEFAULT snapshot
+// (transaction_data{}) — the same rule the row-delete path follows. On the default snapshot a
+// namespace created inside an open transaction is invisible to ITS OWN resolve, so any verdict
+// built on "found == false" (name collision checks, follow-up DDL in the same txn) reads a lie.
+// With ctx.txn a txn sees its own uncommitted row (this case), other sessions do not (case 2
+// above), and a zero-txn ctx sees exactly the committed state.
+TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row") {
+    fixture fx;
+    auto uncommitted = TRANSACTION_ID_START + 1;
+    {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        const components::catalog::oid_t ns_oid = oids[0];
+        auto writes =
+            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_own_txn"), ns_oid);
+        for (auto& w : writes)
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   fx.txn_ctx(uncommitted),
+                                                   w.table_oid,
+                                                   std::move(w.row)));
+        // Intentionally no MVCC swap (no storage_publish_commits call).
+    }
+    INFO("the creating transaction must see its own pg_namespace row");
+    auto own = fx.invoke(&manager_disk_t::resolve_namespace,
+                         fx.txn_ctx(uncommitted),
+                         std::string("ns_own_txn"));
+    REQUIRE_FALSE(own.has_error());
+    REQUIRE(own.value().found);
+
+    INFO("other sessions still do not (case 2's half must keep holding)");
+    auto other =
+        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"));
+    REQUIRE_FALSE(other.has_error());
+    REQUIRE_FALSE(other.value().found);
+}
+
+// list_namespaces: same snapshot fix as resolve_namespace above, on the enumeration leg.
+TEST_CASE("services::disk::mvcc::list_namespaces_sees_its_own_uncommitted_row") {
+    fixture fx;
+    auto uncommitted = TRANSACTION_ID_START + 1;
+    {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        const components::catalog::oid_t ns_oid = oids[0];
+        auto writes =
+            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_own_list"), ns_oid);
+        for (auto& w : writes)
+            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                   fx.txn_ctx(uncommitted),
+                                                   w.table_oid,
+                                                   std::move(w.row)));
+    }
+    auto contains = [](const std::pmr::vector<std::string>& names, const char* wanted) {
+        for (const auto& n : names) {
+            if (n == wanted)
+                return true;
+        }
+        return false;
+    };
+
+    INFO("the creating transaction must see its own namespace in the enumeration");
+    auto own = fx.invoke(&manager_disk_t::list_namespaces, fx.txn_ctx(uncommitted));
+    REQUIRE_FALSE(own.has_error());
+    REQUIRE(contains(own.value(), "ns_own_list"));
+
+    INFO("other sessions still do not");
+    auto other = fx.invoke(&manager_disk_t::list_namespaces, fx.auto_ctx());
+    REQUIRE_FALSE(other.has_error());
+    REQUIRE_FALSE(contains(other.value(), "ns_own_list"));
 }

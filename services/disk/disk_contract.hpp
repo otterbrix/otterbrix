@@ -146,7 +146,8 @@ namespace services::disk {
         // agent), so the per-key loop runs intra-agent via a single read_chunks_by_keys_inner
         // message. The outer vector always has one (possibly empty) entry per key in input
         // order, so result.size() == keys.size(). Callers read cells via chunk.value(col, row).
-        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
+        actor_zeta::unique_future<
+            core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
                             std::pmr::vector<std::uint64_t> key_col_indices,

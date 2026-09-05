@@ -1,5 +1,5 @@
-#include <atomic>
 #include "dispatcher.hpp"
+#include <atomic>
 
 #include <components/casts/default_casts.hpp>
 #include <components/context/context.hpp>
@@ -38,7 +38,6 @@ namespace services::dispatcher {
     void reset_pump_hops() noexcept { g_pump_hops.store(0, std::memory_order_relaxed); }
     void note_pump_hop() noexcept { g_pump_hops.fetch_add(1, std::memory_order_relaxed); }
 #endif
-
 
     namespace {
         // subscriber-kind discriminator carried in the on_drop_resource_marked /
@@ -681,6 +680,25 @@ namespace services::dispatcher {
                                          std::pmr::vector<components::types::complex_logical_type> inputs) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
+        // every per-executor registry has to drop the overload
+        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
+        ack_futures.reserve(executor_addresses_.size());
+        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
+                executor_addresses_[i],
+                &collection::executor::executor_t::unregister_udf,
+                session,
+                function_name,
+                std::pmr::vector<components::types::complex_logical_type>{inputs.begin(), inputs.end(), resource()});
+            if (needs_sched && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            ack_futures.push_back(std::move(fut));
+        }
+        for (auto& fut : ack_futures) {
+            co_await std::move(fut);
+        }
+
         // Operator-pipeline path. The logical leaf node_unregister_udf_t
         // carries the (name, inputs) signature; the operator probes
         // function_registry_t::get_default(), removes the matching overload,
@@ -733,30 +751,32 @@ namespace services::dispatcher {
     }
 
     namespace {
-        // Wrap a register/unregister-cast leaf in a sequence that first resolves any
-        // UDT source/target type names against the catalog, so execute_plan_full's
-        // resolve/validate pass turns them into real types (or leaves UNKNOWN → rejected).
+        // Build a register/unregister-cast plan that first resolves any UDT
+        // source/target type names against the catalog, so execute_plan_full's
+        // resolve pass turns them into real types (or leaves UNKNOWN → rejected).
         components::logical_plan::execution_plan_t
         make_cast_resolve_plan(std::pmr::memory_resource* resource,
                                components::logical_plan::node_ptr leaf,
                                const components::types::complex_logical_type& source,
                                const components::types::complex_logical_type& target) {
-            auto seq = boost::intrusive_ptr(new components::logical_plan::node_sequence_t(resource));
-            seq->append_child(
-                components::logical_plan::make_node_catalog_resolve_namespace(resource,
-                                                                              core::dbname_t{std::string{"public"}}));
+            components::logical_plan::execution_plan_t plan{resource,
+                                                            std::move(leaf),
+                                                            components::logical_plan::make_parameter_node(resource)};
+            components::logical_plan::resolve_entry_t namespace_entry;
+            namespace_entry.dbname = "public";
+            plan.catalog_resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
+                .add(std::move(namespace_entry));
             for (const auto* type : {&source, &target}) {
-                if (type->type() == components::types::logical_type::UNKNOWN) {
-                    seq->append_child(components::logical_plan::make_node_catalog_resolve_type(
-                        resource,
-                        core::dbname_t{std::string{"public"}},
-                        core::typename_t{std::string(type->type_name())}));
+                if (type->type() != components::types::logical_type::UNKNOWN) {
+                    continue;
                 }
+                components::logical_plan::resolve_entry_t type_entry;
+                type_entry.dbname = "public";
+                type_entry.type_name = type->type_name();
+                plan.catalog_resolves.ensure(resource, components::logical_plan::resolve_kind::type)
+                    .add(std::move(type_entry));
             }
-            seq->append_child(std::move(leaf));
-            return components::logical_plan::execution_plan_t{resource,
-                                                              seq,
-                                                              components::logical_plan::make_parameter_node(resource)};
+            return plan;
         }
     } // namespace
 
@@ -819,7 +839,11 @@ namespace services::dispatcher {
         if (!fanout_ok) {
             co_return false;
         }
-        cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
+        if (auto err = cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
+            err.contains_error()) {
+            error(log_, "register_cast: cast registry refused the entry: {}", err.what);
+            co_return false;
+        }
 
         // Step 3 — write the pg_cast row (catalog after registry).
         auto write_leaf = boost::intrusive_ptr(

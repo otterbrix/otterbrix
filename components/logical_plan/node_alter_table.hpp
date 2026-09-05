@@ -47,11 +47,20 @@ namespace components::logical_plan {
         char relkind() const noexcept { return relkind_; }
         void set_relkind(char rk) noexcept { relkind_ = rk; }
 
+        // The altered table, as written. Kept on the node so enrich binds it to a
+        // resolved entry by name.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+        const std::string& relname() const noexcept { return relname_; }
+        void set_relname(std::string relname) { relname_ = std::move(relname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::vector<alter_table_subcommand_t> subcommands_;
+        std::string dbname_;
+        std::string relname_;
         char relkind_{components::catalog::relkind::regular};
     };
 

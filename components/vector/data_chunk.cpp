@@ -305,6 +305,9 @@ namespace components::vector {
         for (uint64_t i = 0; i < column_count(); i++) {
             if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
                 continue;
+            // There's nothing to copy for vector of NULLs
+            if (data[i].type().type() == types::logical_type::NA)
+                continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
         }
@@ -323,6 +326,9 @@ namespace components::vector {
 
         for (uint64_t i = 0; i < column_count(); i++) {
             if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
+                continue;
+            // There's nothing to copy for vector of NULLs
+            if (data[i].type().type() == types::logical_type::NA)
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);

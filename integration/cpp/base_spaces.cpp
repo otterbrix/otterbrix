@@ -563,10 +563,10 @@ namespace otterbrix {
                 // meant to survive (unopenable file, unreadable or incompatible header), so it
                 // must not be used here: an index whose storage will not open costs a full scan,
                 // whereas aborting costs the whole engine its start.
-                auto storage = services::index::disk_hash_table_t::create(
-                    base / "hash_index.bin",
-                    services::index::disk_hash_table_t::default_bucket_count,
-                    &resource);
+                auto storage =
+                    services::index::disk_hash_table_t::create(base / "hash_index.bin",
+                                                               services::index::disk_hash_table_t::default_bucket_count,
+                                                               &resource);
                 if (storage.has_error()) {
                     // Skip the WHOLE index, not just the shared storage: spawning the
                     // bitcask agent with a null shared hash would make it open the same

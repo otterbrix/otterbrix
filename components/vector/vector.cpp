@@ -76,9 +76,8 @@ namespace components::vector {
         // that is thrown away — on every vector the query path makes. reset() still runs and still
         // establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY); only the
         // allocation nobody ever read is skipped.
-        , validity_(type_.type() == types::logical_type::NA || create_data
-                        ? validity_mask_t{resource, nullptr}
-                        : validity_mask_t{resource, capacity}) {
+        , validity_(type_.type() == types::logical_type::NA || create_data ? validity_mask_t{resource, nullptr}
+                                                                           : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
             return;
         }

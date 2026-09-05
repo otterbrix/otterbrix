@@ -3,8 +3,8 @@
 #include "catalog_write_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -27,48 +27,53 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
+        // Per-column metadata accumulated per table, then folded into the entry's
+        // resolved_table_metadata_t. A flat struct (instead of parallel vectors)
+        // keeps the sort+filter logic simple.
+        struct out_row_t {
+            catalog::oid_t attoid{catalog::INVALID_OID};
+            std::string attname;
+            catalog::oid_t atttypid{catalog::INVALID_OID};
+            std::string atttypspec;
+            std::int32_t attnum{0};          // sort key for relkind='r'
+            std::int32_t chunk_position{-1}; // storage chunk column index
+            bool attnotnull{false};
+            bool atthasdefault{false};
+            std::string attdefspec;
+        };
 
-    // Small projection helpers, one per read below. A projection that is too narrow does not
-    // fail — the column comes back as an ordinal-stable placeholder and the consumer silently
-    // reads nothing — so each of these names exactly the columns its read consumes.
-    std::pmr::vector<std::uint64_t> pg_class_oid_only(std::pmr::memory_resource* resource) {
-        std::pmr::vector<std::uint64_t> cols(resource);
-        cols.emplace_back(components::catalog::pg_class_col::oid);
-        return cols;
-    }
+        // Small projection helpers, one per read below. A projection that is too narrow does not
+        // fail — the column comes back as an ordinal-stable placeholder and the consumer silently
+        // reads nothing — so each of these names exactly the columns its read consumes. An empty
+        // projection means "every column".
+        std::pmr::vector<std::uint64_t> pg_class_oid_only(std::pmr::memory_resource* resource) {
+            std::pmr::vector<std::uint64_t> cols(resource);
+            cols.emplace_back(catalog::pg_class_col::oid);
+            return cols;
+        }
 
-    std::pmr::vector<std::uint64_t> pg_rewrite_action_only(std::pmr::memory_resource* resource) {
-        std::pmr::vector<std::uint64_t> cols(resource);
-        cols.emplace_back(components::catalog::pg_rewrite_col::ev_action);
-        return cols;
-    }
-        // Output schema: (position int32, attoid uint32, attname string,
-        // atttypid uint32, atttypspec string). Built once per operator into the
-        // cached member (TASK C10) so even an empty result (table not found)
-        // yields a valid-typed empty chunk.
-        void build_output_schema(std::pmr::vector<types::complex_logical_type>& out_types) {
-            out_types.reserve(5);
-            out_types.emplace_back(types::logical_type::INTEGER);        // position
-            out_types.emplace_back(types::logical_type::UINTEGER);       // attoid
-            out_types.emplace_back(types::logical_type::STRING_LITERAL); // attname
-            out_types.emplace_back(types::logical_type::UINTEGER);       // atttypid
-            out_types.emplace_back(types::logical_type::STRING_LITERAL); // atttypspec
+        std::pmr::vector<std::uint64_t> pg_class_namespace_and_kind(std::pmr::memory_resource* resource) {
+            std::pmr::vector<std::uint64_t> cols(resource);
+            cols.emplace_back(catalog::pg_class_col::relnamespace);
+            cols.emplace_back(catalog::pg_class_col::relkind);
+            return cols;
+        }
+
+        std::pmr::vector<std::uint64_t> pg_rewrite_action_only(std::pmr::memory_resource* resource) {
+            std::pmr::vector<std::uint64_t> cols(resource);
+            cols.emplace_back(catalog::pg_rewrite_col::ev_action);
+            return cols;
         }
     } // namespace
 
     operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
                                                        log_t log,
-                                                       catalog::oid_t namespace_oid,
-                                                       std::string dbname,
-                                                       std::string relname,
-                                                       components::logical_plan::node_catalog_resolve_t* target_node)
+                                                       components::logical_plan::node_catalog_resolve_t* node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
-        , input_namespace_oid_(namespace_oid)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
-        , target_node_(target_node)
+        , node_(node)
         , output_schema_(resource) {
-        build_output_schema(output_schema_);
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+        output_schema_.back().set_alias("table_oid");
     }
 
     actor_zeta::unique_future<void> operator_resolve_table_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -80,100 +85,73 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Output schema is cached on the operator (output_schema_), built once
-        // in the constructor (TASK C10).
+        // Column visible to this snapshot iff added_at_commit_id <= start_time
+        // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > start_time).
+        // attisdropped is a structural backup, set in lockstep with dropped_at > 0.
+        const auto snapshot_start_time = ctx->txn.start_time;
 
-        // Bail with empty output when the disk actor is not wired (test
-        // harnesses).
-        if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->chunks().front().set_cardinality(0);
-            mark_executed();
-            co_return;
-        }
+        // dbname -> namespace_oid for this run. Entries dedupe on (dbname, relname),
+        // so N tables in one database still cost a single pg_namespace read.
+        std::unordered_map<std::string, catalog::oid_t> namespace_cache;
 
-        // (name-form): resolve table_oid via pg_class scan. If relname_ is
-        // empty we cannot resolve — emit empty output.
-        if (table_oid_ == catalog::INVALID_OID) {
-            if (relname_.empty()) {
-                output_ = make_operator_data(resource_, output_schema_, 0);
-                output_->chunks().front().set_cardinality(0);
-                mark_executed();
-                co_return;
+        // Nothing resolves without a disk actor (test harnesses): every entry stays
+        // at INVALID_OID, which is how "did not resolve" is reported.
+        for (auto& entry : node_->entries()) {
+            if (ctx->disk_address == actor_zeta::address_t::empty_address() || entry.relname.empty()) {
+                continue;
             }
-            // Database-qualified name: translate dbname -> namespace_oid at
-            // EXECUTION time via a pg_namespace read (mirrors
-            // operator_resolve_type_t). This cannot be a plan-generation-time
-            // constructor argument: the sibling resolve_namespace operator only
-            // stamps its own node after the whole resolve sub-plan is already
-            // built, so a ctor-frozen oid is always INVALID — which used to
-            // degrade the pg_class scan to relname-only and leak the first
-            // same-named table from ANY database (issue #557). A namespace
-            // miss is a hard not-found: validate then reports
-            // database_not_exists. Deliberately NO ""->public defaulting
-            // (unlike resolve_type): unqualified CREATE TABLE writes
-            // relnamespace=INVALID, so mapping ""->public would break every
-            // unqualified table.
-            // Fast path: the transformer links the table-resolve node to its
-            // sibling namespace-resolve node (same dbname), and the sibling's
-            // operator executes earlier in the Pass-1 chain — read its stamp
-            // instead of re-scanning pg_namespace. Never a correctness
-            // dependency: absent link or unstamped sibling falls through to
-            // the self-resolve read below.
-            if (input_namespace_oid_ == catalog::INVALID_OID && !dbname_.empty() && target_node_) {
-                if (auto* ns = target_node_->target();
-                    ns && ns->kind() == components::logical_plan::resolve_kind::namespace_ && ns->dbname() == dbname_ &&
-                    ns->namespace_oid() != catalog::INVALID_OID) {
-                    input_namespace_oid_ = ns->namespace_oid();
-                }
-            }
-            if (input_namespace_oid_ == catalog::INVALID_OID && !dbname_.empty()) {
-                std::pmr::vector<std::uint64_t> ns_keys(resource_);
-                ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
-                auto [_ns, nsf] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::read_chunks_by_key,
-                                     exec_ctx,
-                                     kPgNamespace,
-                                     std::move(ns_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}),
-                             std::pmr::vector<std::uint64_t>{resource_});
-                auto ns_batches_r = co_await std::move(nsf);
-                if (ns_batches_r.has_error()) {
-                    // A catalog read that failed is not "row not found": reporting it as a miss is
-                    // how an unreadable catalog surfaced as a missing database or table. Every
-                    // catalog read in this operator propagates its error the same way.
-                    set_error(ns_batches_r.error());
-                    co_return;
-                }
-                auto& ns_batches = ns_batches_r.value();
-                if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
-                    !ns_batches[0].is_null(0, 0)) {
-                    input_namespace_oid_ = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
+
+            auto input_namespace_oid = catalog::INVALID_OID;
+            if (!entry.dbname.empty()) {
+                auto cached = namespace_cache.find(entry.dbname);
+                if (cached != namespace_cache.end()) {
+                    input_namespace_oid = cached->second;
                 } else {
-                    // Database does not exist — emit empty output, leave
-                    // found_=false. Never fall through to a relname-only scan.
-                    output_ = make_operator_data(resource_, output_schema_, 0);
-                    output_->chunks().front().set_cardinality(0);
-                    mark_executed();
-                    co_return;
+                    std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                    ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
+                    auto [_ns, nsf] = actor_zeta::send(
+                        ctx->disk_address,
+                        &services::disk::manager_disk_t::read_chunks_by_key,
+                        exec_ctx,
+                        kPgNamespace,
+                        std::move(ns_keys),
+                        components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
+                        std::pmr::vector<std::uint64_t>{resource_});
+                    auto ns_batches_r = co_await std::move(nsf);
+                    if (ns_batches_r.has_error()) {
+                        // A catalog read that failed is not "row not found": reporting it as a miss
+                        // is how an unreadable catalog surfaced as a missing database or table.
+                        // Every catalog read in this operator propagates its error the same way.
+                        set_error(ns_batches_r.error());
+                        co_return;
+                    }
+                    auto& ns_batches = ns_batches_r.value();
+                    if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
+                        !ns_batches[0].is_null(0, 0)) {
+                        input_namespace_oid = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
+                    }
+                    namespace_cache.emplace(entry.dbname, input_namespace_oid);
+                }
+                if (input_namespace_oid == catalog::INVALID_OID) {
+                    // Database does not exist. Never fall through to a
+                    // relname-only scan — validate reports database_not_exists.
+                    continue;
                 }
             }
-            // Two-key (relname, relnamespace) scan whenever a namespace is
-            // known — i.e. always for qualified names. The relname-only scan
-            // remains ONLY for unqualified names (dbname_ empty): no session
-            // default-database substitution exists, so it is what makes
-            // unqualified access work.
+
+            // Two-key (relname, relnamespace) scan whenever a namespace is known —
+            // i.e. always for qualified names. The relname-only scan remains ONLY
+            // for unqualified names.
             std::pmr::vector<std::uint64_t> key_cols(resource_);
             key_cols.emplace_back(catalog::pg_class_col::relname);
             auto keys_chunk = [&] {
-                if (input_namespace_oid_ != catalog::INVALID_OID) {
+                if (input_namespace_oid != catalog::INVALID_OID) {
                     key_cols.emplace_back(catalog::pg_class_col::relnamespace);
                     return components::operators::make_key_chunk(resource_,
-                                                                 std::string_view{relname_},
-                                                                 static_cast<std::uint32_t>(input_namespace_oid_));
+                                                                 std::string_view{entry.relname},
+                                                                 static_cast<std::uint32_t>(input_namespace_oid));
                 }
-                return components::operators::make_key_chunk(resource_, std::string_view{relname_});
+                return components::operators::make_key_chunk(resource_, std::string_view{entry.relname});
             }();
             auto [_lookup, lookup_f] = actor_zeta::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::read_chunks_by_key,
@@ -193,382 +171,318 @@ namespace components::operators {
             auto& lookup_batches = lookup_batches_r.value();
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {
-                // Not found — emit empty output, leave found_=false.
-                output_ = make_operator_data(resource_, output_schema_, 0);
-                output_->chunks().front().set_cardinality(0);
-                mark_executed();
-                co_return;
+                continue;
             }
-            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].get_value<std::uint32_t>(0, 0));
-        }
+            const auto table_oid = static_cast<catalog::oid_t>(lookup_batches[0].get_value<std::uint32_t>(0, 0));
 
-        // read pg_class by oid to determine relkind and relnamespace.
-        // pg_class layout: [0=oid, 1=relname, 2=relnamespace, 3=relkind,
-        // 4=relstoragemode]. We key by "oid" so we get a single row at most.
-        {
-            std::pmr::vector<std::uint64_t> pc_keys(resource_);
-            pc_keys.emplace_back(catalog::pg_class_col::oid);
-            // This read consumes exactly relnamespace and relkind (the two get_value calls below);
-            // the key column is added by the agent. Non-projected columns stay ordinal-stable
-            // placeholders, which is why the reads below still address columns 2 and 3.
-            std::pmr::vector<std::uint64_t> pc_projection(resource_);
-            pc_projection.emplace_back(catalog::pg_class_col::relnamespace);
-            pc_projection.emplace_back(catalog::pg_class_col::relkind);
-            auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               kPgClass,
-                                               std::move(pc_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_),
-                                               std::move(pc_projection));
-            auto pc_batches_r = co_await std::move(pcf);
-            if (pc_batches_r.has_error()) {
-                set_error(pc_batches_r.error());
-                co_return;
-            }
-            auto& pc_batches = pc_batches_r.value();
-            if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
-                found_ = true;
-                if (!pc_batches[0].is_null(2, 0)) {
-                    namespace_oid_ = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(2, 0));
+            // Read pg_class by oid for relkind and relnamespace. pg_class layout:
+            // [0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode]. Keying
+            // by "oid" yields at most a single row.
+            bool found = false;
+            auto namespace_oid = catalog::INVALID_OID;
+            char relkind = 0;
+            {
+                std::pmr::vector<std::uint64_t> pc_keys(resource_);
+                pc_keys.emplace_back(catalog::pg_class_col::oid);
+                auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                   exec_ctx,
+                                                   kPgClass,
+                                                   std::move(pc_keys),
+                                                   components::operators::make_key_chunk(resource_, table_oid),
+                                                   // Exactly the two columns read below; the key
+                                                   // column is added by the agent. Non-projected
+                                                   // columns stay ordinal-stable placeholders,
+                                                   // which is why the reads still address 2 and 3.
+                                                   pg_class_namespace_and_kind(resource_));
+                auto pc_batches_r = co_await std::move(pcf);
+                if (pc_batches_r.has_error()) {
+                    set_error(pc_batches_r.error());
+                    co_return;
                 }
-                if (!pc_batches[0].is_null(3, 0)) {
-                    auto rk_cell = pc_batches[0].get_value<std::string_view>(3, 0);
-                    relkind_ = rk_cell.empty() ? catalog::relkind::regular : rk_cell.front();
-                } else {
-                    relkind_ = catalog::relkind::regular;
+                auto& pc_batches = pc_batches_r.value();
+                if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
+                    found = true;
+                    if (!pc_batches[0].is_null(2, 0)) {
+                        namespace_oid = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(2, 0));
+                    }
+                    if (!pc_batches[0].is_null(3, 0)) {
+                        auto rk_cell = pc_batches[0].get_value<std::string_view>(3, 0);
+                        relkind = rk_cell.empty() ? catalog::relkind::regular : rk_cell.front();
+                    } else {
+                        relkind = catalog::relkind::regular;
+                    }
                 }
             }
-        }
 
-        // Stamp resolved oids onto the node for the validate/enrich/planner
-        // passes (via plan_resolve_index_t). Stamped unconditionally, even when
-        // !found_, so callers detect "did not resolve" via table_oid() == INVALID_OID.
-        if (target_node_) {
-            target_node_->set_namespace_oid(namespace_oid_);
-            target_node_->set_table_oid(table_oid_);
-        }
-
-        if (!found_) {
-            // Table not found: emit an empty, correctly-typed chunk.
-            output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->chunks().front().set_cardinality(0);
-            mark_executed();
-            co_return;
-        }
-
-        // for relkind 'v' (regular view) or 'm' (matview), read
-        // pg_rewrite.ev_action so the dispatcher view-rewrite step can
-        // re-parse the body. pg_rewrite layout: [0=oid, 1=rulename,
-        // 2=ev_class, 3=ev_type, 4=ev_action]. Matview body is also stored
-        // here for REFRESH MATERIALIZED VIEW.
-        std::string view_sql;
-        if (relkind_ == catalog::relkind::view || relkind_ == catalog::relkind::materialized_view) {
-            std::pmr::vector<std::uint64_t> pr_keys(resource_);
-            pr_keys.emplace_back(catalog::pg_rewrite_col::ev_class);
-            auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               kPgRewrite,
-                                               std::move(pr_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_),
-                                               // Only ev_action is read below.
-                                               pg_rewrite_action_only(resource_));
-            auto pr_batches_r = co_await std::move(prf);
-            if (pr_batches_r.has_error()) {
-                set_error(pr_batches_r.error());
-                co_return;
+            // Stamped even when !found so callers detect "did not resolve" via an
+            // absent table_md.
+            entry.namespace_oid = namespace_oid;
+            if (!found) {
+                continue;
             }
-            auto& pr_batches = pr_batches_r.value();
-            if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5) {
-                if (!pr_batches[0].is_null(4, 0)) {
+
+            // relkind 'v' (regular view) / 'm' (matview): read pg_rewrite.ev_action so
+            // the view-rewrite step can re-parse the body (also used by REFRESH
+            // MATERIALIZED VIEW). pg_rewrite layout: [0=oid, 1=rulename, 2=ev_class,
+            // 3=ev_type, 4=ev_action].
+            std::string view_sql;
+            if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
+                std::pmr::vector<std::uint64_t> pr_keys(resource_);
+                pr_keys.emplace_back(catalog::pg_rewrite_col::ev_class);
+                auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                   exec_ctx,
+                                                   kPgRewrite,
+                                                   std::move(pr_keys),
+                                                   components::operators::make_key_chunk(resource_, table_oid),
+                                                   // Only ev_action is read below.
+                                                   pg_rewrite_action_only(resource_));
+                auto pr_batches_r = co_await std::move(prf);
+                if (pr_batches_r.has_error()) {
+                    set_error(pr_batches_r.error());
+                    co_return;
+                }
+                auto& pr_batches = pr_batches_r.value();
+                if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5 &&
+                    !pr_batches[0].is_null(4, 0)) {
                     view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
                 }
             }
-        }
 
-        // Per-row metadata accumulated below, then materialized into the
-        // output chunk in one pass. Using a flat struct (instead of separate
-        // parallel vectors) keeps sort+filter logic simple.
-        // Extended with attnotnull / atthasdefault / attdefspec so the
-        // full resolved_table_metadata_t can be stamped on the logical node.
-        struct out_row_t {
-            catalog::oid_t attoid{catalog::INVALID_OID};
-            std::string attname;
-            catalog::oid_t atttypid{catalog::INVALID_OID};
-            std::string atttypspec;
-            std::int32_t attnum{0};          // sort key for relkind='r'
-            std::int32_t chunk_position{-1}; // storage chunk column index
-            bool attnotnull{false};
-            bool atthasdefault{false};
-            std::string attdefspec;
-        };
-        std::vector<out_row_t> rows;
+            std::vector<out_row_t> rows;
 
-        if (relkind_ == catalog::relkind::computed) {
-            // relkind='g' — scan pg_computed_column.
-            // pg_computed_column layout: [0=relid, 1=attoid, 2=attname,
-            // 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
-            // Mirrors manager_disk_resolve.cpp lines 71-160:
-            //   - collect ALL rows for this relid (including tombstones),
-            //   - per attname keep the max(attversion) row,
-            //   - drop entries whose chosen max-version row is a tombstone
-            //     (attrefcount <= 0),
-            //   - sort by attoid (register-order in storage adopt_schema).
-            std::pmr::vector<std::uint64_t> cc_keys(resource_);
-            cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
-            auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               kPgComputedColumn,
-                                               std::move(cc_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_),
-                             std::pmr::vector<std::uint64_t>{resource_});
-            auto cc_batches_r = co_await std::move(ccf);
-            if (cc_batches_r.has_error()) {
-                set_error(cc_batches_r.error());
-                co_return;
-            }
-            auto& cc_batches = cc_batches_r.value();
-
-            struct cc_candidate_t {
-                catalog::oid_t attoid;
-                std::string attname;
-                catalog::oid_t atttypid;
-                std::string atttypspec;
-                std::int64_t attversion;
-                std::int64_t attrefcount;
-            };
-            // Key by (attname, atttypid, atttypspec) — NOT attname alone — so a
-            // computing table exposes SEVERAL columns sharing a name but with
-            // different types (multi-type fields). Per variant keep the
-            // max(attversion) row; tombstones (refcount<=0) are dropped below.
-            std::unordered_map<std::string, cc_candidate_t> latest_any;
-
-            for (auto& chunk : cc_batches) {
-                if (chunk.column_count() < 7)
-                    continue;
-                for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    if (chunk.is_null(2, i) || chunk.is_null(5, i))
-                        continue;
-                    cc_candidate_t cand;
-                    cand.attname.assign(chunk.get_value<std::string_view>(2, i));
-                    cand.attoid = chunk.is_null(1, i)
-                                      ? catalog::INVALID_OID
-                                      : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                    cand.atttypid = chunk.is_null(3, i)
-                                        ? catalog::INVALID_OID
-                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
-                    if (!chunk.is_null(4, i)) {
-                        cand.atttypspec.assign(chunk.get_value<std::string_view>(4, i));
-                    }
-                    cand.attversion = chunk.get_value<std::int64_t>(5, i);
-                    cand.attrefcount = chunk.is_null(6, i) ? 0 : chunk.get_value<std::int64_t>(6, i);
-
-                    std::string key = cand.attname + '\x1f' + std::to_string(static_cast<unsigned>(cand.atttypid)) +
-                                      '\x1f' + cand.atttypspec;
-                    auto it = latest_any.find(key);
-                    if (it == latest_any.end() || it->second.attversion < cand.attversion) {
-                        latest_any[std::move(key)] = std::move(cand);
-                    }
+            if (relkind == catalog::relkind::computed) {
+                // relkind='g' — scan pg_computed_column. Layout: [0=relid, 1=attoid,
+                // 2=attname, 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
+                std::pmr::vector<std::uint64_t> cc_keys(resource_);
+                cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
+                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                   exec_ctx,
+                                                   kPgComputedColumn,
+                                                   std::move(cc_keys),
+                                                   components::operators::make_key_chunk(resource_, table_oid),
+                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto cc_batches_r = co_await std::move(ccf);
+                if (cc_batches_r.has_error()) {
+                    set_error(cc_batches_r.error());
+                    co_return;
                 }
-            }
-            // Filter: only variants whose chosen (max-version) row is live.
-            for (auto& [key, cand] : latest_any) {
-                if (cand.attrefcount <= 0)
-                    continue;
-                out_row_t r;
-                r.attoid = cand.attoid;
-                r.attname = std::move(cand.attname);
-                r.atttypid = cand.atttypid;
-                r.atttypspec = std::move(cand.atttypspec);
-                rows.push_back(std::move(r));
-            }
-            // Sort by attoid (matches resolve_table sync path).
-            std::sort(rows.begin(), rows.end(), [](const out_row_t& a, const out_row_t& b) {
-                return a.attoid < b.attoid;
-            });
+                auto& cc_batches = cc_batches_r.value();
 
-            // Resolve storage chunk position for each live column. Storage keeps
-            // tombstoned columns until VACUUM, so chunk index in scan_batched
-            // output may differ from attoid ordering. We probe storage for its
-            // current types() list (aliases set at append time) and look up
-            // each row's attname linearly — N is small (column count).
-            auto [_st, stf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::storage_types,
-                                               ctx->session,
-                                               table_oid_);
-            auto storage_types = co_await std::move(stf);
-            // Map each resolved variant to its physical storage column by
-            // (name, type): with multi-type fields several storage columns share
-            // a name, so the type disambiguates. `claimed` prevents two variants
-            // from binding to the same physical column. Falls back to the first
-            // unclaimed same-name column when types don't compare exactly.
-            std::vector<bool> claimed(storage_types.size(), false);
-            for (auto& r : rows) {
-                const types::complex_logical_type rtype =
-                    r.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(r.atttypid))
-                                         : catalog::decode_type_spec(resource_, r.atttypspec);
-                std::int32_t name_only = -1;
-                for (std::size_t i = 0; i < storage_types.size(); ++i) {
-                    if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != r.attname) {
+                struct cc_candidate_t {
+                    catalog::oid_t attoid;
+                    std::string attname;
+                    catalog::oid_t atttypid;
+                    std::string atttypspec;
+                    std::int64_t attversion;
+                    std::int64_t attrefcount;
+                };
+                // Key by (attname, atttypid, atttypspec) — NOT attname alone — so a
+                // computing table exposes SEVERAL columns sharing a name but with
+                // different types (multi-type fields). Per variant keep the
+                // max(attversion) row; tombstones (refcount<=0) are dropped below.
+                std::unordered_map<std::string, cc_candidate_t> latest_any;
+
+                for (auto& chunk : cc_batches) {
+                    if (chunk.column_count() < 7) {
                         continue;
                     }
-                    if (name_only < 0) {
-                        name_only = static_cast<std::int32_t>(i);
-                    }
-                    if (storage_types[i].type() == rtype.type()) {
-                        r.chunk_position = static_cast<std::int32_t>(i);
-                        claimed[i] = true;
-                        break;
-                    }
-                }
-                if (r.chunk_position < 0 && name_only >= 0) {
-                    r.chunk_position = name_only;
-                    claimed[static_cast<std::size_t>(name_only)] = true;
-                }
-            }
-        } else if (relkind_ == catalog::relkind::view) {
-            // Views have no pg_attribute (their schema is derived from the
-            // body SQL on expansion). Leave `rows` empty; view_sql carries
-            // the body for the dispatcher view-rewrite step.
-        } else {
-            // relkind='r', 'm' (matview), and other static-schema kinds:
-            // scan pg_attribute.
-            // pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
-            // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
-            // 7=attisdropped, 8=atttypspec, 9=attdefspec].
-            std::pmr::vector<std::uint64_t> pa_keys(resource_);
-            pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               kPgAttribute,
-                                               std::move(pa_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_),
-                             std::pmr::vector<std::uint64_t>{resource_});
-            auto pa_batches_r = co_await std::move(paf);
-            if (pa_batches_r.has_error()) {
-                set_error(pa_batches_r.error());
-                co_return;
-            }
-            auto& pa_batches = pa_batches_r.value();
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        if (chunk.is_null(2, i) || chunk.is_null(5, i)) {
+                            continue;
+                        }
+                        cc_candidate_t cand;
+                        cand.attname.assign(chunk.get_value<std::string_view>(2, i));
+                        cand.attoid = chunk.is_null(1, i)
+                                          ? catalog::INVALID_OID
+                                          : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                        cand.atttypid = chunk.is_null(3, i)
+                                            ? catalog::INVALID_OID
+                                            : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        if (!chunk.is_null(4, i)) {
+                            cand.atttypspec.assign(chunk.get_value<std::string_view>(4, i));
+                        }
+                        cand.attversion = chunk.get_value<std::int64_t>(5, i);
+                        cand.attrefcount = chunk.is_null(6, i) ? 0 : chunk.get_value<std::int64_t>(6, i);
 
-            // Column visible to this snapshot iff added_at_commit_id <= start_time
-            // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > start_time).
-            // attisdropped is a structural backup, set in lockstep with dropped_at > 0.
-            const auto snapshot_start_time = ctx->txn.start_time;
-            for (auto& chunk : pa_batches) {
-                if (chunk.column_count() < 8)
-                    continue;
-                for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    // Drop tombstones (attisdropped=true).
-                    if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
+                        std::string key = cand.attname + '\x1f' + std::to_string(static_cast<unsigned>(cand.atttypid)) +
+                                          '\x1f' + cand.atttypspec;
+                        auto it = latest_any.find(key);
+                        if (it == latest_any.end() || it->second.attversion < cand.attversion) {
+                            latest_any[std::move(key)] = std::move(cand);
+                        }
+                    }
+                }
+                // Only variants whose chosen (max-version) row is live.
+                for (auto& [key, cand] : latest_any) {
+                    if (cand.attrefcount <= 0) {
                         continue;
-                    if (chunk.column_count() > 10) {
-                        if (!chunk.is_null(10, i)) {
+                    }
+                    out_row_t row;
+                    row.attoid = cand.attoid;
+                    row.attname = std::move(cand.attname);
+                    row.atttypid = cand.atttypid;
+                    row.atttypspec = std::move(cand.atttypspec);
+                    rows.push_back(std::move(row));
+                }
+                std::sort(rows.begin(), rows.end(), [](const out_row_t& lhs, const out_row_t& rhs) {
+                    return lhs.attoid < rhs.attoid;
+                });
+
+                // Resolve the storage chunk position for each live column. Storage
+                // keeps tombstoned columns until VACUUM, so the chunk index in
+                // scan_batched output may differ from attoid ordering. Probe storage
+                // for its current types() list (aliases set at append time) and look
+                // up each row's attname linearly — N is small (column count).
+                auto [_st, stf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_types,
+                                                   ctx->session,
+                                                   table_oid);
+                auto storage_types = co_await std::move(stf);
+                // Map each resolved variant to its physical storage column by
+                // (name, type): with multi-type fields several storage columns share
+                // a name, so the type disambiguates. `claimed` prevents two variants
+                // from binding to the same physical column. Falls back to the first
+                // unclaimed same-name column when types don't compare exactly.
+                std::vector<bool> claimed(storage_types.size(), false);
+                for (auto& row : rows) {
+                    const types::complex_logical_type row_type =
+                        row.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid))
+                                               : catalog::decode_type_spec(resource_, row.atttypspec);
+                    std::int32_t name_only = -1;
+                    for (std::size_t i = 0; i < storage_types.size(); ++i) {
+                        if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != row.attname) {
+                            continue;
+                        }
+                        if (name_only < 0) {
+                            name_only = static_cast<std::int32_t>(i);
+                        }
+                        if (storage_types[i].type() == row_type.type()) {
+                            row.chunk_position = static_cast<std::int32_t>(i);
+                            claimed[i] = true;
+                            break;
+                        }
+                    }
+                    if (row.chunk_position < 0 && name_only >= 0) {
+                        row.chunk_position = name_only;
+                        claimed[static_cast<std::size_t>(name_only)] = true;
+                    }
+                }
+            } else if (relkind != catalog::relkind::view) {
+                // relkind='r', 'm' (matview), and other static-schema kinds: scan
+                // pg_attribute. Layout: [0=attoid, 1=attrelid, 2=attname, 3=atttypid,
+                // 4=attnum, 5=attnotnull, 6=atthasdefault, 7=attisdropped,
+                // 8=atttypspec, 9=attdefspec].
+                //
+                // A view has no pg_attribute (its schema is derived from the body SQL
+                // on expansion), so `rows` stays empty there; view_sql carries the
+                // body for the view-rewrite step.
+                std::pmr::vector<std::uint64_t> pa_keys(resource_);
+                pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
+                auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                   exec_ctx,
+                                                   kPgAttribute,
+                                                   std::move(pa_keys),
+                                                   components::operators::make_key_chunk(resource_, table_oid),
+                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto pa_batches_r = co_await std::move(paf);
+                if (pa_batches_r.has_error()) {
+                    set_error(pa_batches_r.error());
+                    co_return;
+                }
+                auto& pa_batches = pa_batches_r.value();
+
+                for (auto& chunk : pa_batches) {
+                    if (chunk.column_count() < 8) {
+                        continue;
+                    }
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        // Drop tombstones (attisdropped=true).
+                        if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i)) {
+                            continue;
+                        }
+                        if (chunk.column_count() > 10 && !chunk.is_null(10, i)) {
                             auto added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(10, i));
-                            if (added_at > snapshot_start_time)
+                            if (added_at > snapshot_start_time) {
                                 continue; // column added after our snapshot — invisible
+                            }
                         }
-                    }
-                    if (chunk.column_count() > 11) {
-                        if (!chunk.is_null(11, i)) {
+                        if (chunk.column_count() > 11 && !chunk.is_null(11, i)) {
                             auto dropped_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(11, i));
-                            if (dropped_at != 0 && dropped_at <= snapshot_start_time)
+                            if (dropped_at != 0 && dropped_at <= snapshot_start_time) {
                                 continue; // column dropped before our snapshot
+                            }
                         }
-                    }
-                    out_row_t r;
-                    r.attoid = chunk.is_null(0, i) ? catalog::INVALID_OID
-                                                   : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    if (!chunk.is_null(2, i)) {
-                        r.attname.assign(chunk.get_value<std::string_view>(2, i));
-                    }
-                    r.atttypid = chunk.is_null(3, i)
-                                     ? catalog::INVALID_OID
-                                     : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
-                    r.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
-                    // For relkind='r' storage column order matches pg_attribute attnum
-                    // (1-based), so chunk_position is simply attnum-1.
-                    r.chunk_position = r.attnum > 0 ? r.attnum - 1 : -1;
-                    r.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
-                    r.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
-                    if (chunk.column_count() > 8) {
-                        if (!chunk.is_null(8, i)) {
-                            r.atttypspec.assign(chunk.get_value<std::string_view>(8, i));
+                        out_row_t row;
+                        row.attoid = chunk.is_null(0, i)
+                                         ? catalog::INVALID_OID
+                                         : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        if (!chunk.is_null(2, i)) {
+                            row.attname.assign(chunk.get_value<std::string_view>(2, i));
                         }
-                    }
-                    if (chunk.column_count() > 9) {
-                        if (!chunk.is_null(9, i)) {
-                            r.attdefspec.assign(chunk.get_value<std::string_view>(9, i));
+                        row.atttypid = chunk.is_null(3, i)
+                                           ? catalog::INVALID_OID
+                                           : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        row.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
+                        // For relkind='r' storage column order matches pg_attribute
+                        // attnum (1-based), so chunk_position is simply attnum-1.
+                        row.chunk_position = row.attnum > 0 ? row.attnum - 1 : -1;
+                        row.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
+                        row.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
+                        if (chunk.column_count() > 8 && !chunk.is_null(8, i)) {
+                            row.atttypspec.assign(chunk.get_value<std::string_view>(8, i));
                         }
+                        if (chunk.column_count() > 9 && !chunk.is_null(9, i)) {
+                            row.attdefspec.assign(chunk.get_value<std::string_view>(9, i));
+                        }
+                        rows.push_back(std::move(row));
                     }
-                    rows.push_back(std::move(r));
                 }
+                // Sort by attnum (1-based ordinal).
+                std::sort(rows.begin(), rows.end(), [](const out_row_t& lhs, const out_row_t& rhs) {
+                    return lhs.attnum < rhs.attnum;
+                });
             }
-            // Sort by attnum (1-based ordinal).
-            std::sort(rows.begin(), rows.end(), [](const out_row_t& a, const out_row_t& b) {
-                return a.attnum < b.attnum;
-            });
-        }
 
-        // Stamp full resolved_table_metadata_t on the logical resolve node
-        // so enrich/validate can read the columns + not-null / default flags
-        // from the plan tree. Built from the same `rows` we use for the
-        // operator output chunk; decoded type derived from atttypspec or
-        // atttypid via the existing catalog helpers.
-        if (target_node_) {
+            // Stamp the full resolved_table_metadata_t so enrich / validate read the
+            // columns + not-null / default flags off the entry. The decoded type comes
+            // from atttypspec, or from atttypid via the catalog helpers.
             components::logical_plan::resolved_table_metadata_t md;
-            md.table_oid = table_oid_;
-            md.namespace_oid = namespace_oid_;
-            md.relkind = relkind_;
-            md.name = relname_;
+            md.table_oid = table_oid;
+            md.namespace_oid = namespace_oid;
+            md.relkind = relkind;
+            md.name = entry.relname;
             md.view_sql = std::move(view_sql);
             md.columns.reserve(rows.size());
-            for (const auto& r : rows) {
+            for (const auto& row : rows) {
                 components::logical_plan::resolved_column_metadata_t cm;
-                cm.attname = r.attname;
-                cm.attnum = r.attnum;
-                cm.chunk_position = r.chunk_position;
-                cm.attoid = r.attoid;
-                cm.atttypid = r.atttypid;
-                cm.attnotnull = r.attnotnull;
-                cm.atthasdefault = r.atthasdefault;
-                cm.attdefspec = r.attdefspec;
-                cm.atttypspec = r.atttypspec;
-                if (!r.atttypspec.empty()) {
-                    cm.type = catalog::decode_type_spec(resource_, r.atttypspec);
-                } else if (r.atttypid != catalog::INVALID_OID) {
-                    cm.type = types::complex_logical_type(catalog::oid_to_builtin_type(r.atttypid));
+                cm.attname = row.attname;
+                cm.attnum = row.attnum;
+                cm.chunk_position = row.chunk_position;
+                cm.attoid = row.attoid;
+                cm.atttypid = row.atttypid;
+                cm.attnotnull = row.attnotnull;
+                cm.atthasdefault = row.atthasdefault;
+                cm.attdefspec = row.attdefspec;
+                cm.atttypspec = row.atttypspec;
+                if (!row.atttypspec.empty()) {
+                    cm.type = catalog::decode_type_spec(resource_, row.atttypspec);
+                } else if (row.atttypid != catalog::INVALID_OID) {
+                    cm.type = types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid));
                 }
                 if (!cm.attname.empty() && !cm.type.has_alias()) {
                     cm.type.set_alias(cm.attname);
                 }
                 md.columns.push_back(std::move(cm));
             }
-            target_node_->set_resolved_metadata(std::move(md));
+            entry.table_md = std::move(md);
         }
 
-        // Position is a synthetic 1-based ordinal (matches
-        // manager_disk_resolve.cpp's synthetic attnum for relkind='g').
-        const auto row_count = rows.size();
-        const uint64_t capacity = std::max<uint64_t>(row_count, vector::DEFAULT_VECTOR_CAPACITY);
-        output_ = make_operator_data(resource_, output_schema_, capacity);
-        auto& out_chunk = output_->chunks().front();
-        for (std::size_t i = 0; i < row_count; ++i) {
-            const auto& r = rows[i];
-            // Direct typed writes — schema is INTEGER, UINTEGER, STRING,
-            // UINTEGER, STRING; sources are already in the matching C++ types
-            // on the out_row_t struct, so no variant detour needed.
-            set_int32(out_chunk, 0, i, static_cast<std::int32_t>(i + 1));
-            set_uint32(out_chunk, 1, i, static_cast<std::uint32_t>(r.attoid));
-            set_str(out_chunk, 2, i, std::string_view{r.attname}, resource_);
-            set_uint32(out_chunk, 3, i, static_cast<std::uint32_t>(r.atttypid));
-            set_str(out_chunk, 4, i, std::string_view{r.atttypspec}, resource_);
-        }
-        out_chunk.set_cardinality(row_count);
-
+        // 0-row sink output: the resolved data lives in the node's entries.
+        output_ = make_operator_data(resource_, output_schema_, 0);
         mark_executed();
     }
 

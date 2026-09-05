@@ -8,8 +8,10 @@
 #include <components/types/types.hpp>
 
 #include <cstdint>
+#include <memory_resource>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -80,145 +82,112 @@ namespace components::logical_plan {
         referencing
     };
 
-    // Flat catalog-dependency leaf node carrying the resolve kind plus the
-    // role-named payload each kind uses. Each kind is lowered to the
-    // corresponding operator_resolve_*_t during physical plan generation
-    // (create_plan switches on kind()); resolution flows through the standard
-    // pipeline (logical_plan → planner → optimizer → physical_plan_generator
-    // → executor).
+    // One catalog lookup: the request fields the transformer fills in, and the
+    // result fields the matching operator_resolve_*_t stamps back in place.
     //
-    // The node carries no children/expressions and emits no tuples; it is a pure
-    // resolved-dependency marker. The resolve operators stamp the resolved OID /
-    // metadata back via the operator's back-pointer; the dispatcher/executor read
-    // those stamps via plan_resolve_index_t.
-    //
-    // Field usage by kind:
-    //   table       — dbname_ / relname_ / namespace_oid_ / table_oid() (base) /
-    //                 resolved_metadata_ / target_ (optional back-pointer to the
-    //                 sibling namespace resolve; execution-time namespace fast
-    //                 path — operator_resolve_table_t reads its stamp before
-    //                 falling back to its own pg_namespace scan)
-    //   namespace_  — dbname_ / namespace_oid_
-    //   database    — dbname_ / database_oid_
-    //   type        — dbname_ / type_name_ / type_oid_ / resolved_type_metadata_
-    //   constraint  — target_ (sibling node, must be kind()==table) / direction_ /
-    //                 fks_ / check_exprs_
+    // Field usage by the owning node's kind:
+    //   table       — dbname / relname → namespace_oid, table_md
+    //   namespace_  — dbname → namespace_oid
+    //   database    — dbname → database_oid
+    //   type        — dbname / type_name → type_oid, type_md
+    //   constraint  — target indexes the TABLE node's entries, direction
+    //                 → fks, check_exprs, unique_constraints, pk_columns
+    struct resolve_entry_t {
+        static constexpr std::size_t no_target = static_cast<std::size_t>(-1);
+
+        // --- request ---
+        std::string dbname;
+        std::string relname;
+        std::string type_name;
+        resolve_direction direction{resolve_direction::outgoing};
+        // Constraint entries only: index into the TABLE node's entries_ naming the
+        // table whose constraints this entry gathers
+        std::size_t target{no_target};
+
+        // --- result, stamped by the resolve operator ---
+        components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
+        components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
+        components::catalog::oid_t type_oid{components::catalog::INVALID_OID};
+        // Empty optional means the operator did not find the target (or has not run).
+        std::optional<resolved_table_metadata_t> table_md;
+        std::optional<resolved_type_metadata_t> type_md;
+        std::vector<components::catalog::fk_info_t> fks;
+        std::vector<std::pair<std::string, std::string>> check_exprs;
+        // UNIQUE / PRIMARY KEY column groups (contype 'u'/'p'), one ordered local
+        // column-name list per constraint. Read by enrich to stamp the INSERT/UPDATE
+        // node so operator_unique_constraint_t can enforce them.
+        std::vector<std::vector<std::string>> unique_constraints;
+        // PRIMARY KEY column names (contype 'p' only, flattened). PRIMARY KEY implies
+        // NOT NULL, but pg_attribute.attnotnull is only written for column-level
+        // constraints at CREATE TABLE — ALTER TABLE ADD PRIMARY KEY / a table-level PK
+        // never back-fills it. Enrich merges these into the DML node's not_null_cols.
+        std::vector<std::string> pk_columns;
+
+        bool operator==(const resolve_entry_t& other) const noexcept;
+    };
+
+    // Catalog-dependency node: ONE per resolve kind for the WHOLE execution plan,
+    // carrying every lookup of that kind the plan needs
     class node_catalog_resolve_t final : public node_t {
     public:
         node_catalog_resolve_t(std::pmr::memory_resource* resource, resolve_kind kind);
 
         resolve_kind kind() const noexcept { return kind_; }
 
-        // table / namespace_ / database / type
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(core::dbname_t dbname) { dbname_ = std::move(static_cast<std::string&>(dbname)); }
+        const std::pmr::vector<resolve_entry_t>& entries() const noexcept { return entries_; }
+        std::pmr::vector<resolve_entry_t>& entries() noexcept { return entries_; }
+        bool empty() const noexcept { return entries_.empty(); }
 
-        // table
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(core::relname_t relname) { relname_ = std::move(static_cast<std::string&>(relname)); }
-
-        // type
-        const std::string& type_name() const noexcept { return type_name_; }
-        void set_type_name(core::typename_t type_name) { type_name_ = std::move(static_cast<std::string&>(type_name)); }
-        components::catalog::oid_t type_oid() const noexcept { return type_oid_; }
-        void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
-
-        // table / namespace_
-        components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
-        void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
-
-        // database
-        components::catalog::oid_t database_oid() const noexcept { return database_oid_; }
-        void set_database_oid(components::catalog::oid_t oid) noexcept { database_oid_ = oid; }
-
-        // table — full table metadata reconstructed by operator_resolve_table_t
-        // at Pass 1 time. Empty optional means the resolve operator did not find
-        // the table (or hasn't run yet).
-        const std::optional<resolved_table_metadata_t>& resolved_metadata() const noexcept {
-            return resolved_metadata_;
-        }
-        void set_resolved_metadata(resolved_table_metadata_t md) { resolved_metadata_ = std::move(md); }
-
-        // type — stamped by operator_resolve_type_t after pg_type read +
-        // typdefspec decode. Empty optional means the resolve did not find a
-        // matching type. Named distinctly from the table optional above so both
-        // payloads can coexist on the merged node.
-        const std::optional<resolved_type_metadata_t>& resolved_type_metadata() const noexcept {
-            return resolved_type_metadata_;
-        }
-        void set_resolved_type_metadata(resolved_type_metadata_t md) { resolved_type_metadata_ = std::move(md); }
-
-        // constraint — back-pointer to a sibling resolve node (must be
-        // kind()==table); its Pass 1 stamp provides the target's table_oid.
-        // table — optional back-pointer to the sibling namespace resolve node
-        // (must be kind()==namespace_, same dbname); its Pass 1 stamp lets
-        // operator_resolve_table_t skip its own pg_namespace scan. Pure fast
-        // path: absent or unstamped, the operator self-resolves the dbname.
-        node_catalog_resolve_t* target() const noexcept { return target_; }
-        void set_target(node_catalog_resolve_t* target) noexcept { target_ = target; }
-        resolve_direction direction() const noexcept { return direction_; }
-        void set_direction(resolve_direction direction) noexcept { direction_ = direction; }
-
-        const std::vector<components::catalog::fk_info_t>& fks() const noexcept { return fks_; }
-        void set_fks(std::vector<components::catalog::fk_info_t> v) { fks_ = std::move(v); }
-
-        const std::vector<std::pair<std::string, std::string>>& check_exprs() const noexcept { return check_exprs_; }
-        void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
-
-        // constraint (outgoing) — UNIQUE / PRIMARY KEY column groups (contype 'u'/'p').
-        // Each entry is one constraint's ordered local column-name list, resolved from
-        // pg_constraint.conkey by operator_resolve_constraint_t. Read by enrich to stamp
-        // the INSERT/UPDATE node so operator_unique_constraint_t can enforce them.
-        const std::vector<std::vector<std::string>>& unique_constraints() const noexcept { return unique_constraints_; }
-        void set_unique_constraints(std::vector<std::vector<std::string>> v) { unique_constraints_ = std::move(v); }
-
-        // constraint (outgoing) — PRIMARY KEY column names (contype 'p' only; the
-        // flattened union of all PK groups). PRIMARY KEY implies NOT NULL, but
-        // pg_attribute.attnotnull is only written for column-level constraints at
-        // CREATE TABLE — ALTER TABLE ADD PRIMARY KEY / a table-level PK never
-        // back-fills it. Read by enrich to merge into the DML node's not_null_cols.
-        const std::vector<std::string>& pk_columns() const noexcept { return pk_columns_; }
-        void set_pk_columns(std::vector<std::string> v) { pk_columns_ = std::move(v); }
+        // Appends `entry` unless an equivalent request is already present
+        std::size_t add(resolve_entry_t entry);
+        std::size_t find(std::string_view dbname, std::string_view name) const noexcept;
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         const resolve_kind kind_;
-        std::string dbname_;
-        std::string relname_;
-        std::string type_name_;
-        components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
-        components::catalog::oid_t database_oid_{components::catalog::INVALID_OID};
-        components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
-        std::optional<resolved_table_metadata_t> resolved_metadata_;
-        std::optional<resolved_type_metadata_t> resolved_type_metadata_;
-        node_catalog_resolve_t* target_{nullptr};
-        resolve_direction direction_{resolve_direction::outgoing};
-        std::vector<components::catalog::fk_info_t> fks_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_;
-        std::vector<std::vector<std::string>> unique_constraints_;
-        std::vector<std::string> pk_columns_;
+        std::pmr::vector<resolve_entry_t> entries_;
     };
 
     using node_catalog_resolve_ptr = boost::intrusive_ptr<node_catalog_resolve_t>;
 
-    node_catalog_resolve_ptr make_node_catalog_resolve_table(std::pmr::memory_resource* resource,
-                                                             core::dbname_t dbname,
-                                                             core::relname_t relname);
+    node_catalog_resolve_ptr make_node_catalog_resolve(std::pmr::memory_resource* resource, resolve_kind kind);
 
-    node_catalog_resolve_ptr make_node_catalog_resolve_namespace(std::pmr::memory_resource* resource,
-                                                                 core::dbname_t dbname);
+    // Every catalog lookup an execution plan depends on
+    struct catalog_resolves_t {
+        node_catalog_resolve_ptr database;
+        node_catalog_resolve_ptr namespaces;
+        node_catalog_resolve_ptr tables;
+        node_catalog_resolve_ptr types;
+        node_catalog_resolve_ptr constraints;
 
-    node_catalog_resolve_ptr make_node_catalog_resolve_database(std::pmr::memory_resource* resource,
-                                                                core::dbname_t dbname);
+        // The slot for `kind`, created empty on first use. Non-const so the
+        // transformer can register entries.
+        node_catalog_resolve_t& ensure(std::pmr::memory_resource* resource, resolve_kind kind);
 
-    node_catalog_resolve_ptr make_node_catalog_resolve_type(std::pmr::memory_resource* resource,
-                                                            core::dbname_t dbname,
-                                                            core::typename_t type_name);
+        [[nodiscard]] bool empty() const noexcept;
 
-    node_catalog_resolve_ptr make_node_catalog_resolve_constraint(std::pmr::memory_resource* resource,
-                                                                  node_catalog_resolve_t* target,
-                                                                  resolve_direction direction);
+        // --- direct lookups (replace plan_resolve_index_t) ---
+        // The entry naming this target, or nullptr. An empty name never matches, so
+        // a consumer that names nothing simply binds nothing.
+        [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
+        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
+                                                         std::string_view relname) const noexcept;
+        [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
+                                                        std::string_view type_name) const noexcept;
+
+        [[nodiscard]] components::catalog::oid_t namespace_oid(std::string_view dbname) const noexcept;
+        [[nodiscard]] const resolved_table_metadata_t* table_md(std::string_view dbname,
+                                                                std::string_view relname) const noexcept;
+        [[nodiscard]] const resolved_table_metadata_t* table_md(components::catalog::oid_t table_oid) const noexcept;
+        [[nodiscard]] const resolved_type_metadata_t* type_md(std::string_view dbname,
+                                                              std::string_view type_name) const noexcept;
+        // The constraint entry gathered for `table_oid` in `direction`, or nullptr.
+        // Constraint entries reach their table through `target`, so this resolves the
+        // index into the tables node rather than keying on a duplicated oid.
+        [[nodiscard]] const resolve_entry_t* constraints_for(components::catalog::oid_t table_oid,
+                                                             resolve_direction direction) const noexcept;
+    };
 
 } // namespace components::logical_plan

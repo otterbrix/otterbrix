@@ -35,7 +35,7 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_view(ViewStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_view(ViewStmt& node) {
         auto qn = rangevar_to_qualified_name(node.view);
         const std::string db_for_resolve = qn.dbname;
 
@@ -49,7 +49,9 @@ namespace components::sql::transform {
         auto v = logical_plan::make_node_create_view(resource_,
                                                      core::viewname_t{std::move(qn.relname)},
                                                      core::query_sql_t{std::move(query_sql)});
-        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(v));
+        v->set_dbname(db_for_resolve);
+        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
+        return v;
     }
 
 } // namespace components::sql::transform

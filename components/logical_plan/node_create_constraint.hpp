@@ -29,7 +29,12 @@ namespace components::logical_plan {
 
         const std::string& name() const noexcept { return name_; }
         constraint_kind kind() const noexcept { return kind_; }
+        // The FK's referenced table, as written. With ref_dbname() it is how enrich
+        // binds ref_table_oid() to a resolved entry by name — the local table and the
+        // referenced table are two independent lookups, not "the first and second".
         const std::string& ref_dbname() const noexcept { return ref_dbname_; }
+        const std::string& ref_relname() const noexcept { return ref_relname_; }
+        void set_ref_relname(std::string relname) { ref_relname_ = std::move(relname); }
 
         const std::vector<std::string>& local_col_names() const noexcept { return local_col_names_; }
         const std::vector<std::string>& ref_col_names() const noexcept { return ref_col_names_; }
@@ -66,6 +71,7 @@ namespace components::logical_plan {
 
         std::string dbname_;
         std::string relname_;
+        std::string ref_relname_;
         std::string name_;
         constraint_kind kind_;
         std::string ref_dbname_;

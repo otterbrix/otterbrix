@@ -12,49 +12,47 @@ namespace components::logical_plan {
 
 namespace components::operators {
 
-    // Pipeline FK + CHECK constraint resolution.
-    // Reads pg_constraint (+ pg_attribute / pg_class / pg_namespace for FK
-    // metadata) and stamps the result vectors on the back-pointed logical node
-    // so enrich_logical_plan can consume them via plan_resolve_index_t.
+    // Pipeline FK + CHECK + UNIQUE/PK constraint resolution. Resolves EVERY entry
+    // on a kind()==constraint resolve node, reading pg_constraint (+ pg_attribute /
+    // pg_class / pg_namespace for FK metadata) and stamping the result vectors back
+    // into that entry for enrich_logical_plan to consume.
     //
     // Steps (outgoing direction, INSERT/UPDATE):
     //   1. read pg_constraint by conrelid=table_oid.
-    //   2. for each row with contype='f': resolve child/parent col names via
-    //      pg_attribute scans, append to fks vector.
-    //   3. for each row with contype='c' and non-empty conexpr: append
-    //      (conname, conexpr) to check_exprs vector.
+    //   2. contype='f': resolve child/parent col names via pg_attribute, append to fks.
+    //   3. contype='c' with non-empty conexpr: append (conname, conexpr) to check_exprs.
+    //   4. contype='u'/'p': resolve conkey attoids to names, append to
+    //      unique_constraints (and, for 'p', flatten into pk_columns).
     //
     // Steps (referencing direction, DELETE):
     //   1. read pg_constraint by confrelid=table_oid.
-    //   2. for each row with contype='f': resolve child/parent col names AND
-    //      resolve child table {schema, collection} via pg_class + pg_namespace
-    //      scans. Append to fks vector.
+    //   2. contype='f': resolve child/parent col names AND the child table's
+    //      {schema, collection} via pg_class + pg_namespace. Append to fks.
     //
-    // table_oid is read from target_node_->resolved_metadata()->table_oid at
-    // execute time — Pass 1 guarantees the prerequisite resolve_table operator
-    // ran before this one.
+    // Each entry's table_oid comes from `tables_node`: the entry's `target` indexes
+    // that node's entries, and the fixed resolve order (tables before constraints)
+    // guarantees its table_md is already stamped.
+    //
+    // Output: a 0-row chunk — this is a SINK whose product is the entry stamps.
     class operator_resolve_constraint_t final : public read_write_operator_t {
     public:
         operator_resolve_constraint_t(std::pmr::memory_resource* resource,
                                       log_t log,
-                                      components::logical_plan::node_catalog_resolve_t* target_node);
+                                      components::logical_plan::node_catalog_resolve_t* node,
+                                      const components::logical_plan::node_catalog_resolve_t* tables_node);
 
-        // Sourceless SINK leaf (catalog read, no data pipeline, no children). Unlike
-        // the other resolve operators this one emits NO rows — its whole effect is
-        // stamping fks()/check_exprs() onto the back-pointed logical node (read later
-        // via plan_resolve_index). The executor admits the resolve front-pass as an
-        // all-sink chain and drives await_async_and_resume via the bottom-up
-        // needs_async_finalize pass, deepest-first: the prerequisite resolve_table
-        // (its left in the chain) commits + stamps table_oid BEFORE this operator
-        // reads target_node_->target()->resolved_metadata()->table_oid.
+        // Sourceless SINK leaf (catalog read, no data pipeline, no children).
+        // The executor's resolve pass drives await_async_and_resume via the
+        // bottom-up needs_async_finalize walk, after the tables node has run.
         // push()/finalize() inherit the no-op defaults.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        components::logical_plan::node_catalog_resolve_t* target_node_{nullptr};
-        // Static placeholder output schema, built once in the constructor (TASK C10).
+        components::logical_plan::node_catalog_resolve_t* node_;
+        const components::logical_plan::node_catalog_resolve_t* tables_node_;
+        // Static output schema, built once in the constructor.
         std::pmr::vector<components::types::complex_logical_type> output_schema_;
     };
 

@@ -230,13 +230,13 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
         std::string database = string_view_to_string(database_name);
         std::string collection = string_view_to_string(collection_name);
         auto* dispatcher = pod_space->space->dispatcher();
-        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
-            dispatcher->resource(),
-            database,
-            components::logical_plan::make_node_create_collection(dispatcher->resource(),
-                                                                  core::relname_t{collection},
-                                                                  {},
-                                                                  {}));
+        auto node = components::logical_plan::make_node_create_collection(dispatcher->resource(),
+                                                                          core::relname_t{collection},
+                                                                          {},
+                                                                          {});
+        // Naming the target is all this plan owes: the executor registers the
+        // catalog lookup for every target the tree names.
+        node->set_dbname(database);
         auto cursor =
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
@@ -255,11 +255,9 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
         auto* dispatcher = pod_space->space->dispatcher();
-        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
-            dispatcher->resource(),
-            database,
-            components::logical_plan::make_node_drop(dispatcher->resource(),
-                                                     components::logical_plan::drop_target_kind::database));
+        auto node = components::logical_plan::make_node_drop(dispatcher->resource(),
+                                                             components::logical_plan::drop_target_kind::database);
+        node->set_dbname(database);
         auto cursor =
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
@@ -279,12 +277,10 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
         std::string database = string_view_to_string(database_name);
         std::string collection = string_view_to_string(collection_name);
         auto* dispatcher = pod_space->space->dispatcher();
-        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(),
-            database,
-            collection,
-            components::logical_plan::make_node_drop(dispatcher->resource(),
-                                                     components::logical_plan::drop_target_kind::collection));
+        auto node = components::logical_plan::make_node_drop(dispatcher->resource(),
+                                                             components::logical_plan::drop_target_kind::collection);
+        node->set_dbname(database);
+        node->set_relname(collection);
         auto cursor =
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});

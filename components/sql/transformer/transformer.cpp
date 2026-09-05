@@ -3,12 +3,11 @@
 
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/plan_root.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/extension.hpp>
 #include <components/vector/data_chunk.hpp>
 
 namespace components::sql::transform {
-
     namespace {
         // At the SELECT top-level we know the read dependency is the FROM-clause
         // table. transform_select returns a node_aggregate_t (single-table FROM)
@@ -30,10 +29,9 @@ namespace components::sql::transform {
 
         // --- SORT ELIMINATION for a provably-unobservable sub-query ORDER BY ---------------
         //
-        // A flattened sub-query root is either the aggregate itself (no FROM identity) or a
-        // resolve-wrapping sequence_t (resolves at the front, the aggregate last). Unwrap to
-        // the aggregate via the shared logical_plan::effective_root_node; anything that does
-        // not unwrap to an aggregate has nothing to strip.
+        // A flattened sub-query root IS its consumer node (catalog lookups live on the
+        // execution_plan, never in the tree), so anything that is not an aggregate has
+        // nothing to strip.
 
         // Remove a bare ORDER BY (a childless sort_t marker in the aggregate's flat pipeline)
         // when NO limit_t child is present. A LIMIT/OFFSET child makes the sort a top-N: the
@@ -86,7 +84,7 @@ namespace components::sql::transform {
                 if (!order_insensitive_compaction(plan.sub_query_results[i])) {
                     continue;
                 }
-                auto* root = logical_plan::effective_root_node(plan.sub_queries[i].get());
+                auto* root = plan.sub_queries[i].get();
                 if (root && root->type() == logical_plan::node_type::aggregate_t) {
                     strip_bare_sort_child(root);
                 }
@@ -97,40 +95,61 @@ namespace components::sql::transform {
     transform_result transformer::transform(Node& node) {
         logical_plan::execution_plan_t plan(resource_);
 
-        plan.sub_queries.emplace_back(transform(node, &plan));
-
-        if (has_error()) {
-            return {resource_, std::move(error_)};
-        } else {
-            // Strip a provably-unobservable ORDER BY from every order-insensitively compacted
-            // sub-query (IN / ANY / ALL / EXISTS / scalar) before the plan is finalized.
-            eliminate_unobservable_subquery_sorts(plan);
-            return {resource_,
-                    std::move(plan),
-                    std::move(parameter_map_),
-                    std::move(parameter_insert_map_),
-                    std::move(parameter_insert_rows_),
-                    std::move(deferred_limits_)};
+        auto root = transform(node, &plan);
+        plan.catalog_resolves = std::move(catalog_resolves_);
+        if (root.has_error()) {
+            return {resource_, core::error_t(root.error())};
         }
+        if (!root.value()) {
+            return {
+                resource_,
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"statement lowered to an empty plan: " + node_tag_to_string(node.type),
+                                               resource_})};
+        }
+        plan.sub_queries.emplace_back(std::move(root.value()));
+
+        // Strip a provably-unobservable ORDER BY from every order-insensitively compacted
+        // sub-query (IN / ANY / ALL / EXISTS / scalar) before the plan is finalized.
+        eliminate_unobservable_subquery_sorts(plan);
+        return {resource_,
+                std::move(plan),
+                std::move(parameter_map_),
+                std::move(parameter_insert_map_),
+                std::move(parameter_insert_rows_),
+                std::move(deferred_limits_)};
     }
 
-    logical_plan::node_ptr transformer::transform(Node& node, logical_plan::execution_plan_t* plan) {
-        logical_plan::node_ptr log_node = nullptr;
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform(Node& node,
+                                                                          logical_plan::execution_plan_t* plan) {
+        core::result_wrapper_t<logical_plan::node_ptr> log_node{nullptr};
         switch (node.type) {
             case T_CreatedbStmt: {
                 auto& n = pg_cast<CreatedbStmt>(node);
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
-                log_node = transform_create_database(n);
+                auto created = transform_create_database(n);
+                if (created.has_error()) {
+                    log_node = created.error();
+                    break;
+                }
                 // Resolve the namespace name so a later patch can use the
                 // resolve node to detect duplicates through the pipeline.
-                log_node = maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(log_node));
+                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+                log_node = std::move(created.value());
                 break;
             }
             case T_DropdbStmt: {
                 auto& n = pg_cast<DropdbStmt>(node);
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
-                log_node = transform_drop_database(n);
-                log_node = maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(log_node));
+                auto dropped = transform_drop_database(n);
+                if (dropped.has_error()) {
+                    log_node = dropped.error();
+                    break;
+                }
+                auto drop_node = std::move(dropped.value());
+                static_cast<logical_plan::node_drop_t*>(drop_node.get())->set_dbname(dbname);
+                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+                log_node = std::move(drop_node);
                 break;
             }
             case T_CreateStmt:
@@ -150,16 +169,22 @@ namespace components::sql::transform {
                 log_node = transform_create_enum_type(pg_cast<CreateEnumStmt>(node));
                 break;
             case T_SelectStmt: {
-                log_node = transform_select(pg_cast<SelectStmt>(node), plan);
+                auto lowered = transform_select(pg_cast<SelectStmt>(node), plan);
+                if (lowered.has_error()) {
+                    log_node = lowered.error();
+                    break;
+                }
+                auto selected = std::move(lowered.value());
                 // Stamp the primary FROM-clause table as a catalog dependency.
                 // The transformer's aggregate wrapper at the root carries the
                 // (dbname, relname); a future patch can walk joins to add
                 // additional resolves.
-                auto [db, rel] = select_primary_table_identity(log_node);
+                auto [db, rel] = select_primary_table_identity(selected);
                 if (!rel.empty()) {
-                    log_node = maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(log_node));
+                    register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
                 }
-                log_node = wrap_with_catalog_resolve_types(resource_, cast_type_names_, std::move(log_node));
+                register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
+                log_node = std::move(selected);
                 break;
             }
             case T_UpdateStmt:
@@ -196,7 +221,7 @@ namespace components::sql::transform {
                 if (cs.relkind == OBJECT_MATVIEW) {
                     log_node = transform_create_matview(cs, plan);
                 } else {
-                    error_ = core::error_t(
+                    log_node = core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
                                          resource_});
@@ -226,7 +251,7 @@ namespace components::sql::transform {
                 if (var_name == "timezone") {
                     log_node = transform_set_timezone(set_stmt);
                 } else {
-                    error_ = core::error_t(
+                    log_node = core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"SET " + std::string(var_name) + " is not supported", resource_});
                 }
@@ -240,13 +265,13 @@ namespace components::sql::transform {
                 if (extension != nullptr && extension->transform != nullptr) {
                     log_node = extension->transform(resource_, &ext_node, plan->parameters.get());
                 } else {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"no transformer extension for '" + id + "'", resource_});
+                    log_node = core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"no transformer extension for '" + id + "'", resource_});
                 }
                 break;
             }
             default:
-                error_ = core::error_t(
+                log_node = core::error_t(
                     core::error_code_t::sql_parse_error,
                     std::pmr::string{"Unsupported node type: " + node_tag_to_string(node.type), resource_});
         }
@@ -254,7 +279,8 @@ namespace components::sql::transform {
         return log_node;
     }
 
-    logical_plan::node_ptr transformer::transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan) {
         // EXPLAIN ANALYZE is signalled by an "analyze" DefElem in the options list. No style/format
         // option is read from SQL — output formatting is a host C++ concern (the executor's renderer
         // registry, selected per-query by execution_plan_t::explain_render_id).
@@ -284,9 +310,8 @@ namespace components::sql::transform {
         // Only read/DML inner statements are supported — the renderer walks the physical plan the
         // transformer already lowers for these; DDL/other inners are rejected.
         if (!node.query) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"EXPLAIN requires a statement", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"EXPLAIN requires a statement", resource_});
         }
         switch (node.query->type) {
             case T_SelectStmt:
@@ -295,14 +320,11 @@ namespace components::sql::transform {
             case T_DeleteStmt:
                 break;
             default:
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"EXPLAIN of this statement is not supported", resource_});
-                return nullptr;
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"EXPLAIN of this statement is not supported", resource_});
         }
         plan->explain = is_analyze ? logical_plan::explain_type::analyze : logical_plan::explain_type::plan;
         // Lower the inner statement normally so sub_queries.back() stays the real query node.
         return transform(*node.query, plan);
     }
-
-    bool transformer::has_error() const noexcept { return error_.contains_error(); }
 } // namespace components::sql::transform

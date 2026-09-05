@@ -169,26 +169,8 @@ namespace services::planner::impl {
         // This is critical for INSERT-then-register semantics where register depends
         // on insert having processed the chunk first.
         if (!node->children().empty()) {
-            // Skip catalog_resolve_*_t children when a non-resolve consumer
-            // (DML/SELECT) is present: they already ran upstream and stamped OIDs
-            // on the logical nodes. Chaining a resolve as the DML consumer's left_
-            // would make operator_insert read left_->output() and get the resolve
-            // metadata chunk instead of the VALUES chunk — wrong shape, 0 rows.
-            // EXCEPTION: a resolve-only sub-plan must NOT skip, or the chain is
-            // empty; the caller explicitly wants those resolves executed.
-            auto is_catalog_resolve = [](node_type t) { return t == node_type::catalog_resolve_t; };
-            bool has_non_resolve_child = false;
-            for (const auto& child : node->children()) {
-                if (child && !is_catalog_resolve(child->type())) {
-                    has_non_resolve_child = true;
-                    break;
-                }
-            }
             components::operators::operator_ptr head;
             for (const auto& child : node->children()) {
-                if (has_non_resolve_child && child && is_catalog_resolve(child->type())) {
-                    continue;
-                }
                 auto op = create_plan(context, function_registry, child, {}, params);
                 if (head) {
                     // op consumes left_ as its DATA source (e.g. operator_insert

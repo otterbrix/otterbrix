@@ -32,17 +32,15 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_matview(CreateTableAsStmt& cs,
-                                                                 logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::transform_create_matview(CreateTableAsStmt& cs, logical_plan::execution_plan_t* plan) {
         if (!cs.query || cs.query->type != T_SelectStmt) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
         }
         if (!cs.into || !cs.into->rel) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
         }
 
         // 1. Body SQL — for pg_rewrite.ev_action so REFRESH can re-parse later.
@@ -51,9 +49,10 @@ namespace components::sql::transform {
         // 2. Body plan — transform_select returns the consumer aggregate (NOT
         // wrapped with catalog_resolve_*). We hoist the source resolves below
         // so Pass 1 stamps source metadata visible to the planner.
-        auto body_aggregate = transform_select(pg_cast<SelectStmt>(*cs.query), plan);
-        if (!body_aggregate || has_error()) {
-            return nullptr;
+        VALUE_OR_RETURN(auto body_aggregate, transform_select(pg_cast<SelectStmt>(*cs.query), plan));
+        if (!body_aggregate) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"materialized view body lowered to an empty plan", resource_});
         }
 
         // 3. Source identity from the body's aggregate (single-table FROM).
@@ -76,51 +75,33 @@ namespace components::sql::transform {
                                                                    core::body_sql_t{std::move(body_sql)});
         matview_node->set_body_plan(body_aggregate);
 
-        // 6. Wrap with namespace resolve(s) + source table resolve at the front
-        // of an outer sequence_t. Pass 1 walks the sequence's leading
-        // catalog_resolve_*_t children and stamps oids + metadata.
-        auto outer = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
-        logical_plan::node_catalog_resolve_t* mv_ns_ptr = nullptr;
-        if (!mv_db.empty()) {
-            auto mv_ns = logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{mv_db});
-            mv_ns_ptr = mv_ns.get();
-            outer->append_child(std::move(mv_ns));
-        }
-        // Source's namespace + table resolve so Pass 1 stamps source's
-        // resolved_metadata.columns for the planner's derive_output_schema.
-        logical_plan::node_catalog_resolve_t* source_ns_ptr = (source_db == mv_db) ? mv_ns_ptr : nullptr;
-        if (!source_db.empty() && source_db != mv_db) {
-            auto source_ns = logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{source_db});
-            source_ns_ptr = source_ns.get();
-            outer->append_child(std::move(source_ns));
-        }
-        if (!source_rel.empty()) {
-            auto source_table = logical_plan::make_node_catalog_resolve_table(resource_,
-                                                                              core::dbname_t{source_db},
-                                                                              core::relname_t{source_rel});
-            // Namespace fast path: link the source table resolve to its
-            // matching-dbname ns sibling (see maybe_wrap_with_catalog_resolve_table).
-            source_table->set_target(source_ns_ptr);
-            outer->append_child(std::move(source_table));
-        }
-        outer->append_child(matview_node);
-        return outer;
+        // 6. Both identities stay ON the node — enrich binds each to a resolved
+        // entry by name and stamps namespace_oid + source_table_oid + the source's
+        // columns (which the planner's derive_output_schema needs) from there.
+        matview_node->set_dbname(mv_db);
+        matview_node->set_source_dbname(source_db);
+        matview_node->set_source_relname(source_rel);
+        register_catalog_resolve_namespace(resource_, &catalog_resolves_, mv_db);
+        register_catalog_resolve_table(resource_, &catalog_resolves_, source_db, source_rel);
+        return matview_node;
     }
 
-    logical_plan::node_ptr transformer::transform_refresh_matview(RefreshMatViewStmt& rs) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_refresh_matview(RefreshMatViewStmt& rs) {
         if (!rs.relation) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
         }
         auto qn = rangevar_to_qualified_name(rs.relation);
         auto node = logical_plan::make_node_refresh_matview(resource_,
                                                             core::matviewname_t{qn.relname},
                                                             rs.concurrent,
                                                             !rs.skipData);
-        // Wrap so Pass 1 stamps mv's resolved_metadata including view_sql
-        // (Phase A.A2 reads pg_rewrite.ev_action for relkind='m').
-        return maybe_wrap_with_catalog_resolve_table(resource_, qn.dbname, qn.relname, std::move(node));
+        // The matview's identity stays ON the node: enrich binds it to a resolved
+        // entry by name, whose metadata carries view_sql (Phase A.A2 reads
+        // pg_rewrite.ev_action for relkind='m').
+        node->set_dbname(qn.dbname);
+        register_catalog_resolve_table(resource_, &catalog_resolves_, qn.dbname, qn.relname);
+        return node;
     }
 
 } // namespace components::sql::transform

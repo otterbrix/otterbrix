@@ -234,6 +234,10 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
+        unique_future<bool> unregister_udf(components::session::session_id_t session,
+                                           std::string name,
+                                           std::pmr::vector<components::types::complex_logical_type> inputs);
+
         // Add / remove one cast in THIS executor's cast_registry_. Fanned out from
         // the dispatcher so every per-executor registry stays identical — the
         // registry is the sole runtime cast authority (there is no default one).
@@ -265,6 +269,7 @@ namespace services::collection::executor {
 
         using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
                                                             &executor_t::register_udf,
+                                                            &executor_t::unregister_udf,
                                                             &executor_t::register_cast,
                                                             &executor_t::unregister_cast,
                                                             &executor_t::set_explain_renderer,

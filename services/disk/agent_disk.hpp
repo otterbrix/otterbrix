@@ -47,7 +47,6 @@ namespace services::disk {
     // Catalog-DDL _inner handlers take the same by-value context the manager routers do.
     using execution_context_t = ::components::execution_context_t;
 
-
     // Test-observable counter of ROWS the agent ships back for an aggregate-pushdown
     // reduce — the sum of data_chunk_t::size() over the FINAL aggregated chunks
     // produced by the reduce in storage_reduce_inner, i.e. exactly the

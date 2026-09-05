@@ -414,9 +414,9 @@ namespace services::disk {
                             }
                         }
                         if (cont) {
-                            #ifdef DEV_MODE
+#ifdef DEV_MODE
                             services::dispatcher::note_pump_hop();
-                            #endif
+#endif
                             cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
                             progress = true;
                             continue;

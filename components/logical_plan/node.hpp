@@ -18,6 +18,8 @@ namespace components::logical_plan {
     using expression_ptr = expressions::expression_ptr;
     using hash_t = expressions::hash_t;
 
+    struct resolved_table_metadata_t;
+
     // The polymorphic free helper `cfn_of(node_t*)` was removed.
     // Generic walkers that operated on `node_t*` and need the cfn either
     // (a) inline a per-call type switch when truly needed (see
@@ -68,6 +70,11 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
+        // The catalog metadata of the table this node targets, pasted here by
+        // enrich_plan alongside table_oid()
+        const resolved_table_metadata_t* table_metadata() const noexcept { return table_metadata_; }
+        void set_table_metadata(const resolved_table_metadata_t* md) noexcept { table_metadata_ = md; }
+
         // Plan-time resolved output column types (Postgres TupleDesc analogue), one per
         // output column. Stamped by validate_schema during binding from the resolved
         // schema; read by the physical-plan generator so operators can build correctly-
@@ -101,6 +108,7 @@ namespace components::logical_plan {
         // See table_oid()/set_table_oid() above. Default INVALID_OID; enrich
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        const resolved_table_metadata_t* table_metadata_{nullptr};
         // Resolved output column types (see output_types()). Allocated on this node's
         // resource (set in the ctor); empty until the validator stamps it.
         std::pmr::vector<components::types::complex_logical_type> output_types_;

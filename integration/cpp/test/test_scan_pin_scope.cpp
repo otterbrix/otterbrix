@@ -1,9 +1,9 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <components/table/row_group.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <chrono>
 #include <string>
 
 // A scan pins its block once per segment, not once per row.
@@ -28,8 +28,8 @@ namespace {
                 if (i != 0) {
                     sql += ", ";
                 }
-                sql += "(" + std::to_string(v) + ", " + std::to_string(v * 2) + ", " + std::to_string(v * 3) +
-                       ", " + std::to_string(v * 5) + ")";
+                sql += "(" + std::to_string(v) + ", " + std::to_string(v * 2) + ", " + std::to_string(v * 3) + ", " +
+                       std::to_string(v * 5) + ")";
             }
             sql += ";";
             auto session = otterbrix::session_id_t();
@@ -71,8 +71,8 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_pe
     const uint64_t segments = kRows / components::vector::DEFAULT_VECTOR_CAPACITY;
     const uint64_t bound = segments * 16;
 
-    INFO("pins for a full scan of " << kRows << " rows: " << pins << " (segments " << segments
-                                    << ", bound " << bound << ", one-per-row would be " << kRows << ")");
+    INFO("pins for a full scan of " << kRows << " rows: " << pins << " (segments " << segments << ", bound " << bound
+                                    << ", one-per-row would be " << kRows << ")");
     // Positive control: a counter stuck at zero would satisfy any upper bound.
     REQUIRE(pins > 0);
     CHECK(pins <= bound);
@@ -120,9 +120,10 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_
             auto cur = exec("SELECT SUM(b) FROM s.t WHERE a > 49500;");
             REQUIRE(cur->is_success());
         }
-        elapsed_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
-                .count()) / 5;
+        elapsed_us =
+            static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count()) /
+            5;
     }
     WARN("selective filter query: " << elapsed_us << " us per run");
     const auto pins = components::table::storage::buffer_pins();

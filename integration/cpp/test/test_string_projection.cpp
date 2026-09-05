@@ -1,8 +1,8 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <components/table/row_group.hpp>
 #include <chrono>
+#include <components/table/row_group.hpp>
 #include <string>
 
 // Two defects on one site: the gather-by-row-id path behind storage_fetch.
@@ -32,8 +32,8 @@ namespace {
                 if (i != 0) {
                     sql += ", ";
                 }
-                sql += "(" + std::to_string(n) + ", 'tag_value_" + std::to_string(n) + "', 'note_" +
-                       std::to_string(n) + "', " + std::to_string(n) + ")";
+                sql += "(" + std::to_string(n) + ", 'tag_value_" + std::to_string(n) + "', 'note_" + std::to_string(n) +
+                       "', " + std::to_string(n) + ")";
             }
             sql += ";";
             auto session = otterbrix::session_id_t();
@@ -42,25 +42,24 @@ namespace {
     }
 } // namespace
 
-#define STRPROJ_ENV(dirname)                                                                         \
-    auto config = test_create_config("/tmp/otterbrix/integration/test_string_projection/" dirname);   \
-    test_clear_directory(config);                                                                     \
-    config.disk.on = true;                                                                            \
-    config.wal.on = false;                                                                            \
-    config.log.level = log_t::level::off;                                                             \
-    test_spaces space(config);                                                                        \
-    auto* d = space.dispatcher();                                                                     \
-    auto exec = [&](const std::string& sql) {                                                         \
-        auto session = otterbrix::session_id_t();                                                     \
-        return d->execute_sql(session, sql);                                                          \
-    };                                                                                                \
-    REQUIRE(exec("CREATE DATABASE p;")->is_success());                                                \
-    REQUIRE(exec("CREATE TABLE p.t (id bigint, tag text, note text, v bigint);")->is_success());      \
-    fill_tagged(d);                                                                                   \
+#define STRPROJ_ENV(dirname)                                                                                           \
+    auto config = test_create_config("/tmp/otterbrix/integration/test_string_projection/" dirname);                    \
+    test_clear_directory(config);                                                                                      \
+    config.disk.on = true;                                                                                             \
+    config.wal.on = false;                                                                                             \
+    config.log.level = log_t::level::off;                                                                              \
+    test_spaces space(config);                                                                                         \
+    auto* d = space.dispatcher();                                                                                      \
+    auto exec = [&](const std::string& sql) {                                                                          \
+        auto session = otterbrix::session_id_t();                                                                      \
+        return d->execute_sql(session, sql);                                                                           \
+    };                                                                                                                 \
+    REQUIRE(exec("CREATE DATABASE p;")->is_success());                                                                 \
+    REQUIRE(exec("CREATE TABLE p.t (id bigint, tag text, note text, v bigint);")->is_success());                       \
+    fill_tagged(d);                                                                                                    \
     REQUIRE(exec("CREATE INDEX t_id_idx ON p.t (id);")->is_success())
 
-TEST_CASE("integration::cpp::test_string_projection::gather_never_borrows_beyond_its_pins",
-          "[.][strproj]") {
+TEST_CASE("integration::cpp::test_string_projection::gather_never_borrows_beyond_its_pins", "[.][strproj]") {
     STRPROJ_ENV("borrow");
 
     components::table::reset_gathered_borrowed_strings();
@@ -80,8 +79,7 @@ TEST_CASE("integration::cpp::test_string_projection::gather_never_borrows_beyond
     CHECK(escaping == 0);
 }
 
-TEST_CASE("integration::cpp::test_string_projection::unprojected_columns_are_not_fetched",
-          "[.][strproj]") {
+TEST_CASE("integration::cpp::test_string_projection::unprojected_columns_are_not_fetched", "[.][strproj]") {
     STRPROJ_ENV("projection");
 
     // Control first: a statement that DOES name a text column must materialize strings, so a low
@@ -115,14 +113,15 @@ TEST_CASE("integration::cpp::test_string_projection::unprojected_columns_are_not
             auto cur = exec("SELECT SUM(v) FROM p.t WHERE id > 45000;");
             REQUIRE(cur->is_success());
         }
-        elapsed_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
-                .count()) / 5;
+        elapsed_us =
+            static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count()) /
+            5;
     }
     WARN("indexed selective query: " << elapsed_us << " us per run");
 
     REQUIRE(gathered > 0);
-    WARN("SELECT SUM(v) materialized " << wasted << " strings from two columns it never names, over "
-                                       << gathered << " gathered rows");
+    WARN("SELECT SUM(v) materialized " << wasted << " strings from two columns it never names, over " << gathered
+                                       << " gathered rows");
     CHECK(wasted < gathered / 8);
 }

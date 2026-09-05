@@ -1,8 +1,8 @@
 #pragma once
 
-#include <components/table/row_group.hpp>
 #include "storage.hpp"
 #include <components/table/data_table.hpp>
+#include <components/table/row_group.hpp>
 #include <components/table/table_state.hpp>
 
 namespace components::storage {

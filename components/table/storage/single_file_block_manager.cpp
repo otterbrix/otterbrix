@@ -210,9 +210,8 @@ namespace components::table::storage {
                                  std::pmr::string{"Failed to read main header", buffer_manager.resource()});
         }
         if (!main_header.magic_ok()) {
-            return core::error_t(
-                core::error_code_t::data_corruption,
-                std::pmr::string{"Invalid database file: bad magic", buffer_manager.resource()});
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Invalid database file: bad magic", buffer_manager.resource()});
         }
         if (main_header.version != main_header_t::CURRENT_VERSION) {
             return core::error_t(core::error_code_t::data_corruption,

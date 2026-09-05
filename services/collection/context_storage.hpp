@@ -74,6 +74,8 @@ namespace services {
         };
         std::pmr::unordered_map<components::catalog::oid_t, table_index_info_t> table_indexes;
         const components::logical_plan::storage_parameters* parameters = nullptr;
+        // Every catalog lookup the plan depends on, owned by the execution_plan_t
+        const components::logical_plan::catalog_resolves_t* catalog_resolves = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's
         // operator_resolve_table_t. Plan generators (transfer_scan in
         // create_plan_match / create_plan_aggregate) use it to forward live

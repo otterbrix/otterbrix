@@ -18,10 +18,16 @@ namespace components::logical_plan {
 
         const std::string& viewname() const noexcept { return viewname_; }
 
+        // Namespace the view is created in, as written. Kept on the node so enrich
+        // binds it to a resolved namespace entry by name and stamps namespace_oid().
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
         std::string viewname_;
         std::string query_sql_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};

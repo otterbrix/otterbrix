@@ -198,7 +198,6 @@ namespace components::table {
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
         bool row_is_updated(int64_t row_id);
 
-
         core::string_buffer_t& heap() noexcept;
 
     private:

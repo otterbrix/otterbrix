@@ -1,9 +1,9 @@
 #include "operator_computed_field_register.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -78,7 +78,7 @@ namespace components::operators {
                 pg_computed_column,
                 std::move(r_keys),
                 components::operators::make_key_chunk(resource_, table_oid_, std::string_view{col.name()}),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                std::pmr::vector<std::uint64_t>{resource_});
             auto batches_r = co_await std::move(rf);
             if (batches_r.has_error()) {
                 // A failed pg_computed_column read is not a miss; treating it as one lets the
@@ -137,7 +137,7 @@ namespace components::operators {
                                          pg_type,
                                          std::move(t_keys),
                                          components::operators::make_key_chunk(resource_, std::string_view{lookup}),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                         std::pmr::vector<std::uint64_t>{resource_});
                     auto type_batches_r = co_await std::move(tf);
                     if (type_batches_r.has_error()) {
                         set_error(type_batches_r.error());

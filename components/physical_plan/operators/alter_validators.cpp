@@ -1,7 +1,7 @@
 #include "alter_validators.hpp"
 
-#include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -30,7 +30,7 @@ namespace components::operators::alter_validators {
                                           pg_attr_oid,
                                           std::move(keys),
                                           components::operators::make_key_chunk(resource, table_oid),
-                             std::pmr::vector<std::uint64_t>{resource});
+                                          std::pmr::vector<std::uint64_t>{resource});
         auto batches_r = co_await std::move(fut);
         if (batches_r.has_error()) {
             co_return batches_r.error();
@@ -97,7 +97,7 @@ namespace components::operators::alter_validators {
                                           pg_dep_oid,
                                           std::move(keys),
                                           components::operators::make_key_chunk(resource, ref_classid, ref_objid),
-                             std::pmr::vector<std::uint64_t>{resource});
+                                          std::pmr::vector<std::uint64_t>{resource});
         auto batches_r = co_await std::move(fut);
         if (batches_r.has_error()) {
             co_return batches_r.error();

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -123,22 +124,22 @@ namespace {
         }
     }
 
-    void collect_catalog_targets(const logical_plan::node_ptr& node, std::vector<std::string>& out) {
-        if (!node) {
-            return;
-        }
-        if (node->type() == logical_plan::node_type::catalog_resolve_t) {
-            const auto* resolve = static_cast<const logical_plan::node_catalog_resolve_t*>(node.get());
-            const char* kind = resolve->kind() == logical_plan::resolve_kind::table        ? "table"
-                               : resolve->kind() == logical_plan::resolve_kind::namespace_ ? "namespace"
-                               : resolve->kind() == logical_plan::resolve_kind::database   ? "database"
-                               : resolve->kind() == logical_plan::resolve_kind::type       ? "type"
-                                                                                           : "constraint";
-            out.push_back(std::string{kind} + ":" + resolve->dbname() + "." + resolve->relname());
-        }
-        for (const auto& child : node->children()) {
-            collect_catalog_targets(child, out);
-        }
+    // Catalog lookups ride on the plan, one node per kind, each carrying every target of
+    // that kind. A type names itself in type_name; every other kind uses relname.
+    void collect_catalog_targets(const logical_plan::catalog_resolves_t& resolves, std::vector<std::string>& out) {
+        const auto add = [&out](const logical_plan::node_catalog_resolve_ptr& node, const char* kind) {
+            if (!node) {
+                return;
+            }
+            for (const auto& entry : node->entries()) {
+                const std::string& name = entry.relname.empty() ? entry.type_name : entry.relname;
+                out.push_back(std::string{kind} + ":" + entry.dbname + "." + name);
+            }
+        };
+        add(resolves.namespaces, "namespace");
+        add(resolves.tables, "table");
+        add(resolves.types, "type");
+        add(resolves.constraints, "constraint");
     }
 
     void collect_join_arities(const logical_plan::node_ptr& node, std::vector<size_t>& out) {
@@ -228,7 +229,6 @@ namespace {
             return out;
         }
 
-        collect_catalog_targets(result.node_ptr(), out.catalog_targets);
         collect_join_arities(result.node_ptr(), out.join_arities);
         collect_joins(result.node_ptr(), out.joins);
         std::vector<found_key_t> keys;
@@ -239,6 +239,10 @@ namespace {
             if (column.empty() || last_segment(key.path) == column) {
                 out.matches.push_back(key);
             }
+        }
+        // Reads the plan, so it goes last: finalize() hands over what transform() built.
+        if (auto plan = result.finalize(); !plan.has_error()) {
+            collect_catalog_targets(plan.value().catalog_resolves, out.catalog_targets);
         }
         return out;
     }
@@ -879,7 +883,7 @@ TEST_CASE("name_resolution::validator::qualifier_inside_a_derived_join_still_sel
              "INSERT INTO vd.b (id, v) VALUES (1,100),(2,200);"});
 
     // `v` belongs to y, not x. Naming it through x has to be refused.
-    run_refused(db, "SELECT sub.v FROM (SELECT x.v FROM vd.a x JOIN vd.b y ON x.id = y.id) sub;");
+    std::ignore = run_refused(db, "SELECT sub.v FROM (SELECT x.v FROM vd.a x JOIN vd.b y ON x.id = y.id) sub;");
 }
 
 TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neighbour") {
@@ -891,7 +895,7 @@ TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neigh
              "INSERT INTO vd.b (id, bv) VALUES (1,100),(2,200);"});
 
     // `bv` belongs to b, not to the derived table s. Naming it through s must be refused.
-    run_refused(db, "SELECT s.bv FROM (SELECT x.id, x.av FROM vd.a x) s JOIN vd.b b ON s.id = b.id;");
+    std::ignore = run_refused(db, "SELECT s.bv FROM (SELECT x.id, x.av FROM vd.a x) s JOIN vd.b b ON s.id = b.id;");
 }
 
 TEST_CASE("name_resolution::validator::table_function_alias_names_the_relation") {
@@ -998,7 +1002,7 @@ TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
     }
     {
         INFO("unquoted `Id` folds to `id`, which the table does not have");
-        run_refused(db, "SELECT Id FROM vd.q;");
+        std::ignore = run_refused(db, "SELECT Id FROM vd.q;");
     }
 }
 
@@ -1013,7 +1017,7 @@ TEST_CASE("name_resolution::quoted::unquoted_column_is_folded") {
     }
     {
         INFO("the quoted spelling is a different name, and the table has no such column");
-        run_refused(db, "SELECT \"Id\" FROM vd.u;");
+        std::ignore = run_refused(db, "SELECT \"Id\" FROM vd.u;");
     }
 }
 

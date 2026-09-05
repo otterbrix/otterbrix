@@ -140,9 +140,9 @@ namespace services::wal {
                         }
                     }
                     if (cont) {
-                        #ifdef DEV_MODE
+#ifdef DEV_MODE
                         services::dispatcher::note_pump_hop();
-                        #endif
+#endif
                         cont.resume();
                         continue;
                     }
@@ -177,8 +177,7 @@ namespace services::wal {
                 // burns CPU for nothing, lengthening it would expose the documented
                 // push-notify race to the first statement after a pause.
                 pump_cv_.wait_for(lock,
-                                  in_flight.empty() ? std::chrono::microseconds(100)
-                                                    : std::chrono::microseconds(5));
+                                  in_flight.empty() ? std::chrono::microseconds(100) : std::chrono::microseconds(5));
             }
             // in_flight (and every message_ptr / behavior_t it owns) is destroyed
             // here, on the loop thread — never on a sender thread.

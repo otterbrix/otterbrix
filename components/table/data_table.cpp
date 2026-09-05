@@ -91,7 +91,6 @@ namespace components::table {
         }
         column_definitions_.emplace_back(new_column);
 
-
         this->row_groups_ = parent.row_groups_->add_column(new_column);
 
         parent.is_root_ = false;
@@ -100,7 +99,6 @@ namespace components::table {
     data_table_t::data_table_t(data_table_t& parent, uint64_t removed_column)
         : resource_(parent.resource_)
         , is_root_(true) {
-
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }

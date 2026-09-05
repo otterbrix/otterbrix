@@ -35,20 +35,20 @@ namespace services::index {
         // chunk batch; rows are indexed in vector order with contiguous row-ids based at
         // start_row_id / new_start_row_id.
         unique_future<core::error_t> insert_rows(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<components::vector::data_chunk_t> data,
-                                        uint64_t start_row_id,
-                                        uint64_t count);
+                                                 components::catalog::oid_t table_oid,
+                                                 std::pmr::vector<components::vector::data_chunk_t> data,
+                                                 uint64_t start_row_id,
+                                                 uint64_t count);
         unique_future<core::error_t> delete_rows(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<components::vector::data_chunk_t> data,
-                                        std::pmr::vector<int64_t> row_ids);
+                                                 components::catalog::oid_t table_oid,
+                                                 std::pmr::vector<components::vector::data_chunk_t> data,
+                                                 std::pmr::vector<int64_t> row_ids);
         unique_future<core::error_t> update_rows(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<components::vector::data_chunk_t> old_data,
-                                        std::pmr::vector<components::vector::data_chunk_t> new_data,
-                                        std::pmr::vector<int64_t> row_ids,
-                                        int64_t new_start_row_id);
+                                                 components::catalog::oid_t table_oid,
+                                                 std::pmr::vector<components::vector::data_chunk_t> old_data,
+                                                 std::pmr::vector<components::vector::data_chunk_t> new_data,
+                                                 std::pmr::vector<int64_t> row_ids,
+                                                 int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup. commit_inserts / commit_deletes return
         // core::error_t by the project-wide convention (no_error() = success,

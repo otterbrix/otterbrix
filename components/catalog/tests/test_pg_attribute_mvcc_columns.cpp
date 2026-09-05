@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/oid_batch.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/catalog/oid_batch.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
@@ -44,9 +44,7 @@ namespace {
         void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
             upstream_->deallocate(p, bytes, alignment);
         }
-        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
-            return this == &other;
-        }
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
         std::pmr::memory_resource* upstream_;
     };
 } // namespace
@@ -58,7 +56,8 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
 
     std::vector<components::table::column_definition_t> columns;
     columns.emplace_back("id", components::types::complex_logical_type(components::types::logical_type::BIGINT));
-    columns.emplace_back("name", components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL));
+    columns.emplace_back("name",
+                         components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL));
 
     oid_batch_t oids;
     for (oid_t i = 0; i < 64; ++i) {

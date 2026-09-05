@@ -240,8 +240,7 @@ namespace {
         }
         chunk.set_cardinality(count);
 
-        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource,
+        auto node = components::sql::transform::name_catalog_target(
             "wp",
             "t",
             components::logical_plan::make_node_insert(resource, std::move(chunk)));

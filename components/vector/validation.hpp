@@ -44,7 +44,6 @@ namespace components::vector {
             (DEFAULT_VECTOR_CAPACITY + (BITS_PER_VALUE - 1)) / BITS_PER_VALUE;
         static constexpr uint64_t STANDARD_MASK_SIZE = STANDARD_ENTRY_COUNT * sizeof(uint64_t);
 
-
         explicit validity_mask_t(std::pmr::memory_resource* resource, uint64_t size);
         validity_mask_t(std::pmr::memory_resource* resource, uint64_t* ptr)
             : resource_(resource)

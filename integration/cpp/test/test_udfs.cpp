@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -63,7 +64,7 @@ std::unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* 
                            {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_layout, concat_update, concat_finalize};
 
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -105,7 +106,7 @@ std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* re
         {parameter_type::exact(types::logical_type::DOUBLE), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), mult_layout, mult_update, mult_finalize};
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
 
     return fn;
 }
@@ -127,7 +128,7 @@ std::unique_ptr<row_function> make_is_even_func(std::pmr::memory_resource* resou
                            {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), is_even_exec};
 
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -149,7 +150,7 @@ std::unique_ptr<row_function> make_modulo_func(std::pmr::memory_resource* resour
         {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), modulo_exec};
 
-    fn->add_kernel(resource, std::move(k));
+    std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
@@ -187,8 +188,7 @@ TEST_CASE("integration::cpp::test_udfs") {
         // same `ins` would replay against an emptied chunk.
         for (int batch = 0; batch < 2; ++batch) {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));

@@ -248,8 +248,7 @@ TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size
         vector_t v(&tracer, components::types::logical_type::BIGINT, true, false, capacity);
         const auto allocated = tracer.total_allocated();
         const uint64_t data_bytes = capacity * sizeof(int64_t);
-        INFO("bytes allocated by a data-creating BIGINT vector: " << allocated << ", the data alone is "
-                                                                  << data_bytes);
+        INFO("bytes allocated by a data-creating BIGINT vector: " << allocated << ", the data alone is " << data_bytes);
         REQUIRE(allocated > 0);
         // The data buffer plus whatever bookkeeping the buffer carries — but no discarded mask,
         // which would add entry_count(capacity) * 8 bytes on top.

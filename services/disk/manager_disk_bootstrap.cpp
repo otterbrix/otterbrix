@@ -216,7 +216,9 @@ namespace services::disk {
             }
             auto tz_name = read_setting_sync("TimeZone");
             if (!tz_name.empty()) {
-                stored_catalog_.set_timezone(resource(), tz_name);
+                if (auto err = stored_catalog_.set_timezone(resource(), tz_name); err.contains_error()) {
+                    warn(log_, "bootstrap: stored catalog refused timezone '{}': {}", tz_name, err.what);
+                }
             }
         }
 

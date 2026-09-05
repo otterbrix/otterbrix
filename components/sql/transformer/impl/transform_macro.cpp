@@ -4,7 +4,7 @@
 
 namespace components::sql::transform {
 
-    logical_plan::node_ptr transformer::transform_create_function(CreateFunctionStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_function(CreateFunctionStmt& node) {
         // Extract function name from qualified name list
         qualified_name qn;
         if (node.funcname) {
@@ -53,7 +53,9 @@ namespace components::sql::transform {
                                                       core::macroname_t{std::move(qn.relname)},
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
-        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(m));
+        m->set_dbname(db_for_resolve);
+        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
+        return m;
     }
 
 } // namespace components::sql::transform

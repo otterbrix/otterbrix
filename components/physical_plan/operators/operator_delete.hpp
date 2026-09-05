@@ -41,7 +41,6 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-
         // Whether the target table has any index (stamped by enrich onto the plan node).
 
         // False skips the index mirror entirely. Defaults to true: an unstamped plan must

@@ -25,8 +25,7 @@ namespace components::vector {
     // pmr container: it is built per merge/slice on the caller's resource rather than on the
     // global one. The mapped type is still a shared_ptr — vector_buffer_t's ownership is a
     // separate change, flagged by a TODO in vector_buffer.hpp.
-    using indexing_cache_t =
-        std::pmr::unordered_map<uint64_t*, std::shared_ptr<vector_buffer_t>>;
+    using indexing_cache_t = std::pmr::unordered_map<uint64_t*, std::shared_ptr<vector_buffer_t>>;
 
     class indexing_vector_t {
     public:

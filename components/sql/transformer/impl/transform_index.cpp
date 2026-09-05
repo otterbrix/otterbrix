@@ -16,11 +16,10 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_create_index(IndexStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_index(IndexStmt& node) {
         if (!(node.relation && node.relation->relname && node.relation->catalogname && node.idxname)) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"incorrect create index arguments", resource_});
-            return nullptr;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"incorrect create index arguments", resource_});
         }
 
         auto qn = rangevar_to_qualified_name(node.relation);
@@ -34,20 +33,19 @@ namespace components::sql::transform {
             // An expression element — CREATE INDEX ... ((expr)) — has no name
             // (elem->expr instead); only plain column elements are supported.
             if (elem->name == nullptr) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"expression indexes are not supported; "
-                                                        "CREATE INDEX accepts plain column names only",
-                                                        resource_});
-                return nullptr;
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"expression indexes are not supported; "
+                                                      "CREATE INDEX accepts plain column names only",
+                                                      resource_});
             }
             create_index->keys().emplace_back(resource_, elem->name);
         }
-        // Wrap with catalog_resolve so Pass 1 stamps ns_oid + table_oid +
-        // columns; enrich_logical_plan reads from the plan-tree idx.
-        return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                     dbname_for_resolve,
-                                                     relname_for_resolve,
-                                                     std::move(create_index));
+        // The indexed table's identity stays ON the node: enrich binds it to a
+        // resolved entry by name and stamps ns_oid + table_oid + columns from there.
+        create_index->set_dbname(dbname_for_resolve);
+        create_index->set_relname(relname_for_resolve);
+        register_catalog_resolve_table(resource_, &catalog_resolves_, dbname_for_resolve, relname_for_resolve);
+        return create_index;
     }
 
 } // namespace components::sql::transform

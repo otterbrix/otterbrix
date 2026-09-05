@@ -1,12 +1,13 @@
 #include <catch2/catch_test_macros.hpp>
+#include <tuple>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
 
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
-#include <components/catalog/helpers.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -218,10 +219,11 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     v1.emplace_back(toid_lv);
     v1.emplace_back(name_lv);
     auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                             fx.ctx(),
-                             pg_cc,
-                             std::move(k1),
-                             test_probe::build_key_chunk(&fx.resource, std::move(v1)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                        fx.ctx(),
+                                                        pg_cc,
+                                                        std::move(k1),
+                                                        test_probe::build_key_chunk(&fx.resource, std::move(v1)),
+                                                        std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
     REQUIRE(total == 1);
@@ -292,10 +294,11 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     v2.emplace_back(toid_lv);
     v2.emplace_back(name_lv);
     auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                             fx.ctx(),
-                             pg_cc,
-                             std::move(k2),
-                             test_probe::build_key_chunk(&fx.resource, std::move(v2)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                        fx.ctx(),
+                                                        pg_cc,
+                                                        std::move(k2),
+                                                        test_probe::build_key_chunk(&fx.resource, std::move(v2)),
+                                                        std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
     REQUIRE(total == 2);
@@ -374,10 +377,11 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     std::pmr::vector<components::types::logical_value_t> v3{&fx.resource};
     v3.emplace_back(toid_lv);
     auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                             fx.ctx(),
-                             pg_cc,
-                             std::move(k3),
-                             test_probe::build_key_chunk(&fx.resource, std::move(v3)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                        fx.ctx(),
+                                                        pg_cc,
+                                                        std::move(k3),
+                                                        test_probe::build_key_chunk(&fx.resource, std::move(v3)),
+                                                        std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total_rows = 0;
     for (const auto& c : batches) total_rows += c.size();
 
@@ -510,10 +514,11 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                 fx.ctx(),
-                                 pg_cc,
-                                 std::move(kk),
-                                 test_probe::build_key_chunk(&fx.resource, std::move(vv)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                            fx.ctx(),
+                                                            pg_cc,
+                                                            std::move(kk),
+                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
         REQUIRE(total == 4);
@@ -530,10 +535,11 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                 fx.ctx(),
-                                 pg_cc,
-                                 std::move(kk),
-                                 test_probe::build_key_chunk(&fx.resource, std::move(vv)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                            fx.ctx(),
+                                                            pg_cc,
+                                                            std::move(kk),
+                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& chunk : batches) {
             REQUIRE(chunk.column_count() >= 7);
@@ -563,10 +569,11 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                 fx.ctx(),
-                                 pg_cc,
-                                 std::move(kk),
-                                 test_probe::build_key_chunk(&fx.resource, std::move(vv)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                            fx.ctx(),
+                                                            pg_cc,
+                                                            std::move(kk),
+                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);
@@ -640,7 +647,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
                                                    components::table::transaction_data{0, 0},
                                                    {},
                                                    table_oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        std::ignore =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
     }
 
     // Verify storage now has 3 columns (post-#96).
@@ -659,10 +667,11 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         std::pmr::vector<logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                 fx.ctx(),
-                                 pg_cc,
-                                 std::move(kk),
-                                 test_probe::build_key_chunk(&fx.resource, std::move(vv)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                            fx.ctx(),
+                                                            pg_cc,
+                                                            std::move(kk),
+                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
@@ -814,10 +823,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(1, 0, std::string_view("x"));
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append,
-                  append_ctx(table_oid),
-                  table_oid,
-                  to_batch(&fx.resource, std::move(chunk)));
+        std::ignore = fx.invoke(&manager_disk_t::storage_append,
+                                append_ctx(table_oid),
+                                table_oid,
+                                to_batch(&fx.resource, std::move(chunk)));
     }
 
     {
@@ -843,10 +852,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(2, 0, double{3.14});
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append,
-                  append_ctx(table_oid),
-                  table_oid,
-                  to_batch(&fx.resource, std::move(chunk)));
+        std::ignore = fx.invoke(&manager_disk_t::storage_append,
+                                append_ctx(table_oid),
+                                table_oid,
+                                to_batch(&fx.resource, std::move(chunk)));
     }
 
     {
@@ -898,7 +907,8 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_value(0, 0, kval);
         chunk->set_value(1, 0, std::int64_t{kval * 10});
         components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
+        std::ignore =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
     };
 
     // Create + populate the N targets and the survivor.
@@ -941,7 +951,8 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                       fx.ctx(),
                                       targets[i],
                                       std::move(key_cols),
-                                      test_probe::build_key_chunk(&fx.resource, std::move(vals)), std::pmr::vector<std::uint64_t>{&fx.resource});
+                                      test_probe::build_key_chunk(&fx.resource, std::move(vals)),
+                                      std::pmr::vector<std::uint64_t>{&fx.resource});
         REQUIRE(dropped_read.has_error());
         REQUIRE(dropped_read.error().type == core::error_code_t::missing_table);
     }
@@ -955,10 +966,11 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         std::pmr::vector<logical_value_t> vals{&fx.resource};
         vals.emplace_back(&fx.resource, std::int64_t{777});
         auto chunks = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                fx.ctx(),
-                                survivor,
-                                std::move(key_cols),
-                                test_probe::build_key_chunk(&fx.resource, std::move(vals)), std::pmr::vector<std::uint64_t>{&fx.resource}));
+                                                           fx.ctx(),
+                                                           survivor,
+                                                           std::move(key_cols),
+                                                           test_probe::build_key_chunk(&fx.resource, std::move(vals)),
+                                                           std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::uint64_t total = 0;
         for (const auto& c : chunks) total += c.size();
         REQUIRE(total == 1);

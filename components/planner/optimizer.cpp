@@ -15,6 +15,7 @@ namespace components::planner {
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
+                                    const logical_plan::catalog_resolves_t* resolves,
                                     bool can_push_to_agent,
                                     optimizer_pass_t host_pass) {
         if (!node) {
@@ -97,7 +98,7 @@ namespace components::planner {
         // ON-key remap read the same localized indices rewrite_hash_joins detected.
         // UNGATED: projected_cols is a scan projection HINT (empty = read all), valid
         // in in-memory mode too — it needs no owning agent, only the resolved paths.
-        optimizer::prune_columns(node);
+        optimizer::prune_columns(node, resolves);
 
         // Host-injected final pass on the fully-optimized tree (Null Object = no-op).
         node = host_pass(resource, std::move(node));

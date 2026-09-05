@@ -38,6 +38,20 @@ namespace {
         (void) loaded;
         return &registry;
     }
+
+    // Validation reads its registries and execution context from the caller, so the test
+    // supplies its own rather than relying on a process-wide default.
+    services::dispatcher::validation::validation_context_t
+    test_validation_context(std::pmr::memory_resource* resource) {
+        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
+        static const components::graph_execution_context execution_context{};
+        static const bool loaded = [] {
+            components::compute::register_default_functions(functions);
+            return true;
+        }();
+        (void) loaded;
+        return {resource, nullptr, *test_cast_registry(), functions, execution_context};
+    }
 } // namespace
 
 using namespace components;
@@ -337,7 +351,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     agg->append_child(sort);
 
     auto validated =
-        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
+        services::dispatcher::validate_schema(test_validation_context(res), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
 
     // --- Sanity: the validator resolved every locus against the MERGED FROM-order
@@ -480,7 +494,7 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     agg->append_child(match);
 
     logical_plan::storage_parameters sp{res};
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), sp);
+    auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), sp);
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);
@@ -550,7 +564,7 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
     agg->append_child(sort);
     agg->append_child(select);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), sp);
+    auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), sp);
     REQUIRE_FALSE(validated.has_error());
     // Pre-reorder merged coordinates.
     REQUIRE(as_key(computed_sort->params()[0]).path()[0] == 53);
@@ -609,7 +623,7 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     agg->append_child(select);
 
     auto validated =
-        services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
+        services::dispatcher::validate_schema(test_validation_context(res), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // The condition key resolved against the merged schema.
     auto* cond_after_validate = static_cast<compare_expression_t*>(as_expr(case_expr->params()[0]).get());
@@ -648,7 +662,7 @@ TEST_CASE("optimizer::promote_star::select_star_bails_to_canonical") {
     agg->append_child(source);
     agg->append_child(match);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), sp);
+    auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), sp);
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);
@@ -699,7 +713,7 @@ TEST_CASE("optimizer::promote_star::snowflake_bails_to_partial_promotion") {
     agg->append_child(source);
     agg->append_child(match);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), sp);
+    auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), sp);
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);
@@ -745,7 +759,7 @@ TEST_CASE("optimizer::promote_star::composite_key_bails_to_partial_promotion") {
     agg->append_child(source);
     agg->append_child(match);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), sp);
+    auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), sp);
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);

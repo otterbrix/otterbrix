@@ -67,7 +67,7 @@ namespace components::operators {
                                          pg_computed_column,
                                          std::move(r_keys),
                                          components::operators::make_key_chunk(resource_, table_oid_),
-                             std::pmr::vector<std::uint64_t>{resource_});
+                                         std::pmr::vector<std::uint64_t>{resource_});
         auto batches_r = co_await std::move(rf);
         if (batches_r.has_error()) {
             // A failed pg_computed_column read is not a miss; saying "not found" here hides it.

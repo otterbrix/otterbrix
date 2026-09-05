@@ -1,7 +1,7 @@
 #include "create_plan_join.hpp"
 
+#include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_join.hpp>
-#include <components/logical_plan/plan_root.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
 #include <components/physical_plan/operators/operator_join.hpp>
 #include <components/physical_plan/operators/operator_lateral_join.hpp>

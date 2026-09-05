@@ -136,7 +136,6 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
                    {"relid", "attoid", "attname", "atttypid", "atttypspec", "attversion", "attrefcount"});
 }
 
-
 // 9. Every column-index constant names the column it points at.
 //
 // The keyed catalog reads address columns by ORDINAL — no name crosses the mailbox — so

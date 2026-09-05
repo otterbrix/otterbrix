@@ -20,9 +20,7 @@ namespace components::operators {
     uint64_t insert_index_mirror_sends() noexcept {
         return g_insert_index_mirror_sends.load(std::memory_order_relaxed);
     }
-    void reset_insert_index_mirror_sends() noexcept {
-        g_insert_index_mirror_sends.store(0, std::memory_order_relaxed);
-    }
+    void reset_insert_index_mirror_sends() noexcept { g_insert_index_mirror_sends.store(0, std::memory_order_relaxed); }
 #endif
 
     operator_insert::operator_insert(std::pmr::memory_resource* resource,
@@ -129,8 +127,7 @@ namespace components::operators {
         // alone made every INSERT copy its chunk a second time and ship it to a manager that
         // then walked the rows against an empty index list. The real question is whether the
         // TABLE has an index, which enrich stamps on the plan node.
-        const bool mirror_index =
-            table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
+        const bool mirror_index = table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
 
         // ONE flush of the currently-buffered slice. Wrapped in a NAMED coroutine
         // lambda so the DIVERGENT storage op (append + optional index mirror +

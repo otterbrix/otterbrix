@@ -6119,4 +6119,3 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
                 *core::date::parse_timestamp("2024-03-01 08:00:00"));
     }
 }
-

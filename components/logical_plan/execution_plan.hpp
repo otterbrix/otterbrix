@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "node.hpp"
+#include "node_catalog_resolve.hpp"
 #include "param_storage.hpp"
 
 #include <components/vector/data_chunk.hpp>
@@ -58,6 +59,9 @@ namespace components::logical_plan {
         // always has 1 less entry than 'sub_queries'
         // maps 1:1 for every actual sub_query, e.g. sub_queries[1] -> sub_query_results[1]
         std::pmr::vector<id_result_mapping> sub_query_results;
+
+        // Every catalog lookup this plan depends on
+        catalog_resolves_t catalog_resolves;
 
         // hold various parameters for the whole execution_plan_t, including subquery mapping
         parameter_node_ptr parameters;

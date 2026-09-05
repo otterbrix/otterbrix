@@ -54,11 +54,20 @@ namespace components::logical_plan {
 
         const std::string& indexname() const noexcept { return indexname_; }
 
+        // The indexed table, as written. Kept on the node so enrich binds it to a
+        // resolved entry by name.
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+        const std::string& relname() const noexcept { return relname_; }
+        void set_relname(std::string relname) { relname_ = std::move(relname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::string indexname_;
+        std::string dbname_;
+        std::string relname_;
         keys_base_storage_t keys_;
         index_type index_type_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};

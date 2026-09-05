@@ -35,10 +35,16 @@ namespace components::logical_plan {
 
         const std::string& relname() const noexcept { return relname_; }
 
+        // Namespace the table is created in, as written. Kept on the node so enrich
+        // binds it to a resolved namespace entry by name and stamps namespace_oid().
+        const std::string& dbname() const noexcept { return dbname_; }
+        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
         std::string relname_;
         std::vector<table::column_definition_t> column_definitions_;
         std::vector<table::table_constraint_t> constraints_;

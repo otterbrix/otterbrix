@@ -2,6 +2,9 @@
 
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_delete.hpp>
+#include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_update.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
@@ -19,9 +22,44 @@ inline void test_clear_directory(const configuration::config& config) {
     std::filesystem::create_directories(config.main_path);
 }
 
+// Name a DML node's target the way the SQL transformer does. The executor's
+// register_plan_targets picks the name up and registers the catalog lookup, so a
+// hand-built test plan resolves exactly like a transformed one. Returns the node
+// so it drops straight into an execution_plan_t.
+inline components::logical_plan::node_ptr
+test_dml_target(components::logical_plan::node_ptr node, const std::string& database, const std::string& collection) {
+    using namespace components::logical_plan;
+    switch (node->type()) {
+        case node_type::insert_t: {
+            auto* n = static_cast<node_insert_t*>(node.get());
+            n->set_dbname(database);
+            n->set_relname(collection);
+            break;
+        }
+        case node_type::update_t: {
+            auto* n = static_cast<node_update_t*>(node.get());
+            n->set_dbname(database);
+            n->set_relname(collection);
+            break;
+        }
+        case node_type::delete_t: {
+            auto* n = static_cast<node_delete_t*>(node.get());
+            n->set_dbname(database);
+            n->set_relname(collection);
+            break;
+        }
+        default:
+            // Everything else (aggregate/match/...) already carries its own names.
+            break;
+    }
+    return node;
+}
+
 // Test-side CREATE TABLE: builds the same logical plan the SQL transformer
-// emits (create_collection wrapped with catalog_resolve_namespace) and sends
-// it through the single client channel, execute_plan.
+// emits and sends it through the single client channel, execute_plan. The
+// namespace lookup is registered on the plan, exactly as the transformer does;
+// the executor's top-up would also cover it, but naming it here keeps the test
+// plan a faithful copy of a transformed one.
 inline components::cursor::cursor_t_ptr
 test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                        const otterbrix::session_id_t& session,
@@ -30,18 +68,16 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                        std::vector<components::table::column_definition_t> column_definitions = {},
                        std::vector<components::table::table_constraint_t> constraints = {}) {
     auto* resource = dispatcher->resource();
-    auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
-        resource,
-        database,
-        components::logical_plan::make_node_create_collection(resource,
-                                                              core::relname_t{collection},
-                                                              std::move(column_definitions),
-                                                              std::move(constraints)));
-    return dispatcher->execute_plan(
-        session,
-        components::logical_plan::execution_plan_t{resource,
-                                                   std::move(node),
-                                                   components::logical_plan::make_parameter_node(resource)});
+    auto node = components::logical_plan::make_node_create_collection(resource,
+                                                                      core::relname_t{collection},
+                                                                      std::move(column_definitions),
+                                                                      std::move(constraints));
+    node->set_dbname(database);
+    components::logical_plan::execution_plan_t plan{resource,
+                                                    node,
+                                                    components::logical_plan::make_parameter_node(resource)};
+    components::sql::transform::register_catalog_resolve_namespace(resource, &plan.catalog_resolves, database);
+    return dispatcher->execute_plan(session, std::move(plan));
 }
 
 class test_spaces final : public otterbrix::base_otterbrix_t {

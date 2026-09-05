@@ -113,8 +113,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         // is the same for all
         auto full_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -141,8 +140,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto reordered_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, swapped_types, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -169,8 +167,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto insert_with_conversion = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
@@ -202,8 +199,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto partial_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, partial_types, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(),
@@ -335,8 +331,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto reversed_partial_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(),
@@ -463,8 +458,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto invalid_keys_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
-            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(),
+            auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(),

@@ -40,8 +40,7 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulated_tombstones",
-          "[.][s3cleanup]") {
+TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulated_tombstones", "[.][s3cleanup]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup");
     test_clear_directory(config);
     config.disk.on = true;
@@ -79,8 +78,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulate
     std::vector<uint64_t> series;
     for (int pass = 1; pass <= 10; ++pass) {
         // UPDATE is tombstone+append: this leaves kUpdatedPerPass committed tombstones behind.
-        REQUIRE(exec("UPDATE tomb.t SET v = v + 1 WHERE id < " + std::to_string(kUpdatedPerPass) + ";")
-                    ->is_success());
+        REQUIRE(exec("UPDATE tomb.t SET v = v + 1 WHERE id < " + std::to_string(kUpdatedPerPass) + ";")->is_success());
         series.push_back(cleanup_slots_for_one_commit());
     }
 
@@ -114,8 +112,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::cleanup_cost_vs_accumulate
 // A SCATTERED update leaves every vector partially tombstoned, so every vector keeps a
 // chunk_vector_info with any_deleted set, and the cleanup re-walks all 1024 slots of each on every
 // later commit — the shape an OLTP workload updating rows by primary key produces.
-TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_cost_per_commit",
-          "[.][s3cleanup]") {
+TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_cost_per_commit", "[.][s3cleanup]") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup_scattered");
     test_clear_directory(config);
     config.disk.on = true;

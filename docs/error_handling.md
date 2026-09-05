@@ -50,6 +50,44 @@ result_wrapper_t technically does not have a default state (there is either a va
 * Avoid using result_wrapper_t<T> inside other structures (as return type), e.g. std::pair<result_wrapper_t<T>, U>, instead try to include whole result inside: result_wrapper_t<std::pair<T, U>>
 * Even though it does support conversion to boolean, if it encouraged to use 'has_error()' method
 
+### VALUE_OR_RETURN / RETURN_IF_ERROR
+
+Checking a refusal and passing it on is the same four lines at every call site, and
+`AllowShortIfStatementsOnASingleLine: Never` keeps them four. Two macros in `core/result_wrapper.hpp`
+write them once:
+
+```cpp
+VALUE_OR_RETURN(auto limit, build_dml_limit(node.limitCount, resource_, plan));
+RETURN_IF_ERROR(register_with_ctes(node.withClause));
+```
+
+**Best practices:**
+* The first argument of `VALUE_OR_RETURN` is a whole declaration, so `auto x`, `auto& x`, an explicit type, or an assignment to something that already exists (`node->returning()`) all work
+* `VALUE_OR_RETURN` takes a `result_wrapper_t<T>`; `RETURN_IF_ERROR` takes a plain `error_t`, which carries no value. Handing one to the other is a static_assert that names the mistake
+* Both hide a `return` belonging to the **enclosing** function, and `VALUE_OR_RETURN` declares a name in its scope, so neither can serve as the unbraced body of an `if`
+* A wrong argument count is a static_assert. `core::detail::arity` counts arguments as the compiler sees them rather than as the preprocessor does, so `f<a, b>()` is accepted (one argument, two to the preprocessor) while the typo `x(), y()` is rejected instead of being swallowed by the comma operator
+* An expression carrying a top-level comma is fine; a *declaration* carrying one is not, because it cannot be parenthesised — use `auto` there
+* The helpers behind them are spelled `CORE_DETAIL_*`. Preprocessor names have no namespace, so the prefix is the only marker that they are not for direct use
+
+**Where the four lines have to stay.** A refusal that must be handled *after* some cleanup cannot be
+folded, because the macro returns before the cleanup runs. Where state is saved before a call and
+restored after it, the restore belongs on the failure path too:
+
+```cpp
+auto prev = std::move(pending_internal_aggs_);
+pending_internal_aggs_.clear();
+auto sub = transform(*stmt, plan);
+pending_internal_aggs_ = std::move(prev);   // has to run before any return
+if (sub.has_error()) {
+    return sub.error();
+}
+```
+
+Folding this into `VALUE_OR_RETURN` would skip the restore whenever the inner transform refuses.
+There are a dozen such places in the SQL transformer; the explicit form is load-bearing there, not
+leftover noise.
+
+
 ### Known issues
 
 * Currently, there is no rigid structure for error_code_t

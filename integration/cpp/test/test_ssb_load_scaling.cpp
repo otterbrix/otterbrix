@@ -1,10 +1,10 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <services/disk/agent_disk.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <services/disk/agent_disk.hpp>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -56,9 +56,23 @@ namespace {
         if (fields.size() < 17) {
             return {};
         }
-        static const bool is_text[17] =
-            {false, false, false, false, false, false, true, true, false, false, false, false, false, false, false,
-             false, true};
+        static const bool is_text[17] = {false,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         true,
+                                         true,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         false,
+                                         true};
         std::string out = "(";
         for (int i = 0; i < 17; ++i) {
             if (i != 0) {
@@ -101,79 +115,78 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::capacity_without_wal", "[.][
 
 namespace {
     void probe_capacity(const std::filesystem::path& root, bool wal_on) {
-    const std::filesystem::path source =
-        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
-        "data" / "ssb" / "lineorder.tbl";
-    REQUIRE(std::filesystem::exists(source));
+        const std::filesystem::path source =
+            std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
+            "data" / "ssb" / "lineorder.tbl";
+        REQUIRE(std::filesystem::exists(source));
 
-    auto config = test_create_config(root);
-    test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = wal_on;
-    config.log.level = log_t::level::off;
-    test_spaces space(config);
-    auto* d = space.dispatcher();
-    auto exec = [&](const std::string& sql) {
-        auto session = otterbrix::session_id_t();
-        return d->execute_sql(session, sql);
-    };
+        auto config = test_create_config(root);
+        test_clear_directory(config);
+        config.disk.on = true;
+        config.wal.on = wal_on;
+        config.log.level = log_t::level::off;
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
 
-    REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
-    REQUIRE(exec("CREATE TABLE ssb.lineorder ("
-                 "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
-                 "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
-                 "lo_quantity bigint, lo_extendedprice bigint, lo_ordtotalprice bigint, lo_discount bigint, "
-                 "lo_revenue bigint, lo_supplycost bigint, lo_tax bigint, lo_commitdate bigint, "
-                 "lo_shipmode text);")
-                ->is_success());
+        REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+        REQUIRE(exec("CREATE TABLE ssb.lineorder ("
+                     "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
+                     "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
+                     "lo_quantity bigint, lo_extendedprice bigint, lo_ordtotalprice bigint, lo_discount bigint, "
+                     "lo_revenue bigint, lo_supplycost bigint, lo_tax bigint, lo_commitdate bigint, "
+                     "lo_shipmode text);")
+                    ->is_success());
 
-    static const std::string kColumns =
-        "(lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, lo_orderdate, lo_orderpriority, "
-        "lo_shippriority, lo_quantity, lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
-        "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode)";
+        static const std::string kColumns =
+            "(lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, lo_orderdate, lo_orderpriority, "
+            "lo_shippriority, lo_quantity, lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
+            "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode)";
 
-    uint64_t rows_total = 0;
-    std::string failure;
-    const auto start = std::chrono::steady_clock::now();
-    for (int pass = 0; pass < 70 && failure.empty(); ++pass) {
-        std::ifstream file(source);
-        REQUIRE(file.is_open());
-        std::string line;
-        std::getline(file, line); // header
-        while (failure.empty()) {
-            std::string values;
-            int in_batch = 0;
-            while (in_batch < 1000 && std::getline(file, line)) {
-                auto tuple = tuple_from_line(line);
-                if (tuple.empty()) {
-                    continue;
+        uint64_t rows_total = 0;
+        std::string failure;
+        const auto start = std::chrono::steady_clock::now();
+        for (int pass = 0; pass < 70 && failure.empty(); ++pass) {
+            std::ifstream file(source);
+            REQUIRE(file.is_open());
+            std::string line;
+            std::getline(file, line); // header
+            while (failure.empty()) {
+                std::string values;
+                int in_batch = 0;
+                while (in_batch < 1000 && std::getline(file, line)) {
+                    auto tuple = tuple_from_line(line);
+                    if (tuple.empty()) {
+                        continue;
+                    }
+                    if (in_batch != 0) {
+                        values += ", ";
+                    }
+                    values += tuple;
+                    ++in_batch;
                 }
-                if (in_batch != 0) {
-                    values += ", ";
+                if (in_batch == 0) {
+                    break;
                 }
-                values += tuple;
-                ++in_batch;
+                auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
+                if (cur->is_error()) {
+                    failure = cur->get_error().what;
+                    break;
+                }
+                rows_total += static_cast<uint64_t>(in_batch);
             }
-            if (in_batch == 0) {
-                break;
-            }
-            auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
-            if (cur->is_error()) {
-                failure = cur->get_error().what;
-                break;
-            }
-            rows_total += static_cast<uint64_t>(in_batch);
+            WARN("after pass " << (pass + 1) << ": " << rows_total << " rows, on disk "
+                               << (directory_bytes(root) / (1024 * 1024)) << " MiB");
         }
-        WARN("after pass " << (pass + 1) << ": " << rows_total << " rows, on disk "
-                           << (directory_bytes(root) / (1024 * 1024)) << " MiB");
-    }
-    const auto elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    WARN("loaded " << rows_total << " rows in " << elapsed << " s; failure: "
-                   << (failure.empty() ? std::string{"none"} : failure));
-    CHECK(failure.empty());
-    CHECK(rows_total >= 6000000);
-    WARN("ceiling probe: stopped at " << rows_total << " rows");
+        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        WARN("loaded " << rows_total << " rows in " << elapsed
+                       << " s; failure: " << (failure.empty() ? std::string{"none"} : failure));
+        CHECK(failure.empty());
+        CHECK(rows_total >= 6000000);
+        WARN("ceiling probe: stopped at " << rows_total << " rows");
     }
 } // namespace
 
@@ -185,135 +198,133 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_cost_per_slice", "[.][ssbload]") {
-    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch1000_nowal", 1000, false,
+    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch1000_nowal",
+                           1000,
+                           false,
                            "batch 1000, WAL off");
 }
 
 // The benchmark runner's exact shape: 100-row batches and the WAL enabled. If this one degrades
 // while the case above stays flat, the cost is not in the insert path at all.
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_as_the_runner_loads_it", "[.][ssbload]") {
-    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch100_wal", 100, true,
-                           "batch 100, WAL on");
+    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch100_wal", 100, true, "batch 100, WAL on");
 }
 
 namespace {
     void measure_lineorder_load(const std::filesystem::path& root, int batch, bool wal_on, const char* label) {
-    const std::filesystem::path source = std::filesystem::path(__FILE__)
-                                             .parent_path()
-                                             .parent_path()
-                                             .parent_path()
-                                             .parent_path() /
-                                         "benchmark" / "data" / "ssb" / "lineorder.tbl";
-    std::ifstream file(source);
-    REQUIRE(file.is_open());
-    std::string header;
-    std::getline(file, header); // column names
+        const std::filesystem::path source =
+            std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
+            "data" / "ssb" / "lineorder.tbl";
+        std::ifstream file(source);
+        REQUIRE(file.is_open());
+        std::string header;
+        std::getline(file, header); // column names
 
-    auto config = test_create_config(root);
-    test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = wal_on;
-    // The auto-checkpoint threshold is left at its production default on purpose: the defect this
-    // guards against — the counter holding the WHOLE WAL directory size instead of the bytes written
-    // since the last checkpoint, so the threshold stayed tripped forever once crossed — only shows
-    // up against the real threshold. The round count is checked at the end of this function.
-    config.log.level = log_t::level::off;
-    test_spaces space(config);
-    auto* d = space.dispatcher();
-    auto exec = [&](const std::string& sql) {
-        auto session = otterbrix::session_id_t();
-        return d->execute_sql(session, sql);
-    };
+        auto config = test_create_config(root);
+        test_clear_directory(config);
+        config.disk.on = true;
+        config.wal.on = wal_on;
+        // The auto-checkpoint threshold is left at its production default on purpose: the defect this
+        // guards against — the counter holding the WHOLE WAL directory size instead of the bytes written
+        // since the last checkpoint, so the threshold stayed tripped forever once crossed — only shows
+        // up against the real threshold. The round count is checked at the end of this function.
+        config.log.level = log_t::level::off;
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
 
-    REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
-    REQUIRE(exec("CREATE TABLE ssb.lineorder ("
-                 "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
-                 "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
-                 "lo_quantity bigint, lo_extendedprice bigint, lo_ordtotalprice bigint, lo_discount bigint, "
-                 "lo_revenue bigint, lo_supplycost bigint, lo_tax bigint, lo_commitdate bigint, "
-                 "lo_shipmode text);")
-                ->is_success());
+        REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+        REQUIRE(exec("CREATE TABLE ssb.lineorder ("
+                     "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
+                     "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
+                     "lo_quantity bigint, lo_extendedprice bigint, lo_ordtotalprice bigint, lo_discount bigint, "
+                     "lo_revenue bigint, lo_supplycost bigint, lo_tax bigint, lo_commitdate bigint, "
+                     "lo_shipmode text);")
+                    ->is_success());
 
-    static const std::string kColumns =
-        "(lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, lo_orderdate, lo_orderpriority, "
-        "lo_shippriority, lo_quantity, lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
-        "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode)";
+        static const std::string kColumns =
+            "(lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, lo_orderdate, lo_orderpriority, "
+            "lo_shippriority, lo_quantity, lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
+            "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode)";
 
-    std::vector<double> slice_ms;
-    std::vector<uint64_t> slice_bytes;
-    std::vector<uint64_t> slice_checkpoints;
+        std::vector<double> slice_ms;
+        std::vector<uint64_t> slice_bytes;
+        std::vector<uint64_t> slice_checkpoints;
 
-    std::string line;
-    bool exhausted = false;
-    uint64_t rows_total = 0;
-    uint64_t failed_at_row = 0;
-    for (int slice = 0; slice < kSlices && !exhausted; ++slice) {
-        services::disk::reset_table_checkpoints();
-        const auto slice_start = std::chrono::steady_clock::now();
-        int rows_in_slice = 0;
-        while (rows_in_slice < kSlice) {
-            std::string values;
-            int in_batch = 0;
-            while (in_batch < batch && std::getline(file, line)) {
-                auto tuple = tuple_from_line(line);
-                if (tuple.empty()) {
+        std::string line;
+        bool exhausted = false;
+        uint64_t rows_total = 0;
+        uint64_t failed_at_row = 0;
+        for (int slice = 0; slice < kSlices && !exhausted; ++slice) {
+            services::disk::reset_table_checkpoints();
+            const auto slice_start = std::chrono::steady_clock::now();
+            int rows_in_slice = 0;
+            while (rows_in_slice < kSlice) {
+                std::string values;
+                int in_batch = 0;
+                while (in_batch < batch && std::getline(file, line)) {
+                    auto tuple = tuple_from_line(line);
+                    if (tuple.empty()) {
+                        continue;
+                    }
+                    if (in_batch != 0) {
+                        values += ", ";
+                    }
+                    values += tuple;
+                    ++in_batch;
+                }
+                if (in_batch == 0) {
+                    exhausted = true;
+                    break;
+                }
+                auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
+                if (!cur->is_error()) {
+                    rows_in_slice += in_batch;
+                    rows_total += static_cast<uint64_t>(in_batch);
                     continue;
                 }
-                if (in_batch != 0) {
-                    values += ", ";
-                }
-                values += tuple;
-                ++in_batch;
-            }
-            if (in_batch == 0) {
+                WARN("INSERT failed after " << rows_total << " rows (slice " << (slice + 1)
+                                            << "): " << cur->get_error().what);
+                failed_at_row = rows_total;
                 exhausted = true;
                 break;
             }
-            auto cur = exec("INSERT INTO ssb.lineorder " + kColumns + " VALUES " + values + ";");
-            if (!cur->is_error()) {
-                rows_in_slice += in_batch;
-                rows_total += static_cast<uint64_t>(in_batch);
-                continue;
-            }
-            WARN("INSERT failed after " << rows_total << " rows (slice " << (slice + 1) << "): "
-                                        << cur->get_error().what);
-            failed_at_row = rows_total;
-            exhausted = true;
-            break;
+            const auto elapsed =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - slice_start).count();
+            slice_ms.push_back(elapsed);
+            slice_bytes.push_back(directory_bytes(root));
+            slice_checkpoints.push_back(services::disk::table_checkpoints());
         }
-        const auto elapsed =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - slice_start).count();
-        slice_ms.push_back(elapsed);
-        slice_bytes.push_back(directory_bytes(root));
-        slice_checkpoints.push_back(services::disk::table_checkpoints());
-    }
 
-    WARN("rows loaded in total: " << rows_total);
-    CHECK(failed_at_row == 0);
-    REQUIRE(slice_ms.size() >= 2);
-    WARN(label);
-    for (size_t i = 0; i < slice_ms.size(); ++i) {
-        WARN("  slice " << (i + 1) << ": " << slice_ms[i] << " ms, on disk " << (slice_bytes[i] / (1024 * 1024))
-                        << " MiB, checkpoint rounds " << slice_checkpoints[i]);
-    }
-    INFO("first slice " << slice_ms.front() << " ms, last slice " << slice_ms.back() << " ms, ratio "
-                        << (slice_ms.back() / slice_ms.front()));
+        WARN("rows loaded in total: " << rows_total);
+        CHECK(failed_at_row == 0);
+        REQUIRE(slice_ms.size() >= 2);
+        WARN(label);
+        for (size_t i = 0; i < slice_ms.size(); ++i) {
+            WARN("  slice " << (i + 1) << ": " << slice_ms[i] << " ms, on disk " << (slice_bytes[i] / (1024 * 1024))
+                            << " MiB, checkpoint rounds " << slice_checkpoints[i]);
+        }
+        INFO("first slice " << slice_ms.front() << " ms, last slice " << slice_ms.back() << " ms, ratio "
+                            << (slice_ms.back() / slice_ms.front()));
 
-    // Loading the Nth slice must not cost meaningfully more than loading the first: an append does
-    // not get harder because rows already exist. The bound is deliberately loose — this is about
-    // catching a growth curve, not about defending a constant.
-    CHECK(slice_ms.back() < slice_ms.front() * 3.0);
+        // Loading the Nth slice must not cost meaningfully more than loading the first: an append does
+        // not get harder because rows already exist. The bound is deliberately loose — this is about
+        // catching a growth curve, not about defending a constant.
+        CHECK(slice_ms.back() < slice_ms.front() * 3.0);
 
-    // The number that explains the curve. A checkpoint round copies every disk table's .otbx file
-    // whole, so it may only happen once per auto_checkpoint_threshold_bytes of WAL — this load
-    // writes a few times that, so a handful of rounds is expected. One per COMMIT is the defect,
-    // and with 100-row batches that is six thousand of them for this many rows.
-    uint64_t total_rounds = 0;
-    for (auto n : slice_checkpoints) {
-        total_rounds += n;
-    }
-    WARN("total checkpoint rounds during the load: " << total_rounds);
-    CHECK(total_rounds <= 24);
+        // The number that explains the curve. A checkpoint round copies every disk table's .otbx file
+        // whole, so it may only happen once per auto_checkpoint_threshold_bytes of WAL — this load
+        // writes a few times that, so a handful of rounds is expected. One per COMMIT is the defect,
+        // and with 100-row batches that is six thousand of them for this many rows.
+        uint64_t total_rounds = 0;
+        for (auto n : slice_checkpoints) {
+            total_rounds += n;
+        }
+        WARN("total checkpoint rounds during the load: " << total_rounds);
+        CHECK(total_rounds <= 24);
     }
 } // namespace
 
@@ -328,8 +339,8 @@ namespace {
 TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not_suppress_the_automatic_one",
           "[.][ssbload]") {
     const std::filesystem::path source =
-        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
-        "data" / "ssb" / "lineorder.tbl";
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" / "data" /
+        "ssb" / "lineorder.tbl";
     REQUIRE(std::filesystem::exists(source));
 
     auto config = test_create_config("/tmp/otterbrix/integration/test_ssb/explicit_checkpoint");

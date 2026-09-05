@@ -27,8 +27,8 @@
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
 
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <algorithm>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <string_view>
 
 namespace components::planner {
@@ -111,8 +111,7 @@ namespace components::planner {
                     return std::any_of(upd->updates().begin(), upd->updates().end(), [&](const auto& update) {
                         const auto& target = update->key().storage();
                         return !target.empty() &&
-                               std::string_view{target.front().data(), target.front().size()} ==
-                                   std::string_view{col};
+                               std::string_view{target.front().data(), target.front().size()} == std::string_view{col};
                     });
                 });
                 if (touched) {
@@ -120,8 +119,7 @@ namespace components::planner {
                 }
             }
 
-            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() ||
-                !upd->check_exprs().empty()) {
+            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_exprs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
@@ -165,10 +163,10 @@ namespace components::planner {
                     return rewrite_update(r, node);
                 case node_type::delete_t:
                     return rewrite_delete(r, node);
-                // catalog_resolve_t nodes are leaf sub-plans emitted by the SQL
-                // transformer; physical_plan_generator lowers them to
-                // operator_resolve_*_t which performs the pg_catalog lookup at
-                // execute time. Pass through unchanged — no children to walk.
+                // A catalog_resolve_t is never part of a query tree — it reaches the
+                // planner only as a leaf of the executor's own resolve sub-plan,
+                // which physical_plan_generator lowers to operator_resolve_*_t.
+                // Pass through unchanged — no children to walk.
                 case node_type::catalog_resolve_t:
                 case node_type::allocate_oids_t:
                     return node;
@@ -681,10 +679,9 @@ namespace components::planner {
                     return rewrite_drop(r, node);
                 case node_type::alter_table_t:
                     return rewrite_alter_table(r, node);
-                // catalog_resolve_t nodes are leaf sub-plans appearing as
-                // siblings of DDL/DML consumer nodes inside a sequence_t. Pass
-                // through unchanged — the actual lookup happens in
-                // operator_resolve_*_t at execute time.
+                // See walk(): a catalog_resolve_t only ever arrives as a leaf of the
+                // executor's resolve sub-plan. Pass through unchanged — the actual
+                // lookup happens in operator_resolve_*_t at execute time.
                 case node_type::catalog_resolve_t:
                 case node_type::allocate_oids_t:
                     return node;

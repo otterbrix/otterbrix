@@ -59,10 +59,7 @@ void create_index(const collection_name_t& collection_name) {
     auto session = otterbrix::session_id_t();
     auto node = make_node_create_index(dispatcher->resource());
     node->keys().emplace_back(dispatcher->resource(), "count");
-    auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(),
-                                                                                  database_name,
-                                                                                  collection_name,
-                                                                                  node);
+    auto plan = components::sql::transform::name_catalog_target(database_name, collection_name, node);
     dispatcher->execute_plan(session, execution_plan_t{dispatcher->resource(), plan, nullptr});
 }
 

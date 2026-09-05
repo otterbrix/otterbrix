@@ -884,12 +884,11 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session,
-                                        "SELECT * FROM TestDatabase.TestCollection"
-                                        " JOIN TestDatabase.CopyTestCollection ON"
-                                        " (TestCollection.custom_type).f3.f1 ="
-                                        " (CopyTestCollection.custom_type).f3.f1");
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection"
+                                               " JOIN TestDatabase.CopyTestCollection ON"
+                                               " (TestCollection.custom_type).f3.f1 ="
+                                               " (CopyTestCollection.custom_type).f3.f1");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 33);
         }

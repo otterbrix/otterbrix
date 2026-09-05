@@ -21,27 +21,21 @@ namespace components::sql::transform {
         uuid_database_schema_table = 4
     };
 
-    logical_plan::node_ptr transformer::transform_create_table(CreateStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
-        auto col_defs = get_column_definitions(resource_, *coldefs);
-        if (transform_failed(col_defs)) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
 
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
         logical_plan::node_ptr created;
-        if (col_defs.value().empty()) {
+        if (col_defs.empty()) {
             created =
                 logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
         }
 
-        auto constraints = extract_table_constraints(resource_, *coldefs);
-        if (transform_failed(constraints)) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(auto constraints, extract_table_constraints(resource_, *coldefs));
 
         // B1a: every table is disk-backed; the WITH (storage = ...) option is gone.
         // A user writing it believes it still selects a storage mode, so refuse it
@@ -52,20 +46,19 @@ namespace components::sql::transform {
                 if (!def->defname)
                     continue;
                 if (std::string_view(def->defname) == "storage") {
-                    error_ = core::error_t(
+                    return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"the WITH (storage = ...) option has been removed: "
                                          "tables are always disk-backed",
                                          resource_});
-                    return nullptr;
                 }
             }
         }
 
         created = logical_plan::make_node_create_collection(resource_,
                                                             core::relname_t{qn.relname},
-                                                            std::move(col_defs.value()),
-                                                            std::move(constraints.value()),
+                                                            std::move(col_defs),
+                                                            std::move(constraints),
                                                             node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
@@ -77,33 +70,29 @@ namespace components::sql::transform {
                 components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
             }
         }
-        if (udt_names.empty()) {
-            // No UDTs — wrap target namespace only.
-            return maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(created));
+        // The target namespace stays ON the node: enrich binds it to a resolved
+        // namespace entry by name and stamps namespace_oid() from there.
+        if (auto* cn = dynamic_cast<logical_plan::node_create_collection_t*>(created.get())) {
+            cn->set_dbname(dbname);
         }
-        // Build sequence_t(resolve_ns, resolve_type per UDT…, create).
-        // Pass 1 stamps each resolve_type node's type_md_by_qname entry;
-        // resolve_one_type + dispatcher's existence checks read from idx.
-        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
-        if (!dbname.empty()) {
-            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{dbname}));
-        }
-        for (const auto& nm : udt_names) {
-            // Probe "public" namespace by default (resolve_one_type's first
-            // hit). pg_catalog builtins are not in udt_names since
-            // walk_user_type_refs only emits STRUCT/ENUM/UNKNOWN; pg_catalog
-            // scalars resolve via resolve_builtin earlier.
-            seq->append_child(logical_plan::make_node_catalog_resolve_type(resource_,
-                                                                           core::dbname_t{std::string{"public"}},
-                                                                           core::typename_t{nm}));
-        }
-        seq->append_child(std::move(created));
-        return seq;
+        register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+        // Probe the "public" namespace by default (resolve_one_type's first hit).
+        // pg_catalog builtins are not in udt_names since walk_user_type_refs only
+        // emits STRUCT/ENUM/UNKNOWN; pg_catalog scalars resolve via resolve_builtin
+        // earlier.
+        register_catalog_resolve_types(resource_,
+                                       &catalog_resolves_,
+                                       std::vector<std::string>(udt_names.begin(), udt_names.end()));
+        return created;
     }
 
-    logical_plan::node_ptr transformer::transform_drop(DropStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
         auto wrap_one = [&](const std::string& db, const std::string& rel, logical_plan::node_ptr n) {
-            return maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(n));
+            auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
+            drop->set_dbname(db);
+            drop->set_relname(rel);
+            register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
+            return n;
         };
         switch (node.removeType) {
             case OBJECT_TABLE: {
@@ -143,26 +132,30 @@ namespace components::sql::transform {
                         return wrap_one(database, collection, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_INDEX: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"incorrect drop: arguments size", resource_});
-                    return nullptr;
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
+                // DROP INDEX names two pg_class rows — the parent table and the index itself
                 auto wrap_index = [&](const std::string& db,
                                       const std::string& rel,
                                       const std::string& index_name,
                                       logical_plan::node_ptr n) {
+                    auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
+                    drop->set_dbname(db);
+                    drop->set_relname(rel);
+                    drop->set_index_name(index_name);
                     std::vector<std::pair<std::string, std::string>> targets;
                     targets.emplace_back(db, rel);
                     targets.emplace_back(db, index_name);
-                    return maybe_wrap_with_catalog_resolve_tables(resource_, std::move(targets), std::move(n));
+                    register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
+                    return n;
                 };
                 //when casting to enum -1 is used to account for obligated index name
                 switch (static_cast<table_name>(drop_name.size() - 1)) {
@@ -197,32 +190,26 @@ namespace components::sql::transform {
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_TYPE: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"incorrect drop: arguments size", resource_});
-                    return nullptr;
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
                 std::string type_name = strVal(drop_name.back().data);
                 auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::type);
-                // Wrap with resolve_type so Pass 1 stamps type_oid +
-                // resolved_type_metadata. enrich's drop_type_t branch reads
-                // from plan-tree idx (resolve_type_t stamps it at Pass 1).
-                auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
-                seq->append_child(
-                    logical_plan::make_node_catalog_resolve_namespace(resource_,
-                                                                      core::dbname_t{std::string{"public"}}));
-                seq->append_child(logical_plan::make_node_catalog_resolve_type(resource_,
-                                                                               core::dbname_t{std::string{"public"}},
-                                                                               core::typename_t{type_name}));
-                seq->append_child(std::move(n));
-                return seq;
+                // The dropped type's name stays ON the node (in relname_, the
+                // node's single target-name slot) so enrich binds it to the
+                // resolved type entry and stamps type_oid from there.
+                n->set_dbname("public");
+                n->set_relname(type_name);
+                register_catalog_resolve_namespace(resource_, &catalog_resolves_, "public");
+                register_catalog_resolve_types(resource_, &catalog_resolves_, {type_name});
+                return n;
             }
             case OBJECT_SEQUENCE: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
@@ -240,9 +227,8 @@ namespace components::sql::transform {
                         return wrap_one(database, seq_name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_VIEW: {
@@ -261,9 +247,8 @@ namespace components::sql::transform {
                         return wrap_one(database, view_name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             case OBJECT_FUNCTION: {
@@ -282,15 +267,13 @@ namespace components::sql::transform {
                         return wrap_one(database, macro_name, std::move(n));
                     }
                     default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"incorrect drop: arguments size", resource_});
-                        return nullptr;
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
             default:
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"Unsupported removeType", resource_});
-                return nullptr;
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"Unsupported removeType", resource_});
         }
     }
 

@@ -33,6 +33,20 @@ namespace components::logical_plan {
 
     using insert_fill_list_t = std::pmr::vector<insert_fill_column_t>;
 
+    // A bare fractional literal in VALUES carries no declared target type, and the catalog is
+    // out of the transformer's reach, so the only value it can build is a double —
+    // 0.12345678901234567890 lands in the chunk as 0.12345678901234567737. These records keep
+    // the digits as written until the enrich pass, the first point that knows the column is
+    // DECIMAL and with what scale. `row` counts across the whole chunk batch; `column` is the
+    // position in the chunk, the same index column_bindings is ordered by.
+    struct insert_literal_digits_t {
+        uint64_t row{0};
+        uint64_t column{0};
+        std::pmr::string text;
+    };
+
+    using insert_literal_digits_list_t = std::pmr::vector<insert_literal_digits_t>;
+
     class node_insert_t final : public node_t {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
@@ -97,6 +111,12 @@ namespace components::logical_plan {
         // One entry per incoming chunk column, in chunk order. Stamped by validate_schema.
         void set_column_bindings(insert_column_bindings_t v) { column_bindings_ = std::move(v); }
         const insert_column_bindings_t& column_bindings() const { return column_bindings_; }
+        insert_column_bindings_t& column_bindings() { return column_bindings_; }
+
+        // Digits of the bare fractional literals in VALUES, stamped by the transformer and
+        // spent by enrich once the target column's scale is known.
+        void set_literal_digits(insert_literal_digits_list_t v) { literal_digits_ = std::move(v); }
+        const insert_literal_digits_list_t& literal_digits() const { return literal_digits_; }
 
     private:
         hash_t hash_impl() const override;
@@ -116,6 +136,7 @@ namespace components::logical_plan {
         std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
         insert_column_bindings_t column_bindings_;
         insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
+        insert_literal_digits_list_t literal_digits_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

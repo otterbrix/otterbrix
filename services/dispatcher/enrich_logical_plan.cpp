@@ -209,6 +209,115 @@ namespace services::dispatcher { namespace {
         return core::error_t::no_error();
     }
 
+    // Re-reads the bare fractional literals of a VALUES list at the target column's own scale.
+    // The transformer could only park them in the chunk as doubles — it parses SQL with no
+    // catalog in reach, so `0.1` had no scale to be honoured at. validate_schema has since
+    // named the target, so the digits it carried can be spent here, before the planner.
+    //
+    // Whole columns only. A cell with no recorded digits (a bound parameter, folded constant
+    // arithmetic, an integer literal widened into the column) has nothing exact to read, and
+    // one vector cannot hold a mix, so such a column keeps its double -> DECIMAL cast as is.
+    core::error_t spend_literal_digits(components::logical_plan::node_insert_t* node) {
+        using components::types::logical_type;
+        const auto& digits = node->literal_digits();
+        if (digits.empty() || node->column_bindings().empty() || node->children().empty()) {
+            return core::error_t::no_error();
+        }
+        auto* source = node->children().front().get();
+        if (source->type() != components::logical_plan::node_type::data_t) {
+            return core::error_t::no_error();
+        }
+        auto* resource = node->resource();
+        auto& chunks = static_cast<components::logical_plan::node_data_t*>(source)->chunks();
+        std::vector<uint64_t> chunk_start(chunks.size() + 1, 0);
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            chunk_start[i + 1] = chunk_start[i] + chunks[i].size();
+        }
+        const uint64_t total_rows = chunk_start.back();
+
+        // The records address cells by (row, column). Anything outside the chunk batch means
+        // the batch is no longer the one the transformer filled, so no record describes it.
+        std::unordered_map<uint64_t, std::vector<const std::pmr::string*>> by_column;
+        for (const auto& record : digits) {
+            if (record.row >= total_rows || record.column >= node->column_bindings().size()) {
+                return core::error_t::no_error();
+            }
+            auto& rows = by_column[record.column];
+            if (rows.empty()) {
+                rows.assign(total_rows, nullptr);
+            }
+            rows[record.row] = &record.text;
+        }
+
+        for (const auto& [column, rows] : by_column) {
+            const auto& target_type = node->column_bindings()[column].target_type;
+            if (target_type.type() != logical_type::DECIMAL || target_type.extension() == nullptr) {
+                continue;
+            }
+            bool applicable = true;
+            for (const auto& chunk : chunks) {
+                if (column >= chunk.data.size() || chunk.data[column].type().type() != logical_type::DOUBLE) {
+                    applicable = false;
+                    break;
+                }
+            }
+            for (std::size_t ci = 0; applicable && ci < chunks.size(); ++ci) {
+                const auto& stored = chunks[ci].data[column];
+                for (uint64_t row = 0; row < chunks[ci].size(); ++row) {
+                    if (!stored.is_null(row) && rows[chunk_start[ci] + row] == nullptr) {
+                        applicable = false;
+                        break;
+                    }
+                }
+            }
+            if (!applicable) {
+                continue;
+            }
+            const auto* decimal =
+                static_cast<const components::types::decimal_logical_type_extension*>(target_type.extension());
+            auto rebuilt_type = target_type;
+            rebuilt_type.set_alias(std::string(chunks.front().data[column].type().alias()));
+            const bool narrow = rebuilt_type.to_physical_type() == components::types::physical_type::INT64;
+            for (std::size_t ci = 0; ci < chunks.size(); ++ci) {
+                auto& chunk = chunks[ci];
+                components::vector::vector_t rebuilt(resource, rebuilt_type, chunk.capacity());
+                for (uint64_t row = 0; row < chunk.size(); ++row) {
+                    if (chunk.data[column].is_null(row)) {
+                        rebuilt.set_null(row, true);
+                        continue;
+                    }
+                    auto scaled = components::sql::transform::parse_exact_decimal(resource,
+                                                                                  *rows[chunk_start[ci] + row],
+                                                                                  decimal->width(),
+                                                                                  decimal->scale());
+                    if (scaled.has_error()) {
+                        return scaled.error();
+                    }
+                    rebuilt.set_value(row,
+                                      narrow ? components::types::logical_value_t::create_decimal(
+                                                   resource,
+                                                   rebuilt_type,
+                                                   static_cast<int64_t>(scaled.value()))
+                                             : components::types::logical_value_t::create_decimal(resource,
+                                                                                                  rebuilt_type,
+                                                                                                  scaled.value()));
+                }
+                chunk.data[column] = std::move(rebuilt);
+            }
+            // The column now IS the stored type, so the assignment cast would run a second,
+            // lossy conversion over a value that is already exact.
+            node->column_bindings()[column].cast = {};
+            if (source->has_output_types()) {
+                auto declared = source->output_types();
+                if (column < declared.size()) {
+                    declared[column] = rebuilt_type;
+                    source->set_output_types(std::move(declared));
+                }
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     void enrich_insert_sync(components::logical_plan::node_insert_t* node) {
         // bind_catalog_data already pasted the target's metadata onto the node.
         const auto* md = node->table_metadata();
@@ -1069,6 +1178,11 @@ namespace services::dispatcher { namespace {
             case node_type::insert_t: {
                 auto* node = static_cast<node_insert_t*>(root.get());
                 enrich_insert_sync(node);
+                // Before the fill list: an exact literal may still overflow its column, and
+                // that refusal must land before anything else is stamped onto the node.
+                if (auto ec = spend_literal_digits(node); ec.contains_error()) {
+                    co_return ec;
+                }
                 // FK + CHECK + UNIQUE/PK gathered by operator_resolve_constraint_t
                 // (direction=outgoing). No catalog probe here — a pure entry read.
                 const auto* md = node->table_metadata();

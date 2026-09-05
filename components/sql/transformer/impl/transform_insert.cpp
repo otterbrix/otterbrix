@@ -436,6 +436,11 @@ namespace components::sql::transform {
                 field_names.emplace_back(field.as_string());
             }
 
+            // Digits of every bare fractional literal, addressed by the cell it lands in. The
+            // chunk can only hold the double they parsed to; enrich re-reads these once the
+            // target column's DECIMAL scale is known.
+            logical_plan::insert_literal_digits_list_t literal_digits(resource_);
+
             // Fills one row of `chunk` at chunk-local index `chunk_row` from the value list
             // of global row `global_row`. Discovers/promotes columns in `chunk` as it goes
             // and records ParamRef slots (keyed by global row) in parameter_insert_map_.
@@ -573,6 +578,13 @@ namespace components::sql::transform {
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             }
                         }
+                        if (auto digits = fractional_literal_text(pg_ptr_cast<Node>(it_value->data));
+                            !digits.empty()) {
+                            literal_digits.push_back(logical_plan::insert_literal_digits_t{
+                                global_row,
+                                column_index,
+                                std::pmr::string{digits.data(), digits.size(), resource_}});
+                        }
                     }
                 }
                 return core::error_t::no_error();
@@ -622,6 +634,7 @@ namespace components::sql::transform {
                 ins = logical_plan::make_node_insert(resource_, std::move(chunks), std::move(key_translation));
             }
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
+            ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->returning() = returning;
             ins_node->set_dbname(qn.dbname);
             ins_node->set_relname(qn.relname);

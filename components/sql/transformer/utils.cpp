@@ -945,6 +945,25 @@ namespace components::sql::transform {
         return types::logical_value_t(resource, parsed);
     }
 
+    std::string_view fractional_literal_text(Node* node) {
+        if (!node || nodeTag(node) != T_A_Const) {
+            return {};
+        }
+        Value* value = &pg_ptr_cast<A_Const>(node)->val;
+        if (nodeTag(value) != T_Float) {
+            // T_Integer stores `ival`, not digits, and it is exact already.
+            return {};
+        }
+        std::string_view text{strVal(value)};
+        types::int128_t ignored{0};
+        if (parse_exact_integer(text, ignored) != integer_text_t::not_an_integer) {
+            // Digits-only T_Float (a literal past int32): numeric_literal_value answers it
+            // exactly as BIGINT/HUGEINT, so nothing is lost and nothing needs carrying.
+            return {};
+        }
+        return text;
+    }
+
     namespace {
 
         // SQL-facing names, used only to address the DECLARED target in a refusal.

@@ -11,7 +11,8 @@ namespace components::logical_plan {
         , key_translation_(resource)
         , returning_(resource)
         , column_bindings_(resource)
-        , fill_list_(resource) {}
+        , fill_list_(resource)
+        , literal_digits_(resource) {}
 
     std::pmr::vector<expressions::key_t>& node_insert_t::key_translation() { return key_translation_; }
 

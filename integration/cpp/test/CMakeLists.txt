@@ -89,6 +89,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp
+        test_decimal_literal_exactness.cpp
         test_update_upsert_refusal.cpp
         test_fk_cascade_set_default_specs.cpp
         test_pipeline_context_move.cpp

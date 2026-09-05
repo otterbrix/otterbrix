@@ -359,6 +359,13 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
                                                                          Value* value);
 
+    // The digits of a fractional numeric literal, empty for anything else. This is the ONE
+    // literal shape numeric_literal_value has to answer as a double, so it is the one whose
+    // written digits do not survive into the plan; a caller that will later learn a DECIMAL
+    // target keeps them to re-read with parse_exact_decimal. The view borrows the parse
+    // tree's storage.
+    std::string_view fractional_literal_text(Node* node);
+
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
     core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 

@@ -258,6 +258,69 @@ TEST_CASE("unique constraint operator: a key column list that is empty is refuse
 }
 
 // ---------------------------------------------------------------------------
+// EVERY CHUNK IS READ BY THE FIRST CHUNK'S POSITIONS, SO EVERY CHUNK MUST HAVE
+// THE FIRST CHUNK'S LAYOUT.
+//
+// The operator resolves each key column's position ONCE, against the FRONT
+// chunk, and then indexes chunk.data[position] in EVERY chunk of the write-set.
+// The "one DML — one schema" invariant makes that legal today; a chunk with a
+// different layout would be read at the first chunk's positions anyway — a
+// NARROWER chunk as memory PAST ITS COLUMNS (out of bounds, silently), a
+// REORDERED chunk as THE WRONG COLUMN (below: the duplicate key 1 in the second
+// chunk sits at position 1, the operator reads position 0 = 999, and the
+// declared UNIQUE key admits the duplicate in silence). There is no reading of
+// the wrong column that is a uniqueness check, so a chunk that disagrees with
+// the front chunk's layout is refused, not read.
+// ---------------------------------------------------------------------------
+TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the first chunk is refused",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    // Chunk 1: [k, v], key column "k" at position 0, k = 1.
+    std::pmr::vector<types::complex_logical_type> cols1(&resource);
+    cols1.emplace_back(types::logical_type::BIGINT);
+    cols1.back().set_alias("k");
+    cols1.emplace_back(types::logical_type::BIGINT);
+    cols1.back().set_alias("v");
+    vector::data_chunk_t chunk1(&resource, cols1, 1);
+    chunk1.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk1.set_value(1, 0, types::logical_value_t(&resource, int64_t(100)));
+    chunk1.set_cardinality(1);
+
+    // Chunk 2: [v, k] — same columns, SWAPPED. Its "k" duplicates chunk 1's key.
+    std::pmr::vector<types::complex_logical_type> cols2(&resource);
+    cols2.emplace_back(types::logical_type::BIGINT);
+    cols2.back().set_alias("v");
+    cols2.emplace_back(types::logical_type::BIGINT);
+    cols2.back().set_alias("k");
+    vector::data_chunk_t chunk2(&resource, cols2, 1);
+    chunk2.set_value(0, 0, types::logical_value_t(&resource, int64_t(999)));
+    chunk2.set_value(1, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk2.set_cardinality(1);
+
+    operators::chunks_vector_t chunks(&resource);
+    chunks.emplace_back(std::move(chunk1));
+    chunks.emplace_back(std::move(chunk2));
+    auto data = operators::make_operator_data(&resource, std::move(chunks));
+
+    operators::operator_ptr op(
+        new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"k"}}));
+    op->set_children(operators::operator_ptr(new constraint_source_operator_t(&resource, std::move(data))));
+
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    auto fut = op->await_async_and_resume(&ctx);
+    REQUIRE(fut.is_ready());
+    std::move(fut).take_ready();
+
+    INFO("a write-set chunk that disagrees with the first chunk's layout must be refused, "
+         "never read at the first chunk's positions");
+    REQUIRE(op->has_error());
+    const std::string err{op->get_error().what};
+    INFO("error: " << err);
+    REQUIRE(err.find("\"k\"") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // LAYER 2 IS NOT SWITCHED OFF BY AN UNRESOLVED TABLE NAME.
 //
 // The existing-row layer used to be skipped on

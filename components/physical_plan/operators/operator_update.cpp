@@ -484,6 +484,24 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
+        // A PLAN THAT DECLARES UPSERT IS NOT A PLAN THIS OPERATOR IMPLEMENTS. The flag
+        // was accepted into upsert_ and then read by NOTHING, while node_update_t prints
+        // it ($upsert: 1) — so a plan promising insert-or-update was executed as a plain
+        // update, and a match that found nothing reported SUCCESS with 0 rows instead of
+        // the insert the plan declared. No SQL reaches the flag (the grammar has neither
+        // `upsert` nor ON CONFLICT); the logical-plan API does. Rule 6: refuse the
+        // declared-but-unimplemented semantics loudly, BEFORE the first flush, instead
+        // of executing a quieter statement in their place.
+        if (upsert_) {
+            set_error(core::error_t{
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"UPDATE with upsert=true: upsert semantics are not implemented — "
+                                 "the plan declares an insert-or-update this engine cannot deliver",
+                                 resource_}});
+            mark_failed();
+            co_return;
+        }
+
         // BOUNDED DML SINK. The executor drives this INCREMENTALLY: once
         // per mid-pump "buffer full" (dml_flush_is_final==false) and once at the
         // post-pump finalize (==true). Each drive flushes whatever push() folded into

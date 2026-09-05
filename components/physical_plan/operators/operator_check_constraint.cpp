@@ -25,10 +25,10 @@ namespace components::operators {
             return std::nullopt;
         }
 
-        expressions::compare_expression_ptr constant_leaf(std::pmr::memory_resource* r, bool value) {
-            using CT = expressions::compare_type;
-            return expressions::make_compare_expression(r, value ? CT::all_true : CT::all_false);
-        }
+        // (constant_leaf(true) used to live here, for the three arms that compiled a
+        // MISSED column name into the constant TRUE. Those arms refuse now — a CHECK
+        // over a name the table does not have is a constraint enforced by nothing —
+        // so nothing builds a constant predicate any more.)
 
         expressions::param_storage column_operand(std::pmr::memory_resource* r, size_t ordinal) {
             expressions::key_t key(r);
@@ -243,12 +243,17 @@ namespace components::operators {
                 find_top_level(expr, kIsNotNull) == expr.size() - kIsNotNull.size()) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNotNull.size())));
                 // Every table column is IN the row by the time this runs: an INSERT that
-                // omitted one had it expanded (to its DEFAULT, or NULL) before the append.
-                // So the predicate reads the column. A name that is still not here belongs
-                // to no column of this write-set, and a CHECK says nothing about it.
+                // omitted one had it expanded (to its DEFAULT, or NULL) before the append,
+                // and CHECK is refused on dynamic-schema tables at DDL — so a name that is
+                // still not here names NO column of this table. It used to compile to the
+                // constant TRUE, which is this operator's SUCCESS path: the declared
+                // constraint judged nothing, silently. The declaration path now writes the
+                // mentioned names onto the node and the DDL guard refuses the typo; this
+                // is the last line of defence for a constraint that reached the catalog by
+                // another route, and it answers the same way.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
-                    return expressions::expression_ptr{constant_leaf(r, true)};
+                    return unevaluable(r, ctx, expr, "the column \"" + col + "\" does not exist in the written row");
                 }
                 // IS NOT NULL is not an operator of its own — it is a negated is_null, which is
                 // exactly how the graph builder wants to see it.
@@ -261,10 +266,11 @@ namespace components::operators {
             }
             if (expr.size() > kIsNull.size() && find_top_level(expr, kIsNull) == expr.size() - kIsNull.size()) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNull.size())));
-                // Mirror of IS NOT NULL: the column is in the row, so read it.
+                // Mirror of IS NOT NULL: the column is in the row, so read it — and a
+                // name that is not refuses for the same reason as that arm.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
-                    return expressions::expression_ptr{constant_leaf(r, true)};
+                    return unevaluable(r, ctx, expr, "the column \"" + col + "\" does not exist in the written row");
                 }
                 return expressions::expression_ptr{expressions::make_compare_expression(r,
                                                                                         CT::is_null,
@@ -310,9 +316,11 @@ namespace components::operators {
                 // plan's copy of its DEFAULT. That caller is gone with the absent case.)
                 auto ordinal = find_col_index(*ctx.chunk, col_name);
                 if (!ordinal.has_value()) {
-                    // Not a column of this write-set (see the IS NOT NULL arm): a CHECK over
-                    // it has nothing to compare.
-                    return expressions::expression_ptr{constant_leaf(r, true)};
+                    // Not a column of this table at all (see the IS NOT NULL arm): a CHECK
+                    // over it compares nothing, and compiling it to TRUE enforced the
+                    // declared constraint with nothing.
+                    return unevaluable(r, ctx, expr,
+                                       "the column \"" + col_name + "\" does not exist in the written row");
                 }
 
                 const auto compare_type_of = [&op]() {

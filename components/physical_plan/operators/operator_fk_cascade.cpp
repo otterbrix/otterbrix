@@ -99,6 +99,30 @@ namespace components::operators {
             co_return;
         }
 
+        // EVERY SET-DEFAULT COLUMN MUST CARRY ITS OWN DEFAULT SPEC. The SET DEFAULT leg
+        // ('d') reads child_col_default_specs[ci] for ci over child_col_schema_indices,
+        // guarded only by `ci < ...size()`. A specs list SHORTER than the position list
+        // therefore did not fail: the tail columns fell silently into the SET NULL arm,
+        // substituting one referential action for another — the same quiet substitution
+        // the `absent` and narrow-parent guards above already refuse. Hoisted here with
+        // the other structural guards (it depends on no fetched data), so a poisoned
+        // descriptor is refused BEFORE the first scan/fetch send. The one producer
+        // (enrich) fills both vectors in one loop, so the skew is unreachable through SQL
+        // today — this is the floor under an fk_info_t that arrived by another road. Only
+        // 'd' needs specs; SET NULL ('n') and the other actions are exempt.
+        if (fk_.del_action == 'd' &&
+            fk_.child_col_default_specs.size() < fk_.child_col_schema_indices.size()) {
+            std::pmr::string what{"FK constraint: ON DELETE SET DEFAULT has ", resource_};
+            what.append(std::to_string(fk_.child_col_default_specs.size()).c_str());
+            what.append(" default spec(s) for ");
+            what.append(std::to_string(fk_.child_col_schema_indices.size()).c_str());
+            what.append(" referencing column(s) — a column with no spec would silently be set to "
+                        "NULL instead of its default");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
+        }
+
         // Child key column names are the same for every row; hoist them once.
         std::pmr::vector<std::string> key_cols(resource_);
         key_cols.reserve(fk_.child_col_names.size());

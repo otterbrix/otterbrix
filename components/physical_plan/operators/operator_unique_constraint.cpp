@@ -143,6 +143,29 @@ namespace components::operators {
                 const uint64_t n = chunk.size();
                 components::vector::data_chunk_t keys_chunk(resource_, key_types, n == 0 ? 1 : n);
                 for (std::size_t j = 0; j < sources.size(); ++j) {
+                    // EVERY CHUNK IS READ AT THE FRONT CHUNK'S POSITIONS, SO EVERY CHUNK
+                    // MUST HAVE THE FRONT CHUNK'S LAYOUT. "One DML — one schema" makes
+                    // this a floor rather than a live path; without it a chunk that
+                    // disagreed was not refused but READ ANYWAY — a narrower chunk past
+                    // the end of its column array (chunk.data is a std::pmr::vector and
+                    // operator[] does not check its bound), a reordered one at the WRONG
+                    // column, so the declared key deduplicated somebody else's values in
+                    // silence. Same per-chunk guard, same reason, as the parent-side
+                    // width check in operator_fk_cascade_t ("Per chunk, not once for the
+                    // front one"). Checked before reference() below — the largest ordinal
+                    // this loop reads — and the TYPE must match too: the key chunk is
+                    // typed once from the front chunk, and hash/cells_equal read the
+                    // referenced buffer under that type.
+                    if (sources[j] >= chunk.column_count() ||
+                        chunk.data[sources[j]].type().alias() != group[j] ||
+                        chunk.data[sources[j]].type() != key_types[j]) {
+                        std::pmr::string what{"UNIQUE constraint: key column \"", resource_};
+                        what.append(group[j].c_str());
+                        what.append("\" is not at the same position in every chunk of the write-set — "
+                                    "the chunks disagree about the table's shape");
+                        set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                        co_return;
+                    }
                     keys_chunk.data[j].reference(chunk.data[sources[j]]);
                 }
                 keys_chunk.set_cardinality(n);

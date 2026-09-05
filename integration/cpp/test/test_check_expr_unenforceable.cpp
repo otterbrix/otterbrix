@@ -158,3 +158,72 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::operator_inside_a_string_
     CHECK(count_of("SELECT COUNT(*) FROM c.t;") == 1);
     CHECK(count_of("SELECT COUNT(*) FROM c.t WHERE id = 2;") == 0);
 }
+
+// ============================================================================
+// A COLUMN NAME THE TABLE DOES NOT HAVE IS A CHECK OVER NOTHING — REFUSED AT
+// THE FIRST WRITE, NEVER SILENTLY ADMITTED.
+//
+// `CHECK (nosuchcol > 0)` deparses cleanly (it is a recognised shape:
+// column OP constant), so the declaration is accepted. At DML time the operator
+// recogniser's find_col_index missed the column and compiled the predicate to
+// the constant TRUE — the declared constraint judged no row, ever, in silence.
+//
+// The physical-plan floor (operator_check_constraint) now REFUSES a name it
+// cannot find in the written row instead of returning constant TRUE: the write
+// fails loudly rather than being admitted against a constraint enforced by
+// nothing. The IDEAL closure — refusing the typo at the declaration by carrying
+// the mentioned names onto the constraint node and into conkey — lives in
+// components/sql/transformer + the enrich-time DDL guard, which are outside this
+// wave's files and are handed off. What this wave guarantees is that the silent
+// pass is gone: a CHECK the engine cannot bind to a column is loud, not TRUE.
+// ============================================================================
+
+TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_alter_refuses_at_write", "[checkexpr]") {
+    MAKE_ENV("unknown_col_alter");
+    REQUIRE(exec("CREATE TABLE c.t (a bigint);")->is_success());
+    // Declaration is accepted today (the DDL-level refusal is handed off); the
+    // floor is at the write.
+    exec("ALTER TABLE c.t ADD CONSTRAINT chk_typo CHECK (nosuchcol > 0);");
+
+    auto ins = exec("INSERT INTO c.t (a) VALUES (-1);");
+    INFO("a CHECK naming a column the table does not have must not silently admit the row");
+    REQUIRE(ins->is_error());
+    const std::string what{ins->get_error().what};
+    INFO("error: " << what);
+    CHECK(what.find("nosuchcol") != std::string::npos);
+    CHECK(count_of("SELECT COUNT(*) FROM c.t;") == 0);
+}
+
+TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_inline_table_level_refuses_at_write",
+          "[checkexpr]") {
+    MAKE_ENV("unknown_col_inline");
+    // The inline table-level CHECK is stored the same way and compiled by the same
+    // operator, so it hits the same floor.
+    if (exec("CREATE TABLE c.t (a bigint, CHECK (nosuch > 0));")->is_success()) {
+        auto ins = exec("INSERT INTO c.t (a) VALUES (-1);");
+        INFO("inline table-level CHECK over a missing column must refuse the write");
+        REQUIRE(ins->is_error());
+        CHECK(std::string{ins->get_error().what}.find("nosuch") != std::string::npos);
+    }
+}
+
+TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_inline_column_level_refuses_at_write",
+          "[checkexpr]") {
+    MAKE_ENV("unknown_col_inline_col");
+    if (exec("CREATE TABLE c.t (a bigint, b bigint CHECK (height > 0));")->is_success()) {
+        auto ins = exec("INSERT INTO c.t (a, b) VALUES (1, 2);");
+        INFO("inline column-level CHECK over a missing column must refuse the write");
+        REQUIRE(ins->is_error());
+        CHECK(std::string{ins->get_error().what}.find("height") != std::string::npos);
+    }
+}
+
+// The floor triggers ONLY on a genuinely missing column: a valid reference to a
+// sibling column stays legal and enforced.
+TEST_CASE("integration::cpp::check_expr_unenforceable::sibling_column_stays_legal", "[checkexpr]") {
+    MAKE_ENV("sibling_col");
+    REQUIRE(exec("CREATE TABLE c.t (a bigint, b bigint CHECK (a > 0));")->is_success());
+    CHECK(exec("INSERT INTO c.t (a, b) VALUES (1, -5);")->is_success());
+    CHECK(exec("INSERT INTO c.t (a, b) VALUES (-1, 5);")->is_error());
+    CHECK(count_of("SELECT COUNT(*) FROM c.t;") == 1);
+}

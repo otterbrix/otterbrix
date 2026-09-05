@@ -676,8 +676,21 @@ namespace services::wal {
         // A new exit that returns without it would suppress every later round forever.
         // enabled_ is implied: the trigger only fires inside the enabled commit_txn path.
 
-        // (a) Flush dirty index btrees first so a post-recovery rebuild starts
-        //     from a consistent on-disk index state (mirrors operator_checkpoint).
+        // (a) Flush the indexes. TWO THINGS HAPPEN IN THIS ONE MESSAGE, and the old note
+        //     here named neither: it said the flush exists "so a post-recovery rebuild
+        //     starts from a consistent on-disk index state", and there is no post-recovery
+        //     rebuild -- that pass was removed from base_spaces as a proven no-op, which
+        //     operator_checkpoint's own note has said for some time.
+        //       * manager_index_t::flush_all_indexes ARMS the durable "these indexes are
+        //         about to be renumbered and are not yet rebuilt" guard
+        //         (manager_index_t::rebuild_marker_path_) -- this handler is the first step
+        //         of both compacting orchestrations and is sent from nowhere else, so it is
+        //         where "a compacting round is starting" can be written down. A guard that
+        //         could not be made durable comes back as the refusal below and ends the
+        //         round BEFORE it renumbers anything;
+        //       * and the flush is the only REPORT on the health of the indexes' existing
+        //         durable state, taken before step (c2)'s rebuild clears and re-creates the
+        //         stores (see operator_checkpoint.cpp for the measurement).
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
             auto [_fi, fi_fut] =
                 actor_zeta::send(manager_index_, &services::index::manager_index_t::flush_all_indexes, session);
@@ -745,6 +758,12 @@ namespace services::wal {
         //      CHECKPOINT statement, and it mirrored steps (a)-(d) of it — but not the
         //      statement's rebuild, which is why every auto-checkpoint left the indexes
         //      behind. It now calls the SAME driver the operator does.
+        //
+        //      AND THE DRIVER IS ALSO WHAT DISARMS THE GUARD STEP (a) ARMED: repopulate_table
+        //      clears the marker for a table only after that table's agents have published
+        //      and force_flushed. A round abandoned below therefore leaves the guard STANDING,
+        //      which is the whole point — the next start declines to wire the indexes it names
+        //      instead of answering from stores that may be naming pre-compact rows.
         //
         //      AND IT SITS AHEAD OF THE TRUNCATE AT (d) ON PURPOSE. The truncation is the
         //      only step of the round that destroys anything, so a rebuild that refuses must

@@ -2,11 +2,15 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
+#include <cstdint>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
+#include <core/file/local_file_system.hpp>
+#include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
 #include <set>
+#include <string>
 
 namespace {
     using value_t = components::types::logical_value_t;
@@ -50,6 +54,11 @@ namespace services::index {
         // Written ONLY where deferred_deletes_ is, never read on a decision path -- the
         // sweep walks the vector itself, so this cannot become a second source of truth.
         std::atomic<uint64_t> g_index_deferred_deletes{0};
+        // One bump per index_agent_contract::stage_inserts message this manager sends. The
+        // send sites are the DML insert leg, the CREATE INDEX catchup leg and the rebuild
+        // feed; counting the MESSAGE rather than the rows is deliberate, because the
+        // question it answers is HOW MANY INDEXES a batch reached.
+        std::atomic<uint64_t> g_index_stage_insert_batches{0};
     } // namespace
     uint64_t index_repopulations() noexcept { return g_index_repopulations.load(std::memory_order_relaxed); }
     void reset_index_repopulations() noexcept { g_index_repopulations.store(0, std::memory_order_relaxed); }
@@ -61,6 +70,13 @@ namespace services::index {
     void reset_index_key_column_probes() noexcept { g_index_key_column_probes.store(0, std::memory_order_relaxed); }
 
     uint64_t index_deferred_deletes() noexcept { return g_index_deferred_deletes.load(std::memory_order_relaxed); }
+
+    uint64_t index_stage_insert_batches() noexcept {
+        return g_index_stage_insert_batches.load(std::memory_order_relaxed);
+    }
+    void reset_index_stage_insert_batches() noexcept {
+        g_index_stage_insert_batches.store(0, std::memory_order_relaxed);
+    }
 #endif
 
     // --- Routing lookups (declared in the header; pure, no actor state) --------------
@@ -1061,6 +1077,21 @@ namespace services::index {
               static_cast<unsigned>(index_oid),
               static_cast<unsigned>(table_oid));
 
+        // THE REBUILD GUARD LOSES ITS SUBJECT. An index named in the marker is one a start
+        // declined to wire; DROP INDEX takes the thing the note is about away, so the note
+        // goes with it and cannot outlive the catalog row it describes. Done ABOVE the
+        // registry lookup on purpose: the entry that matters most is exactly the one no
+        // engine is registered for. A refusal is logged rather than propagated -- the
+        // contract returns void, and a stale line naming a dead indexrelid costs nothing but
+        // a bootstrap comparison that can never match.
+        if (auto marker_error = forget_rebuild_marker_entry_(table_oid, index_oid);
+            marker_error.contains_error()) {
+            error(log_,
+                  "manager_index_t::drop_index: the rebuild guard still names index_oid={}: {}",
+                  static_cast<unsigned>(index_oid),
+                  marker_error.what);
+        }
+
         // EVERYTHING THAT CAN STILL REACH THIS AGENT IS TAKEN AWAY BEFORE THE DROP IS
         // SENT, AND THE AGENT ITSELF IS TAKEN INTO THIS FRAME.
         //
@@ -1151,6 +1182,9 @@ namespace services::index {
                 // statement. Not an error and not a silent drop: there is no key to index.
                 continue;
             }
+#ifdef DEV_MODE
+            g_index_stage_insert_batches.fetch_add(1, std::memory_order_relaxed);
+#endif
             auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(
                 record.address,
                 ctx.session,
@@ -1251,6 +1285,9 @@ namespace services::index {
             auto new_batch =
                 collect_contiguous(resource_, record.keys, new_data, new_start_row_id, row_ids.size());
             if (!new_batch.empty()) {
+#ifdef DEV_MODE
+                g_index_stage_insert_batches.fetch_add(1, std::memory_order_relaxed);
+#endif
                 auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(
                     record.address,
                     ctx.session,
@@ -1610,6 +1647,9 @@ namespace services::index {
             // txn_id 0: committed-for-everyone. The stage/commit pair is the SAME write
             // path a statement takes, which is the point — there is no second, rebuild-only
             // route into a store for the two to drift apart on.
+#ifdef DEV_MODE
+            g_index_stage_insert_batches.fetch_add(1, std::memory_order_relaxed);
+#endif
             auto [stage_sched, stage_future] =
                 actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(record.address,
                                                                                   session,
@@ -1636,7 +1676,30 @@ namespace services::index {
         // The rebuild is a statement (VACUUM / CHECKPOINT drives it), so a refusal is
         // returned rather than logged: an index that could not be rebuilt disagrees with
         // its table, and the caller is the only one that can act on that.
-        co_return first_error;
+        if (first_error.contains_error()) {
+            co_return first_error;
+        }
+
+        // ONLY NOW IS THE GUARD DROPPED FOR THIS TABLE. Every agent published and
+        // force_flushed (both families end commit_inserts with one), so the durable index
+        // now names the durable table and the note this round armed has been earned. Dropped
+        // for THESE index oids alone: a sibling index an earlier start declined to wire is
+        // not in `it->second`, was not rebuilt here, and is still stale.
+        //
+        // A marker that cannot be rewritten fails the statement. The index is correct on the
+        // device, so this is not a lie about the data -- it is a maintenance round that
+        // cannot record its own outcome, and the conservative residue (the note survives and
+        // the next start declines a healthy index) is the one worth reporting loudly rather
+        // than discovering later.
+        if (auto marker_error = clear_rebuild_marker_(table_oid, it->second); marker_error.contains_error()) {
+            error(log_,
+                  "manager_index_t::repopulate_table: table_oid={} was rebuilt, but the rebuild guard could "
+                  "not be cleared: {}",
+                  static_cast<unsigned>(table_oid),
+                  marker_error.what);
+            co_return marker_error;
+        }
+        co_return core::error_t::no_error();
     }
 
     // --- Txn-aware Query ---
@@ -1808,8 +1871,238 @@ namespace services::index {
         co_return result;
     }
 
+    // --- The durable "renumbered and not yet rebuilt" marker (see the declarations) ------
+
+    std::filesystem::path manager_index_t::rebuild_marker_path_() const {
+        if (path_db_.empty()) {
+            return {};
+        }
+        return path_db_ / "index_rebuild_pending";
+    }
+
+    std::pmr::vector<manager_index_t::pending_index_rebuild_t> manager_index_t::read_rebuild_marker_() const {
+        std::pmr::vector<pending_index_rebuild_t> pending(resource_);
+        const auto marker = rebuild_marker_path_();
+        if (marker.empty()) {
+            return pending;
+        }
+        std::error_code ec;
+        if (!std::filesystem::exists(marker, ec) || ec) {
+            return pending;
+        }
+        std::ifstream in(marker);
+        if (!in.is_open()) {
+            // A marker that exists and cannot be READ is the one case this reader cannot
+            // answer for. It is left to the caller as an EMPTY list plus this trace rather
+            // than as an abort: refusing to open the database over an unreadable maintenance
+            // note would trade a stale index for a database nobody can start.
+            return pending;
+        }
+        unsigned long long table_oid = 0;
+        unsigned long long index_oid = 0;
+        while (in >> table_oid >> index_oid) {
+            pending.push_back(pending_index_rebuild_t{static_cast<components::catalog::oid_t>(table_oid),
+                                                      static_cast<components::catalog::oid_t>(index_oid)});
+        }
+        return pending;
+    }
+
+    core::error_t
+    manager_index_t::write_rebuild_marker_(const std::pmr::vector<pending_index_rebuild_t>& pending) const {
+        const auto marker = rebuild_marker_path_();
+        if (marker.empty()) {
+            // No on-disk catalog path: no disk indexes either (create_index refuses without
+            // one), so there is nothing a compaction could renumber under an index.
+            return core::error_t::no_error();
+        }
+        auto tmp_path = marker;
+        tmp_path += ".tmp";
+
+        core::filesystem::local_file_system_t fs;
+        auto refuse = [&](std::string reason) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp_path, rm_ec);
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"manager_index_t: the index rebuild marker " + marker.string() +
+                                                      " was NOT updated: " + std::move(reason),
+                                                  resource_});
+        };
+
+        if (pending.empty()) {
+            // NOTHING OWED: the note goes away. remove's ec overload keeps exceptions off
+            // this path (rule 2) and cannot confuse "there was nothing there" -- the goal
+            // reached -- with "the device would not unlink it".
+            std::error_code ec;
+            std::filesystem::remove(marker, ec);
+            if (ec) {
+                return refuse("the empty marker could not be removed: " + ec.message());
+            }
+            return core::error_t::no_error();
+        }
+
+        std::string body;
+        body.reserve(pending.size() * 16);
+        for (const auto& entry : pending) {
+            body += std::to_string(static_cast<unsigned>(entry.table_oid));
+            body += ' ';
+            body += std::to_string(static_cast<unsigned>(entry.index_oid));
+            body += '\n';
+        }
+
+        std::error_code stale_ec;
+        std::filesystem::remove(tmp_path, stale_ec); // a stump a previously refused round left
+        auto tmp = core::filesystem::open_file(fs,
+                                               tmp_path,
+                                               core::filesystem::file_flags::WRITE |
+                                                   core::filesystem::file_flags::FILE_CREATE_NEW);
+        if (tmp == nullptr) {
+            return refuse("could not open the staging file " + tmp_path.string());
+        }
+        // BOTH SIDES OF THIS ARE UNSIGNED, and saying so explicitly is not decoration:
+        // file_handle_t::write takes a uint64_t count and answers a uint64_t
+        // bytes_written (core/file/file_handle.hpp), so an int64_t here is a signedness
+        // change on the way in and a signed/unsigned comparison on the way out -- two
+        // diagnostics gcc's -Wall/-Wextra raise and this project turns into errors, while
+        // the macOS build skips -Werror and would have shipped them.
+        const auto want = static_cast<std::uint64_t>(body.size());
+        const auto written = tmp->write(body.data(), want);
+        if (!written.complete || written.bytes_written != want) {
+            tmp.reset();
+            return refuse("the staging write landed " + std::to_string(written.bytes_written) + " of " +
+                          std::to_string(want) + " bytes");
+        }
+        if (!tmp->sync()) {
+            tmp.reset();
+            return refuse("the staging file could not be fsynced");
+        }
+        tmp.reset(); // closes the descriptor; the fsync above is what made the bytes durable
+        if (!core::filesystem::move_files(fs, tmp_path, marker)) {
+            return refuse("the rename over the live marker was refused");
+        }
+        // The rename is published; its own durability is a separate question. Mirrors
+        // persist_checkpoint_sidecar: the directory fsync is what makes the NAME survive, and
+        // losing it costs a start that reads the previous list -- which for an ARM is the
+        // dangerous direction, so it is reported rather than shrugged off.
+        auto dir = core::filesystem::open_file(fs, marker.parent_path(), core::filesystem::file_flags::READ);
+        if (dir == nullptr || !core::filesystem::file_sync(fs, *dir)) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"manager_index_t: the index rebuild marker " + marker.string() +
+                                                      " was written and renamed, but its directory could not be "
+                                                      "fsynced -- a crash may still surface the previous list",
+                                                  resource_});
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t manager_index_t::arm_rebuild_marker_() {
+        if (rebuild_marker_path_().empty()) {
+            return core::error_t::no_error();
+        }
+        auto pending = read_rebuild_marker_();
+        const auto already_named = [&pending](components::catalog::oid_t table_oid,
+                                              components::catalog::oid_t index_oid) {
+            for (const auto& entry : pending) {
+                if (entry.table_oid == table_oid && entry.index_oid == index_oid) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::size_t before = pending.size();
+        for (const auto& [table_oid, records] : indexes_per_oid_) {
+            if (dropped_table_agents_.find(table_oid) != dropped_table_agents_.end()) {
+                // Mid-DROP: on_horizon_advanced is about to take the agents and the entry
+                // with them, so naming it here would leave a note about an index that is
+                // being reaped. all_indexed_oids excludes these for the same reason.
+                continue;
+            }
+            for (const auto& record : records) {
+                if (!already_named(table_oid, record.index_oid)) {
+                    pending.push_back(pending_index_rebuild_t{table_oid, record.index_oid});
+                }
+            }
+        }
+        if (pending.size() == before && before == 0) {
+            // Nothing indexed and nothing owed: no file to write and none to remove.
+            return core::error_t::no_error();
+        }
+        return write_rebuild_marker_(pending);
+    }
+
+    core::error_t manager_index_t::clear_rebuild_marker_(components::catalog::oid_t table_oid,
+                                                         const index_records_t& rebuilt) {
+        if (rebuild_marker_path_().empty()) {
+            return core::error_t::no_error();
+        }
+        auto pending = read_rebuild_marker_();
+        if (pending.empty()) {
+            return core::error_t::no_error();
+        }
+        std::pmr::vector<pending_index_rebuild_t> survivors(resource_);
+        survivors.reserve(pending.size());
+        for (const auto& entry : pending) {
+            bool rebuilt_now = false;
+            if (entry.table_oid == table_oid) {
+                rebuilt_now = match_index_relid(rebuilt, entry.index_oid) != nullptr;
+            }
+            if (!rebuilt_now) {
+                survivors.push_back(entry);
+            }
+        }
+        if (survivors.size() == pending.size()) {
+            return core::error_t::no_error(); // nothing of this table's was owed
+        }
+        return write_rebuild_marker_(survivors);
+    }
+
+    core::error_t manager_index_t::forget_rebuild_marker_entry_(components::catalog::oid_t table_oid,
+                                                                components::catalog::oid_t index_oid) {
+        if (rebuild_marker_path_().empty()) {
+            return core::error_t::no_error();
+        }
+        auto pending = read_rebuild_marker_();
+        if (pending.empty()) {
+            return core::error_t::no_error();
+        }
+        std::pmr::vector<pending_index_rebuild_t> survivors(resource_);
+        survivors.reserve(pending.size());
+        for (const auto& entry : pending) {
+            if (entry.table_oid == table_oid && entry.index_oid == index_oid) {
+                continue;
+            }
+            survivors.push_back(entry);
+        }
+        if (survivors.size() == pending.size()) {
+            return core::error_t::no_error();
+        }
+        return write_rebuild_marker_(survivors);
+    }
+
+    std::pmr::vector<manager_index_t::pending_index_rebuild_t> manager_index_t::pending_index_rebuilds_sync() const {
+        return read_rebuild_marker_();
+    }
+
     manager_index_t::unique_future<core::error_t> manager_index_t::flush_all_indexes(session_id_t session) {
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
+
+        // THE COMPACTION GUARD IS ARMED HERE, BEFORE ANYTHING IS FLUSHED, because this
+        // handler IS the first step of both compacting orchestrations and is sent from
+        // nowhere else (operator_checkpoint_t step 1, run_auto_checkpoint step (a)). The
+        // whole argument -- what the marker is, why an ordering cannot replace it and what
+        // it costs -- is on rebuild_marker_path_.
+        //
+        // A REFUSAL STOPS THE ROUND, and that is the point rather than strictness: the round
+        // is about to renumber the rows this note is about, and a note that is not on the
+        // device covers nothing. Both callers treat a refused flush as "abandon the round
+        // without truncating", which is exactly the answer a guard that could not be written
+        // deserves.
+        if (auto arm_error = arm_rebuild_marker_(); arm_error.contains_error()) {
+            error(log_,
+                  "manager_index_t::flush_all_indexes: the index rebuild guard could not be made durable, so "
+                  "the round must not go on to renumber the rows it guards: {}",
+                  arm_error.what);
+            co_return arm_error;
+        }
 
         // Await all pending agent operations first: this is the cross-handler
         // ordering barrier (e.g. the agent-drop futures parked by
@@ -2161,26 +2454,63 @@ namespace services::index {
             co_return;
         }
 
+        // ONE INDEX, THE ONE THIS MESSAGE NAMES -- which is what the parameter has always
+        // been for and what the declaration has always said ("locates the engine for
+        // (table_oid, index_oid)"), while the body fanned the batch out over every record of
+        // the table and used index_oid in its log lines only. A build feeding the table's
+        // OTHER indexes is not a wrong answer -- both stores dedup a repeated (key, row id)
+        // pair, and the delete leg is dropped above, so the worst it can add is a superset
+        // entry -- but it is a second full staging and publication of rows those indexes
+        // already hold, and it is not what the caller asked for.
+        //
+        // A NAMED INDEX THAT IS NOT REGISTERED IS A REFUSAL, not a quiet skip: the operator
+        // driving this created the index before it started feeding it, so the pair being
+        // absent means the build's rows are going nowhere. Recorded against the build's
+        // transaction exactly like the missing-table case above, so its commit_inserts
+        // refuses.
+        const auto* target = match_index_relid(it->second, index_oid);
+        if (target == nullptr) {
+            error(log_,
+                  "manager_index_t::apply_wal_record_for_index: table_oid={} has no registry entry for "
+                  "index_oid={} (wal_id={} type={}); the build's commit will refuse",
+                  static_cast<unsigned>(table_oid),
+                  static_cast<unsigned>(index_oid),
+                  wal_record_id,
+                  static_cast<unsigned>(record_type));
+            catchup_failures_.try_emplace(
+                txn_id,
+                core::error_t{core::error_code_t::index_create_fail,
+                              std::pmr::string{"CREATE INDEX could not place a record: the index it names is not "
+                                               "registered on this table; the build is missing rows and may not "
+                                               "publish",
+                                               resource_}});
+            co_return;
+        }
+
         // Entries are tagged with the CREATE INDEX txn_id, so they stay in that
         // transaction's bucket until the post-pipeline commit publishes them with the rest
         // of the build.
         std::pmr::vector<unique_future<core::error_t>> futures(resource_);
-        futures.reserve(it->second.size());
-        for (const auto& record : it->second) {
+        {
             auto batch = collect_contiguous(resource_,
-                                            record.keys,
+                                            target->keys,
                                             physical_data,
                                             static_cast<int64_t>(physical_row_start),
                                             total_rows);
-            if (batch.empty()) {
-                continue;
+            if (!batch.empty()) {
+#ifdef DEV_MODE
+                g_index_stage_insert_batches.fetch_add(1, std::memory_order_relaxed);
+#endif
+                auto [needs_sched, f] =
+                    actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(target->address,
+                                                                                      session,
+                                                                                      txn_id,
+                                                                                      std::move(batch));
+                schedule_agent(target->address, needs_sched);
+                futures.emplace_back(std::move(f));
             }
-            auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(record.address,
-                                                                                                      session,
-                                                                                                      txn_id,
-                                                                                                      std::move(batch));
-            schedule_agent(record.address, needs_sched);
-            futures.emplace_back(std::move(f));
+            // An empty batch means no chunk carries THIS index's key columns. Not an error
+            // and not a silent drop: there is no key here to index.
         }
 
         for (auto& f : futures) {

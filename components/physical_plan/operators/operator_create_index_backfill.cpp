@@ -143,8 +143,9 @@ namespace components::operators {
         // out on the error before the lift — so the ABORT fan-out never sees it.
         //
         // Releasing the WAL retention guard is folded in rather than repeated: it was
-        // copy-pasted at three exits and MISSING at a fourth (the insert_rows refusal
-        // below), which pinned the checkpoint truncation point for the life of the process.
+        // copy-pasted at three exits and MISSING at a fourth (the backfill staging refusal,
+        // which used to return from the loop below), which pinned the checkpoint truncation
+        // point for the life of the process.
         // drop_index tolerates an unknown engine, so the closure is safe wherever it is
         // called and cannot collide with the executor's own undo on the success paths.
         //
@@ -212,12 +213,39 @@ namespace components::operators {
 
                 // The fetched batch is an MVCC-filtered scan: deleted / invisible rows
                 // are SKIPPED, so batch->row_ids carries the TRUE — possibly GAPPED —
-                // physical row ids. insert_rows stamps contiguous ids from its
-                // start_row_id, so feed it one maximal contiguous row-id RUN at a
-                // time, based at that run's first physical id: every index entry then
-                // points at its real storage row (never assume gap-free ids).
-                // The extra awaits stay sequential in this operator coroutine —
+                // physical row ids. The staging door stamps contiguous ids from the
+                // physical_row_start it is given, so feed it one maximal contiguous
+                // row-id RUN at a time, based at that run's first physical id: every
+                // index entry then points at its real storage row (never assume gap-free
+                // ids). The extra awaits stay sequential in this operator coroutine —
                 // same lost-wakeup discipline as the fetch/insert pair above.
+                //
+                // THE DOOR IS THE ADDRESSED ONE, AND THAT IS THE FIX RATHER THAN A STYLE
+                // CHOICE. What stood here was manager_index_t::insert_rows(table_oid), and
+                // that handler fans its batch out over EVERY index registered for the oid —
+                // right for DML, where an INSERT owes every index of the table, and exactly
+                // backwards for a BACKFILL, whose rows are already in every PRE-EXISTING
+                // index and missing only from the one being built. A second CREATE INDEX on
+                // a non-empty table therefore re-staged and re-published the whole table
+                // into the first index as well: measured as 2 staging messages per run where
+                // the first build sent 1 (test_create_index_backfill_addressing). Not a
+                // wrong answer — both stores dedup a repeated (key, row id) pair — but a
+                // full extra pass over the table per pre-existing index, every time an index
+                // is added. apply_wal_record_for_index takes the indexrelid and feeds that
+                // engine alone, which is also what the catchup leg below has always called;
+                // the two halves of this operator now address the index the same way.
+                //
+                // ITS ERROR CHANNEL IS THE BUILD'S COMMIT, not this await. The contract
+                // returns void, so a staging an agent refused is RECORDED against this
+                // build's transaction (manager_index_t::catchup_failures_) and refuses the
+                // commit_inserts that publishes the build — the one door it must pass — after
+                // which executor.cpp's undo_create_index drops the engine and reverts the
+                // pg_index row. That is the same mechanism the catchup leg relies on and it
+                // is pinned end-to-end by test_create_index_catchup_refusal. What it costs
+                // relative to the old insert_rows call is LATENCY, not loudness: the scan
+                // runs to the end before the refusal surfaces. Restoring the immediate
+                // refusal needs an index-addressed insert door WITH an error channel on
+                // services/index/index_contract.hpp; there is none today.
                 const auto& batch_chunk = *reply.batch;
                 const auto* row_ids = batch_chunk.row_ids.data<int64_t>();
                 uint64_t run_start = 0;
@@ -231,24 +259,18 @@ namespace components::operators {
                     idx_chunks.push_back(batch_chunk.partial_copy(resource_, run_start, run_len));
                     auto [_ir, irf] =
                         actor_zeta::send(ctx->index_address,
-                                         &services::index::manager_index_t::insert_rows,
-                                         services::index::execution_context_t{ctx->session,
-                                                                              ctx->txn,
-                                                                              ctx->execution_context.timezone_offset,
-                                                                              table_oid_},
+                                         &services::index::manager_index_t::apply_wal_record_for_index,
+                                         ctx->session,
                                          table_oid_,
+                                         index_oid_,
+                                         services::wal::id_t{0}, // no journal record: this run came from the scan
+                                         static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
+                                         std::pmr::vector<int64_t>(resource_),
                                          std::move(idx_chunks),
                                          static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
-                                         run_len);
-                    auto index_error = co_await std::move(irf);
-                    if (index_error.contains_error()) {
-                        // A backfill run that did not reach the index leaves the new index
-                        // incomplete; the CREATE INDEX must fail rather than publish it.
-                        set_error(std::move(index_error));
-                        mark_failed();
-                        co_await abandon_build(resource_);
-                        co_return;
-                    }
+                                         ctx->txn.transaction_id,
+                                         ctx->execution_context.timezone_offset);
+                    co_await std::move(irf);
                     run_start += run_len;
                 }
             }

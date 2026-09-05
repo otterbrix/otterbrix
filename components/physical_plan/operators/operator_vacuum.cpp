@@ -82,6 +82,16 @@ namespace components::operators {
         // a renumbering, it walks all_indexed_oids (which already excludes oids mid-DROP)
         // rather than every relation in pg_class, and having two hand-written versions of it is
         // exactly how the WAL auto-checkpoint ended up without one.
+        //
+        // WHAT THIS ROUTE DOES NOT DO, STATED SO THE NEXT CHANGE HAS TO READ IT: it does not
+        // ARM the durable rebuild guard (manager_index_t::rebuild_marker_path_). That guard is
+        // armed inside flush_all_indexes, which the two COMPACTING orchestrations send as
+        // their first step and VACUUM does not send at all — correctly, because VACUUM reaches
+        // no compact() today and therefore opens no window between a renumbering and a
+        // rebuild. IF COMPACTION EVER RETURNS TO vacuum_inner, the arm has to come with it,
+        // ABOVE the vacuum_all call rather than here: a guard armed after the renumbering has
+        // already committed covers nothing. The rebuild below would then merely clear entries
+        // this statement never wrote, which clear_rebuild_marker_ treats as a no-op.
         if (renumbered_storages > 0) {
             auto rebuild_error =
                 co_await services::index::repopulate_indexes_after_compaction(resource_,

@@ -754,8 +754,10 @@ namespace otterbrix {
         // Earlier would INVERT the comparison, not merely weaken it: an ALTER ADD COLUMN whose
         // pg_attribute row is still unreplayed would look like a drop of a surviving column,
         // and the replayed PHYSICAL_INSERT chunks still carry the pre-drop column count and
-        // need a table that still has it. Later would be after bootstrap_indexes_sync, whose
-        // rebuild scan would then feed the index a layout no post-start scan ever sees.
+        // need a table that still has it. Later would be after bootstrap_indexes_sync, which
+        // OPENS every index store against the schema as it then stands -- a layout no
+        // post-start scan would ever see. (It scans no table itself: the rebuild pass that
+        // once did was removed, see the note at the end of that function.)
         // Single-threaded, pre-scheduler-start; the release itself happens at the next
         // checkpoint, exactly as on the live path.
         if (disk_ptr) {
@@ -950,8 +952,51 @@ namespace otterbrix {
         std::size_t indexes_wired = 0;
         std::size_t indexes_skipped_unfinished = 0;
         std::size_t indexes_skipped_unopenable = 0;
+        std::size_t indexes_skipped_unrebuilt = 0;
+
+        // THE PREVIOUS PROCESS'S UNFINISHED COMPACTION, READ BACK. A compacting round arms
+        // this note before it renumbers anything and clears it per table only once that
+        // table's rebuild has force_flushed; anything still in it names an index whose store
+        // holds PRE-COMPACT physical row ids over a table that was renumbered underneath it.
+        // See manager_index_t::rebuild_marker_path_ for the whole argument, including why no
+        // ordering of the round's steps can replace the note.
+        const auto pending_rebuilds = manager_index_->pending_index_rebuilds_sync();
+        const auto rebuild_is_owed = [&pending_rebuilds](components::catalog::oid_t table_oid,
+                                                         components::catalog::oid_t index_oid) {
+            for (const auto& entry : pending_rebuilds) {
+                if (entry.table_oid == table_oid && entry.index_oid == index_oid) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
         auto index_rows = manager_disk_->scan_alive_pg_index_sync();
         for (auto& row : index_rows) {
+            if (rebuild_is_owed(row.table_oid, row.oid)) {
+                // NOT WIRED, and the decision is the same one the unfinished-backfill branch
+                // below takes, for a closely related reason: an index nobody rebuilt after a
+                // compaction is not merely out of date, it NAMES ROWS THAT MOVED. Wiring it
+                // would answer queries -- the registry, not pg_index.indisvalid, is what
+                // create_plan_match consults -- with whichever row slid into the physical id
+                // the stale entry holds, or with nothing at all where the id now maps to no
+                // row group. Both are silent. Declining costs full scans and says so.
+                //
+                // NO REBUILD IS ATTEMPTED HERE. This window runs before the schedulers start,
+                // and a rebuild is a clear plus a refill through the agents' mailboxes; the
+                // pass that used to pretend otherwise is described at the end of this
+                // function. Re-creating the index is what fixes it, and a fresh CREATE INDEX
+                // mints a new indexrelid that this note cannot name.
+                error(log_,
+                      "bootstrap_indexes_sync: pg_index row (indexrelid={}, indrelid={}) was left naming "
+                      "PRE-COMPACT row ids by a checkpoint that did not finish its index rebuild — the index is "
+                      "NOT wired, queries on the table fall back to full scans; DROP INDEX and re-issue CREATE "
+                      "INDEX to rebuild it",
+                      static_cast<unsigned>(row.oid),
+                      static_cast<unsigned>(row.table_oid));
+                ++indexes_skipped_unrebuilt;
+                continue;
+            }
             if (row.ready_since == 0) {
                 // pg_index row exists but the backfill never committed — no fallback, the
                 // operator must re-issue CREATE INDEX. The DECISION is right; the SILENCE
@@ -1025,23 +1070,31 @@ namespace otterbrix {
         // disk-backed facade only ERASED it. A provable no-op, paid for with a full scan
         // of every table on every start.
         //
-        // WHAT IT WAS SUPPOSED TO FIX IS STILL BROKEN AND IS NOT FIXED HERE: CHECKPOINT
+        // WHAT IT WAS SUPPOSED TO FIX IS ANSWERED ABOVE, AND NOT BY REBUILDING. CHECKPOINT
         // compaction renumbers physical row_ids from 0 while the on-disk index keeps the
-        // pre-compact ones, so a post-restart lookup can name a row id that no longer maps
-        // to a live row (collection_t::fetch drops it). Repairing that means clearing and
-        // rebuilding the AGENT's store, which is a mailbox round trip, and this window
-        // runs before the scheduler starts. It belongs to the runtime repopulate path
-        // (manager_index_t::repopulate_table), not to bootstrap.
+        // pre-compact ones, and a round that died between those two durable acts leaves that
+        // state on the device forever — no ordering of the round's own steps can reach past
+        // its own crash. What reaches past it is the round's durable note
+        // (manager_index_t::rebuild_marker_path_), armed before the renumbering and cleared
+        // per table only once that table's rebuild has force_flushed. This function READS
+        // that note and declines to wire the indexes it names, so the failure costs full
+        // scans and an error line instead of silent wrong answers. Repairing them still
+        // belongs to the runtime path (manager_index_t::repopulate_table) or to a fresh
+        // CREATE INDEX: a rebuild is a mailbox round trip and the schedulers are not running
+        // in this window.
 
-        // The two skip reasons are DIFFERENT EVENTS (an unfinished build the operator must
-        // re-issue vs a storage that would not open and may heal) and no longer share a count.
+        // The three skip reasons are DIFFERENT EVENTS (an unfinished build the operator must
+        // re-issue; a storage that would not open and may heal; a store left naming
+        // pre-compact rows) and do not share a count.
         trace(log_,
               "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
-              "({} skipped: unfinished build; {} skipped: unopenable storage), {} dropped tombstones restored",
+              "({} skipped: unfinished build; {} skipped: unopenable storage; {} skipped: rebuild owed after a "
+              "compaction), {} dropped tombstones restored",
               live_tables.size(),
               indexes_wired,
               indexes_skipped_unfinished,
               indexes_skipped_unopenable,
+              indexes_skipped_unrebuilt,
               dropped.size());
     }
 

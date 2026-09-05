@@ -18,7 +18,15 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // THIS STEP IS HERE FOR ITS ANSWER, NOT FOR ITS BYTES, and the distinction was
+        // STEP 1 NOW DOES TWO THINGS, AND THE SECOND IS THE ONE THE ROUND CANNOT START
+        // WITHOUT. flush_all_indexes ARMS the durable "these indexes are about to be
+        // renumbered and are not yet rebuilt" guard before it flushes anything
+        // (manager_index_t::rebuild_marker_path_), because this handler is the first step of
+        // both compacting orchestrations and is sent from nowhere else in the tree. A guard
+        // that could not be written comes back as a refusal here and stops the round below,
+        // ahead of the compaction it was meant to cover.
+        //
+        // THE FLUSH ITSELF IS HERE FOR ITS ANSWER, NOT FOR ITS BYTES, and the distinction was
         // measured rather than argued.
         //
         // What it writes is genuinely dead. force_flush persists each store's dirty state;
@@ -108,13 +116,15 @@ namespace components::operators {
         // and the rebuild is the round's last chance to fail recoverably. Between the compact
         // committing its header and the rebuild's force_flush landing (btree and bitcask both
         // end commit_inserts with one), the durable state is a post-compact table under
-        // pre-compact indexes — permanently, because nothing repairs it later: base_spaces
-        // rebuilds no index at startup (the pass that did was removed as a proven no-op) and
-        // WAL replay maintains none either. Whatever ends the round inside that window —
-        // a refused truncate returning through the branch below, or a kill -9 — must not
-        // ALSO have destroyed journal segments. Ordering it this way is what makes the
-        // refusal path safe; it does not shorten the window itself (see the note on
-        // repopulate_indexes_after_compaction).
+        // pre-compact indexes. Whatever ends the round inside that window — a refused
+        // truncate returning through the branch below, or a kill -9 — must not ALSO have
+        // destroyed journal segments. Ordering it this way is what makes the refusal path
+        // safe; it does not shorten the window itself, and it never could: a call order
+        // cannot reach past the round's own death. What does reach past it is the durable
+        // guard step 1 armed (manager_index_t::rebuild_marker_path_, armed inside
+        // flush_all_indexes and cleared per table inside repopulate_table). A start that
+        // finds it still armed declines to wire the indexes it names, so the window now
+        // costs full scans and an error line rather than silent wrong answers.
         //
         // THE LOOP ITSELF LIVES IN services::index::repopulate_indexes_after_compaction, and
         // it being there is the point rather than tidiness. compact() is reached from three

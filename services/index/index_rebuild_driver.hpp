@@ -59,11 +59,16 @@ namespace services::index {
     // WHAT THE ORDER DOES NOT BUY, so nobody reads more into it than it says: it does not
     // shorten the window. A crash after the compaction is durable and before this driver's
     // flush lands leaves indexes naming pre-compact rows whether the journal was trimmed or
-    // not, and NOTHING repairs that on the next start — base_spaces rebuilds no index at
-    // startup (manager_index.hpp records the removal of the pass that used to look like it
-    // did) and WAL replay maintains none either. Closing that window needs a durable
-    // "these oids were renumbered and not yet rebuilt" fact that bootstrap can act on; it
-    // is not something a call order can express.
+    // not, and no ordering of the round's own steps can reach past the round's own death.
+    // WHAT DOES reach past it is a durable "these indexes were renumbered and not yet
+    // rebuilt" fact, and there is one: manager_index_t arms it inside flush_all_indexes --
+    // the first step of both orchestrations, ahead of the compaction -- and clears it per
+    // table inside repopulate_table, only once that table's agents have published and
+    // force_flushed. base_spaces::bootstrap_indexes_sync READS it and declines to wire the
+    // indexes it names, so a crash in this window now costs full scans and an error line
+    // instead of silent wrong answers. See manager_index_t::rebuild_marker_path_ for the
+    // file, the union rule and the price. Rebuilding them is still the runtime path's job or
+    // a fresh CREATE INDEX; bootstrap runs before the schedulers and cannot do it.
     //
     // DRAINED-OR-RELEASED, never abandoned: a live fetch-next cursor gates compact() on its
     // oid, so a leaked one would wedge the very table the next round has to reclaim. The

@@ -258,6 +258,92 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
     std::filesystem::remove_all(path);
 }
 
+// THE STAGING LEG MUST FEED THE INDEX IT NAMES, AND REFUSE WHEN IT CANNOT FIND IT.
+//
+// apply_wal_record_for_index takes an indexrelid and its declaration says it "locates the
+// engine for (table_oid, index_oid)". It did not: the body looked the TABLE up and then
+// staged the batch into EVERY record registered for that oid, using index_oid in its log
+// lines and nowhere else. Two consequences, and the second is why this case exists:
+//
+//   * a build fed the table's other indexes rows they already held -- not a wrong answer,
+//     because both stores dedup a repeated (key, row id) pair, but a full extra staging and
+//     publication per pre-existing index (measured at the SQL surface by
+//     integration/cpp/test/test_create_index_backfill_addressing.cpp);
+//   * and an indexrelid the registry does NOT hold was INDISTINGUISHABLE from one it does.
+//     A record naming an index that is not registered means the build's rows are going
+//     nowhere, and the fan-out answered it by staging into the table's other indexes and
+//     returning quietly. The handler's contract returns void, so the refusal goes where the
+//     #122 one goes: recorded against the build's transaction, surfaced at the commit_inserts
+//     the build must pass to publish.
+//
+// This is the channel the MAIN backfill leg now depends on as well -- operator_create_index_
+// backfill_t stages its scan runs through this same addressed door.
+TEST_CASE("services::index::manager::a staging record naming an unregistered index fails the build's commit") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    const auto path = fresh_index_root("index_manager_unaddressed_staging");
+
+    auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+
+    // The table IS registered and DOES carry an index -- so the #122 gate (no registry entry
+    // for the table) cannot be what answers here. The record below names a DIFFERENT index.
+    manager->bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(manager
+                      ->bootstrap_index_sync(kTableOid,
+                                             kIndexOid,
+                                             components::logical_plan::index_type::single,
+                                             keys_of(&resource, {"id"}),
+                                             std::pmr::set<std::uint64_t>(&resource))
+                      .contains_error());
+
+    const auto session = session_id_t::generate_uid();
+    const uint64_t build_txn = TRANSACTION_ID_START + 53;
+
+    {
+        std::pmr::vector<int64_t> row_ids(&resource);
+        auto fut = manager->apply_wal_record_for_index(
+            session,
+            kTableOid,
+            kIndexOid + 7, // registered nowhere
+            /*wal_record_id=*/11,
+            static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
+            std::move(row_ids),
+            chunk_of(&resource, {10}),
+            /*physical_row_start=*/0,
+            build_txn,
+            core::date::timezone_offset_t{});
+        REQUIRE(fut.is_ready());
+    }
+
+    {
+        std::pmr::vector<components::catalog::oid_t> oids(&resource);
+        oids.emplace_back(kTableOid);
+        auto fut = manager->commit_inserts(ctx_for(session, build_txn), std::move(oids), /*commit_id=*/900);
+        REQUIRE(fut.is_ready());
+        auto commit = std::move(fut).take_ready();
+        INFO("a build whose rows were addressed to an index nobody registered may not publish");
+        REQUIRE(commit.contains_error());
+    }
+
+    // The abort mirror clears it, exactly as it does for the #122 refusal. This table DOES
+    // carry a live agent, so the revert is a real round trip and has to be pumped.
+    {
+        auto agents = manager->owned_btree_agents_sync();
+        REQUIRE(agents.size() == 1);
+        auto revert = manager->revert_insert(ctx_for(session, build_txn), kTableOid);
+        settle(revert, agents.front());
+        std::pmr::vector<components::catalog::oid_t> oids(&resource);
+        oids.emplace_back(kTableOid);
+        auto fut = manager->commit_inserts(ctx_for(session, build_txn + 1), std::move(oids), /*commit_id=*/901);
+        settle(fut, agents.front());
+        REQUIRE_FALSE(std::move(fut).take_ready().contains_error());
+    }
+
+    manager.reset();
+    std::filesystem::remove_all(path);
+}
+
 // Wave entry #123. A catchup staging the agent REFUSES used to be only logged, because
 // the handler's contract return type is void -- the build then published an index that
 // never took those rows. The refusal must be recorded and must fail the build's commit,

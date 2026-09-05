@@ -67,6 +67,15 @@ namespace services::index {
     //
     // NOT reset-able and never read on a decision path: the sweep reads the queue itself.
     uint64_t index_deferred_deletes() noexcept;
+
+    // Test-observable count of INSERT BATCHES STAGED INTO AN INDEX AGENT (one per
+    // index_agent_contract::stage_inserts send from this manager). It is what separates
+    // "the statement fed the index" from "the statement fed EVERY index of the table":
+    // both answer the same rows, because both stores dedup a repeated (key, row id) pair,
+    // so no row assertion anywhere can tell an addressed feed from a fan-out. The number
+    // can.
+    uint64_t index_stage_insert_batches() noexcept;
+    void reset_index_stage_insert_batches() noexcept;
 #endif
 
     // ONE LIVE INDEX, AND EVERY FACT ABOUT IT THE MANAGER NEEDS.
@@ -291,8 +300,26 @@ namespace services::index {
         // pending buckets (empty at bootstrap), re-stage every row of every table into
         // bucket 0, and then commit bucket 0 -- which for a disk-backed facade only ERASED
         // it. A provable no-op, paid for with a full scan of every table on every start.
-        // The stale-row_id problem it names is real and is recorded as unfixed: nothing
-        // rewrites the on-disk index after a compact.
+        // The stale-row_id problem it names is real, and it is not fixed by rebuilding at
+        // startup: bootstrap runs before the schedulers and a rebuild is a mailbox round
+        // trip. It is answered instead by the durable guard below (rebuild_marker_path_) --
+        // armed ahead of the compaction, cleared only after the rebuild landed, and read by
+        // base_spaces::bootstrap_indexes_sync, which DECLINES to wire the indexes it names.
+
+        // ONE (table, index) PAIR RECORDED AS "RENUMBERED AND NOT YET REBUILT".
+        //
+        // The durable fact the compaction window needs; see rebuild_marker_path_ for the
+        // whole argument. Read at bootstrap, by base_otterbrix_t::bootstrap_indexes_sync.
+        struct pending_index_rebuild_t {
+            components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
+            components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
+        };
+
+        // Bootstrap door (single-threaded, pre-scheduler-start, like the bootstrap_* calls
+        // below): the pairs a previous process armed and never cleared. An index named here
+        // stores PRE-COMPACT physical row ids and MUST NOT be wired -- see
+        // rebuild_marker_path_. Empty on a clean start and on every in-memory topology.
+        [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> pending_index_rebuilds_sync() const;
 
         // Collection lifecycle
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
@@ -571,6 +598,62 @@ namespace services::index {
         // First failure wins per transaction -- the reason worth reporting is the one that
         // broke the build first.
         std::pmr::unordered_map<uint64_t, core::error_t> catchup_failures_;
+
+        // THE DURABLE "THESE INDEXES NAME PRE-COMPACT ROWS" FACT, AND WHY IT IS A FILE.
+        //
+        // A compacting round is two durable acts with a gap between them:
+        // agent_disk_t::checkpoint_inner commits the compacted table (its .otbx header plus
+        // the `.wal_id` sidecar), and the rebuild that follows makes the indexes name the new
+        // ids, durable at its own force_flush. Inside that gap the DEVICE holds a post-compact
+        // table under pre-compact indexes, and nothing repairs it afterwards: bootstrap
+        // rebuilds no index (the pass that used to look like it did was removed as a proven
+        // no-op, see above) and WAL replay maintains none. So a kill -9 in the gap is
+        // PERMANENT, and the two shapes of the resulting failure are both SILENT -- an id
+        // naming no row group is dropped by collection_t::fetch (a short answer) and an id
+        // that now belongs to a different survivor is gathered as the match (a wrong answer).
+        //
+        // ORDERING CANNOT CLOSE THIS. Whatever order the round runs its steps in, the gap
+        // between two durable acts exists; only a fact that OUTLIVES THE PROCESS can be read
+        // on the other side of it. That fact is this file:
+        //
+        //     ${path_db_}/index_rebuild_pending      one "<table_oid> <index_oid>" per line
+        //
+        // ARMED BEFORE THE COMPACTION, CLEARED ONLY AFTER THE REBUILD LANDED. The arm rides
+        // flush_all_indexes, which is the FIRST step of both compacting orchestrations
+        // (operator_checkpoint_t and manager_wal_replicate_t::run_auto_checkpoint) and is
+        // sent from nowhere else in the tree -- so "a compacting round is starting" and "this
+        // handler ran" are the same event. The clear rides repopulate_table, which is the
+        // per-table rebuild itself, and happens only on the path where every agent reported
+        // success -- i.e. after the force_flush inside commit_inserts. Clearing anywhere
+        // earlier would disarm the guard before the thing it guards had happened.
+        //
+        // THE ARM UNIONS, IT DOES NOT REPLACE. An index that a previous start declined to
+        // wire is not in indexes_per_oid_, so a replacing write would drop its entry and the
+        // start after that would wire the stale store. Entries leave only two ways: the
+        // rebuild that fixes them, and drop_index, which takes away the thing they describe.
+        //
+        // THE PRICE, NAMED. The window it covers starts at flush_all_indexes and ends at each
+        // table's rebuild, so a kill inside a round that had not yet compacted anything still
+        // costs those indexes -- they are declined at the next start and the operator has to
+        // re-create them. That is the conservative direction on purpose: the alternative is
+        // answering from an index that may be naming rows that no longer exist, and there is
+        // no third state the round can distinguish after the fact.
+        [[nodiscard]] std::filesystem::path rebuild_marker_path_() const;
+        [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> read_rebuild_marker_() const;
+        [[nodiscard]] core::error_t
+        write_rebuild_marker_(const std::pmr::vector<pending_index_rebuild_t>& pending) const;
+        // Union every currently registered (table, index) pair into the marker. Returns the
+        // reason it could not be made durable: a round whose guard is not on the device may
+        // not go on to renumber the rows the guard is about.
+        [[nodiscard]] core::error_t arm_rebuild_marker_();
+        // Drop this table's entries FOR THE INDEXES NAMED, and only those: a table can carry
+        // a rebuilt index beside one an earlier start declined to wire, and the second is
+        // still stale.
+        [[nodiscard]] core::error_t clear_rebuild_marker_(components::catalog::oid_t table_oid,
+                                                          const index_records_t& rebuilt);
+        // The single-pair form, for DROP INDEX: the note loses its subject.
+        [[nodiscard]] core::error_t forget_rebuild_marker_entry_(components::catalog::oid_t table_oid,
+                                                                 components::catalog::oid_t index_oid);
 
         // Drop the held-back erases of a whole table / of one index, WITHOUT publishing
         // them. Called wherever the thing they were owed to is being taken away: the agent

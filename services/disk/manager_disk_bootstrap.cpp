@@ -311,7 +311,12 @@ namespace services::disk {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);
                 auto row = make_row(resource(), settings_def->columns, [&](data_chunk_t& chunk, auto*) {
                     chunk.set_value(0, 0, std::string_view("TimeZone"));
-                    chunk.set_value(1, 0, std::string_view("UTC"));
+                    // Lowercase, deliberately: it is what SET TIMEZONE would store (the SQL
+                    // transformer lowercases the name before it reaches the plan), and the ONLY
+                    // form core::date::timezone_to_offset recognizes -- its contract is
+                    // lowercase input. Seeding "UTC" here made every start of every node write
+                    // a default and then WARN about the stored catalog refusing it.
+                    chunk.set_value(1, 0, std::string_view("utc"));
                 });
                 seed_row(catalog::well_known_oid::pg_settings_table, settings_def->name, row);
                 require_seeded(catalog::well_known_oid::pg_settings_table, settings_def->name, 1);

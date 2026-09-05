@@ -414,8 +414,14 @@ namespace services::index {
             // A key that would not decode must not reach the DURABLE txn log: the frame it
             // lands in is replayed by every later open, so one NA key would be re-inserted
             // into the index on every restart from then on.
+            //
+            // THE BUCKETS ARE READ HERE AND ERASED ONLY AFTER THE JOURNAL SAYS YES (branch
+            // lesson: state is cleared only AFTER the operation succeeds). The erase used to
+            // live INSIDE this collector, ahead of apply_txn_inserts -- so a journal IO
+            // refusal lost the staged batch, and a RETRY of the same commit found an empty
+            // bucket and reported success over nothing.
             bool decode_ok = true;
-            const auto take = [&](uint64_t bucket_id) {
+            const auto collect = [&](uint64_t bucket_id) {
                 auto it = pending_inserts_.find(bucket_id);
                 if (it == pending_inserts_.end()) {
                     return;
@@ -429,11 +435,10 @@ namespace services::index {
                     }
                     journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
                 }
-                pending_inserts_.erase(it);
             };
-            take(txn_id);
+            collect(txn_id);
             if (decode_ok) {
-                take(0);
+                collect(0);
             }
             if (!decode_ok) {
                 co_return core::error_t{
@@ -446,6 +451,10 @@ namespace services::index {
             }
             // Propagate the txn-log IO error straight back to the manager's commit handler.
             auto apply_error = store_.apply_txn_inserts(txn_id, journal);
+            if (!apply_error.contains_error()) {
+                pending_inserts_.erase(txn_id);
+                pending_inserts_.erase(0);
+            }
             co_return pay_merge_debt(std::move(apply_error));
         }
         // txn_id == 0: committed-for-everyone (rebuild / repopulate feed), no journal.
@@ -482,8 +491,12 @@ namespace services::index {
             // Symmetric with commit_inserts, and the cost of getting it wrong is larger here:
             // a delete frame naming an NA key removes nothing, so the row stays in the index
             // after every replay while the statement was told the delete landed.
+            //
+            // And the same erase-only-after-success ordering as commit_inserts: a journal
+            // refusal must leave the staged deletes in their bucket, or the retried commit
+            // reports success while the row stays in the index forever.
             bool decode_ok = true;
-            const auto take = [&](uint64_t bucket_id) {
+            const auto collect = [&](uint64_t bucket_id) {
                 auto it = pending_deletes_.find(bucket_id);
                 if (it == pending_deletes_.end()) {
                     return;
@@ -497,11 +510,10 @@ namespace services::index {
                     }
                     journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
                 }
-                pending_deletes_.erase(it);
             };
-            take(txn_id);
+            collect(txn_id);
             if (decode_ok) {
-                take(0);
+                collect(0);
             }
             if (!decode_ok) {
                 co_return core::error_t{
@@ -513,6 +525,10 @@ namespace services::index {
                 co_return core::error_t::no_error();
             }
             auto apply_error = store_.apply_txn_deletes(txn_id, journal);
+            if (!apply_error.contains_error()) {
+                pending_deletes_.erase(txn_id);
+                pending_deletes_.erase(0);
+            }
             co_return pay_merge_debt(std::move(apply_error));
         }
         // bitcask's remove is already O(1) (a keydir lookup) and honours bulk mode, so the

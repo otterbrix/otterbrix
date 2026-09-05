@@ -2,6 +2,7 @@
 
 #include <atomic>
 
+#include <cstdio>
 #include <cstring>
 
 #include <components/types/types.hpp>
@@ -92,7 +93,17 @@ namespace components::table {
             segment.start = start_ + static_cast<int64_t>(offset);
             offset += segment.count;
         }
-        data_.reinitialize();
+        if (!data_.reinitialize()) {
+            // Unreachable from here -- the loop above has just made the starts contiguous, so a
+            // gap means the tree corrupted itself between the two walks. set_start's whole chain
+            // (move_to_collection -> merge_storage) is void end to end, so the refusal is
+            // reported the way this directory reports channel-less legs, and the stale row_start
+            // map is left as it was: a loud stop is recoverable, a half-rebuilt map misroutes
+            // every later point read (rule 6).
+            std::fprintf(stderr,
+                         "components::table::column_data_t::set_start: segment starts are not contiguous after "
+                         "re-basing; the row_start map was left untouched\n");
+        }
     }
 
     const types::complex_logical_type& column_data_t::root_type() const {
@@ -183,19 +194,11 @@ namespace components::table {
         }
     }
 
-    void column_data_t::scan_committed_range(uint64_t row_group_start,
-                                             uint64_t offset_in_row_group,
-                                             uint64_t count,
-                                             vector::vector_t& result) {
-        column_scan_state child_state;
-        initialize_scan_with_offset(child_state, static_cast<int64_t>(row_group_start + offset_in_row_group));
-        auto scan_count = scan_vector(child_state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
-        if (has_updates()) {
-            assert(result.get_vector_type() == vector::vector_type::FLAT);
-            result.flatten(scan_count);
-            updates_->fetch_committed_range(static_cast<int64_t>(offset_in_row_group), count, result);
-        }
-    }
+    // scan_committed_range used to stand here. It had ZERO callers anywhere in the tree, and it
+    // read through a local column_scan_state whose scan_error nobody checked before layering
+    // updates_->fetch_committed_range on top -- a silent result over a failed scan the moment
+    // anyone wired it up. Deleted as dead rather than given a channel (rule 6: no silent leg
+    // kept alive on faith); scan_count_with_updates below is the living updates-aware read.
 
     uint64_t column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         if (count == 0) {

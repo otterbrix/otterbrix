@@ -2330,6 +2330,13 @@ TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
     dev_set_max_leaf_nodes(0);
     CHECK(max_leaf_nodes() == MAX_LEAF_NODES);
     REQUIRE(tree.flush());
+    const size_t leaves_at_last_good_flush = [&] {
+        auto handle = open_file(fs, testing_directory / path_t("metadata"), file_flags::READ);
+        REQUIRE(handle != nullptr);
+        size_t counters[2];
+        REQUIRE(handle->read(static_cast<void*>(counters), sizeof(counters), 0));
+        return counters[1];
+    }();
 
     INFO("with the ceiling lowered under the tree, the guard has to fire");
     {
@@ -2339,8 +2346,11 @@ TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
         REQUIRE(handle != nullptr);
         size_t counters[2];
         REQUIRE(handle->read(static_cast<void*>(counters), sizeof(counters), 0));
-        INFO("the header must not count more leaves than the guard let it write");
-        CHECK(counters[1] <= 3);
+        // A refused flush no longer writes a TRUNCATED list (which silently dropped every
+        // leaf past the ceiling at the next load); it leaves the last-good metadata in
+        // place, whole, naming only files that exist.
+        INFO("the refused flush must leave the last-good metadata untouched");
+        CHECK(counters[1] == leaves_at_last_good_flush);
     }
     REQUIRE(tree.flush());
 
@@ -3335,6 +3345,195 @@ TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
         REQUIRE(reopened.count() == 0); // refused leaves serve nothing, not something else
         // And nothing may ever write that emptiness over the rows still on the device.
         REQUIRE_FALSE(reopened.flush());
+    }
+
+    remove_directory(fs, testing_directory);
+}
+
+// THE OOM LEG OF A LAZY BLOCK LOAD MUST NOT BE A NULL DEREFERENCE.
+//
+// load_segment_() has three refusal legs. Two of them (a refused read, a failed checksum)
+// poison the slot with a VALID empty stand-in, which is what keeps every walk below
+// memory-safe. The third -- the allocation refusal -- CANNOT leave a stand-in (a stand-in is
+// itself a block allocation), so the slot stays EMPTY, exactly as lazy_load() left it. The
+// segment_tree iterators' operator*/operator-> then dereferenced that null without asking.
+// The walks now go through the checked door (iterator::get()), skip what could not be
+// loaded, and the refusal is on the tree's channel; a later walk with memory available
+// heals by itself, exactly like a poisoned slot does.
+TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_block") {
+    // Refuses every allocation while armed; the arming happens BETWEEN load() (metadata only
+    // for integer keys -- the blocks stay unloaded) and the scan that needs the blocks.
+    class armable_oom_resource_t : public std::pmr::memory_resource {
+    public:
+        void arm() noexcept { armed_ = true; }
+        void disarm() noexcept { armed_ = false; }
+
+    private:
+        void* do_allocate(size_t bytes, size_t alignment) override {
+            if (armed_) {
+                throw std::bad_alloc();
+            }
+            return resource_.allocate(bytes, alignment);
+        }
+        void do_deallocate(void* ptr, size_t bytes, size_t alignment) override {
+            resource_.deallocate(ptr, bytes, alignment);
+        }
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
+
+        bool armed_ = false;
+        core::pmr::otterbrix_resource resource_ = core::pmr::otterbrix_resource();
+    };
+
+    armable_oom_resource_t resource;
+    path_t testing_directory = scratch_dir("btree_oom_lazy_block");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+    constexpr uint64_t items = 100;
+
+    {
+        btree_t tree(&resource, fs, testing_directory, key_getter, 12);
+        std::vector<char> buffer(item_size, 0);
+        for (uint64_t i = 0; i < items; i++) {
+            write_unaligned<uint64_t>(reinterpret_cast<data_ptr_t>(buffer.data()), i);
+            REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    btree_t tree(&resource, fs, testing_directory, key_getter, 12);
+    tree.load();
+    REQUIRE(tree.size() == items);
+    REQUIRE(tree.load_failure() == load_failure_t::none);
+
+    auto deserialize = [](void* buf, uint64_t) { return read_unaligned<uint64_t>(static_cast<data_ptr_t>(buf)); };
+
+    {
+        resource.arm();
+        std::pmr::vector<uint64_t> starved;
+        // RED before the fix: operator-> dereferenced the null slot the allocation refusal
+        // left behind, and this line died with SIGSEGV instead of answering.
+        REQUIRE(tree.full_scan(&starved, deserialize));
+        resource.disarm();
+        CHECK(starved.empty());
+        INFO("the refusal must be on the channel, not swallowed");
+        CHECK(tree.take_load_failure() == load_failure_t::out_of_memory);
+    }
+
+    {
+        // With memory back, the same tree serves the same rows: the empty slot healed by
+        // itself, exactly as a poisoned stand-in does.
+        std::pmr::vector<uint64_t> healed;
+        REQUIRE(tree.full_scan(&healed, deserialize));
+        CHECK(healed.size() == items);
+        CHECK(tree.load_failure() == load_failure_t::none);
+    }
+
+    {
+        // The reverse walk goes through the same door. The healed scan above made every block
+        // resident, so a FRESH load is needed to face the reverse walk with unloaded slots.
+        btree_t reloaded(&resource, fs, testing_directory, key_getter, 12);
+        reloaded.load();
+        REQUIRE(reloaded.size() == items);
+
+        resource.arm();
+        std::pmr::vector<uint64_t> starved;
+        REQUIRE(reloaded.scan_decending<uint64_t>(btree_t::index_t(uint64_t(0)),
+                                                  btree_t::index_t(uint64_t(items)),
+                                                  items * 2,
+                                                  &starved,
+                                                  deserialize,
+                                                  [](const auto&, const auto&) { return true; }));
+        resource.disarm();
+        CHECK(starved.empty());
+        CHECK(reloaded.take_load_failure() == load_failure_t::out_of_memory);
+    }
+
+    remove_directory(fs, testing_directory);
+}
+
+// A FAILED LEAF FLUSH MUST NOT PUT A NEW METADATA FILE OVER THE LAST GOOD ONE.
+//
+// btree_t::flush() walks the leaves with `ok = node->flush() && ok;` -- and then wrote the
+// metadata list UNCONDITIONALLY, naming every leaf INCLUDING the one whose flush refused.
+// For a brand-new leaf that refusal means its file was never created, so the metadata now
+// names a file the directory does not hold -- and load() answers that with the WHOLE tree
+// empty (a named-but-missing leaf cannot be told apart from a truncation, so nothing may be
+// served). One refused leaf flush therefore cost every row of every OTHER leaf at the next
+// open, loudly but totally. The fix: a flush that could not write every leaf does not
+// replace the metadata at all -- the last-good list stays, every file it names exists, and
+// the false return says the NEW state is not durable.
+TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = scratch_dir("btree_flush_refused_leaf");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+
+    btree_t tree(&resource, fs, testing_directory, key_getter, 12);
+    std::vector<char> buffer(item_size, 0);
+    auto put = [&](uint64_t i) {
+        write_unaligned<uint64_t>(reinterpret_cast<data_ptr_t>(buffer.data()), i);
+        REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    };
+
+    // v1: one leaf (id 0), durable. This is the last-good state the refused flush must keep.
+    for (uint64_t i = 0; i < 11; i++) {
+        put(i);
+    }
+    REQUIRE(tree.flush());
+
+    // A directory squatting where the NEXT leaf (id 1) will create its file: the split leaf
+    // has no file until its first flush (lease_file_ opens with FILE_CREATE), and that open
+    // refuses against a directory.
+    const auto squatted = testing_directory / "segmented_block1";
+    REQUIRE(std::filesystem::create_directory(squatted));
+
+    for (uint64_t i = 11; i < 30; i++) {
+        put(i);
+    }
+    INFO("the flush must say the new state did not become durable");
+    REQUIRE_FALSE(tree.flush());
+
+    // Heal the path. The new leaf's file still does not exist -- exactly the state the old
+    // metadata write turned into a total wipe.
+    REQUIRE(std::filesystem::remove(squatted));
+
+    {
+        btree_t reopened(&resource, fs, testing_directory, key_getter, 12);
+        reopened.load();
+        // RED before the fix: the metadata written by the REFUSED flush named leaf 1, whose
+        // file was never created, and load() opened the tree EMPTY with io_error on the
+        // channel -- every row of leaf 0 gone with it.
+        INFO("the last-good metadata still opens: no missing files, no wipe");
+        CHECK(reopened.load_failure() == load_failure_t::none);
+        CHECK(reopened.size() > 0);
+        CHECK(reopened.contains_index(btree_t::index_t(uint64_t(0))));
+    }
+
+    // And the tree that failed can simply flush again once the refusal lifts: the leaves that
+    // stayed dirty are written, the metadata is replaced as a whole, and everything is served.
+    REQUIRE(tree.flush());
+    {
+        btree_t reopened(&resource, fs, testing_directory, key_getter, 12);
+        reopened.load();
+        CHECK(reopened.load_failure() == load_failure_t::none);
+        CHECK(reopened.size() == 30);
+        CHECK(reopened.contains_index(btree_t::index_t(uint64_t(29))));
     }
 
     remove_directory(fs, testing_directory);

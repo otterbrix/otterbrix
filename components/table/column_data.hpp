@@ -101,10 +101,6 @@ namespace components::table {
                                         bool allow_updates,
                                         uint64_t scan_count);
 
-        virtual void scan_committed_range(uint64_t row_group_start,
-                                          uint64_t offset_in_row_group,
-                                          uint64_t count,
-                                          vector::vector_t& result);
         virtual uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count);
         // Like scan_count, but tolerates and applies committed updates over the scanned
         // range (scan_count itself asserts no updates). Used by LIST/ARRAY parents whose

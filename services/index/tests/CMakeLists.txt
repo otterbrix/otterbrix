@@ -10,6 +10,7 @@ set(${PROJECT_NAME}_SOURCES
     test_index_agent_dropped_writes.cpp
     test_index_agent_reaping.cpp
     test_index_agent_buffer.cpp
+    test_index_agent_commit_retry.cpp
     test_index_registry.cpp
     test_index_delete_horizon.cpp
     test_index_catchup_delete_bucket.cpp

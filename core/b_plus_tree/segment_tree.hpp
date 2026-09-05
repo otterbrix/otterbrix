@@ -224,6 +224,18 @@ namespace core::b_plus_tree {
             iterator(const iterator& other);
             iterator(iterator&& other) noexcept;
 
+            // The CHECKED door to the block, and the one walks must take. load_segment_() has
+            // three refusal legs: a refused read and a failed checksum poison the slot with a
+            // VALID empty stand-in, but the allocation refusal CANNOT (a stand-in is itself a
+            // block allocation), so the slot stays EMPTY and operator*/operator-> below would
+            // dereference null. get() performs the same load and answers nullptr instead;
+            // out_of_memory is already on the leaf's channel by then, and a later call heals
+            // by itself exactly like a poisoned slot does.
+            [[nodiscard]] inline const block_t* get() {
+                load_block();
+                return block_;
+            }
+            // Assume the block is loadable; only safe after a successful get().
             inline const block_t& operator*() {
                 load_block();
                 return *block_;
@@ -307,6 +319,13 @@ namespace core::b_plus_tree {
             r_iterator(const r_iterator& other);
             r_iterator(r_iterator&& other) noexcept;
 
+            // See iterator::get(): the checked door for the one refusal leg (allocation) that
+            // cannot leave a valid stand-in behind.
+            [[nodiscard]] inline const block_t* get() {
+                load_block();
+                return block_;
+            }
+            // Assume the block is loadable; only safe after a successful get().
             inline const block_t& operator*() {
                 load_block();
                 return *block_;

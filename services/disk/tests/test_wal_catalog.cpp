@@ -7,6 +7,8 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/catalog/session_catalog.hpp>
+#include <core/date/timezones.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -186,10 +188,35 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        (void) fx;
+        // The fixture's ctor ran the bootstrap; prove it did its half before asserting the
+        // absence of WAL records below (a bootstrap that seeded nothing would also emit none).
+        REQUIRE_FALSE(fx.disk->read_setting_sync("TimeZone").empty());
     }
     // No ddl_* invoked → no WAL records expected.
     REQUIRE(pg_catalog_physical_count(dir) == 0);
+    cleanup_dir(dir);
+}
+
+// 1b. The default the bootstrap seeds must be a value the engine itself recognizes. It used
+//     to seed 'UTC' — which core::date::timezone_to_offset refuses (the recognizer's contract
+//     is lowercase input, and the one SQL ingress lowercases before it stores), so EVERY start
+//     of EVERY node seeded a default and then WARNed about refusing it, and the stored
+//     catalog's timezone offset never came from the setting it had just written.
+TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") {
+    auto dir = wal_cat_dir() + "/tz_default";
+    cleanup_dir(dir);
+    {
+        fixture fx(dir);
+        const auto seeded = fx.disk->read_setting_sync("TimeZone");
+        REQUIRE_FALSE(seeded.empty());
+        CAPTURE(seeded);
+        // RED before the fix: seeded == "UTC", refused by the engine's own recognizer.
+        REQUIRE(core::date::timezone_to_offset(seeded).has_value());
+        // And the consumer that WARNed on every start accepts it now.
+        components::catalog::session_catalog_t accepts;
+        REQUIRE_FALSE(accepts.set_timezone(&fx.resource, seeded).contains_error());
+        REQUIRE(accepts.timezone_offset == core::date::timezone_offset_t{0});
+    }
     cleanup_dir(dir);
 }
 

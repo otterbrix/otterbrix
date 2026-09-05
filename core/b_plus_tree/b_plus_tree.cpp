@@ -800,7 +800,13 @@ namespace core::b_plus_tree {
         result.reserve(item_count_);
         while (first_leaf) {
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // See full_scan: the allocation-refusal leg leaves an empty slot no walk
+                    // may dereference; the refusal is on the channel.
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     result.push_back(it->index);
                 }
             }
@@ -895,6 +901,21 @@ namespace core::b_plus_tree {
         // then a repair on the failure path: the two agree only while nothing has gone wrong with
         // the counter itself, and the counter is exactly what a lie here would be believed from.
         *(buffer + 1) = written_ids;
+        if (!ok) {
+            // A flush that could not WRITE every leaf, or could not NAME every leaf at the
+            // ceiling, must not replace the metadata. The list built above names leaves
+            // including the one whose flush refused -- for a brand-new leaf that is a file
+            // that was never created, and load() answers a named-but-missing file with the
+            // WHOLE tree empty (io_error on the channel). Writing this list would turn one
+            // refused leaf into the loss of every other leaf at the next open. The last-good
+            // metadata on the device names only files that exist, so the tree stays openable
+            // at its last durable state; the false return says the NEW state is not durable,
+            // and the leaves that stayed dirty are written by the next flush that succeeds --
+            // which then replaces the list as a whole.
+            tree_mutex_.unlock();
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            return false;
+        }
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);
         if (file == nullptr) {

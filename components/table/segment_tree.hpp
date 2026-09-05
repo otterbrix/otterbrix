@@ -4,7 +4,6 @@
 #include <cassert>
 #include <memory>
 #include <mutex>
-#include <stdexcept>
 #include <vector>
 
 namespace components::table {
@@ -261,18 +260,31 @@ namespace components::table {
             return result;
         }
 
-        void reinitialize() {
+        // Rebuilds the row_start map from the segments' own starts. False = a gap between
+        // nodes, i.e. a broken tree invariant somewhere upstream; the map is left UNTOUCHED
+        // then -- a half-rebuilt map would misroute try_segment_index's binary search, and the
+        // sole caller (column_data_t::set_start) has just made the starts contiguous, so the
+        // tripwire firing means corruption, not a recoverable state. This used to THROW
+        // std::runtime_error -- the same rules-2/9 failure class as the segment_index() throw
+        // converted above: it unwinds across the disk agent's mailbox into a coroutine whose
+        // unhandled_exception() is empty, and the statement hangs instead of failing.
+        [[nodiscard]] bool reinitialize() {
             if (nodes_.empty()) {
-                return;
+                return true;
             }
             int64_t offset = nodes_[0].node->start;
             for (auto& entry : nodes_) {
                 if (entry.node->start != offset) {
-                    throw std::runtime_error("In segment_tree_t::reinitialize - gap found between nodes!");
+                    return false;
                 }
+                offset += static_cast<int64_t>(entry.node->count);
+            }
+            offset = nodes_[0].node->start;
+            for (auto& entry : nodes_) {
                 entry.row_start = offset;
                 offset += static_cast<int64_t>(entry.node->count);
             }
+            return true;
         }
 
     protected:

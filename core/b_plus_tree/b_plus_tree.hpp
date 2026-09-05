@@ -292,7 +292,15 @@ namespace core::b_plus_tree {
 
         while (first_leaf) {
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // The allocation-refusal leg: nothing could bring this block into memory,
+                    // out_of_memory is on the tree's channel (load_segment_ reported it), and
+                    // the walk serves the blocks it CAN read -- the same shape a poisoned
+                    // stand-in already gives the two other refusal legs.
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     T t = deserializer(reinterpret_cast<void*>(it->item.data), it->item.size);
                     if (predicate(it->index, t)) {
                         result->emplace_back(std::move(t));
@@ -338,7 +346,13 @@ namespace core::b_plus_tree {
             }
 
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // See full_scan: the allocation-refusal leg leaves an empty slot no walk
+                    // may dereference; the refusal is on the channel.
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     if (it->index > max_index) {
                         tree_mutex_.unlock_shared();
                         return true;
@@ -395,7 +409,13 @@ namespace core::b_plus_tree {
             }
 
             for (auto block = last_leaf->rbegin(); block != last_leaf->rend(); block++) {
-                for (auto it = block->rbegin(); it != block->rend(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    // See full_scan: the allocation-refusal leg leaves an empty slot no walk
+                    // may dereference; the refusal is on the channel.
+                    continue;
+                }
+                for (auto it = blk->rbegin(); it != blk->rend(); it++) {
                     if (it->index < min_index) {
                         tree_mutex_.unlock_shared();
                         return true;

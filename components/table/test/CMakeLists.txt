@@ -34,6 +34,7 @@ set(${PROJECT_NAME}_SOURCES
         test_update_merge.cpp
         test_block_accounting_bounds.cpp
         test_wave_table.cpp
+        test_segment_tree_reinitialize.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

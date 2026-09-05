@@ -120,13 +120,13 @@ namespace components::table {
     // update_info_t::update_for_transaction, fetch_updates, fetch_committed,
     // fetch_committed_range, fetch_row -- return void
     // or bool, and their callers are in components/table/column_data.cpp
-    // (updates_->fetch_committed / fetch_updates at :884/:886, updates_->fetch_row at :894,
-    // updates_->fetch_committed_range at :182/:211), which is where a channel would have to
-    // start. column_scan_state::scan_error is already that channel for the two scan_vector
-    // legs (column_data.cpp:877 uses it for the outstanding-updates refusal); fetch_update_row
-    // and scan_committed_range have none. Threading it is a signature change in
-    // column_data.{hpp,cpp} and its own callers, which this change does not own, so this
-    // reports and stops the walk instead of reading through a fabricated pointer.
+    // (updates_->fetch_committed / fetch_updates in scan_vector, updates_->fetch_row in
+    // fetch_update_row, updates_->fetch_committed_range in scan_count_with_updates), which is
+    // where a channel would have to start. column_scan_state::scan_error is already that
+    // channel for the two scan_vector legs (it carries the outstanding-updates refusal);
+    // fetch_update_row has none. Threading it is a signature change in column_data.{hpp,cpp}
+    // and its own callers, which this change does not own, so this reports and stops the walk
+    // instead of reading through a fabricated pointer.
     void report_unreachable_update_node(const char* where, const core::error_t& error);
 
     struct undo_buffer_allocator_t {

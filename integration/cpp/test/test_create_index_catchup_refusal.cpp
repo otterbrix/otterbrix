@@ -30,6 +30,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -73,7 +74,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::create_index_catchup_refusal::a_refused_catchup_leaves_the_table_answering_in_full") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_create_index_catchup_refusal/refused",
+    auto config = make_test_config(integration_fixture_path("test_create_index_catchup_refusal/refused"),
                                    /*wal_on=*/true);
     config.log.level = log_t::level::off;
 

@@ -24,6 +24,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 using namespace components;
@@ -56,7 +57,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_readers_snapshot") {
-    auto config = test_create_config("/tmp/test_index_fetch_visibility/snapshot");
+    auto config = test_create_config(integration_fixture_path("test_index_fetch_visibility/snapshot"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -140,7 +141,7 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
 // another session has deleted and committed them. This is the guard against
 // "fix visibility by hiding everything".
 TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_keeps_rows_the_snapshot_owns") {
-    auto config = test_create_config("/tmp/test_index_fetch_visibility/retain");
+    auto config = test_create_config(integration_fixture_path("test_index_fetch_visibility/retain"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

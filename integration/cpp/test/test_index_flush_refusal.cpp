@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -32,7 +33,7 @@
 
 TEST_CASE("integration::cpp::test_index_flush_refusal::checkpoint_fails_when_an_index_flush_cannot_reach_the_disk") {
     auto config = test_helpers::make_test_config(
-        "/tmp/otterbrix/integration/test_index_flush_refusal/checkpoint",
+        integration_fixture_path("test_index_flush_refusal/checkpoint"),
         /*wal_on=*/true);
     config.log.level = log_t::level::off;
 

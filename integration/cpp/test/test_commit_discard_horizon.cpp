@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -123,7 +124,7 @@ namespace {
 // index-delete queue -- fed by the ORDINARY delete that follows -- never drains.
 // ===========================================================================
 TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops_the_sweeps") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_commit_discard_horizon/sweeps",
+    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/sweeps"),
                                    /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -190,7 +191,7 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
 // transaction the engine refused and reported as an error.
 // ===========================================================================
 TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_rows_never_appear") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_commit_discard_horizon/visibility",
+    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/visibility"),
                                    /*wal_on=*/true);
     config.log.level = log_t::level::off;
 

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -29,7 +30,7 @@
 // own is_null() on the read-back cell, and a COUNT that ignores NULLs.
 
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_null_persistence/basic");
+    auto config = test_create_config(integration_fixture_path("test_null_persistence/basic"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -116,7 +117,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
 // here is the same silent corruption as in a flat column — the reloaded cell reads as a
 // present zero/empty value.
 TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpoint_and_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_null_persistence/nested");
+    auto config = test_create_config(integration_fixture_path("test_null_persistence/nested"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -252,7 +253,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
 // round-trip is not proof. 3000 rows span three row groups; the NULL pattern (every
 // 100th id) puts NULLs in ALL of them, including past row 2048.
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row_group") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_null_persistence/multi_rg");
+    auto config = test_create_config(integration_fixture_path("test_null_persistence/multi_rg"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

@@ -34,6 +34,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/cursor/cursor.hpp>
@@ -92,7 +93,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_older_snapshots_row") {
-    auto config = test_create_config("/tmp/test_index_delete_horizon/older_snapshot");
+    auto config = test_create_config(integration_fixture_path("test_index_delete_horizon/older_snapshot"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -193,7 +194,7 @@ TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_ol
 // delete of the old key plus an insert of the new one, must move the row from one
 // key to the other rather than answer under both.
 TEST_CASE("integration::cpp::index_delete_horizon::the_index_still_forgets_once_nobody_is_looking") {
-    auto config = test_create_config("/tmp/test_index_delete_horizon/forgets");
+    auto config = test_create_config(integration_fixture_path("test_index_delete_horizon/forgets"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

@@ -4,6 +4,7 @@
 
 #include <components/cursor/cursor.hpp>
 
+#include <services/disk/agent_disk.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <cstdint>
@@ -77,6 +78,23 @@ namespace {
 TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_may_not_restage_the_first_index") {
     auto config = make_test_config(fixture_root() + "/db", /*wal_on=*/true);
     config.log.level = log_t::level::off;
+    // THE METER BELOW IS PROCESS-WIDE, SO THE WINDOW IT IS READ OVER HAS TO BE EXCLUSIVE.
+    // g_index_stage_insert_batches (services/index/manager_index.cpp) is bumped from FOUR
+    // places: the DML insert and update legs, the CREATE INDEX backfill this case measures,
+    // and repopulate_table -- the index rebuild an automatic checkpoint drives. The first
+    // two cannot fire inside the window because the window contains exactly one statement
+    // and it is a CREATE INDEX. The fourth is asynchronous and would count as legally as
+    // the backfill does, so it is taken off the board here rather than hoped against: a
+    // threshold this large is never reached by a 200-row table's log. Same knob, same
+    // reason, as test_index_stale_marker_crash.cpp.
+    //
+    // MEASURED, so the knob is not superstition. At the config default (16 MB) this table
+    // never trips the auto-checkpoint and both windows saw 0 rounds in six runs -- the leak
+    // is latent, not active. Lower the threshold to 1 KB and the same two windows see 2 and
+    // 4 rounds respectively: the meter then counts a checkpoint's repopulate_table beside
+    // the build it is supposed to be measuring. The witness below is what turns "it did not
+    // happen to fire" into "it provably did not fire in this window".
+    config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -99,10 +117,23 @@ TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_ma
     }
 
     // BUILD ONE, with nothing else registered on the table: this is the calibration.
+    //
+    // THE ORDER IS THE POINT. The reset comes first, the BASE IS PINNED AT ZERO so a reset
+    // that did not take cannot pass for a build that sent nothing, the action is asserted
+    // SUCCESSFUL, and only then is the meter read: a counter cleared before an attempt that
+    // then failed would be measuring emptiness and calling it a measurement. The second
+    // meter is the exclusivity witness -- an automatic checkpoint round is the one other
+    // thing that could bump the batch counter, and this proves none ran in the window.
+    services::disk::reset_table_checkpoints();
     services::index::reset_index_stage_insert_batches();
+    REQUIRE(services::index::index_stage_insert_batches() == 0);
+    REQUIRE(services::disk::table_checkpoints() == 0);
     REQUIRE(exec(d, "CREATE INDEX a_idx ON bdb.t (a);")->is_success());
     const auto staged_by_the_first_build = services::index::index_stage_insert_batches();
     INFO("stage_inserts messages the FIRST build sent: " << staged_by_the_first_build);
+    INFO("checkpoint rounds inside the FIRST window (must be 0, or the meter is not the build's): "
+         << services::disk::table_checkpoints());
+    REQUIRE(services::disk::table_checkpoints() == 0);
     REQUIRE(staged_by_the_first_build > 0);
 
     {
@@ -120,10 +151,17 @@ TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_ma
         REQUIRE(cur->size() == 1);
     }
 
-    // THE SECOND BUILD. It reads the same rows and must feed b_idx alone.
+    // THE SECOND BUILD. It reads the same rows and must feed b_idx alone. Same order and
+    // the same two witnesses as the first window, so the two numbers are comparable.
+    services::disk::reset_table_checkpoints();
     services::index::reset_index_stage_insert_batches();
+    REQUIRE(services::index::index_stage_insert_batches() == 0);
+    REQUIRE(services::disk::table_checkpoints() == 0);
     REQUIRE(exec(d, "CREATE INDEX b_idx ON bdb.t (b);")->is_success());
     const auto staged_by_the_second_build = services::index::index_stage_insert_batches();
+    INFO("checkpoint rounds inside the SECOND window (must be 0, or the meter is not the build's): "
+         << services::disk::table_checkpoints());
+    REQUIRE(services::disk::table_checkpoints() == 0);
 
     // THE POINT. Same table, same rows, same scan decomposition -- so a build that feeds
     // only the index it is building sends the same number of staging messages as the first

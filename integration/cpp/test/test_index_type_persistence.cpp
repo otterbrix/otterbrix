@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -57,7 +58,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_type_persistence::hash_index_type_survives_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_type_persistence/hash_restart");
+    auto config = test_create_config(integration_fixture_path("test_index_type_persistence/hash_restart"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -136,7 +137,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_survives_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_type_persistence/temporal_restart");
+    auto config = test_create_config(integration_fixture_path("test_index_type_persistence/temporal_restart"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

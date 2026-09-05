@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -27,7 +28,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::statement_shape::no_statement_is_a_named_refusal") {
-    auto config = test_create_config("/tmp/test_statement_shape_w3/no_statement");
+    auto config = test_create_config(integration_fixture_path("test_statement_shape_w3/no_statement"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -55,7 +56,7 @@ TEST_CASE("integration::cpp::statement_shape::no_statement_is_a_named_refusal") 
 }
 
 TEST_CASE("integration::cpp::statement_shape::multi_statement_is_refused_whole") {
-    auto config = test_create_config("/tmp/test_statement_shape_w3/multi");
+    auto config = test_create_config(integration_fixture_path("test_statement_shape_w3/multi"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

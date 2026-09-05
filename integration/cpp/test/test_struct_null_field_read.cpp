@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -17,7 +18,7 @@
 // built the whole-cell value, which is why the existing nested-NULL tests route around
 // this and it stayed hidden.
 TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_cell_with_a_null_field") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_struct_null_field_read/select");
+    auto config = test_create_config(integration_fixture_path("test_struct_null_field_read/select"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

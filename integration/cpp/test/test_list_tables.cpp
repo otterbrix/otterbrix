@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/catalog_listing.hpp>
@@ -121,7 +122,7 @@ TEST_CASE("integration::cpp::list_tables::filters_system_rows_and_non_tables") {
 // system catalogs become queryable it must report the two names. Reporting an
 // empty list is wrong in both worlds, and that is exactly what it used to do.
 TEST_CASE("integration::cpp::list_tables::two_tables_never_read_as_empty") {
-    auto config = test_create_config("/tmp/otterbrix/integration/list_tables/two_tables");
+    auto config = test_create_config(integration_fixture_path("list_tables/two_tables"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

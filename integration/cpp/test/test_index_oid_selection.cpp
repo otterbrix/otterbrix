@@ -31,6 +31,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <sstream>
@@ -102,7 +103,7 @@ namespace {
 // index_scan on the scan target's oid; the index manager finds no such index
 // there and the empty id set silently reads as "matched nothing" — zero rows.
 TEST_CASE("integration::cpp::index_oid_selection::unindexed_predicate_column_returns_rows") {
-    auto config = test_create_config("/tmp/test_index_oid_selection/rows");
+    auto config = test_create_config(integration_fixture_path("test_index_oid_selection/rows"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -140,7 +141,7 @@ TEST_CASE("integration::cpp::index_oid_selection::unindexed_predicate_column_ret
 // branch keeps its index scan and the other silently degrades to a full scan.
 // Per-oid selection must produce an Index Scan for BOTH branches.
 TEST_CASE("integration::cpp::index_oid_selection::each_table_uses_its_own_index") {
-    auto config = test_create_config("/tmp/test_index_oid_selection/explain");
+    auto config = test_create_config(integration_fixture_path("test_index_oid_selection/explain"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

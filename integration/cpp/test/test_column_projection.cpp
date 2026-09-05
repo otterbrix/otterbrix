@@ -17,6 +17,7 @@
 //   * Functions in WHERE (pruning should disable itself here — semantics preserved)
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -30,7 +31,7 @@ using namespace test_helpers;
 // validates the on-disk projection path end to end — the path the in-memory tests
 // below do NOT exercise.
 TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
-    auto config = make_test_config("/tmp/col_proj/disk_backed", true);
+    auto config = make_test_config(integration_fixture_path("col_proj/disk_backed"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -99,7 +100,7 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
 }
 
 TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
-    auto config = make_test_config("/tmp/col_proj/disk_backed_join", true);
+    auto config = make_test_config(integration_fixture_path("col_proj/disk_backed_join"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -648,7 +649,7 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
 // pre-fix in non-ASAN builds; their job is to lock the guard-chunk shape and act
 // as the ASAN tripwire.
 TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_guard") {
-    auto config = make_test_config("/tmp/col_proj/empty_guard", true);
+    auto config = make_test_config(integration_fixture_path("col_proj/empty_guard"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

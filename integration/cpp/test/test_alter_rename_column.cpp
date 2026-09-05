@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -136,7 +137,7 @@ namespace {
 // CASE 1 — the statement itself. Today it reports success and changes nothing, so the OLD name
 // still resolves and the NEW one does not: both halves below are inverted on the unfixed build.
 TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the_name") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_rename_column/rebind");
+    auto config = test_create_config(integration_fixture_path("test_alter_rename_column/rebind"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -191,7 +192,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the
 //   * the content is checked per row, not just the count: a walk that dropped the column and a
 //     scan that reads it as all-NULL both keep the row count intact.
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_restart_with_its_data") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_rename_column/restart");
+    auto config = test_create_config(integration_fixture_path("test_alter_rename_column/restart"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -345,7 +346,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
 // would otherwise hide the released space behind the surviving column's), and the durable root
 // is walked offline before and after so a release shows up as a root that SHRANK.
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a_crash_before_the_checkpoint") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_rename_column/crash");
+    auto config = test_create_config(integration_fixture_path("test_alter_rename_column/crash"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -478,7 +479,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
 // same crash window, and then closes the loop by materializing the added column after the
 // restart and checking the identity it was born with, offline, in the durable file.
 TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized_add_column_are_distinguishable") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_rename_column/add_vs_rename");
+    auto config = test_create_config(integration_fixture_path("test_alter_rename_column/add_vs_rename"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

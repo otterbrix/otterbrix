@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -85,7 +86,7 @@ namespace {
 // one of the 40 elements of `payload` reads 0 for the last 1024 — the exact signature of a
 // codec that carried the TYPE and dropped the PAYLOAD.
 TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survives_replay_of_the_journal") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_nested_payload_replay/array");
+    auto config = test_create_config(integration_fixture_path("test_wal_nested_payload_replay/array"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -197,7 +198,7 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
 // is a second silent corruption wearing the first one's clothes: the gate is the CONTENT AND
 // THE NULLS TOGETHER, on rows that exist only in the journal.
 TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_payload_survive_replay_of_the_journal") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_nested_payload_replay/list_struct");
+    auto config = test_create_config(integration_fixture_path("test_wal_nested_payload_replay/list_struct"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

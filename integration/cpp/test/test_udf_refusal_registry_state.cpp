@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -214,7 +215,7 @@ namespace {
 TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leaves_no_registry_entry_when_pg_"
           "namespace_cannot_be_read") {
     const std::filesystem::path dir =
-        "/tmp/otterbrix/integration/test_udf_refusal_registry_state/namespace_read_refusal";
+        integration_fixture_path("test_udf_refusal_registry_state/namespace_read_refusal");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
@@ -317,7 +318,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
 // one pg_proc row. Without it the case above could go green by collapse — any change that made
 // every register_udf fail would satisfy every assertion it makes.
 TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registration_reaches_pg_proc") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_udf_refusal_registry_state/healthy";
+    const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/healthy");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;

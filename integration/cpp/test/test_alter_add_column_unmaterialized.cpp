@@ -26,6 +26,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -61,7 +62,7 @@ namespace {
 
 // The bare reproduction: naming the column alone is enough.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_column_reads_null") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/select_column");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/select_column"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -78,7 +79,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_column_read
 
 // SELECT * has to widen to the catalog's shape, not the storage's.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_star_reads_null") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/select_star");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/select_star"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -97,7 +98,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_star_reads_
 // The column read as a PREDICATE, which pushes it down a different leg than the
 // projection: the filter binds it as an input and the scan has to feed the graph.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::predicate_on_column") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/predicate");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/predicate"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -124,7 +125,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::predicate_on_colum
 
 // Aggregates: COUNT(col) ignores NULLs, COUNT(*) does not, SUM over all-NULL is NULL.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::aggregates_over_column") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/aggregates");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/aggregates"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -153,7 +154,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::aggregates_over_co
 
 // ORDER BY on the column, and a GROUP BY that keys on it.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::order_and_group_by_column") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/order_group");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/order_group"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -184,7 +185,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::order_and_group_by
 // new row must answer with its value — i.e. the pre-materialization read above was
 // not a different answer from the post-materialization one.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_insert_keeps_old_rows_null") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/materialize");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/materialize"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -221,7 +222,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_inse
 // The catalog row is durable and the storage column is not, so a restart RE-ENTERS
 // the same state rather than leaving it. The read must answer the same after it.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::survives_restart_before_first_insert") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/restart");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/restart"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -252,7 +253,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::survives_restart_b
 // inserted without the column — enrich_logical_plan's build_insert_fill_list is
 // the single oracle for that — and the second half of this case pins that split.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_does_not_backfill_old_rows") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/with_default");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/with_default"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -292,7 +293,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_does_not_b
 // Before the fix the first case aborted in collection_t::append on
 // `chunk.column_count() == types_.size()`.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::dml_over_the_column") {
-    auto config = test_create_config("/tmp/test_alter_add_column_unmaterialized/dml");
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/dml"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

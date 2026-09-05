@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -664,7 +665,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
 // {a:int}, {a:string}, restart, {a:bool}: SELECT * must return all three rows with
 // each variant in its own column.
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_variants_restart");
+    auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_restart"));
     test_clear_directory(config);
 
     INFO("phase 1: computed table, two type variants of 'a' (bigint, string)");
@@ -839,11 +840,11 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
 // still be computed (from pg_class.relkind), or the post-recovery {a:bool} insert
 // would be glued into the bigint 'a' column instead of a new variant column.
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_crash_replay_synthesis") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_variants_crash_src");
+    auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_crash_src"));
     test_clear_directory(config);
 
     const std::filesystem::path crash_dir =
-        "/tmp/otterbrix/integration/test_persistence/computed_variants_crash_copy";
+        integration_fixture_path("test_persistence/computed_variants_crash_copy");
 
     INFO("phase 1: computed table, two type variants; copy the live directory (crash image)");
     {
@@ -995,10 +996,10 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
 // The table is computed (relkind='g') on purpose: rehydrate_missing_user_storages_sync skips
 // 'g' at the source, so the ONLY thing that can rebuild this file is replay synthesis.
 TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_under_its_namespace") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/replay_ns_src");
+    auto config = test_create_config(integration_fixture_path("test_persistence/replay_ns_src"));
     test_clear_directory(config);
 
-    const std::filesystem::path crash_dir = "/tmp/otterbrix/integration/test_persistence/replay_ns_copy";
+    const std::filesystem::path crash_dir = integration_fixture_path("test_persistence/replay_ns_copy");
 
     // Returns every ${ns}/${oid} pair under the disk root that holds a table.otbx and whose
     // BOTH components are user oids.
@@ -1111,7 +1112,7 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
 // through INSERT: a computed table adopts arbitrary per-document columns, a regular
 // zero-column table refuses them.
 TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_regular") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/zero_col_regular");
+    auto config = test_create_config(integration_fixture_path("test_persistence/zero_col_regular"));
     test_clear_directory(config);
 
     INFO("phase 1: regular one-column table, DROP the only column");
@@ -1626,7 +1627,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
 // defaults, so NULL was stored. The constraint admitted exactly what it exists to reject.
 // This test requires the check's verdict and the stored value to agree.
 TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_after_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_check_agrees");
+    auto config = test_create_config(integration_fixture_path("test_persistence/default_check_agrees"));
     test_clear_directory(config);
 
     INFO("phase 1: c INT DEFAULT 5 with CHECK (c IS NOT NULL); verdict and value agree in-session");
@@ -1703,7 +1704,7 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
 // restart — the duplicate-key decision was made about 5 and NULL was stored twice. The
 // decision must be about what is really written.
 TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_after_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_unique_agrees");
+    auto config = test_create_config(integration_fixture_path("test_persistence/default_unique_agrees"));
     test_clear_directory(config);
 
     INFO("phase 1: code bigint DEFAULT 5 UNIQUE; one omitted-column row lands with 5");
@@ -3060,7 +3061,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
 //      SQL with no storage clause anywhere.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/b1a_disk_default");
+    auto config = test_create_config(integration_fixture_path("test_persistence/b1a_disk_default"));
     test_clear_directory(config);
 
     const auto disk_root = config.disk.path;
@@ -3157,7 +3158,7 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
 // left it at. min(prev) is therefore the same number it always was, which is why the floor
 // still lands on checkpoint #1's wal id and the segments below it still go.
 TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_truncate_no_double_replay");
+    auto config = test_create_config(integration_fixture_path("test_persistence/wal_truncate_no_double_replay"));
     test_clear_directory(config);
     config.wal.max_segment_size = 8 * 1024;
 

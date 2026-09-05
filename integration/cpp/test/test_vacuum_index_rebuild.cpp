@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -149,7 +150,7 @@ namespace {
 // no header commits can only spend space. So the counter read one repopulate per relation where
 // the correct number is none.
 TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_it_never_renumbers") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_vacuum_index_rebuild/vacuum");
+    auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/vacuum"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -205,7 +206,7 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_
 // case fails twice: the counter reads 0, and `WHERE k = <key of a tail row>` answers with
 // whichever row moved into the physical id the stale entry still names.
 TEST_CASE("integration::cpp::vacuum_index_rebuild::a_compacting_checkpoint_still_owes_the_rebuild") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_vacuum_index_rebuild/checkpoint");
+    auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/checkpoint"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -247,7 +248,7 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::a_compacting_checkpoint_still
 // table big enough for the per-table scan-and-refill to dominate; run it with [vacuumcost].
 TEST_CASE("integration::cpp::vacuum_index_rebuild::what_a_vacuum_costs_on_an_indexed_table",
           "[.][vacuumcost]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_vacuum_index_rebuild/cost");
+    auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/cost"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

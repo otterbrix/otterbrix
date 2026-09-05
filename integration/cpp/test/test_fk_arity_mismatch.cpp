@@ -20,6 +20,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <vector>
@@ -107,7 +108,7 @@ namespace {
 // test is written against is the opposite: the DELETE reports success, the
 // parent row is gone, and child 10 is left pointing at nothing.
 TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orphaning") {
-    auto config = test_create_config("/tmp/test_fk_arity_mismatch/cascade");
+    auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/cascade"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -133,7 +134,7 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orpha
 // per-parent buckets and blocks on any non-empty one, so an all-empty answer
 // lets the parent go exactly as CASCADE does — with the child rows still there.
 TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orphaning") {
-    auto config = test_create_config("/tmp/test_fk_arity_mismatch/restrict");
+    auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/restrict"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -160,7 +161,7 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orph
 // referenced row is not in the parent table", which sends the user looking for a
 // missing row that is right there. The check must name the real defect.
 TEST_CASE("integration::cpp::fk_arity_mismatch::insert_names_the_real_defect") {
-    auto config = test_create_config("/tmp/test_fk_arity_mismatch/insert");
+    auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/insert"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

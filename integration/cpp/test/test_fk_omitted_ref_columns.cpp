@@ -23,6 +23,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -73,7 +74,7 @@ namespace {
 // (1) The INSERT side. A child row whose pid is in no parent row must be refused
 // by the omitted-list FK exactly as it would be by `REFERENCES fkr.parent (id)`.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::orphan_insert_is_refused") {
-    auto config = make_test_config("/tmp/test_fk_omitted_ref_columns/orphan_insert");
+    auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/orphan_insert"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -100,7 +101,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::orphan_insert_is_refused") 
 // (2) ON DELETE RESTRICT over the same omitted-list FK: deleting a parent that
 // still has children must be refused, and both tables must be untouched.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::restrict_blocks_parent_delete") {
-    auto config = make_test_config("/tmp/test_fk_omitted_ref_columns/restrict");
+    auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/restrict"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -121,7 +122,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::restrict_blocks_parent_dele
 // succeed AND take the referencing child rows with it. An unenforced constraint
 // shows up here as a surviving orphan, not as an error.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::cascade_removes_children") {
-    auto config = make_test_config("/tmp/test_fk_omitted_ref_columns/cascade");
+    auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/cascade"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -146,7 +147,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::cascade_removes_children") 
 // one thing that must NOT happen is accepting the statement and enforcing
 // nothing. The constraint has no referenced side to bind to, so the ALTER fails.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::no_primary_key_refuses_the_ddl") {
-    auto config = make_test_config("/tmp/test_fk_omitted_ref_columns/no_pk");
+    auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/no_pk"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -169,7 +170,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::no_primary_key_refuses_the_
 // is no pairing to make, so the DDL must say so instead of binding the columns
 // positionally and losing the tail.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::arity_against_primary_key_is_checked") {
-    auto config = make_test_config("/tmp/test_fk_omitted_ref_columns/arity");
+    auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/arity"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 

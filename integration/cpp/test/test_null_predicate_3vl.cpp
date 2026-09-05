@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -138,7 +139,7 @@ TEST_CASE("integration::cpp::pred3vl::not_over_and_or") {
 //  DELETE / UPDATE consumers: only definitely-TRUE rows are affected.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pred3vl::delete_update") {
-    auto config = test_helpers::make_test_config("/tmp/p3vl/dml", true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/dml"), true);
     {
         test_spaces space(config);
         auto* d = space.dispatcher();

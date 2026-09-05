@@ -32,6 +32,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -77,7 +78,7 @@ namespace {
 // back to a full scan, return all the right rows, and the test would pass while
 // testing nothing at all.
 TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every_duplicate") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_read_through_agent/duplicates");
+    auto config = test_create_config(integration_fixture_path("test_index_read_through_agent/duplicates"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -185,7 +186,7 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
 // over committed data only -- which is precisely why this case exists next to the
 // duplicates one above.
 TEST_CASE("integration::cpp::index_read_through_agent::own_uncommitted_insert_is_visible_only_to_its_txn") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_read_through_agent/visibility");
+    auto config = test_create_config(integration_fixture_path("test_index_read_through_agent/visibility"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

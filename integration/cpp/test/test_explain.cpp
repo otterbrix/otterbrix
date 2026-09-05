@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -787,7 +788,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 // stamped merged path and folds into each side's full_scan (a pushable
 // `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
-    auto config = test_helpers::make_test_config("/tmp/test_explain/join_shared_col", true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/join_shared_col"), true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -864,7 +865,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
-    auto config = test_helpers::make_test_config("/tmp/test_explain/transitive_equi", false);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/transitive_equi"), false);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

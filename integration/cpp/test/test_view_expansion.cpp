@@ -23,6 +23,7 @@
 //      the empty matview it names.
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
@@ -107,7 +108,7 @@ namespace {
 // — the behaviour test_jsonb_support::view_over_navigation used to describe in a
 // comment ("a narrowed projection over the view is ignored") without pinning it.
 TEST_CASE("integration::cpp::test_view_expansion::narrowed_projection_over_view") {
-    auto config = make_test_config("/tmp/test_view_expansion/projection");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/projection"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -122,7 +123,7 @@ TEST_CASE("integration::cpp::test_view_expansion::narrowed_projection_over_view"
 // [D2/T2] An outer WHERE over a view filters the view's rows. The replacement
 // dropped the outer predicate and answered with the body's own row set.
 TEST_CASE("integration::cpp::test_view_expansion::outer_where_over_view") {
-    auto config = make_test_config("/tmp/test_view_expansion/where");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/where"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -136,7 +137,7 @@ TEST_CASE("integration::cpp::test_view_expansion::outer_where_over_view") {
 // [D2/T3] An aggregate over a view aggregates the view's rows. The replacement
 // dropped the aggregate entirely and returned the body's rows.
 TEST_CASE("integration::cpp::test_view_expansion::aggregate_over_view") {
-    auto config = make_test_config("/tmp/test_view_expansion/aggregate");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/aggregate"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -155,7 +156,7 @@ TEST_CASE("integration::cpp::test_view_expansion::aggregate_over_view") {
 // happens — the row set is just quietly wrong — so the pin is the equality
 // against the hand-written equivalent query on the base table.
 TEST_CASE("integration::cpp::test_view_expansion::view_constant_not_clobbered_by_outer_constant") {
-    auto config = make_test_config("/tmp/test_view_expansion/params");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/params"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -173,7 +174,7 @@ TEST_CASE("integration::cpp::test_view_expansion::view_constant_not_clobbered_by
 // [D2/T5] A join whose left side is a view keeps the join. The replacement
 // answered with the bare view body and no join at all.
 TEST_CASE("integration::cpp::test_view_expansion::join_with_view_side") {
-    auto config = make_test_config("/tmp/test_view_expansion/join");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/join"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -189,7 +190,7 @@ TEST_CASE("integration::cpp::test_view_expansion::join_with_view_side") {
 // [D2/T6] A view over a view resolves both levels. Each pass splices one level
 // and the level it added only becomes visible after its own resolve round.
 TEST_CASE("integration::cpp::test_view_expansion::view_over_view") {
-    auto config = make_test_config("/tmp/test_view_expansion/nested");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/nested"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -211,7 +212,7 @@ TEST_CASE("integration::cpp::test_view_expansion::view_over_view") {
 // accident that produced the old error would be gone too. The message is part of
 // the pin: it has to name the view, not a missing column.
 TEST_CASE("integration::cpp::test_view_expansion::dml_through_view_is_refused") {
-    auto config = make_test_config("/tmp/test_view_expansion/dml");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/dml"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -234,7 +235,7 @@ TEST_CASE("integration::cpp::test_view_expansion::dml_through_view_is_refused") 
 // touch. There was no e2e coverage of DROP VIEW at all, so the guard's blast
 // radius is pinned here.
 TEST_CASE("integration::cpp::test_view_expansion::drop_view_still_resolves_the_view") {
-    auto config = make_test_config("/tmp/test_view_expansion/drop");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/drop"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -257,7 +258,7 @@ TEST_CASE("integration::cpp::test_view_expansion::drop_view_still_resolves_the_v
 // to resolve at all), and if the slice ran past the body it would carry the
 // trailing clause into the stored SQL.
 TEST_CASE("integration::cpp::test_view_expansion::body_is_what_was_written") {
-    auto config = make_test_config("/tmp/test_view_expansion/body");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/body"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -281,7 +282,7 @@ TEST_CASE("integration::cpp::test_view_expansion::body_is_what_was_written") {
 // nowhere, so accepting it would promise column names the stored body does not
 // produce. Refused (rule 6) instead of half-supported.
 TEST_CASE("integration::cpp::test_view_expansion::view_column_alias_list_is_refused") {
-    auto config = make_test_config("/tmp/test_view_expansion/aliases");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/aliases"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -294,7 +295,7 @@ TEST_CASE("integration::cpp::test_view_expansion::view_column_alias_list_is_refu
 // forever, with nothing said. WITH NO DATA — the form whose meaning IS an empty
 // matview — keeps working.
 TEST_CASE("integration::cpp::test_view_expansion::matview_without_no_data_is_refused") {
-    auto config = make_test_config("/tmp/test_view_expansion/matview");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/matview"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -323,7 +324,7 @@ TEST_CASE("integration::cpp::test_view_expansion::matview_without_no_data_is_ref
 // merging any resolves: merge_catalog_resolves appends to the entries vector,
 // which reallocates it, and the collected references point INTO that vector.
 TEST_CASE("integration::cpp::test_view_expansion::same_view_referenced_twice") {
-    auto config = make_test_config("/tmp/test_view_expansion/twice");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/twice"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -358,7 +359,7 @@ TEST_CASE("integration::cpp::test_view_expansion::same_view_referenced_twice") {
 //
 // Nothing fails in either case — the row set is just quietly wrong.
 TEST_CASE("integration::cpp::test_view_expansion::two_views_keep_their_own_constants") {
-    auto config = make_test_config("/tmp/test_view_expansion/two_views");
+    auto config = make_test_config(integration_fixture_path("test_view_expansion/two_views"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);

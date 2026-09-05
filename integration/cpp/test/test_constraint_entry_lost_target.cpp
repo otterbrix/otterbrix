@@ -36,6 +36,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -124,7 +125,7 @@ namespace {
 // register_catalog_resolve_table just minted for it), so the declared UNIQUE is
 // gathered and enforced: the second row carrying code = 100 does not go in.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::a_named_target_enforces_the_declared_key") {
-    auto config = make_test_config("/tmp/test_constraint_entry_lost_target/control");
+    auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/control"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -148,7 +149,7 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::a_named_target_enforc
 // used to skip it, hand on an EMPTY constraint set, and let both rows in under a
 // UNIQUE the user declared and the engine had accepted.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::an_unnamed_target_does_not_repeal_the_key") {
-    auto config = make_test_config("/tmp/test_constraint_entry_lost_target/no_target");
+    auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/no_target"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -182,7 +183,7 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::an_unnamed_target_doe
 // The same shape one step further out: a target that IS a number but points past
 // the end of the tables node. Same silence, same consequence.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::an_out_of_range_target_does_not_repeal_the_key") {
-    auto config = make_test_config("/tmp/test_constraint_entry_lost_target/out_of_range");
+    auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/out_of_range"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -204,7 +205,7 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::an_out_of_range_targe
 // broken entry is refused, and everything else about the database — reading the
 // table, writing it through ordinary SQL, dropping it — still works.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::the_refusal_does_not_brick_the_database") {
-    auto config = make_test_config("/tmp/test_constraint_entry_lost_target/not_bricked");
+    auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/not_bricked"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 

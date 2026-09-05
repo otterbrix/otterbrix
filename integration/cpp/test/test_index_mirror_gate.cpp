@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
@@ -170,7 +171,7 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors
 // zero.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_index_mirror_gate::dropping_a_twin_index_leaves_the_survivor_live") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/twin");
+    auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/twin"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

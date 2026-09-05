@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -235,7 +236,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_pg_proc_cannot_be_read") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_read_refusal/register_udf";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/register_udf");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
@@ -314,7 +315,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
 // `already_exists` by the catalog check. Without it the case above could go green by collapse
 // — any change that made every second registration fail would satisfy it.
 TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_already_exists") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_read_refusal/duplicate";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/duplicate");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;

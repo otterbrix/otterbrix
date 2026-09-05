@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -20,7 +21,7 @@
 // to the RIGHT rows through the rebuilt index.
 
 TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoint_shifts_rebuilt_row_ids") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_rebuild_live_snapshot");
+    auto config = test_create_config(integration_fixture_path("test_index_rebuild_live_snapshot"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

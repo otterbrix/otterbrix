@@ -20,6 +20,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -28,7 +29,7 @@ namespace {
     struct env_t {
         configuration::config config;
         explicit env_t(const std::string& dir)
-            : config(test_create_config("/tmp/otterbrix/integration/test_fk_default_column/" + dir)) {
+            : config(test_create_config(integration_fixture_path("test_fk_default_column/" + dir))) {
             test_clear_directory(config);
             config.wal.on = false;
             config.log.level = log_t::level::off;

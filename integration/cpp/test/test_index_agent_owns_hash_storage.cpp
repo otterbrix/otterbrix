@@ -28,6 +28,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <services/index/manager_index.hpp>
 
@@ -55,7 +56,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_answers_after_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_agent_owns_hash_storage/existing");
+    auto config = test_create_config(integration_fixture_path("test_index_agent_owns_hash_storage/existing"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -115,7 +116,7 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
 // full-key hook can decide whether such an entry matches. Losing the hook loses every
 // long key SILENTLY: the SELECT succeeds and returns nothing.
 TEST_CASE("integration::cpp::index_agent_owns_hash_storage::long_key_hash_index_answers_after_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_agent_owns_hash_storage/long_key");
+    auto config = test_create_config(integration_fixture_path("test_index_agent_owns_hash_storage/long_key"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

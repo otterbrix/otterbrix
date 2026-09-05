@@ -25,6 +25,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -54,7 +55,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::referenced_parent_column_cannot_be_dropped", "[fkdropcol]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_fk_parent_column_drop/referenced");
+    auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/referenced"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -114,7 +115,7 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::referenced_parent_colum
 }
 
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::unreferenced_parent_column_still_drops", "[fkdropcol]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_fk_parent_column_drop/unreferenced");
+    auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/unreferenced"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -142,7 +143,7 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::unreferenced_parent_col
 
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::child_key_column_drop_takes_the_constraint_with_it",
           "[fkdropcol]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_fk_parent_column_drop/child_side");
+    auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/child_side"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -178,7 +179,7 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::child_key_column_drop_t
 
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::dropping_the_parent_table_clears_the_constraint",
           "[fkdropcol]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_fk_parent_column_drop/drop_parent_table");
+    auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/drop_parent_table"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -208,7 +209,7 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::dropping_the_parent_tab
 }
 
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::drop_constraint_does_not_claim_success", "[fkdropcol]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_fk_parent_column_drop/drop_constraint");
+    auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/drop_constraint"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

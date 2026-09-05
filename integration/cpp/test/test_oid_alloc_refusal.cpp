@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -81,7 +82,7 @@ namespace {
 // item 1 — THE ROUND DELIVERS NOTHING (both failure branches answered with this).
 // ===========================================================================
 TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_the_oid_round_delivers_nothing") {
-    auto config = test_helpers::make_test_config("/tmp/otterbrix/integration/test_oid_alloc_refusal/empty",
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_oid_alloc_refusal/empty"),
                                                  /*wal_on=*/false);
     config.log.level = log_t::level::off;
 
@@ -139,7 +140,7 @@ TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_t
 // the pg_attribute row for the last column of the table is written with it.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_the_oid_round_is_one_short") {
-    auto config = test_helpers::make_test_config("/tmp/otterbrix/integration/test_oid_alloc_refusal/short",
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_oid_alloc_refusal/short"),
                                                  /*wal_on=*/false);
     config.log.level = log_t::level::off;
 

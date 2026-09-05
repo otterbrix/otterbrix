@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <set>
@@ -39,7 +40,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types_are_refused") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/refused", true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/refused"), true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -64,7 +65,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types
 // The mirror image: every type the encoders DO carry must still be accepted. A gate that
 // over-refuses is as much a defect as one that under-refuses.
 TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_are_accepted") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/accepted", true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/accepted"), true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -90,7 +91,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_a
 // services::index::index_disk unit suite (convert_temporal_preserves_order red-proofs the abort,
 // date_keys / timestamp_keys drive probes and bounds through the tree).
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_the_right_rows") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/temporal", true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/temporal"), true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -144,7 +145,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_t
 // the acceptance is proven with rows, not just a successful CREATE: the INSERTs after it
 // drive every key through the hash index's maintenance encoder.
 TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/decimal", true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/decimal"), true);
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -180,7 +181,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
 // must not change across the restart. The NULL row rides along because a NULL key is
 // legitimately absent from the index; collapsing or refusing it on reopen would corrupt this.
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_restart") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/restart", true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/restart"), true);
 
     {
         test_spaces space(config);

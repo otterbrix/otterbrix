@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -36,7 +37,7 @@ using namespace test_helpers;
 // A row with a VALID FK reference but a VIOLATING CHECK must be rejected.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
-    auto config = make_test_config("/tmp/test_stacked_constraints/fk_plus_check");
+    auto config = make_test_config(integration_fixture_path("test_stacked_constraints/fk_plus_check"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -77,7 +78,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
 // must be rejected.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
-    auto config = make_test_config("/tmp/test_stacked_constraints/fk_plus_notnull");
+    auto config = make_test_config(integration_fixture_path("test_stacked_constraints/fk_plus_notnull"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -120,7 +121,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
 // positions are covered regardless of the planner's stacking order.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
-    auto config = make_test_config("/tmp/test_stacked_constraints/two_outgoing_fks");
+    auto config = make_test_config(integration_fixture_path("test_stacked_constraints/two_outgoing_fks"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -175,7 +176,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
 // a skipped cascade leaves dangling child rows.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
-    auto config = make_test_config("/tmp/test_stacked_constraints/two_cascade_children");
+    auto config = make_test_config(integration_fixture_path("test_stacked_constraints/two_cascade_children"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -255,7 +256,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
 // explicit NULL or an omitted column with NO default (which really stores NULL).
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_default") {
-    auto config = make_test_config("/tmp/test_stacked_constraints/check_is_not_null_default");
+    auto config = make_test_config(integration_fixture_path("test_stacked_constraints/check_is_not_null_default"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -35,12 +36,12 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuilt_row_ids") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_rebuild_crash/orig");
+    auto config = test_create_config(integration_fixture_path("test_index_rebuild_crash/orig"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    const std::filesystem::path crash_dir = "/tmp/otterbrix/integration/test_index_rebuild_crash/crashed";
+    const std::filesystem::path crash_dir = integration_fixture_path("test_index_rebuild_crash/crashed");
     constexpr int64_t kRows = 2000;
 
     {
@@ -109,13 +110,13 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
 }
 
 TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_nothing") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_rebuild_crash/orig_all");
+    auto config = test_create_config(integration_fixture_path("test_index_rebuild_crash/orig_all"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
     const std::filesystem::path crash_dir =
-        "/tmp/otterbrix/integration/test_index_rebuild_crash/crashed_all";
+        integration_fixture_path("test_index_rebuild_crash/crashed_all");
 
     {
         test_spaces space(config);

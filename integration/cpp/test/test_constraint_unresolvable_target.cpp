@@ -43,6 +43,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -83,7 +84,7 @@ namespace {
 // `relation "nosuchtable" does not exist` and writes nothing. Otterbrix wrote a
 // dead pg_constraint row and reported success.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::references_missing_table_is_refused") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/missing_table");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/missing_table"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -116,7 +117,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::references_missing_
 // list is read positionally from conkey onwards, so dropping the unmatched name
 // silently produces a constraint on a different (here: an empty) column set.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referencing_missing_column_is_refused") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/fk_child_col");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/fk_child_col"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -133,7 +134,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referencing_miss
 
 // (2b) The REFERENCED column list names a column the parent does not have.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referenced_missing_column_is_refused") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/fk_parent_col");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/fk_parent_col"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -151,7 +152,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referenced_missi
 // (3) UNIQUE over a column that does not exist. Accepted today, and the key it
 // declares does not exist: two identical rows go in under it.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_missing_column_is_refused") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/unique_col");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/unique_col"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -178,7 +179,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_missing_c
 // declared key is (id, nosuchcol), the row that lands in pg_constraint says
 // (id). Silently narrowing a key changes which rows the table will accept.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_partially_resolvable_list_is_refused") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/unique_partial");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/unique_partial"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -205,7 +206,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_partially_re
 // never happen is "the DDL is accepted AND the duplicate goes in". Refusing the
 // DDL is one legal answer, enforcing the key is the other.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_dynamic_schema_is_never_a_no_op") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/unique_dynamic");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/unique_dynamic"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -248,7 +249,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_dynamic_s
 // different defect — it binds the NEXT column's name, so the lists still agree
 // in length — and this case catches that one too, at the duplicate-id check.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::resolvable_key_constraints_stay_enforced") {
-    auto config = make_test_config("/tmp/test_constraint_unresolvable_target/sentinel");
+    auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/sentinel"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 

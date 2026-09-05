@@ -30,6 +30,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <services/index/manager_index.hpp>
 
@@ -76,7 +77,7 @@ namespace {
 // complete answer from a plausible one: an index that keeps a single row per key
 // answers `k = 7` with one row and looks entirely healthy doing it.
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_is_answered_by_the_agent") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_ordered_read_through_agent/predicates");
+    auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/predicates"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -131,7 +132,7 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_i
 // The behavioural gate: the rows a default index reports must follow the table
 // through INSERT, UPDATE, DELETE and a restart.
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_are_reflected") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_ordered_read_through_agent/dml");
+    auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/dml"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -232,7 +233,7 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_a
 // drop it, and the transaction would fail to see its own insert with nothing
 // reporting a problem.
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::own_uncommitted_rows_satisfy_a_range") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_ordered_read_through_agent/visibility");
+    auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/visibility"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

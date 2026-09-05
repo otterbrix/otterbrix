@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -76,7 +77,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_type_spec_write_gate::decimal_outside_the_window_is_refused_at_ddl") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_type_spec_write_gate/decimal_window", true);
+    auto config = make_test_config(integration_fixture_path("test_type_spec_write_gate/decimal_window"), true);
     config.log.level = log_t::level::off;
 
     {
@@ -120,7 +121,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::decimal_outside_the_wind
 }
 
 TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries_survive_checkpoint_and_restart") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_type_spec_write_gate/decimal_boundaries", true);
+    auto config = make_test_config(integration_fixture_path("test_type_spec_write_gate/decimal_boundaries"), true);
     config.log.level = log_t::level::off;
 
     {
@@ -194,7 +195,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
 }
 
 TEST_CASE("integration::cpp::test_type_spec_write_gate::nesting_past_the_format_limit_is_refused_at_create_type") {
-    auto config = make_test_config("/tmp/otterbrix/integration/test_type_spec_write_gate/nesting_limit", true);
+    auto config = make_test_config(integration_fixture_path("test_type_spec_write_gate/nesting_limit"), true);
     config.log.level = log_t::level::off;
 
     // The deepest chain index CREATE TYPE accepted. Used after the restart to prove the

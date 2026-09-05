@@ -45,6 +45,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -118,7 +119,7 @@ namespace {
 // THE CONTROL. The same node with an expression on it: the CHECK is gathered
 // from the same catalog row shape and enforced, so the violating row stays out.
 TEST_CASE("integration::cpp::check_row_without_expression::a_check_with_an_expression_is_enforced") {
-    auto config = make_test_config("/tmp/test_check_row_without_expression/control");
+    auto config = make_test_config(integration_fixture_path("test_check_row_without_expression/control"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -146,7 +147,7 @@ TEST_CASE("integration::cpp::check_row_without_expression::a_check_with_an_expre
 // that rides on the unread constraint has to be refused. What must never happen
 // is the third answer: both accepted, and the CHECK silently gone.
 TEST_CASE("integration::cpp::check_row_without_expression::a_check_row_with_no_expression_is_not_passed_over") {
-    auto config = make_test_config("/tmp/test_check_row_without_expression/no_expr");
+    auto config = make_test_config(integration_fixture_path("test_check_row_without_expression/no_expr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -172,7 +173,7 @@ TEST_CASE("integration::cpp::check_row_without_expression::a_check_row_with_no_e
 // written under the unread CHECK; the database around it still reads, still
 // writes where no such row exists, and still drops.
 TEST_CASE("integration::cpp::check_row_without_expression::an_unreadable_check_row_does_not_brick_the_database") {
-    auto config = make_test_config("/tmp/test_check_row_without_expression/not_bricked");
+    auto config = make_test_config(integration_fixture_path("test_check_row_without_expression/not_bricked"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 

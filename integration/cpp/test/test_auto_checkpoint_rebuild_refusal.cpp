@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -411,7 +412,7 @@ namespace {
 // index flush -- step (d) is never entered, and the round that follows, with nothing in its
 // way, does the rebuild and the truncation both.
 TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_may_not_cost_the_journal") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_auto_checkpoint_rebuild_refusal/db");
+    auto config = test_create_config(integration_fixture_path("test_auto_checkpoint_rebuild_refusal/db"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -250,7 +251,7 @@ namespace {
 // commit published a catalog delete the journal never recorded.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_the_catalog_delete_is_refused") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/drop_table";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/drop_table");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -302,7 +303,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_
 // green by collapse — any change that made every DROP TABLE fail would satisfy every assertion
 // it makes.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_scrubs_the_catalog") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/healthy";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/healthy");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -344,7 +345,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
 // second half is the one a "make every ALTER fail" change cannot satisfy.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dropped_in_one_transaction_is_dropped") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/add_drop_in_txn";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/add_drop_in_txn");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -384,7 +385,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
 // nothing at all — or one that made ADD COLUMN write nothing — would satisfy every assertion
 // the transactional case makes.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dropped_in_autocommit_is_dropped") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/add_drop_autocommit";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/add_drop_autocommit");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -433,7 +434,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
 // This case is the second red: the row survives the commit AND carries a real commit id.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_column_row_carries_its_commit_id") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_backfill";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_backfill");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -463,7 +464,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
 // in-transaction one above.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_column_row_carries_its_commit_id") {
     const std::filesystem::path dir =
-        "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_backfill_autocommit";
+        integration_fixture_path("test_catalog_delete_refusal/added_at_backfill_autocommit");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -494,7 +495,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_colu
 // proof in components/table/test/test_update_merge.cpp). One ALTER could not reach it -- which
 // is why widening the scan alone looked survivable on a single ALTER and was not.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each_carry_their_own_commit_id") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_backfill_twice";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_backfill_twice");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -551,7 +552,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each
 // manager_disk_t::max_persisted_commit_id_sync, the reopen frontier, which until now could only
 // ever return 0 from the pg_attribute half.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tombstone_carries_its_commit_id") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/dropped_at_backfill";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/dropped_at_backfill");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -611,7 +612,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
 // the stamp was a permanent 0 could only ever contribute 0.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commit_id_survives_a_restart") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/added_at_restart";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_restart");
     // Cleared once, here: every scope below must open the SAME directory.
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
@@ -693,7 +694,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 // read, the delete no longer silently misses.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rename_leaves_one_attribute_row") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/rename_in_txn";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/rename_in_txn");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
@@ -724,7 +725,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rena
 }
 
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_create_index_leaves_one_pg_index_row") {
-    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_delete_refusal/create_index_in_txn";
+    const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/create_index_in_txn");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 

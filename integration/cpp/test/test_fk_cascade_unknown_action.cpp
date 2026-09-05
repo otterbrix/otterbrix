@@ -38,6 +38,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -110,7 +111,7 @@ namespace {
 // CONTROL A — ON DELETE RESTRICT. The referenced parent row cannot go while a
 // child references it, and both tables still hold what they held.
 TEST_CASE("integration::cpp::fk_cascade_unknown_action::restrict_blocks_the_parent_delete") {
-    auto config = make_test_config("/tmp/test_fk_cascade_unknown_action/restrict");
+    auto config = make_test_config(integration_fixture_path("test_fk_cascade_unknown_action/restrict"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -134,7 +135,7 @@ TEST_CASE("integration::cpp::fk_cascade_unknown_action::restrict_blocks_the_pare
 // CONTROL B — ON DELETE CASCADE. The child row goes with the parent, so the
 // stand can tell a cascade that ran from one that did not.
 TEST_CASE("integration::cpp::fk_cascade_unknown_action::cascade_removes_the_child_row") {
-    auto config = make_test_config("/tmp/test_fk_cascade_unknown_action/cascade");
+    auto config = make_test_config(integration_fixture_path("test_fk_cascade_unknown_action/cascade"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -161,7 +162,7 @@ TEST_CASE("integration::cpp::fk_cascade_unknown_action::cascade_removes_the_chil
 // child rows are dealt with. What must never happen is a success that leaves the
 // child pointing at a parent row that is gone.
 TEST_CASE("integration::cpp::fk_cascade_unknown_action::an_unknown_action_does_not_orphan_the_child") {
-    auto config = make_test_config("/tmp/test_fk_cascade_unknown_action/unknown");
+    auto config = make_test_config(integration_fixture_path("test_fk_cascade_unknown_action/unknown"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 

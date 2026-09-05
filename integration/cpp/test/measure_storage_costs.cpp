@@ -28,6 +28,7 @@
 // Run:   ./measure_storage_costs [all|checkpoint|insert|index] [runs]
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -227,7 +228,8 @@ namespace {
 
     // ---- (1) checkpoint round + (2) footprint --------------------------------
     void measure_checkpoint_and_footprint(unsigned run, std::vector<series_t>& all) {
-        const std::string dir = "/tmp/otterbrix/measure_storage_costs/checkpoint_" + std::to_string(run);
+        const std::string dir =
+            integration_fixture_path("measure_storage_costs/checkpoint_" + std::to_string(run)).string();
         auto config = make_test_config(dir, /*wal_on=*/true);
 
         test_spaces space(config);
@@ -282,7 +284,8 @@ namespace {
     // ---- (3) insert cost vs table size ---------------------------------------
     void measure_insert(unsigned run, std::vector<series_t>& all) {
         {
-            const std::string dir = "/tmp/otterbrix/measure_storage_costs/insert_1k_" + std::to_string(run);
+            const std::string dir =
+                integration_fixture_path("measure_storage_costs/insert_1k_" + std::to_string(run)).string();
             auto config = make_test_config(dir, /*wal_on=*/true);
             test_spaces space(config);
             auto* d = space.dispatcher();
@@ -294,7 +297,8 @@ namespace {
             record(all, "3. ms/row, 100-row batch @1k", "ms", per_row_1k);
         }
         {
-            const std::string dir = "/tmp/otterbrix/measure_storage_costs/insert_100k_" + std::to_string(run);
+            const std::string dir =
+                integration_fixture_path("measure_storage_costs/insert_100k_" + std::to_string(run)).string();
             auto config = make_test_config(dir, /*wal_on=*/true);
             test_spaces space(config);
             auto* d = space.dispatcher();
@@ -324,7 +328,7 @@ namespace {
 
     // ---- (4) point SELECT through an index -----------------------------------
     void measure_index(unsigned run, std::vector<series_t>& all) {
-        const std::string dir = "/tmp/otterbrix/measure_storage_costs/index_" + std::to_string(run);
+        const std::string dir = integration_fixture_path("measure_storage_costs/index_" + std::to_string(run)).string();
         auto config = make_test_config(dir, /*wal_on=*/true);
         test_spaces space(config);
         auto* d = space.dispatcher();

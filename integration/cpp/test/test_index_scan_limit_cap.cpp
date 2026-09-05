@@ -27,6 +27,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <sstream>
@@ -88,7 +89,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped_answer_truncated") {
-    auto config = test_create_config("/tmp/test_index_scan_limit_cap/prefix");
+    auto config = test_create_config(integration_fixture_path("test_index_scan_limit_cap/prefix"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -170,7 +171,7 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
 // budget is an upper bound, and running out of rows before running out of budget is
 // the ordinary case, not a boundary the cap may mishandle.
 TEST_CASE("integration::cpp::index_scan_limit_cap::a_cap_wider_than_the_match_returns_every_row") {
-    auto config = test_create_config("/tmp/test_index_scan_limit_cap/wide");
+    auto config = test_create_config(integration_fixture_path("test_index_scan_limit_cap/wide"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

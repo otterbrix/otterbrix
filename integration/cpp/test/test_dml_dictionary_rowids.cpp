@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -24,7 +25,7 @@
 // right either way, which is exactly why the corruption is silent.
 
 TEST_CASE("integration::cpp::dml_dictionary_rowids::delete_past_first_vector_kills_the_right_rows") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_dml_dictionary_rowids/del");
+    auto config = test_create_config(integration_fixture_path("test_dml_dictionary_rowids/del"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
 
@@ -72,7 +73,7 @@ TEST_CASE("integration::cpp::dml_dictionary_rowids::delete_past_first_vector_kil
 }
 
 TEST_CASE("integration::cpp::dml_dictionary_rowids::update_past_first_vector_hits_the_right_rows") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_dml_dictionary_rowids/upd");
+    auto config = test_create_config(integration_fixture_path("test_dml_dictionary_rowids/upd"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
 

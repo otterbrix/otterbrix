@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -239,7 +240,7 @@ namespace {
 // a WAL segment that cannot be read is a real refusal and must be reported -- but it fails it
 // AFTER the indexes have been made durable against the table they now describe.
 TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_truncate_may_not_cost_the_index_rebuild") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_checkpoint_rebuild_before_truncate/orig");
+    auto config = test_create_config(integration_fixture_path("test_checkpoint_rebuild_before_truncate/orig"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -249,7 +250,7 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     const std::filesystem::path crash_dir =
-        "/tmp/otterbrix/integration/test_checkpoint_rebuild_before_truncate/crashed";
+        integration_fixture_path("test_checkpoint_rebuild_before_truncate/crashed");
 
     wal_open_refusal_t fault;
 

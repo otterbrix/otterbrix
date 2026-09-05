@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
@@ -42,7 +43,7 @@
 using components::types::logical_type;
 
 TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restart_decimal") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/type_spec_decimal");
+    auto config = test_create_config(integration_fixture_path("test_persistence_gaps/type_spec_decimal"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -108,7 +109,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
 }
 
 TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restart_list") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/type_spec_list");
+    auto config = test_create_config(integration_fixture_path("test_persistence_gaps/type_spec_list"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -163,7 +164,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
 }
 
 TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/default_lost");
+    auto config = test_create_config(integration_fixture_path("test_persistence_gaps/default_lost"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -248,7 +249,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
 }
 
 TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_checkpoint") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence_gaps/crash_src");
+    auto config = test_create_config(integration_fixture_path("test_persistence_gaps/crash_src"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -256,7 +257,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
     // kill -9 simulation: copy the LIVE data directory while the engine is up; the scope
     // destructor's checkpoint then touches only the ORIGINAL, so the copy is exactly what
     // a crash right after the DDL would have left on disk.
-    const std::filesystem::path crash_dir = "/tmp/otterbrix/integration/test_persistence_gaps/crash_copy";
+    const std::filesystem::path crash_dir = integration_fixture_path("test_persistence_gaps/crash_copy");
 
     INFO("phase 1: DDL only, no checkpoint; copy the live directory (crash image)");
     {

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -153,7 +154,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_returns_blocks") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_drop_column_reclaim/disk_drop");
+    auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/disk_drop"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -297,7 +298,7 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
 // hide the question), rows added in two rounds around the checkpoint, and every measurement
 // taken with the engine DOWN against a freshly loaded .otbx.
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkpoint_rearms_the_release") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_drop_column_reclaim/crash_rearm");
+    auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/crash_rearm"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

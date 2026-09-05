@@ -40,6 +40,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -115,7 +116,7 @@ namespace {
 // is refused, or the key is enforced — what must never happen is the third
 // answer, "accepted, and the duplicate is in the table".
 TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_not_repeal_a_unique") {
-    auto config = make_test_config("/tmp/test_declared_key_conkey_loss/unique");
+    auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/unique"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -150,7 +151,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
 // promises at once — uniqueness and the NOT NULL it implies — so the key column
 // takes both a duplicate and a NULL.
 TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_not_repeal_a_primary_key") {
-    auto config = make_test_config("/tmp/test_declared_key_conkey_loss/pk");
+    auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/pk"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -184,7 +185,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
 // the unreadable key row must still be readable and still be droppable — only
 // the writes that would ride on the unenforced key are refused.
 TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_does_not_brick_the_database") {
-    auto config = make_test_config("/tmp/test_declared_key_conkey_loss/not_bricked");
+    auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/not_bricked"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -250,7 +251,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_doe
 // property being pinned is about the DATABASE, not about which guard spoke.
 // ============================================================================
 TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_survives_a_restart_without_bricking") {
-    const std::filesystem::path dir = "/tmp/test_declared_key_conkey_loss/restart";
+    const std::filesystem::path dir = integration_fixture_path("test_declared_key_conkey_loss/restart");
     auto config = make_test_config(dir);
 
     {
@@ -406,7 +407,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_fk_column_list_does_not_repeal_the_key") {
-    auto config = make_test_config("/tmp/test_declared_key_conkey_loss/fk");
+    auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/fk"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 

@@ -20,6 +20,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 #include <sstream>
@@ -176,7 +177,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_all") {
     // disk ON: constraint enforcement + revert path exercised on disk.
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/atomicity");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/atomicity"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

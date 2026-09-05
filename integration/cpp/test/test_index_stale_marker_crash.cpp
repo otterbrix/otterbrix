@@ -307,7 +307,29 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
             }
             INFO("the deferred-erase queue has to be empty before the fault goes in");
             REQUIRE(services::index::index_deferred_deletes() == 0);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            // AND THE ERASES MUST HAVE LANDED, NOT MERELY BEEN SENT. The horizon sweep
+            // subtracts from that meter where it ERASES the queue entry
+            // (manager_index_t::on_horizon_advanced), and only awaits the agents'
+            // commit_deletes futures further down -- so a zero meter proves the messages
+            // are in the agents' mailboxes and nothing more. A sleep_for(500ms) used to
+            // stand in for the rest, which is a clock guessing at an event.
+            //
+            // THE EVENT IS OBSERVABLE: an index scan is a message to the SAME agent
+            // addresses commit_deletes went to, a mailbox is FIFO, and
+            // bitcask_index_agent_t::commit_deletes carries NO suspension point -- it runs
+            // apply_txn_deletes / publish_buckets straight through to co_return on the
+            // agent's own thread -- so an answer coming back proves the erase write ahead
+            // of it is finished, not merely started. That is what this read is: the same
+            // probe set the pre-round agreement check below uses, ordered here so the
+            // injection cannot be armed over an unfinished erase.
+            //
+            // HONEST ABOUT THE EVIDENCE: shortening that sleep to zero did NOT make the
+            // case fail in eight runs (five idle, three under a 24-way CPU load), so this
+            // is a shape fix and not a reproduction. What it buys is that the barrier no
+            // longer depends on a duration being guessed generously enough.
+            INFO("a read through the index orders the injection after the erase write");
+            REQUIRE(disagreements_with_the_full_scan(d) == 0);
         }
 
         INFO("and the read path under test is the INDEX, on the same query text used below");

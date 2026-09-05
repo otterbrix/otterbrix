@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -72,7 +73,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the_configured_segment_limit") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_threshold_config/segments");
+    auto config = test_create_config(integration_fixture_path("test_index_threshold_config/segments"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;

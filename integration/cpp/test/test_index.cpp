@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <algorithm>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
@@ -791,7 +792,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
     constexpr int kDeleted = 500;
 
     auto config =
-        test_create_config("/tmp/otterbrix/integration/test_index/vacuum_keeps_committed_deletes_full_row_group");
+        test_create_config(integration_fixture_path("test_index/vacuum_keeps_committed_deletes_full_row_group"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

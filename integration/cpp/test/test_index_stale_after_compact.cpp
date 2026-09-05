@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -94,12 +95,12 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacting_checkpoint_keeps_the_index") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_stale_after_compact/orig");
+    auto config = test_create_config(integration_fixture_path("test_index_stale_after_compact/orig"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    const std::filesystem::path crash_dir = "/tmp/otterbrix/integration/test_index_stale_after_compact/crashed";
+    const std::filesystem::path crash_dir = integration_fixture_path("test_index_stale_after_compact/crashed");
 
     {
         test_spaces space(config);
@@ -227,7 +228,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
 // The guard against a vacuous pass is table_checkpoints(): if no automatic round ran, the
 // case proves nothing and says so instead of going green.
 TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_rebuilds_what_it_renumbers") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_stale_after_compact/auto");
+    auto config = test_create_config(integration_fixture_path("test_index_stale_after_compact/auto"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
@@ -291,8 +292,30 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         ++doomed;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    // The automatic round is fire-and-forget off commit_txn; give it room to finish.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // The automatic round is fire-and-forget off commit_txn, so what follows WAITS FOR THE
+    // EVENT the two assertions below read, not for a clock. A bare sleep_for(500ms) stood
+    // here, and it was load-bearing: MEASURED at this point, table_checkpoints() is already
+    // 2 while index_repopulations() is still 0 in every run, and the repopulation lands
+    // 41-69 ms later (idle and under a 24-way CPU load alike). With the wait taken out the
+    // case fails 3 runs out of 3 on `CHECK(index_repopulations() > 0)` with `0 > 0`. So the
+    // question was never whether to wait -- it was whether to wait a guessed 500 ms or
+    // until the thing happened. The deadline below is a ceiling on an already-broken run,
+    // not the expected wait: the loop leaves the instant both meters are non-zero, which on
+    // this machine is the first few polls. 30 s matches the event wait in
+    // test_index_stale_marker_crash.cpp.
+    const auto wait_started = std::chrono::steady_clock::now();
+    {
+        const auto deadline = wait_started + std::chrono::seconds(30);
+        while ((services::disk::table_checkpoints() == 0 || services::index::index_repopulations() == 0) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    INFO("waited " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                           wait_started)
+                          .count()
+                   << " ms for the automatic round: table_checkpoints=" << services::disk::table_checkpoints()
+                   << " index_repopulations=" << services::index::index_repopulations());
 
     INFO("NOT VACUOUS: without an automatic checkpoint round this case tests nothing");
     REQUIRE(services::disk::table_checkpoints() > 0);

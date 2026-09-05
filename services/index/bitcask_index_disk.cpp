@@ -972,14 +972,25 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
-        std::unique_lock lock(mutex_);
-        // Fast path for bulk loading: skip duplicate check and disk read.
-        // Caller must ensure bulk_mode is enabled and keys are unique.
-        row_ids_t rows(resource_);
-        rows.emplace_back(value);
-        note_write_error(append_snapshot(key, rows));
-        mark_operation_dirty();
-        // flush_if_needed() is skipped in bulk_mode anyway
+        // bitcask's insert IS its bulk insert, exactly as its remove is already its bulk
+        // remove (see remove_bulk_unchecked below). The per-operation work a bulk path
+        // exists to skip is the btree's O(items-per-key) find() scan; bitcask has none —
+        // current_rows is one hash lookup plus one record read — and flush_if_needed
+        // already returns early while bulk mode is engaged.
+        //
+        // This used to append a snapshot holding ONLY `value`, on the stated assumption
+        // that the caller's keys are unique. They are not. A non-unique index is the
+        // ordinary case, and append_snapshot REPLACES a key's entire row list, so every
+        // rebuild feed — repopulate_table, and the txn-0 bulk leg of
+        // index_agent_disk_t::insert_many — collapsed each repeated key down to whichever
+        // row happened to be written last. CHECKPOINT and VACUUM both drive that feed, so
+        // a hashed index silently lost its duplicates at the first checkpoint and every
+        // restart afterwards answered from the reduced list.
+        //
+        // The loss was invisible until reads started going through find(): the keydir
+        // that answered them before keeps one entry per key anyway, so it reported the
+        // same single row either way.
+        insert(key, value);
     }
 
     void bitcask_index_disk_t::remove(value_t key) {

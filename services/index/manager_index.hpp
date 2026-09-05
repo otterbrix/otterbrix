@@ -217,17 +217,19 @@ namespace services::index {
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
-        // Query (txn-aware)
-        unique_future<std::pmr::vector<int64_t>> search(session_id_t session,
-                                                        components::catalog::oid_t table_oid,
-                                                        components::index::keys_base_storage_t keys,
-                                                        components::types::logical_value_t value,
-                                                        components::expressions::compare_type compare,
-                                                        uint64_t start_time,
-                                                        uint64_t txn_id,
-                                                        core::date::timezone_offset_t session_tz);
+        // Query (txn-aware). See the contract for what the wrapper distinguishes; in
+        // short, an EMPTY vector now means "no row matches" and nothing else.
+        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        search(session_id_t session,
+               components::catalog::oid_t table_oid,
+               components::index::keys_base_storage_t keys,
+               components::types::logical_value_t value,
+               components::expressions::compare_type compare,
+               uint64_t start_time,
+               uint64_t txn_id,
+               core::date::timezone_offset_t session_tz);
 
-        unique_future<std::pmr::vector<int64_t>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
         search_with_preferred_type(session_id_t session,
                                    components::catalog::oid_t table_oid,
                                    components::index::keys_base_storage_t keys,

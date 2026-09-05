@@ -175,6 +175,30 @@ namespace components::index {
         pending_entries_t pending_inserts(uint64_t txn_id) const;
         pending_entries_t pending_deletes(uint64_t txn_id) const;
 
+        // Fold the txn-local half of an equality lookup into `rows`.
+        //
+        // For a disk-backed index the two halves of an answer live in two different
+        // places. The COMMITTED half is on disk and is read out of the index's own
+        // agent, one message, one reply. The UNCOMMITTED half never reaches disk at all
+        // (owner decision 16: per-txn buckets, no write-through), so it can only come
+        // from here. `rows` arrives holding the disk half and leaves holding both.
+        //
+        // Which buckets count is the whole question, and the answer is NOT "all of
+        // them": an entry of some other in-flight transaction must not appear. The
+        // implementation folds in exactly the bucket of `txn_id` plus bucket 0 (already
+        // committed, not yet mirrored), then removes what those same two buckets have
+        // marked deleted. That replaces a visibility PREDICATE over a merge of every
+        // pending transaction with two map lookups, which is also why nothing here
+        // needs an insert_id / delete_id stamp.
+        //
+        // NOT called for an in-memory index: it keeps committed and pending entries in
+        // one structure and answers both from find(). The implementations there say so
+        // loudly rather than inheriting a no-op.
+        void merge_uncommitted_rows(const value_t& key,
+                                    uint64_t txn_id,
+                                    core::date::timezone_offset_t local_timezone,
+                                    std::pmr::vector<int64_t>& rows) const;
+
         void clean_memory_to_new_elements(std::size_t count) noexcept;
 
     protected:
@@ -206,6 +230,14 @@ namespace components::index {
         virtual void cleanup_versions_impl(uint64_t lowest_active) = 0;
         virtual pending_entries_t pending_inserts_impl(uint64_t txn_id) const = 0;
         virtual pending_entries_t pending_deletes_impl(uint64_t txn_id) const = 0;
+        // Pure virtual on purpose (same reasoning as index_disk_t's backend hooks):
+        // there is no default to fall into. A do-nothing default would let an index
+        // whose committed rows come from a disk agent inherit "nothing pending", and a
+        // transaction would stop seeing its own writes with nothing reporting it.
+        virtual void merge_uncommitted_rows_impl(const value_t& key,
+                                                 uint64_t txn_id,
+                                                 core::date::timezone_offset_t local_timezone,
+                                                 std::pmr::vector<int64_t>& rows) const = 0;
 
         virtual void clean_memory_to_new_elements_impl(std::size_t count) = 0;
 

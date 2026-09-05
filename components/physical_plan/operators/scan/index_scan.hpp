@@ -70,7 +70,12 @@ namespace components::operators {
         // Windowing core: run the one-shot index search (txn-aware visibility), store the matched
         // ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_). If there is
         // no index service or the search matched nothing, leaves an empty window.
-        actor_zeta::unique_future<void> open_index_window(pipeline::context_t* ctx);
+        //
+        // Returns the manager's error when the search could not be ANSWERED (no engine
+        // for the oid, no index on the predicate key, a failed read in the index's disk
+        // agent) — distinct from a search that answered "no rows", which is no_error()
+        // over an empty window.
+        actor_zeta::unique_future<core::error_t> open_index_window(pipeline::context_t* ctx);
 
         // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent batches the
         // reply into ≤ DEFAULT_VECTOR_CAPACITY chunks (each stamped with its absolute row_ids), which

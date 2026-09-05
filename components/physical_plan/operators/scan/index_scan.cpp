@@ -27,12 +27,12 @@ namespace components::operators {
     // Run the ONE-SHOT index search and compute the read-cap window [pos_=0, end_) over the matched
     // ids. source_next calls this exactly once (the first call), so the search + windowing logic
     // lives in ONE place.
-    actor_zeta::unique_future<void> index_scan::open_index_window(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             // No index service — empty window (no matched ids).
             pos_ = 0;
             end_ = 0;
-            co_return;
+            co_return core::error_t::no_error();
         }
 
         // Search index for matching row IDs (txn-aware visibility). One-shot: the whole matched
@@ -59,7 +59,17 @@ namespace components::operators {
                                                ctx->txn.start_time,
                                                ctx->txn.transaction_id,
                                                ctx->execution_context.timezone_offset);
-        row_ids_vec_ = co_await std::move(sf);
+        auto matched = co_await std::move(sf);
+        if (matched.has_error()) {
+            // The index manager could not ANSWER — no engine for the oid, no index on
+            // the predicate key, or a failed read in the index's disk agent. An empty
+            // window here would be indistinguishable from "matched nothing" and would
+            // publish a silently short result set.
+            pos_ = 0;
+            end_ = 0;
+            co_return matched.error();
+        }
+        row_ids_vec_ = std::move(matched.value());
 
         // Apply the read-cap (offset+limit head cap) count to compute the [0, count) window over the
         // matched ids. SELECT OFFSET is applied by operator_limit above, so the scan receives
@@ -69,7 +79,7 @@ namespace components::operators {
         const size_t count = (cap >= 0) ? std::min(total, static_cast<size_t>(cap)) : total;
         pos_ = 0;
         end_ = count;
-        co_return;
+        co_return core::error_t::no_error();
     }
 
     // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent windows the
@@ -115,7 +125,14 @@ namespace components::operators {
 
         if (!opened_) {
             opened_ = true;
-            co_await open_index_window(ctx);
+            if (auto search_error = co_await open_index_window(ctx); search_error.contains_error()) {
+                // Same channel the window fetch below uses: the source reports the
+                // failure instead of draining to zero rows, which would look exactly
+                // like a predicate nothing matched.
+                set_error(search_error);
+                mark_failed();
+                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(search_error));
+            }
             // Cache the table schema for the no-row empty-guard below.
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,

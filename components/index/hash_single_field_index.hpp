@@ -63,6 +63,14 @@ namespace components::index {
         void cleanup_versions_impl(uint64_t lowest_active) final;
         index_t::pending_entries_t pending_inserts_impl(uint64_t txn_id) const final;
         index_t::pending_entries_t pending_deletes_impl(uint64_t txn_id) const final;
+        // Unreachable by contract, and LOUD rather than a no-op -- see index.hpp. An
+        // in-memory index holds its committed and pending entries in one structure and
+        // answers both from find_impl, so it is never read through a disk agent and
+        // never has a txn-local half to fold back in.
+        void merge_uncommitted_rows_impl(const value_t& key,
+                                         uint64_t txn_id,
+                                         core::date::timezone_offset_t local_timezone,
+                                         std::pmr::vector<int64_t>& rows) const final;
 
         void clean_memory_to_new_elements_impl(std::size_t count) final;
 

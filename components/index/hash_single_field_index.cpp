@@ -1,5 +1,8 @@
 #include "hash_single_field_index.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 namespace components::index {
 
     hash_single_field_index_t::hash_single_field_index_t(std::pmr::memory_resource* resource,
@@ -201,6 +204,24 @@ namespace components::index {
         storage_.clear();
         pending_inserts_.clear();
         pending_deletes_.clear();
+    }
+
+    void hash_single_field_index_t::merge_uncommitted_rows_impl(const value_t&,
+                                                                uint64_t,
+                                                                core::date::timezone_offset_t,
+                                                                std::pmr::vector<int64_t>&) const {
+        // Unreachable by contract: this hook only means something for an index whose
+        // COMMITTED rows are read out of a disk agent, leaving the txn-local half to be
+        // folded back in by the caller. Everything this index holds -- committed and
+        // pending alike -- is in storage_ and comes back from find_impl, so reaching
+        // here means a caller routed an in-memory index down the disk read path.
+        //
+        // A quiet no-op would be worse than a crash: the caller would keep whatever
+        // "disk half" it thinks it read (nothing, for an index with no agent) and serve
+        // a SELECT that silently lost every row. Die where the bug is. Unconditional --
+        // std::abort() runs under NDEBUG too.
+        assert(false && "merge_uncommitted_rows: an in-memory index reached the disk read path");
+        std::abort();
     }
 
 } // namespace components::index

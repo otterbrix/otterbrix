@@ -3,6 +3,9 @@
 
 #include <components/table/row_version_manager.hpp>
 
+#include <algorithm>
+#include <string_view>
+
 namespace components::index {
 
     disk_hash_single_field_index_t::disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
@@ -74,6 +77,13 @@ namespace components::index {
 
     auto disk_hash_single_field_index_t::remove_impl(value_t, core::date::timezone_offset_t) -> void {}
 
+    // NO LONGER THE PRODUCTION READ PATH. A SELECT reaches this index's committed rows
+    // through its disk agent (index_agent_disk_t::find_rows, routed by
+    // manager_index_t::search) and folds the txn-local half back in through
+    // merge_uncommitted_rows_impl below. This override still exists because index_t
+    // requires it and the component's own unit tests exercise it directly; it reads the
+    // KEYDIR, which keeps one entry per key and therefore cannot see duplicates — the
+    // very reason the read moved to the agent.
     index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value,
                                                              core::date::timezone_offset_t local_timezone) const {
         scratch_results_.clear();
@@ -180,6 +190,70 @@ namespace components::index {
             out.push_back(pending_entry_t{decode_key(resource(), encoded), row_id});
         }
         return out;
+    }
+
+    void disk_hash_single_field_index_t::merge_uncommitted_rows_impl(const value_t& key,
+                                                                     uint64_t txn_id,
+                                                                     core::date::timezone_offset_t local_timezone,
+                                                                     std::pmr::vector<int64_t>& rows) const {
+        // `rows` already holds the committed half, read out of this index's disk agent.
+        // Add what has not reached disk yet, and only what the ASKING transaction is
+        // entitled to see.
+        //
+        // Two buckets, two map lookups -- not a walk of every pending transaction:
+        //   bucket 0    committed for everyone but not yet mirrored to disk.
+        //               repopulate_table refills it between its clear() fan-out and its
+        //               closing commit_insert(0, 0), and each of those steps co_awaits,
+        //               so a lookup CAN land in that window: the disk has been wiped and
+        //               these entries are the only copy of the rebuilt index.
+        //   bucket txn  this transaction's own uncommitted inserts and deletes.
+        // Every other bucket belongs to a transaction that has not committed. It is
+        // skipped because it is not looked up at all -- there is no stamp to compare and
+        // no predicate to get wrong.
+        //
+        // Keys are compared ENCODED. The bucket holds the key exactly as encode_key
+        // produced it on the way in, so encoding the probe the same way makes the
+        // comparison byte-for-byte and, more importantly, applies the SAME
+        // normalization (narrow ints widened to BIGINT/UBIGINT) to both sides. Decoding
+        // the stored key back to a logical_value_t and comparing values would compare a
+        // normalized key against an un-normalized probe.
+        const auto encoded = encode_key(key, local_timezone);
+        const std::string_view probe(encoded);
+
+        const auto add_bucket = [&](uint64_t bucket) {
+            auto it = pending_inserts_.find(bucket);
+            if (it == pending_inserts_.end()) {
+                return;
+            }
+            for (const auto& [pending_key, row_id] : it->second) {
+                if (std::string_view(pending_key) == probe) {
+                    rows.push_back(row_id);
+                }
+            }
+        };
+        const auto drop_bucket = [&](uint64_t bucket) {
+            auto it = pending_deletes_.find(bucket);
+            if (it == pending_deletes_.end()) {
+                return;
+            }
+            for (const auto& [pending_key, row_id] : it->second) {
+                if (std::string_view(pending_key) != probe) {
+                    continue;
+                }
+                rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
+            }
+        };
+
+        // Inserts first, then deletes: a row this transaction inserted AND deleted must
+        // end up absent, which only holds if the removal runs over the merged list.
+        add_bucket(0);
+        if (txn_id != 0) {
+            add_bucket(txn_id);
+        }
+        drop_bucket(0);
+        if (txn_id != 0) {
+            drop_bucket(txn_id);
+        }
     }
 
     void disk_hash_single_field_index_t::clean_memory_to_new_elements_impl(std::size_t) {

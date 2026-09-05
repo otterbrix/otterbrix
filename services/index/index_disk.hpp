@@ -46,10 +46,16 @@ namespace services::index {
 
         // Bulk-load fast path. insert_bulk_unchecked / remove_bulk_unchecked skip the
         // per-operation dedup find() and the per-operation flush; force_flush() persists
-        // once at the end. The CALLER guarantees the (key,value) pairs are unique / present
-        // as appropriate (the bulk-load and repopulate paths do), so the per-op find() is
-        // unnecessary — eliminating its O(rows^2) cost for backends (e.g. btree) whose
+        // once at the end, eliminating the O(rows^2) cost for backends (e.g. btree) whose
         // find() is not O(1). Pure virtual: each backend supplies a real bulk path.
+        //
+        // WHAT THE CALLER GUARANTEES, precisely: each (key, row_id) PAIR is fed at most
+        // once and, for the remove side, is present. It does NOT guarantee unique KEYS —
+        // a non-unique index is the ordinary case, and every rebuild feed
+        // (repopulate_table, the txn-0 leg of index_agent_disk_t::insert_many) replays a
+        // whole table, repeated keys included. An implementation that reads the weaker
+        // sentence this comment used to carry as "one row per key" and overwrites the
+        // key's row list drops every duplicate, which is what bitcask's did.
         virtual void insert_bulk_unchecked(const value_t& key, size_t value) = 0;
         virtual void remove_bulk_unchecked(const value_t& key, size_t row_id) = 0;
 

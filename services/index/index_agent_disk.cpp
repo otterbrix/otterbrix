@@ -76,6 +76,9 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove_many, msg);
                 break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::find_rows>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::find_rows, msg);
+                break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
                 break;
@@ -161,6 +164,31 @@ namespace services::index {
             index_disk_->remove_bulk_unchecked(key, row_id);
         }
         co_return index_disk_->force_flush();
+    }
+
+    index_agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+    index_agent_disk_t::find_rows(session_id_t session, value_t key) {
+        trace(log_, "index_agent_disk_t::find_rows, session: {}", session.data());
+        if (is_dropped_) {
+            // drop() released the backing (bitcask resets its store, the btree its
+            // tree), so there is nothing left to read and reading it would touch freed
+            // state. A dropped agent still has a live address, and drop_index awaits the
+            // drop BEFORE it unregisters, so a read already in flight can arrive here.
+            // Say so; an empty answer would read as "no such row".
+            co_return core::error_t{
+                core::error_code_t::index_not_exists,
+                std::pmr::string{"index_agent_disk_t::find_rows: the index has been dropped", resource()}};
+        }
+        // index_disk_t::result is size_t-wide; row ids are int64_t everywhere above this
+        // actor. Convert once, here, so the reply carries the type the reader uses.
+        index_disk_t::result found(resource());
+        index_disk_->find(key, found);
+        std::pmr::vector<int64_t> rows(resource());
+        rows.reserve(found.size());
+        for (auto row : found) {
+            rows.emplace_back(static_cast<int64_t>(row));
+        }
+        co_return std::move(rows);
     }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {

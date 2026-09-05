@@ -29,6 +29,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_bootstrap_failure.cpp
         test_index_type_persistence.cpp
         test_index_txn_log_routing.cpp
+        test_index_read_through_agent.cpp
         test_index_rebuild_crash.cpp
         test_index_rebuild_live_snapshot.cpp
         test_dml_dictionary_rowids.cpp

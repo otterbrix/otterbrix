@@ -101,17 +101,30 @@ namespace services::index {
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
+        // Query (txn-aware).
+        //
+        // The result is WRAPPED, and the wrapper is the point: a bare vector was empty
+        // in three cases a caller could not tell apart -- no engine for the oid, no
+        // index matching the keys, and a search that legitimately matched no row. The
+        // first two are planner-invariant violations (an index_scan is only ever built
+        // for a predicate the planner saw an index for), so they now come back as
+        // errors, and an empty vector means exactly one thing: no row carries the key.
+        // A failed read inside the index's disk agent is the fourth value and travels
+        // the same channel.
+        //
+        // Still NOT covered: index_scan's own empty-address early return, which yields
+        // an empty window before this message is ever sent.
+        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        search(session_id_t session,
+               components::catalog::oid_t table_oid,
+               components::index::keys_base_storage_t keys,
+               components::types::logical_value_t value,
+               components::expressions::compare_type compare,
+               uint64_t start_time,
+               uint64_t txn_id,
+               core::date::timezone_offset_t session_tz);
         // Query (txn-aware)
-        unique_future<std::pmr::vector<int64_t>> search(session_id_t session,
-                                                        components::catalog::oid_t table_oid,
-                                                        components::index::keys_base_storage_t keys,
-                                                        components::types::logical_value_t value,
-                                                        components::expressions::compare_type compare,
-                                                        uint64_t start_time,
-                                                        uint64_t txn_id,
-                                                        core::date::timezone_offset_t session_tz);
-        // Query (txn-aware)
-        unique_future<std::pmr::vector<int64_t>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
         search_with_preferred_type(session_id_t session,
                                    components::catalog::oid_t table_oid,
                                    components::index::keys_base_storage_t keys,

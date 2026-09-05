@@ -1471,8 +1471,8 @@ namespace services::index {
 
     // --- Txn-aware Query ---
 
-    manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search_with_preferred_type(session_id_t /*session*/,
+    manager_index_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+    manager_index_t::search_with_preferred_type(session_id_t session,
                                                 components::catalog::oid_t table_oid,
                                                 components::index::keys_base_storage_t keys,
                                                 components::types::logical_value_t value,
@@ -1481,10 +1481,15 @@ namespace services::index {
                                                 uint64_t start_time,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        std::pmr::vector<int64_t> result(resource_);
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            co_return result;
+            // A planner invariant, not a data answer: an index_scan is only built for a
+            // predicate the planner already saw an index for, so arriving here means the
+            // plan and the index manager disagree about the table. Reporting an empty
+            // match would turn that into "no rows" — the exact silent wrong answer the
+            // no-fallback rule forbids.
+            co_return core::error_t{core::error_code_t::index_not_exists,
+                                    std::pmr::string{"index search: no index engine for the table oid", resource_}};
         }
 
         auto* index = it->second->matching(keys, preferred_type);
@@ -1492,13 +1497,83 @@ namespace services::index {
             index = components::index::search_index(it->second, keys);
         }
         if (!index) {
-            co_return result;
+            co_return core::error_t{
+                core::error_code_t::index_not_exists,
+                std::pmr::string{"index search: the table has no index on the predicate key", resource_}};
         }
-        co_return index->search(compare, value, start_time, txn_id, session_tz);
+
+        // `WHERE indexed_col <op> NULL` is UNKNOWN for every row, so it selects nothing.
+        // Answered before the send, not after: an index stores only NON-NULL keys (see
+        // index_t), so there is no round trip to make and no key for a backend to encode.
+        if (value.is_null()) {
+            co_return std::pmr::vector<int64_t>(resource_);
+        }
+
+        // Disk-backed HASHED index: the committed rows live in the agent and are read by
+        // message. Everything else still answers from its in-memory structure — the
+        // ordered b+tree facade and the rewiring of index_type::single onto it are C2a
+        // and C2b, and routing range predicates through this leg before those exist
+        // would change lt/lte/gt/gte/ne semantics, not just their transport.
+        const bool read_through_agent =
+            index->is_disk() && index->type() == components::logical_plan::index_type::hashed;
+        if (!read_through_agent) {
+            co_return index->search(compare, value, start_time, txn_id, session_tz);
+        }
+
+        // A hash index has no ordering, so only equality can reach it. The planner
+        // enforces that (can_use_index refuses a range predicate unless a NON-hashed
+        // index also covers the key), so a range arriving here is a routing bug. It used
+        // to `throw "not supported"` inside an actor coroutine, where the exception is
+        // swallowed and the statement reports success over zero rows.
+        if (compare != components::expressions::compare_type::eq) {
+            co_return core::error_t{
+                core::error_code_t::index_not_exists,
+                std::pmr::string{"index search: a hashed index cannot answer a range predicate", resource_}};
+        }
+
+        // Remember the index's OWN oid before the await. The address is enough to send,
+        // but not to come back to: see the re-lookup below.
+        const auto index_oid = index->oid();
+        auto agent_addr = index->disk_agent();
+        auto [needs_sched, agent_future] =
+            actor_zeta::otterbrix::send(agent_addr,
+                                        &index_agent_disk_t::find_rows,
+                                        session,
+                                        components::types::logical_value_t(resource_, value));
+        schedule_agent(agent_addr, needs_sched);
+        auto agent_result = co_await std::move(agent_future);
+        if (agent_result.has_error()) {
+            co_return agent_result.error();
+        }
+
+        // THE AWAIT ABOVE SUSPENDED THIS SINGLE-THREADED LOOP. unregister_collection and
+        // on_horizon_advanced both erase engines_[oid] (and the latter reaps the owning
+        // agent), and drop_index removes the index from its engine, so `it` and `index`
+        // are stale pointers from here on — the same hazard commit_inserts records where
+        // it collects oids instead of engine pointers. Re-resolve BOTH, by oid.
+        it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            // The table was dropped while the read was in flight. Its rows are gone with
+            // it, so the empty answer is the true one rather than a fallback.
+            co_return std::pmr::vector<int64_t>(resource_);
+        }
+        auto* index_after = it->second->matching_relid(index_oid);
+        if (!index_after) {
+            co_return std::pmr::vector<int64_t>(resource_);
+        }
+
+        // Rows on disk, plus this transaction's own uncommitted inserts, minus its own
+        // uncommitted deletes. The disk half is what just came back; the txn-local half
+        // never reaches disk at all and can only come from the index. Note the answer is
+        // deliberately a SUPERSET filter, not a visibility one: which committed rows a
+        // reader may SEE is the table's decision, and storage_fetch applies it.
+        auto rows = std::move(agent_result.value());
+        index_after->merge_uncommitted_rows(value, txn_id, session_tz, rows);
+        co_return std::move(rows);
     }
 
-    manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search(session_id_t /*session*/,
+    manager_index_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+    manager_index_t::search(session_id_t session,
                             components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
                             components::types::logical_value_t value,
@@ -1506,17 +1581,20 @@ namespace services::index {
                             uint64_t start_time,
                             uint64_t txn_id,
                             core::date::timezone_offset_t session_tz) {
-        std::pmr::vector<int64_t> result(resource_);
-
-        auto it = engines_.find(table_oid);
-        if (it == engines_.end())
-            co_return result;
-
-        auto* index = components::index::search_index(it->second, keys);
-        if (!index)
-            co_return result;
-
-        co_return index->search(compare, value, start_time, txn_id, session_tz);
+        // The two handlers differ only in whether a preferred backend is named, and
+        // index_type::no_valid matches no registered index — so search IS
+        // search_with_preferred_type with nothing preferred, and the read path exists
+        // once. Invoked directly rather than self-sent: we are already on this actor
+        // (same shape as manager_wal_replicate_t co_awaiting its own truncate_before).
+        co_return co_await search_with_preferred_type(session,
+                                                      table_oid,
+                                                      std::move(keys),
+                                                      std::move(value),
+                                                      compare,
+                                                      components::logical_plan::index_type::no_valid,
+                                                      start_time,
+                                                      txn_id,
+                                                      session_tz);
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>

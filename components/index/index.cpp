@@ -276,6 +276,19 @@ namespace components::index {
 
     index_t::pending_entries_t index_t::pending_deletes(uint64_t txn_id) const { return pending_deletes_impl(txn_id); }
 
+    void index_t::merge_uncommitted_rows(const value_t& key,
+                                         uint64_t txn_id,
+                                         core::date::timezone_offset_t local_timezone,
+                                         std::pmr::vector<int64_t>& rows) const {
+        // Same NULL rule as find/insert above, enforced in the ONE place that owns the
+        // invariant: a NULL key is never stored, so no pending bucket can hold it and
+        // there is nothing to fold in.
+        if (is_null_key(key)) {
+            return;
+        }
+        merge_uncommitted_rows_impl(key, txn_id, local_timezone, rows);
+    }
+
     void index_t::clean_memory_to_new_elements(std::size_t count) noexcept { clean_memory_to_new_elements_impl(count); }
 
     index_t::iterator_t::reference index_t::iterator_t::operator*() const { return impl_->value_ref(); }

@@ -83,6 +83,27 @@ namespace services::index {
         unique_future<core::error_t>
         remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
 
+        // Equality read: every row id stored under `key`, duplicates included.
+        //
+        // This is the ONLY way a committed hashed-index row reaches a reader. It goes
+        // through index_disk_t::find, which reads the bitcask SNAPSHOT RECORD and
+        // unrolls the whole row list. The keydir cannot answer this question: it keeps
+        // one entry per key whose payload field is `rows.back()` (append_snapshot), so a
+        // reader that consults it silently drops every duplicate.
+        //
+        // ONE STEP, no cursor. The whole matched set comes back in this single reply
+        // (owner decision 4: parity with the pre-mailbox read; a cursor was weighed and
+        // deferred). The cost is written down here rather than discovered later: the cap
+        // from `LIMIT` is applied ABOVE, in index_scan::open_index_window, so a key
+        // matching a million rows ships ~8 MB of ids (8 bytes each) across the mailbox
+        // even for `LIMIT 10`. That is the price of the deferral, and the place to look
+        // when it starts to hurt is a cursor message, not a cap sneaked in here — an
+        // index that answers with a SUBSET is a wrong answer, not a fast one.
+        //
+        // Answered on THIS actor's resource(), and wrapped: an empty vector means "no
+        // row carries this key", never "the read did not happen".
+        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>> find_rows(session_id_t session, value_t key);
+
         // Mailbox flush handler — fanned out by manager_index_t::flush_all_indexes.
         // Guards on is_dropped_ internally (a dropped agent has no backing), then
         // forces the backend to persist. Ordered behind any pending insert/remove
@@ -93,6 +114,7 @@ namespace services::index {
                                                             &index_agent_disk_t::clear,
                                                             &index_agent_disk_t::insert_many,
                                                             &index_agent_disk_t::remove_many,
+                                                            &index_agent_disk_t::find_rows,
                                                             &index_agent_disk_t::force_flush>;
 
         auto make_type() const noexcept -> const char*;

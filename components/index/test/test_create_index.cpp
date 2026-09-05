@@ -40,6 +40,13 @@ private:
     void cleanup_versions_impl(uint64_t) override {}
     pending_entries_t pending_inserts_impl(uint64_t) const override { return pending_entries_t{resource()}; }
     pending_entries_t pending_deletes_impl(uint64_t) const override { return pending_entries_t{resource()}; }
+    // The fake holds no pending state and is never read through a disk agent, so this
+    // hook has nothing to fold in. Stated explicitly because index_t leaves no default
+    // to inherit (see index.hpp).
+    void merge_uncommitted_rows_impl(const value_t&,
+                                     uint64_t,
+                                     core::date::timezone_offset_t,
+                                     std::pmr::vector<int64_t>&) const override {}
     void clean_memory_to_new_elements_impl(size_t) override {}
 
     class impl_t final : public iterator::iterator_impl_t {

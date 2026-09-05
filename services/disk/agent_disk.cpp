@@ -1,8 +1,9 @@
 #include "agent_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
 #include "manager_disk.hpp"
-#include <algorithm>                              // std::min
-#include <components/logical_plan/node_group.hpp> // node_group_t::set_pushdown (re-lowering guard)
+#include <algorithm>                                       // std::min
+#include <components/catalog/system_table_schemas.hpp>     // encode_type_spec (type names in refusals)
+#include <components/logical_plan/node_group.hpp>          // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/operator_hash_group.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
@@ -684,6 +685,37 @@ namespace services::disk {
                     if (data->data[col].type().has_alias() &&
                         data->data[col].type().alias() == table_columns[t].name() &&
                         (!is_computed_table || data->data[col].type().type() == table_columns[t].type().type())) {
+                        // THE MATCHED VECTOR MUST CARRY THE COLUMN'S EXACT TYPE. The match
+                        // above routes by NAME (plus the bare logical_type enum on a computed
+                        // table), which is deliberately blind to PARAMETERIZATION — so a
+                        // DECIMAL(12,4) chunk used to be moved into a DECIMAL(10,2) column:
+                        // the statistics merge died on the cross-type logical_value_t
+                        // comparison in a debug build, and a release build appended scale-4
+                        // raw integers into a scale-2 column, misreading every later scan
+                        // ×100 without a word. The same door also let any other same-enum
+                        // shape drift through (LIST child types, ARRAY sizes, ENUM entries).
+                        // Refuse the statement instead, BEFORE the WAL record and the
+                        // materialization — nothing has landed anywhere yet. The full-type
+                        // equality ignores aliases and treats a bare scalar and its
+                        // alias-tagged twin as equal, so ordinary inserts are untouched.
+                        const auto& incoming_type = data->data[col].type();
+                        const auto& stored_type = table_columns[t].type();
+                        if (incoming_type != stored_type) {
+                            const auto spell = [](const components::types::complex_logical_type& t_) {
+                                auto spec = components::catalog::encode_type_spec(t_);
+                                return spec.empty() ? std::to_string(static_cast<int>(t_.type())) : spec;
+                            };
+                            std::pmr::string what{"storage_append: column '", resource()};
+                            what.append(table_columns[t].name().c_str());
+                            what.append("' of table oid ");
+                            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+                            what.append(" stores type ");
+                            what.append(spell(stored_type).c_str());
+                            what.append(", the incoming chunk carries ");
+                            what.append(spell(incoming_type).c_str());
+                            what.append("; nothing was appended");
+                            co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
+                        }
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;
@@ -1639,7 +1671,10 @@ namespace services::disk {
         // Typed hash index: tuple-hash -> input key indices. Skip any input tuple with a NULL
         // key cell (a NULL foreign key references nothing — matches the callers' MATCH null-
         // skip), so it never matches a scanned row. Nullness is read from the ORIGINAL keys
-        // chunk (cast_vector does not carry validity).
+        // chunk because that chunk is the semantic source of the tuples — cast_vector DOES
+        // carry validity row-by-row (both its string and numeric legs), so either side of
+        // the copy/cast fork above would answer the same; the original is simply the one
+        // that exists on both forks.
         components::vector::vector_t key_hash_vec(resource, components::types::logical_type::UBIGINT, nkeys);
         std::vector<std::uint64_t> norm_col_ids(key_col_indices.size());
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {

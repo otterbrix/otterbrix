@@ -245,13 +245,16 @@ namespace core::b_plus_tree {
                 return block_;
             }
 
+            // The prefix forms move the SAME way as their postfix twins below. They used to
+            // move against them (++ stepped metadata_ down), latent only because every
+            // traversal in the tree spells the postfix form.
             inline const iterator& operator++() {
-                metadata_--;
+                metadata_++;
                 get_block();
                 return *this;
             }
             inline const iterator& operator--() {
-                metadata_++;
+                metadata_--;
                 get_block();
                 return *this;
             }
@@ -281,6 +284,10 @@ namespace core::b_plus_tree {
             }
 
             inline iterator& operator=(const iterator& rhs) {
+                // The whole position is handed over: the metadata pointer AND the tree it
+                // belongs to. Copying only metadata_ left an iterator assigned across trees
+                // reading the OLD tree's segment table with the NEW tree's pointer.
+                seg_tree_ = rhs.seg_tree_;
                 metadata_ = rhs.metadata_;
                 get_block();
                 return *this;
@@ -335,13 +342,15 @@ namespace core::b_plus_tree {
                 return block_;
             }
 
+            // Same contract as iterator's prefix forms: they move the way the postfix twins
+            // move (a reverse step is metadata_ DOWN). They used to be inverted.
             inline const r_iterator& operator++() {
-                metadata_++;
+                metadata_--;
                 get_block();
                 return *this;
             }
             inline const r_iterator& operator--() {
-                metadata_--;
+                metadata_++;
                 get_block();
                 return *this;
             }
@@ -371,6 +380,8 @@ namespace core::b_plus_tree {
             }
 
             inline r_iterator& operator=(const r_iterator& rhs) {
+                // Same as iterator::operator=: the owning tree travels with the position.
+                seg_tree_ = rhs.seg_tree_;
                 metadata_ = rhs.metadata_;
                 get_block();
                 return *this;

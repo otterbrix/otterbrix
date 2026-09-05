@@ -3538,3 +3538,135 @@ TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata"
 
     remove_directory(fs, testing_directory);
 }
+
+// ЗАПИСЬ #351: the PREFIX increment/decrement of both leaf iterators moved AGAINST their
+// postfix twins (iterator's ++ did metadata_--, r_iterator's ++ did metadata_++), latent
+// only because every traversal in the tree spells the postfix form. Adjacent in the same
+// entry: operator= copied metadata_ but not seg_tree_, so an iterator assigned across
+// trees kept reading the OLD tree's segment table with the NEW tree's metadata pointer.
+TEST_CASE("core::b_plus_tree::segment_tree_iterator_prefix_matches_postfix") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = scratch_dir("segment_tree_iter_prefix");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+    auto fname = testing_directory;
+    fname /= "segtree_iter_prefix_file";
+    unique_ptr<file_handle_t> handle =
+        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+    segment_tree_t tree(&resource, key_getter, std::move(handle));
+
+    std::vector<dummy_alloc> test_data;
+    for (uint64_t i = 0; i < 100; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        write_unaligned<uint64_t>(dummy.buffer, i);
+        test_data.push_back(dummy);
+        REQUIRE(tree.append(dummy.buffer, dummy.size));
+    }
+    REQUIRE(tree.blocks_count() >= 3);
+
+    INFO("iterator: ++it must land where it++ lands");
+    {
+        auto pre = tree.begin();
+        auto post = tree.begin();
+        ++pre;
+        post++;
+        REQUIRE(pre == post);
+        REQUIRE((pre - tree.begin()) == 1);
+    }
+    INFO("iterator: --it must land where it-- lands");
+    {
+        auto pre = tree.begin() + 1;
+        auto post = tree.begin() + 1;
+        --pre;
+        post--;
+        REQUIRE(pre == post);
+        REQUIRE(pre == tree.begin());
+    }
+    INFO("r_iterator: ++it must land where it++ lands");
+    {
+        auto pre = tree.rbegin();
+        auto post = tree.rbegin();
+        ++pre;
+        post++;
+        REQUIRE(pre == post);
+        REQUIRE((pre - tree.rbegin()) == 1);
+    }
+    INFO("r_iterator: --it must land where it-- lands");
+    {
+        auto pre = tree.rbegin() + 1;
+        auto post = tree.rbegin() + 1;
+        --pre;
+        post--;
+        REQUIRE(pre == post);
+        REQUIRE(pre == tree.rbegin());
+    }
+
+    for (auto& d : test_data) {
+        resource.deallocate(d.buffer, d.size);
+    }
+    remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::segment_tree_iterator_assignment_rebinds_the_tree") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = scratch_dir("segment_tree_iter_assign");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+    auto make_tree = [&](const char* name) {
+        auto fname = testing_directory;
+        fname /= name;
+        unique_ptr<file_handle_t> handle =
+            open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
+        return std::make_unique<segment_tree_t>(&resource, key_getter, std::move(handle));
+    };
+    auto tree_a = make_tree("segtree_assign_a");
+    auto tree_b = make_tree("segtree_assign_b");
+
+    std::vector<dummy_alloc> test_data;
+    for (uint64_t i = 0; i < 8; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        write_unaligned<uint64_t>(dummy.buffer, i);
+        test_data.push_back(dummy);
+        REQUIRE((i < 4 ? *tree_a : *tree_b).append(dummy.buffer, dummy.size));
+    }
+
+    // Assigning tree_b's begin() over an iterator born on tree_a must hand over the
+    // WHOLE position: metadata pointer AND owning tree. Before the fix seg_tree_ kept
+    // pointing at tree_a, so the dereference below walked tree_a's segment table with
+    // tree_b's metadata pointer — an out-of-range read the debug build refuses with
+    // an assert and the release build answers with a stale/null block.
+    auto it = tree_a->begin();
+    it = tree_b->begin();
+    REQUIRE(it.get() == tree_b->begin().get());
+    REQUIRE(it.get() != nullptr);
+    REQUIRE(it.get() != tree_a->begin().get());
+
+    for (auto& d : test_data) {
+        resource.deallocate(d.buffer, d.size);
+    }
+    tree_a.reset();
+    tree_b.reset();
+    remove_directory(fs, testing_directory);
+}

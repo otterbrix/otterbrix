@@ -474,6 +474,30 @@ namespace components::catalog {
     // Forward declaration for mutual recursion.
     static std::string encode_type_nested(const types::complex_logical_type& t);
 
+    // ЗАПИСЬ #366: the flat codec used to write names AS IS, so a struct field, union
+    // member, enum name/label or user-type name carrying one of the format's own
+    // delimiters ( ) , : = produced a spec the strict decoder refuses — the DDL went
+    // through and every later resolve failed per-statement, with no writer gate anywhere.
+    // The encoder escapes those characters (backslash-prefixed) and the decoder reads the
+    // escapes back. A backslash before anything OUTSIDE this set — including a raw
+    // backslash an old build may have written — is a loud data_corruption refusal, never
+    // a silent decode to a DIFFERENT name.
+    static bool flat_name_needs_escape(char c) {
+        return c == '\\' || c == '(' || c == ')' || c == ',' || c == ':' || c == '=';
+    }
+
+    static std::string escape_flat_name(std::string_view name) {
+        std::string out;
+        out.reserve(name.size());
+        for (char c : name) {
+            if (flat_name_needs_escape(c)) {
+                out += '\\';
+            }
+            out += c;
+        }
+        return out;
+    }
+
     static std::string encode_type_nested(const types::complex_logical_type& t) {
         using LT = types::logical_type;
         auto sn = scalar_type_to_name(t.type());
@@ -486,7 +510,7 @@ namespace components::catalog {
                    std::to_string(static_cast<unsigned>(ext->scale())) + ")";
         }
         if (t.type() == LT::UNKNOWN) {
-            return "UNKNOWN(" + t.type_name() + ")";
+            return "UNKNOWN(" + escape_flat_name(t.type_name()) + ")";
         }
         if (t.type() == LT::LIST) {
             return "LIST(" + encode_type_nested(t.child_type()) + ")";
@@ -501,10 +525,10 @@ namespace components::catalog {
         }
         if (t.type() == LT::STRUCT) {
             const auto* ext = static_cast<const types::struct_logical_type_extension*>(t.extension());
-            std::string out = "STRUCT(" + ext->type_name();
+            std::string out = "STRUCT(" + escape_flat_name(ext->type_name());
             for (const auto& f : ext->child_types()) {
                 out += ',';
-                out += f.alias();
+                out += escape_flat_name(f.alias());
                 out += ':';
                 out += encode_type_nested(f);
             }
@@ -520,7 +544,7 @@ namespace components::catalog {
                 if (!first)
                     out += ',';
                 first = false;
-                out += children[i].alias();
+                out += escape_flat_name(children[i].alias());
                 out += ':';
                 out += encode_type_nested(children[i]);
             }
@@ -582,13 +606,70 @@ namespace components::catalog {
     static types::complex_logical_type
     parse_flat_type(std::pmr::memory_resource* resource, flat_parse_ctx_t& ctx, uint32_t depth);
 
-    // Read characters until one of the stop chars (at depth 0).
+    // Read characters until one of the stop chars (at depth 0). Keyword/number positions
+    // only — a backslash is consumed literally here and the keyword match refuses it.
     static std::string read_token(std::string_view s, size_t& pos) {
         size_t start = pos;
         while (pos < s.size() && s[pos] != '(' && s[pos] != ')' && s[pos] != ',' && s[pos] != ':') {
             ++pos;
         }
         return std::string{s.substr(start, pos - start)};
+    }
+
+    // Read a NAME (struct/union field, struct/enum type name, UNKNOWN reference): the
+    // escape-aware twin of read_token. `\c` for c in the delimiter set yields c; a
+    // backslash before anything else — a trailing one included — fails the context, so a
+    // raw backslash written by a pre-escaping build refuses instead of decoding to a
+    // different name.
+    static std::string read_name_token(flat_parse_ctx_t& ctx) {
+        std::string out;
+        while (ctx.pos < ctx.s.size() && ctx.s[ctx.pos] != '(' && ctx.s[ctx.pos] != ')' && ctx.s[ctx.pos] != ',' &&
+               ctx.s[ctx.pos] != ':') {
+            char c = ctx.s[ctx.pos];
+            if (c == '\\') {
+                if (ctx.pos + 1 >= ctx.s.size() || !flat_name_needs_escape(ctx.s[ctx.pos + 1])) {
+                    ctx.fail("type spec: malformed escape in a name");
+                    return out;
+                }
+                c = ctx.s[ctx.pos + 1];
+                ++ctx.pos;
+            }
+            out += c;
+            ++ctx.pos;
+        }
+        return out;
+    }
+
+    // Escape-aware scan for the ENUM leg's flat splitting: the position of `target`
+    // outside any `\x` pair, npos when absent.
+    static size_t find_unescaped(std::string_view s, char target, size_t from) {
+        for (size_t i = from; i < s.size(); ++i) {
+            if (s[i] == '\\') {
+                ++i;
+                continue;
+            }
+            if (s[i] == target) {
+                return i;
+            }
+        }
+        return std::string_view::npos;
+    }
+
+    // Unescape one already-delimited name; false on a malformed escape.
+    static bool unescape_flat_name(std::string_view in, std::string& out) {
+        out.clear();
+        out.reserve(in.size());
+        for (size_t i = 0; i < in.size(); ++i) {
+            char c = in[i];
+            if (c == '\\') {
+                if (i + 1 >= in.size() || !flat_name_needs_escape(in[i + 1])) {
+                    return false;
+                }
+                c = in[++i];
+            }
+            out += c;
+        }
+        return true;
     }
 
     // Whole-token integer read (mirrors parse_oid_csv): from_chars stops at the first
@@ -661,7 +742,7 @@ namespace components::catalog {
             return std::move(decimal.value());
         }
         if (name == "UNKNOWN") {
-            std::string tname = read_token(ctx.s, ctx.pos);
+            std::string tname = read_name_token(ctx);
             if (!ctx.expect(')', "UNKNOWN(name)")) {
                 return unknown();
             }
@@ -702,11 +783,11 @@ namespace components::catalog {
             return types::complex_logical_type::create_map(resource, key, val);
         }
         if (name == "STRUCT") {
-            std::string struct_name = read_token(ctx.s, ctx.pos);
+            std::string struct_name = read_name_token(ctx);
             std::pmr::vector<types::complex_logical_type> fields(resource);
             while (!ctx.failed && ctx.pos < ctx.s.size() && ctx.s[ctx.pos] == ',') {
                 ++ctx.pos; // ','
-                std::string fname = read_token(ctx.s, ctx.pos);
+                std::string fname = read_name_token(ctx);
                 if (!ctx.expect(':', "STRUCT field")) {
                     return unknown();
                 }
@@ -723,7 +804,7 @@ namespace components::catalog {
             std::pmr::vector<types::complex_logical_type> fields(resource);
             // First member
             if (ctx.pos < ctx.s.size() && ctx.s[ctx.pos] != ')') {
-                std::string fname = read_token(ctx.s, ctx.pos);
+                std::string fname = read_name_token(ctx);
                 if (!ctx.expect(':', "UNION member")) {
                     return unknown();
                 }
@@ -733,7 +814,7 @@ namespace components::catalog {
             }
             while (!ctx.failed && ctx.pos < ctx.s.size() && ctx.s[ctx.pos] == ',') {
                 ++ctx.pos; // ','
-                std::string fname = read_token(ctx.s, ctx.pos);
+                std::string fname = read_name_token(ctx);
                 if (!ctx.expect(':', "UNION member")) {
                     return unknown();
                 }
@@ -762,9 +843,10 @@ namespace components::catalog {
             return "";
         }
         // ENUM: flat text "ENUM:type_name:label0=val0,label1=val1,..."
+        // Name and labels are escape_flat_name-escaped — see the note above it.
         if (t.type() == LT::ENUM) {
             std::string out = "ENUM:";
-            out += t.type_name();
+            out += escape_flat_name(t.type_name());
             out += ':';
             const auto* ext = t.extension();
             if (ext != nullptr) {
@@ -775,7 +857,7 @@ namespace components::catalog {
                         out += ',';
                     first = false;
                     const auto& etype = entry.type();
-                    out += etype.has_alias() ? etype.alias() : std::string{};
+                    out += escape_flat_name(etype.has_alias() ? etype.alias() : std::string{});
                     out += '=';
                     out += std::to_string(entry.value<std::int32_t>());
                 }
@@ -800,12 +882,19 @@ namespace components::catalog {
         // encode_type_spec above — a live format, not a compatibility shim.
         if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) {
             auto rest = spec.substr(5);
-            auto colon = rest.find(':');
+            // Escape-aware from here on: the encoder escapes the format's delimiters
+            // inside the name and the labels, so every split looks only at UNESCAPED
+            // separators and every extracted name is unescaped (a malformed escape —
+            // including a raw backslash a pre-escaping build wrote — refuses loudly).
+            auto colon = find_unescaped(rest, ':', 0);
             if (colon == std::string_view::npos) {
                 // The encoder always writes the second ':', even for zero entries.
                 return corrupt("type spec: ENUM without an entry-list separator");
             }
-            std::string name{rest.substr(0, colon)};
+            std::string name;
+            if (!unescape_flat_name(rest.substr(0, colon), name)) {
+                return corrupt("type spec: malformed escape in an ENUM name");
+            }
             std::vector<components::types::logical_value_t> entries;
             auto entries_str = rest.substr(colon + 1);
             if (!entries_str.empty()) {
@@ -813,16 +902,19 @@ namespace components::catalog {
                 // for(;;) so the empty token behind a trailing ',' is visited too — the
                 // same truncation trace parse_oid_csv learned to keep (helpers.cpp).
                 for (;;) {
-                    const std::size_t comma = entries_str.find(',', i);
+                    const std::size_t comma = find_unescaped(entries_str, ',', i);
                     const std::string_view token =
                         entries_str.substr(i, (comma == std::string_view::npos ? entries_str.size() : comma) - i);
-                    const std::size_t eq = token.find('=');
+                    const std::size_t eq = find_unescaped(token, '=', 0);
                     if (eq == std::string_view::npos) {
                         // Covers the empty token as well: the encoder writes label=value
                         // pairs and nothing else.
                         return corrupt("type spec: ENUM entry without '='");
                     }
-                    std::string label{token.substr(0, eq)};
+                    std::string label;
+                    if (!unescape_flat_name(token.substr(0, eq), label)) {
+                        return corrupt("type spec: malformed escape in an ENUM label");
+                    }
                     const auto val_str = token.substr(eq + 1);
                     int v{};
                     const auto [vp, vec_] = std::from_chars(val_str.data(), val_str.data() + val_str.size(), v);

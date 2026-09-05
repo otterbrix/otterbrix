@@ -149,13 +149,17 @@ namespace disk_test_helpers {
         const catalog::oid_t index_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
-        auto writes = catalog::build_create_index_writes(&fx.resource,
-                                                         index_name,
-                                                         ns_oid,
-                                                         table_oid,
-                                                         index_oid,
-                                                         col_attoids,
-                                                         catalog::indtype::single);
+        auto writes_r = catalog::build_create_index_writes(&fx.resource,
+                                                           index_name,
+                                                           ns_oid,
+                                                           table_oid,
+                                                           index_oid,
+                                                           col_attoids,
+                                                           catalog::indtype::single);
+        // Same contract as read_ok/append_ok: no test here hands the builder an
+        // unstamped column, and swallowing the writer-side gate would publish nothing.
+        assert(!writes_r.has_error() && "disk_test_helpers::test_create_index: builder refused the write set");
+        auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         constexpr catalog::oid_t pg_index = catalog::well_known_oid::pg_index_table;

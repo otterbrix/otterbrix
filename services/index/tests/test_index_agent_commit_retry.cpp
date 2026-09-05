@@ -184,3 +184,106 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
 
     std::filesystem::remove_all(path);
 }
+
+// ЗАПИСЬ #353: the txn==0 leg (rebuild / repopulate feed, no journal) erased the bucket
+// AFTER applying it to the store but BEFORE force_flush() answered. The batch itself was
+// not lost (the keydir held it), but a commit whose flush refused had already cleared its
+// bucket — so the RETRY of that commit published nothing, found nothing parked, and
+// reported success without ever re-asking the store for durability. Same branch lesson as
+// the txn!=0 fix above: state is cleared only AFTER the operation succeeds. Re-publishing
+// a kept bucket is safe in this family: bitcask's insert/remove doors are idempotent on
+// the (key, row) pair.
+TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucket until the flush verdict") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    const auto path = fresh_index_root("otterbrix_test_index_agent_publish_retry");
+
+    // segment_record_limit=4 so the FIRST non-bulk append after the 5-row seed asks for a
+    // rotation; the squat below makes that rotation's open refuse, which leaves the store
+    // with no active segment and every later append refusing (parked, handed over by
+    // force_flush) — an environmental refusal on exactly the txn==0 publish leg.
+    auto agent_result = bitcask_index_agent_t::create(&resource,
+                                                      path,
+                                                      kTableOid,
+                                                      kIndexOid,
+                                                      /*flush_threshold=*/1000,
+                                                      /*segment_record_limit=*/4,
+                                                      log,
+                                                      std::pmr::set<std::uint64_t>(&resource));
+    REQUIRE_FALSE(agent_result.has_error());
+    auto agent = std::move(agent_result.value());
+
+    const auto session = session_id_t::generate_uid();
+    const logical_value_t val42(&resource, int64_t{42});
+
+    auto read = [&](uint64_t txn_id) {
+        auto answer = ask<&index_agent_contract::read_rows>(agent,
+                                                            session,
+                                                            compare_type::eq,
+                                                            logical_value_t(&resource, val42),
+                                                            txn_id);
+        REQUIRE_FALSE(answer.has_error());
+        return sorted(std::move(answer.value()));
+    };
+
+    // Seed five committed-for-everyone rows over the txn==0 route. Bulk mode suppresses
+    // rotation, so the active segment ends the seed holding 5 >= 4 records.
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(
+                      agent,
+                      session,
+                      uint64_t{0},
+                      entries(&resource, {{42, 7}, {43, 8}, {44, 9}, {45, 10}, {46, 11}}))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+    REQUIRE(read(0) == std::vector<int64_t>{7});
+
+    // A directory squatting on the NEXT segment's path (fresh store: active id 2, next 3)
+    // makes the rotation's open refuse mid-publish.
+    const auto next_segment = store_dir(path) / "bitcask.000003.data";
+    REQUIRE(std::filesystem::create_directory(next_segment));
+
+    SECTION("a refused txn==0 commit_deletes keeps its bucket, and the retry re-asks durability") {
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::stage_deletes>(agent, session, uint64_t{0}, entries(&resource, {{42, 7}}))
+                .contains_error());
+
+        auto refused = ask<&index_agent_contract::commit_deletes>(agent, session, uint64_t{0});
+        INFO("the rotation refusal must reach the statement");
+        REQUIRE(refused.contains_error());
+
+        // RED before the fix: the bucket was erased ahead of the flush verdict, so this
+        // retry published nothing, found nothing parked, and answered no_error — success
+        // over a delete that never reached the device.
+        auto retried = ask<&index_agent_contract::commit_deletes>(agent, session, uint64_t{0});
+        REQUIRE(retried.contains_error());
+
+        // The kept bucket keeps the SEMANTICS straight too: bucket 0 is committed for
+        // everyone (readers subtract it), merely not yet durable — so the reader already
+        // sees the delete while the statement keeps hearing "not durable" until a retry
+        // lands. Before the fix the erased bucket made the reader UN-see a committed
+        // delete that was then never going to be published.
+        CHECK(read(0).empty());
+    }
+
+    SECTION("a refused txn==0 commit_inserts keeps its bucket, and the retry re-asks durability") {
+        // Break the active segment first (same rotation squat, via a one-row delete).
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::stage_deletes>(agent, session, uint64_t{0}, entries(&resource, {{43, 8}}))
+                .contains_error());
+        REQUIRE(ask<&index_agent_contract::commit_deletes>(agent, session, uint64_t{0}).contains_error());
+
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{50, 20}}))
+                .contains_error());
+
+        auto refused = ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0});
+        INFO("the append refusal must reach the statement");
+        REQUIRE(refused.contains_error());
+
+        // RED before the fix: same vacuous success as the delete leg.
+        auto retried = ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0});
+        REQUIRE(retried.contains_error());
+    }
+
+    std::filesystem::remove_all(path);
+}

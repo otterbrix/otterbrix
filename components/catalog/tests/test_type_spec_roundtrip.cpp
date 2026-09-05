@@ -256,3 +256,88 @@ TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
     REQUIRE(decoded.has_error());
     REQUIRE(decoded.error().type == core::error_code_t::data_corruption);
 }
+
+// ЗАПИСЬ #366: the flat codec wrote names AS IS, so a field, alias, label or type name
+// carrying one of the format's own delimiters ( ) , : = produced a spec the (now strict)
+// decoder refuses — DDL went through and every later resolve failed per-statement. The
+// encoder escapes those characters now, and the decoder reads the escapes back.
+TEST_CASE("catalog::type_spec::struct_field_names_with_delimiters_roundtrip") {
+    auto f1 = complex_logical_type{logical_type::INTEGER};
+    f1.set_alias("we:ird,na(me)");
+    auto f2 = complex_logical_type{logical_type::STRING_LITERAL};
+    f2.set_alias("back\\slash=eq");
+    std::pmr::vector<complex_logical_type> fields(g_resource);
+    fields.push_back(f1);
+    fields.push_back(f2);
+    auto t = complex_logical_type::create_struct("na:me(d)", fields);
+    auto spec = encode_type_spec(t);
+
+    // RED before the fix: the raw delimiters made this spec unreadable (or misread).
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::STRUCT);
+    const auto& out = t2.child_types();
+    REQUIRE(out.size() == 2);
+    REQUIRE(out[0].alias() == "we:ird,na(me)");
+    REQUIRE(out[0].type() == logical_type::INTEGER);
+    REQUIRE(out[1].alias() == "back\\slash=eq");
+    REQUIRE(out[1].type() == logical_type::STRING_LITERAL);
+}
+
+TEST_CASE("catalog::type_spec::union_member_names_with_delimiters_roundtrip") {
+    auto m1 = complex_logical_type{logical_type::INTEGER};
+    m1.set_alias("i:n,t");
+    auto m2 = complex_logical_type{logical_type::STRING_LITERAL};
+    m2.set_alias("s)t(r");
+    std::pmr::vector<complex_logical_type> members(g_resource);
+    members.push_back(m1);
+    members.push_back(m2);
+    auto t = complex_logical_type::create_union(members);
+    auto spec = encode_type_spec(t);
+
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::UNION);
+    const auto& ch = t2.child_types();
+    REQUIRE(ch.size() >= 3);
+    REQUIRE(ch[1].alias() == "i:n,t");
+    REQUIRE(ch[2].alias() == "s)t(r");
+}
+
+TEST_CASE("catalog::type_spec::enum_names_with_delimiters_roundtrip") {
+    std::vector<components::types::logical_value_t> entries;
+    components::types::logical_value_t e0(g_resource, 0);
+    e0.set_alias("a=b,c:d");
+    entries.push_back(std::move(e0));
+    components::types::logical_value_t e1(g_resource, 1);
+    e1.set_alias("plain");
+    entries.push_back(std::move(e1));
+    auto t = complex_logical_type::create_enum("mo:od,s", std::move(entries));
+    auto spec = encode_type_spec(t);
+
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::ENUM);
+    REQUIRE(t2.type_name() == "mo:od,s");
+    const auto* ext = static_cast<const enum_logical_type_extension*>(t2.extension());
+    REQUIRE(ext->entries().size() == 2);
+    REQUIRE(ext->entries()[0].type().alias() == "a=b,c:d");
+    REQUIRE(ext->entries()[1].type().alias() == "plain");
+}
+
+TEST_CASE("catalog::type_spec::unknown_name_with_delimiters_roundtrip") {
+    auto t = complex_logical_type::create_unknown("user)type,");
+    auto spec = encode_type_spec(t);
+
+    auto t2 = decode_ok(spec);
+    REQUIRE(t2.type() == logical_type::UNKNOWN);
+    REQUIRE(t2.type_name() == "user)type,");
+}
+
+TEST_CASE("catalog::type_spec::malformed_escape_refuses") {
+    // A backslash followed by anything outside the escapable set — or a trailing one —
+    // is not silently absorbed into the name: an old raw-written backslash name must
+    // refuse loudly rather than decode to a DIFFERENT name.
+    auto bad = decode_type_spec(g_resource, "UNKNOWN(a\\zb)");
+    REQUIRE(bad.has_error());
+    REQUIRE(bad.error().type == core::error_code_t::data_corruption);
+    auto trailing = decode_type_spec(g_resource, "UNKNOWN(ab\\");
+    REQUIRE(trailing.has_error());
+}

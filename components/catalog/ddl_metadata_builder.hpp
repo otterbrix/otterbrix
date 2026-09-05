@@ -98,13 +98,21 @@ namespace components::catalog {
     // namespace). Written ALWAYS — the caller converts from
     // logical_plan::index_type via index_type_to_indtype_code and must not pass 0.
     // oid_batch must hold at least 1 OID (index_oid).
-    std::vector<catalog_write_t> build_create_index_writes(std::pmr::memory_resource* resource,
-                                                           const std::string& index_name,
-                                                           oid_t namespace_oid,
-                                                           oid_t table_oid,
-                                                           oid_t index_oid,
-                                                           const std::vector<oid_t>& column_attoids,
-                                                           char indtype);
+    //
+    // WRITER-SIDE GATE (same class as build_create_constraint_writes' conkey gate): an
+    // INVALID_OID member of column_attoids means the caller lost a column identity. The
+    // old code wrote the token into the indkey CSV anyway and silently SKIPPED that
+    // column's 'i' pg_depend edge, so the index claimed a column no dependency walk could
+    // see — the same DROP COLUMN blindness the constraint gate closed. Refused instead
+    // (rule 6; the refusal costs one DDL).
+    core::result_wrapper_t<std::vector<catalog_write_t>>
+    build_create_index_writes(std::pmr::memory_resource* resource,
+                              const std::string& index_name,
+                              oid_t namespace_oid,
+                              oid_t table_oid,
+                              oid_t index_oid,
+                              const std::vector<oid_t>& column_attoids,
+                              char indtype);
 
     // Writes pg_type + pg_depend (type→ns 'n').
     // type_spec may be empty for built-in types.

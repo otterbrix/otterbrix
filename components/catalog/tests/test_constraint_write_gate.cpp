@@ -106,6 +106,46 @@ TEST_CASE("catalog::constraint_writes::an_empty_list_stays_legal") {
     REQUIRE(count_attribute_edges(writes.value()) == 0);
 }
 
+// ЗАПИСЬ #368: the SAME class for CREATE INDEX. build_create_index_writes wrote every
+// attoid into the indkey CSV but silently SKIPPED the per-column 'i' pg_depend edge for
+// an INVALID_OID member — the index claimed a column no dependency walk could see, the
+// same DROP COLUMN blindness the conkey gate above closed. The builder refuses now.
+// RED (proven pre-fix, 2026-09-03): indkey "20001,0" (2 tokens) vs 1 column edge —
+// count_attribute_edges(writes) == tokens.size() expanded to 1 == 2.
+TEST_CASE("catalog::index_writes::an_unstamped_indkey_column_is_refused") {
+    auto writes = build_create_index_writes(g_resource,
+                                            "users_by_name",
+                                            /*namespace_oid=*/oid_t{16384},
+                                            /*table_oid=*/oid_t{20000},
+                                            /*index_oid=*/oid_t{20020},
+                                            {oid_t{20001}, INVALID_OID},
+                                            indtype::single);
+    REQUIRE(writes.has_error());
+    REQUIRE(writes.error().type == core::error_code_t::invalid_constraint);
+}
+
+TEST_CASE("catalog::index_writes::every_indkey_column_carries_a_dependency_edge") {
+    auto writes = build_create_index_writes(g_resource,
+                                            "users_by_name",
+                                            /*namespace_oid=*/oid_t{16384},
+                                            /*table_oid=*/oid_t{20000},
+                                            /*index_oid=*/oid_t{20020},
+                                            {oid_t{20001}, oid_t{20002}},
+                                            indtype::single);
+    REQUIRE_FALSE(writes.has_error());
+    std::string indkey;
+    for (const auto& w : writes.value()) {
+        if (w.table_oid == well_known_oid::pg_index_table) {
+            indkey = std::string(w.row.get_value<std::string_view>(pg_index_col::indkey, 0));
+        }
+    }
+    bool ok = true;
+    const auto tokens = parse_oid_csv(indkey, ok);
+    REQUIRE(ok);
+    REQUIRE(tokens.size() == 2);
+    REQUIRE(count_attribute_edges(writes.value()) == tokens.size());
+}
+
 TEST_CASE("catalog::row_builders::pg_attribute_row_is_always_full_width") {
     // The row builders' "missing system-table definition" arm answered with an
     // EMPTY chunk no caller checked. The arm was unreachable (well-known oids are

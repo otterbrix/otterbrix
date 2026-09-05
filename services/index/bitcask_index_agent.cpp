@@ -376,7 +376,6 @@ namespace services::index {
                 }
                 apply(key, static_cast<size_t>(row_id));
             }
-            buckets.erase(it);
         };
         publish_one(txn_id);
         if (txn_id != 0 && decode_ok) {
@@ -391,7 +390,25 @@ namespace services::index {
         // The rows are only in the index once this succeeds. Reporting no_error on a
         // failed flush would leave the statement believing the index matches the table
         // when it does not.
-        return store_.force_flush();
+        //
+        // AND THE BUCKETS ARE ERASED ONLY AFTER THE FLUSH SAYS YES (branch lesson: state
+        // is cleared only after the operation succeeds — the same ordering the journalled
+        // txn!=0 legs got in an earlier wave). The erase used to sit inside publish_one,
+        // ahead of this verdict, so a commit whose flush refused — an fsync the device
+        // rejected, or a put failure the void write doors could only PARK for force_flush
+        // to hand over — had already cleared its bucket: the RETRY of that commit
+        // published nothing, found nothing parked, and reported success over rows that
+        // never became durable (or never landed at all). Re-publishing a kept bucket is
+        // safe in this family: bitcask's insert/remove doors are idempotent on the
+        // (key, row) pair — insert dedups against current_rows, remove of an absent pair
+        // is a no-op — so a retry re-applies what is missing and re-asks for durability.
+        auto flush_error = store_.force_flush();
+        if (flush_error.contains_error()) {
+            return flush_error;
+        }
+        buckets.erase(txn_id);
+        buckets.erase(0);
+        return core::error_t::no_error();
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>

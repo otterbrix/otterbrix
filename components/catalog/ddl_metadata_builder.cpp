@@ -523,13 +523,28 @@ namespace components::catalog {
         return result;
     }
 
-    std::vector<catalog_write_t> build_create_index_writes(std::pmr::memory_resource* resource,
-                                                           const std::string& index_name,
-                                                           oid_t namespace_oid,
-                                                           oid_t table_oid,
-                                                           oid_t index_oid,
-                                                           const std::vector<oid_t>& column_attoids,
-                                                           char indtype) {
+    core::result_wrapper_t<std::vector<catalog_write_t>>
+    build_create_index_writes(std::pmr::memory_resource* resource,
+                              const std::string& index_name,
+                              oid_t namespace_oid,
+                              oid_t table_oid,
+                              oid_t index_oid,
+                              const std::vector<oid_t>& column_attoids,
+                              char indtype) {
+        // WRITER-SIDE GATE, the conkey gate's twin (see build_create_constraint_writes):
+        // an INVALID_OID member would be written into indkey while its 'i' pg_depend edge
+        // was silently skipped — an index claiming a column no dependency walk can see.
+        for (std::size_t i = 0; i < column_attoids.size(); ++i) {
+            if (column_attoids[i] == INVALID_OID) {
+                return core::error_t{
+                    core::error_code_t::invalid_constraint,
+                    std::pmr::string{"index '" + index_name + "': indkey column #" + std::to_string(i) +
+                                         " has no attoid; the row would claim a column without a "
+                                         "dependency edge",
+                                     resource}};
+            }
+        }
+
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='i')
@@ -566,14 +581,12 @@ namespace components::catalog {
         }
 
         // pg_depend: index→table 'a' auto-cascade, followed by per-column 'i'
-        // deps — all in one chunk in the same order as before.
+        // deps — all in one chunk in the same order as before. The gate above refused
+        // any INVALID_OID entry, so every listed column gets its edge — indkey and
+        // pg_depend agree by construction.
         {
             const auto& dep_def = system_table(pg_depend_oid);
-            std::size_t dep_count = 1; // index → table
-            for (const oid_t col_attoid : column_attoids) {
-                if (col_attoid != INVALID_OID)
-                    ++dep_count;
-            }
+            const std::size_t dep_count = 1 + column_attoids.size(); // index → table, then columns
             const std::string auto_dep_str(1, deptype::auto_dep);
             auto chunk = make_pg_rows(resource,
                                       dep_def.columns,
@@ -588,8 +601,6 @@ namespace components::catalog {
                                           set_str(c, 4, i, auto_dep_str, r);
                                           ++i;
                                           for (const oid_t col_attoid : column_attoids) {
-                                              if (col_attoid == INVALID_OID)
-                                                  continue;
                                               set_oid(c, 0, i, well_known_oid::pg_class_table);
                                               set_oid(c, 1, i, index_oid);
                                               set_oid(c, 2, i, well_known_oid::pg_attribute_table);

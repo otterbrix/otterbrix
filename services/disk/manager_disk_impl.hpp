@@ -86,14 +86,12 @@ namespace services::disk {
             return local;
         }
 
-        // ---------------------------------------------------------------------------
-        // Catalog function aliases (used unqualified via "using namespace detail")
-        // ---------------------------------------------------------------------------
-
-        using components::catalog::decode_type_spec;
-        using components::catalog::encode_type_spec;
-        using components::catalog::logical_type_to_pg_name;
-        using components::catalog::oid_to_builtin_type;
+        // ЗАПИСЬ #375: a block of `using components::catalog::{decode,encode}_type_spec /
+        // logical_type_to_pg_name / oid_to_builtin_type` stood here under a comment claiming
+        // they were "used unqualified". None were: every call site in services/disk spells
+        // the qualified name, and logical_type_to_pg_name is not named in the subsystem at
+        // all. Do not re-add them — components::types declares its own decode_type_spec and
+        // encode_type_spec, so an unqualified call would be ambiguous, not convenient.
 
         // ---------------------------------------------------------------------------
         // pg_catalog system table OIDs (well-known) — internal aliases.

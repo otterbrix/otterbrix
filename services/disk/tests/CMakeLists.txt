@@ -22,6 +22,7 @@ set(${PROJECT_NAME}_SOURCES
     test_vacuum_footprint.cpp
     test_checkpoint_dirty.cpp
     test_open_refusals.cpp
+    test_document_decimal_routing.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

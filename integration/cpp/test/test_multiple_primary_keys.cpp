@@ -13,9 +13,10 @@
 // These cases pin the floor: the moment the doubled key would be USED (a DML
 // that gathers constraints, or an FK binding to "the" primary key), the
 // statement is refused and the refusal names both constraints. They also pin
-// that the state stays REPAIRABLE: ALTER TABLE ... DROP CONSTRAINT gathers no
-// constraints for the target, so the repair statement itself must not trip the
-// refusal.
+// that the state stays REPAIRABLE: ALTER TABLE ... DROP CONSTRAINT gathers
+// names only (no enforcement decode), so the repair statement itself must not
+// trip the refusal — test_alter_drop_constraint.cpp pins that repair end to
+// end; the DROP COLUMN route below stays as the second exit.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -80,12 +81,12 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_by_alter_is_refused_at_use_and
         REQUIRE(what.find("pk_b") != std::string::npos);
     }
 
-    // Repair path. ALTER TABLE ... DROP CONSTRAINT parses but is refused as
-    // unimplemented on this branch, so the live repair is dropping one key's
-    // COLUMN: DROP COLUMN scrubs the constraints keyed on it through their
-    // 'i' pg_depend edges, and its plan registers no constraint gather for the
-    // target — the refusal must not fire on the statement that fixes the
-    // catalog, or a per-statement refusal would turn into a dead table.
+    // Repair path, the COLUMN route: DROP COLUMN scrubs the constraints keyed
+    // on it through their 'i' pg_depend edges, and its plan registers no
+    // constraint gather for the target — the refusal must not fire on the
+    // statement that fixes the catalog, or a per-statement refusal would turn
+    // into a dead table. (DROP CONSTRAINT is the other exit;
+    // test_alter_drop_constraint.cpp pins it.)
     run_ok(d, "ALTER TABLE mpk.t DROP COLUMN b;");
     {
         auto cur = run_ok(d, "INSERT INTO mpk.t (a) VALUES (1);");

@@ -142,6 +142,9 @@ namespace components::operators {
 
             std::vector<catalog::fk_info_t> fks;
             std::vector<std::pair<std::string, std::string>> check_exprs;
+            // (conname, oid) of every outgoing row, whatever its kind — the
+            // carrier DROP CONSTRAINT resolves its name through.
+            std::vector<std::pair<std::string, catalog::oid_t>> constraint_oids;
 
             // scan pg_constraint by (conrelid|confrelid).
             std::pmr::vector<std::uint64_t> con_keys(resource_);
@@ -209,10 +212,10 @@ namespace components::operators {
             // becomes its own unique group and pk_columns FLATTENS both key lists into one multi-column "primary
             // key" nobody declared — the thing enrich merges NOT NULL from and an FK with an omitted column list
             // binds to. A key that is two keys cannot be enforced or bound, so the gather refuses and names both.
-            // The refusal is per-statement and repairable: the repair statements register no constraint gather —
-            // ALTER TABLE ... DROP COLUMN of one key's column (scrubs that key through its 'i' pg_depend edge;
-            // DROP CONSTRAINT itself is refused as unimplemented upstream) and DROP TABLE both pass under a
-            // doubled key. Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
+            // The refusal is per-statement and repairable: ALTER TABLE ... DROP CONSTRAINT registers a
+            // names_only gather (the early-continue in the row loop below skips the enforcement decode), and
+            // DROP COLUMN of one key's column / DROP TABLE register no gather at all. All three pass under
+            // a doubled key. Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
             bool pk_seen = false;
             std::string first_pk_label;
 
@@ -263,6 +266,23 @@ namespace components::operators {
                         co_return;
                     }
                     const char contype = contype_cell[0];
+
+                    if (direction == direction_t::outgoing && !con_chunk.is_null(catalog::pg_constraint_col::oid, ci) &&
+                        !con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
+                        const auto cname = con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci);
+                        if (!cname.empty()) {
+                            constraint_oids.emplace_back(
+                                std::string{cname},
+                                static_cast<catalog::oid_t>(
+                                    con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
+                        }
+                    }
+                    if (entry.names_only) {
+                        // Names-only gather: the pair above is the whole answer. No
+                        // enforcement decode — and none of its refusals, so a doubled
+                        // PRIMARY KEY does not block the DROP CONSTRAINT that repairs it.
+                        continue;
+                    }
 
                     if (contype == 'f') {
                         pending_fk_t pending;
@@ -946,6 +966,7 @@ namespace components::operators {
             entry.check_exprs = std::move(check_exprs);
             entry.unique_constraints = std::move(unique_groups);
             entry.pk_columns = std::move(pk_columns);
+            entry.constraint_oids = std::move(constraint_oids);
         }
 
         // 0-row sink output: the resolved data lives in the node's entries.

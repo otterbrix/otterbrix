@@ -272,7 +272,7 @@ TEST_CASE("components::sql::errors::create_table_storage_option_removed") {
 //
 // Rule 6: a statement that changes nothing does not get to say it changed
 // something. Each form below fails loudly with a message that names the form the
-// user typed, exactly as ALTER TABLE ... DROP CONSTRAINT does.
+// user typed.
 // ---------------------------------------------------------------------------
 namespace {
     struct alter_probe_t {
@@ -304,7 +304,11 @@ namespace {
         if (node->type() == components::logical_plan::node_type::alter_table_t) {
             const auto* alter = static_cast<const components::logical_plan::node_alter_table_t*>(node.get());
             for (const auto& sub : alter->subcommands()) {
-                if (sub.column_name.empty()) {
+                // The name a no-op would hide behind is per-kind: DROP CONSTRAINT
+                // carries constraint_name, every column clause carries column_name.
+                if (sub.kind == components::logical_plan::alter_table_kind::drop_constraint
+                        ? sub.constraint_name.empty()
+                        : sub.column_name.empty()) {
                     out.empty_named_subcommand = true;
                 }
             }
@@ -371,9 +375,10 @@ TEST_CASE("components::sql::errors::alter_forms_that_did_nothing_are_refused") {
     TEST_ALTER_REFUSED("ALTER TABLE d.t VALIDATE CONSTRAINT ck;",
                        R"_(ALTER TABLE ... VALIDATE CONSTRAINT ck is not implemented; the table was not altered)_");
 
-    // The one already-loud sibling: it must keep saying exactly what it said.
-    TEST_ALTER_REFUSED("ALTER TABLE d.t DROP CONSTRAINT ck;",
-                       R"_(ALTER TABLE ... DROP CONSTRAINT ck is not implemented; the constraint is still in force)_");
+    // Implemented (queue #354): DROP CONSTRAINT transforms into a drop_constraint
+    // subcommand; integration/cpp/test/test_alter_drop_constraint.cpp pins its
+    // end-to-end behavior.
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t DROP CONSTRAINT ck;");
 
     // A constraint clause mixed with any other clause would silently keep ONLY the
     // constraint and drop the rest on the floor: the AddConstraint arm returns its

@@ -21,8 +21,8 @@
 // (operator_fk_check.cpp), but a constraint that can never be evaluated must not
 // be reported as ACCEPTED in the first place: today's engine answered
 // `ADD CONSTRAINT` with SUCCESS and then refused EVERY INSERT into the child and
-// EVERY DELETE from the parent, forever, with no way to take the constraint back
-// (`ALTER TABLE ... DROP CONSTRAINT` is not implemented). So the refusal moved up
+// EVERY DELETE from the parent until a DROP CONSTRAINT took the constraint
+// back. So the refusal moved up
 // to the DDL, where PostgreSQL puts it, and these cases now assert two things:
 // the ALTER is refused and names the arity, and the constraint DID NOT HALF-LAND
 // — the DML that a landed constraint would have blocked runs unimpeded, and
@@ -173,9 +173,9 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orph
 
 // The INSERT side of the same constraint, and the reason the refusal had to move
 // to the DDL. While the lopsided ALTER was ACCEPTED, operator_fk_check refused
-// every INSERT into the child forever — a table taken permanently out of service
-// by a statement the engine had reported as successful, with no DROP CONSTRAINT
-// to undo it. With the ALTER refused there is no constraint, so the INSERT lands.
+// every INSERT into the child — a table taken out of service by a statement the
+// engine had reported as successful, until a DROP CONSTRAINT undid it. With the
+// ALTER refused there is no constraint, so the INSERT lands.
 TEST_CASE("integration::cpp::fk_arity_mismatch::insert_names_the_real_defect") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/insert"));
     test_clear_directory(config);

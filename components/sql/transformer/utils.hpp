@@ -397,26 +397,10 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
                                                                          A_Expr* node);
 
-    // What a DROP clause SAID about its dependents, as this layer can honestly read it.
-    //
-    // The grammar's `opt_drop_behavior` (components/sql/parser/gram.y) has three
-    // alternatives and only TWO values: the EMPTY alternative yields DROP_RESTRICT, the very
-    // token an explicitly written RESTRICT yields. `DROP TABLE t RESTRICT` and `DROP TABLE t`
-    // are therefore INDISTINGUISHABLE here.
-    //
-    // So DROP_RESTRICT maps to `unspecified` — "the statement named neither word" — and NOT
-    // to restrict_. Mapping it to restrict_ would misreport every bare DROP in the tree and
-    // flip all of them at once (refuses_on_dependency turns true), which is precisely what
-    // the owner decision recorded on drop_behavior_t rules out for this build. A written
-    // CASCADE maps to cascade_: that changes no outcome today, because `unspecified` already
-    // resolves to CASCADE, but it stops the word from being discarded and it is the half that
-    // stays correct when GitHub #638 moves the unwritten default to RESTRICT.
-    //
-    // Making a written RESTRICT reachable takes a THIRD DropBehavior value produced by
-    // `opt_drop_behavior: /* EMPTY */` in the grammar. This function cannot invent that
-    // distinction, and recovering it from the raw statement text is not a distinction at all:
-    // `ALTER TABLE t ADD COLUMN c text DEFAULT 'restrict'` carries the word too, and a
-    // multi-clause ALTER carries one word per clause with nothing to attach it to.
+    // What a DROP clause said about its dependents. gram.y's opt_drop_behavior
+    // yields DROP_RESTRICT for both a written RESTRICT and the empty alternative
+    // — PostgreSQL parity: the unwritten form IS RESTRICT (#638), so both map to
+    // restrict_; DROP_CASCADE maps to cascade_.
     components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept;
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
@@ -448,7 +432,12 @@ namespace components::sql::transform {
     {
         none,
         outgoing,
-        referencing
+        referencing,
+        // (conname, oid) pairs only — no enforcement decode, no enforcement
+        // refusals. DROP CONSTRAINT registers this so the gather cannot refuse
+        // the very catalog state (e.g. a doubled PRIMARY KEY) the statement
+        // exists to repair.
+        names_only
     };
 
     // Name a hand-built plan node's catalog target — what the transform_* functions

@@ -103,6 +103,11 @@ namespace components::logical_plan {
         // Constraint entries only: index into the TABLE node's entries_ naming the
         // table whose constraints this entry gathers
         std::size_t target{no_target};
+        // Constraint entries only: gather (conname, oid) pairs and NOTHING else —
+        // no enforcement decode, none of its refusals. DROP CONSTRAINT uses this
+        // so a repairable-but-invalid catalog state (doubled PRIMARY KEY) cannot
+        // refuse its own repair statement.
+        bool names_only{false};
 
         // --- result, stamped by the resolve operator ---
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
@@ -122,6 +127,9 @@ namespace components::logical_plan {
         // constraints at CREATE TABLE — ALTER TABLE ADD PRIMARY KEY / a table-level PK
         // never back-fills it. Enrich merges these into the DML node's not_null_cols.
         std::vector<std::string> pk_columns;
+        // Every pg_constraint row on the table (outgoing scan, all contypes), as
+        // (conname, oid). Read by enrich to stamp DROP CONSTRAINT subcommands.
+        std::vector<std::pair<std::string, components::catalog::oid_t>> constraint_oids;
 
         bool operator==(const resolve_entry_t& other) const noexcept;
     };
@@ -186,8 +194,14 @@ namespace components::logical_plan {
         // The constraint entry gathered for `table_oid` in `direction`, or nullptr.
         // Constraint entries reach their table through `target`, so this resolves the
         // index into the tables node rather than keying on a duplicated oid.
+        // names_only entries are skipped: they carry no enforcement data, and a DML
+        // statement handed one would silently enforce nothing.
         [[nodiscard]] const resolve_entry_t* constraints_for(components::catalog::oid_t table_oid,
                                                              resolve_direction direction) const noexcept;
+        // Any OUTGOING constraint entry for `table_oid` — full or names_only; both
+        // stamp constraint_oids. The DROP CONSTRAINT name→oid lookup.
+        [[nodiscard]] const resolve_entry_t*
+        constraint_names_for(components::catalog::oid_t table_oid) const noexcept;
     };
 
 } // namespace components::logical_plan

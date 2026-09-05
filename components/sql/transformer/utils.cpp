@@ -1515,16 +1515,15 @@ namespace components::sql::transform {
     }
 
     components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept {
-        // No `default:` — the two-value enum is the whole reason `unspecified` exists, and a
-        // third grammar value (the one that would finally separate a written RESTRICT from
-        // silence) must break this build rather than fall into the silent form.
+        // No `default:` — a new grammar value must break this build, not fall
+        // into either form silently.
         switch (written) {
             case DROP_CASCADE:
                 return components::catalog::drop_behavior_t::cascade_;
             case DROP_RESTRICT:
                 break;
         }
-        return components::catalog::drop_behavior_t::unspecified;
+        return components::catalog::drop_behavior_t::restrict_;
     }
 
     namespace {
@@ -2115,9 +2114,10 @@ namespace components::sql::transform {
         }
         logical_plan::resolve_entry_t constraint_entry;
         constraint_entry.target = table_index;
-        constraint_entry.direction = (with_constraints == constraint_resolve_kind::outgoing)
-                                         ? logical_plan::resolve_direction::outgoing
-                                         : logical_plan::resolve_direction::referencing;
+        constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
+                                         ? logical_plan::resolve_direction::referencing
+                                         : logical_plan::resolve_direction::outgoing;
+        constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
         resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
     }
 

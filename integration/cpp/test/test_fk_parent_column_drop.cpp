@@ -188,12 +188,14 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::dropping_the_parent_tab
     };
     seed(d);
 
-    // Neighbouring case: DROP TABLE parent. The cascade walk seeds at
+    // Neighbouring case: DROP TABLE parent CASCADE. The cascade walk seeds at
     // (pg_class, parent_oid) and reaches the constraint through the table-level
     // 'n' edge, and deletes_for_classid(pg_class) also clears pg_constraint by
     // confrelid — so the FK goes with the table and the child stays usable.
+    // CASCADE is written since #638: the bare form is RESTRICT and refuses this
+    // very edge (test_drop_default_restrict.cpp pins the refusal).
     {
-        auto cur = exec("DROP TABLE fkdrop.parent;");
+        auto cur = exec("DROP TABLE fkdrop.parent CASCADE;");
         INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
     }
@@ -218,19 +220,18 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::drop_constraint_does_no
     };
     seed(d);
 
-    // Neighbouring case: ALTER TABLE ... DROP CONSTRAINT. The grammar parses it
-    // (AT_DropConstraint), but the transformer had no case for it, so it fell
-    // through to `default:` and the statement reported SUCCESS having removed
-    // nothing — the constraint, and every pg_depend edge under it, stayed. A
-    // statement that removes nothing must not report that it removed something.
+    // Neighbouring case: ALTER TABLE ... DROP CONSTRAINT. Once refused as
+    // unimplemented (this case pinned the refusal); implemented in queue #354,
+    // so the pin flipped with it: the statement now succeeds and takes the
+    // constraint — and its enforcement — with it.
     {
         auto cur = exec("ALTER TABLE fkdrop.child DROP CONSTRAINT fk_pid;");
         INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
-        REQUIRE(cur->is_error());
+        REQUIRE(cur->is_success());
     }
-    // Proof the constraint really is untouched: it still enforces.
+    // Proof the constraint really is gone: it no longer enforces.
     {
         auto cur = exec("INSERT INTO fkdrop.child (id, pid) VALUES (15, 999);");
-        CHECK(cur->is_error());
+        CHECK(cur->is_success());
     }
 }

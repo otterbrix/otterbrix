@@ -1074,8 +1074,8 @@ namespace services::dispatcher { namespace {
         // operator_fk_cascade does the mirror. The operator floor refuses the
         // shape at DML time — which is the whole problem being fixed here: the
         // ALTER answered SUCCESS and then EVERY INSERT into the child and EVERY
-        // DELETE from the parent were refused permanently, with no
-        // `ALTER TABLE ... DROP CONSTRAINT` to take it back. Refused here it never
+        // DELETE from the parent were refused until a DROP CONSTRAINT took the
+        // constraint back. Refused here it never
         // reaches pg_constraint, so the tables stay usable and the user is told at
         // the statement that was actually wrong. PostgreSQL refuses it here too.
         if (node->local_col_names().size() != node->ref_col_names().size()) {
@@ -1455,6 +1455,39 @@ namespace services::dispatcher { namespace {
                 auto* node = static_cast<node_alter_table_t*>(root.get());
                 if (const auto* tbl = node->table_metadata()) {
                     node->set_relkind(tbl->relkind);
+                }
+                // DROP CONSTRAINT: resolve each written name to its pg_constraint
+                // oid off the names-only gather. A missing name refuses here —
+                // except under IF EXISTS, where the clause stays INVALID_OID and
+                // the planner skips it. An unresolved TABLE is not judged here:
+                // the planner bails and the executor refuses with the relation's
+                // name (the true cause).
+                if (node->table_oid() != components::catalog::INVALID_OID) {
+                    for (auto& sub : node->subcommands()) {
+                        if (sub.kind != components::logical_plan::alter_table_kind::drop_constraint) {
+                            continue;
+                        }
+                        const auto* names = resolves ? resolves->constraint_names_for(node->table_oid()) : nullptr;
+                        auto found = components::catalog::INVALID_OID;
+                        if (names) {
+                            for (const auto& [cname, coid] : names->constraint_oids) {
+                                if (cname == sub.constraint_name) {
+                                    found = coid;
+                                    break;
+                                }
+                            }
+                        }
+                        if (found == components::catalog::INVALID_OID && !sub.missing_ok) {
+                            std::pmr::string msg{resource};
+                            msg.append("constraint \"");
+                            msg.append(sub.constraint_name.data(), sub.constraint_name.size());
+                            msg.append("\" of relation \"");
+                            msg.append(node->relname().data(), node->relname().size());
+                            msg.append("\" does not exist");
+                            co_return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
+                        }
+                        sub.constraint_oid = found;
+                    }
                 }
                 break;
             }

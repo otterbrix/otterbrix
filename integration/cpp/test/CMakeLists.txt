@@ -176,6 +176,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_select_intermediate.cpp
         test_create_table_duplicate.cpp
         test_create_table_with_options.cpp
+        test_alter_drop_constraint.cpp
+        test_drop_default_restrict.cpp
         test_drop_index_repeat.cpp
         test_drop_restrict_deptype.cpp
         test_fixture_root_qualification.cpp

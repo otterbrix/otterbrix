@@ -687,7 +687,7 @@ namespace components::planner {
         // Pre-conditions: enrich_logical_plan has stamped table_oid on the node. No OIDs are pre-allocated: the add
         // operator allocates its own attoid at execution time (one per clause) since attnum/attoid are per-row, and
         // the drop operator looks up the attoid by (table_oid, column_name) at execution time too.
-        node_ptr rewrite_alter_table(std::pmr::memory_resource* r, node_ptr node) {
+        core::result_wrapper_t<node_ptr> rewrite_alter_table(std::pmr::memory_resource* r, node_ptr node) {
             auto* alter = static_cast<logical_plan::node_alter_table_t*>(node.get());
             const auto table_oid = alter->table_oid();
             if (table_oid == catalog::INVALID_OID) {
@@ -770,21 +770,39 @@ namespace components::planner {
                         // (dependency-free; lowers to operator_computed_field_unregister_t).
                         drop->set_computed(true);
                     } else {
-                        // RESTRICT/CASCADE/neither comes from the subcommand — the
-                        // transformer copies the grammar's AlterTableCmd::behavior as of
-                        // 2026-09-05 (components/sql/transformer/impl/transform_alter_table.cpp,
-                        // `sub.behavior = drop_behavior_of(cmd->behavior)`), so `unspecified`
-                        // now means the user wrote neither word; the operator refuses blocked drops
-                        // under restrict_ and treats `unspecified` as CASCADE
-                        // (components/catalog/results/ddl_result.hpp). Hardcoding a
-                        // behavior here would make the written word unreachable by
-                        // construction.
+                        // RESTRICT/CASCADE comes from the subcommand (the transformer
+                        // copies the grammar's AlterTableCmd::behavior through
+                        // drop_behavior_of; bare = restrict_, PostgreSQL parity).
+                        // Hardcoding a behavior here would make the written word
+                        // unreachable by construction.
                         drop->set_behavior(sub.behavior);
                     }
                     seq->append_child(drop);
+                } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {
+                    if (sub.constraint_oid == catalog::INVALID_OID) {
+                        if (sub.missing_ok) {
+                            // IF EXISTS on a missing name: the one sanctioned no-op.
+                            continue;
+                        }
+                        // Enrich refuses this before the rewrite runs; a host-built
+                        // plan that skipped enrich must not fall through to an empty
+                        // sequence claiming the constraint was removed (rule 6).
+                        std::pmr::string msg{"ALTER TABLE ... DROP CONSTRAINT ", r};
+                        msg.append(sub.constraint_name.data(), sub.constraint_name.size());
+                        msg.append(": constraint oid unresolved — nothing was dropped");
+                        return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
+                    }
+                    // Same tear-down DROP TABLE uses, seeded at the constraint: the
+                    // cascade operator deletes the pg_constraint row and both
+                    // pg_depend legs, honoring RESTRICT/CASCADE on dependents.
+                    seq->append_child(boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(
+                        r,
+                        catalog::well_known_oid::pg_constraint_table,
+                        sub.constraint_oid,
+                        sub.behavior)));
                 }
             }
-            return seq;
+            return node_ptr{seq};
         }
 
         // DDL-aware walk: handles DDL nodes in addition to DML rewrites. Returns

@@ -70,6 +70,11 @@ namespace components::operators {
                                 std::pmr::string{"operator is not a pipeline source", resource_});
     }
 
+    actor_zeta::unique_future<void> operator_t::release_cursor(pipeline::context_t* /*ctx*/) {
+        // Default: this operator owns no storage cursor, so there is nothing to release.
+        co_return;
+    }
+
     core::error_t
     operator_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& /*input*/, chunks_vector_t& /*out*/) {
         return core::error_t(core::error_code_t::physical_plan_error,

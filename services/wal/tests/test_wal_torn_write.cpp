@@ -74,7 +74,8 @@ TEST_CASE("wal::torn::table_storage_tracks_wal_id_chain") {
     REQUIRE(ts.prev_checkpoint_wal_id() == 42);
 
     // Crucial for truncate_before: prev (42) is what bounds safe WAL deletion, not 100.
-    // Truncating ≤ 100 would discard records [43..100] needed if recovery falls back to .prev.
+    // Truncating ≤ 100 would discard records [43..100] needed if a later round dies before
+    // its header commit and the two-slot root reopens the superseded root (floor 42).
     REQUIRE(ts.prev_checkpoint_wal_id() < ts.checkpoint_wal_id());
 
     cleanup();

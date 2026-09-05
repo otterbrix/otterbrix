@@ -29,7 +29,6 @@ namespace components::catalog {
                                                            const std::string& dbname,
                                                            const std::string& relname,
                                                            const std::vector<table::column_definition_t>& columns,
-                                                           bool is_disk_storage,
                                                            oid_t namespace_oid,
                                                            oid_batch_t& oid_batch,
                                                            char relkind = relkind::regular);
@@ -84,13 +83,17 @@ namespace components::catalog {
     //   pg_depend (index→table 'a') + N×pg_depend (index→column 'i').
     // column_attoids[i] is the pg_attribute.attoid for the i-th indexed column;
     // routing identity (no name lookup needed).
+    // indtype: single-char physical-backend code (catalog_codes.hpp indtype
+    // namespace). Written ALWAYS — the caller converts from
+    // logical_plan::index_type via index_type_to_indtype_code and must not pass 0.
     // oid_batch must hold at least 1 OID (index_oid).
     std::vector<catalog_write_t> build_create_index_writes(std::pmr::memory_resource* resource,
                                                            const std::string& index_name,
                                                            oid_t namespace_oid,
                                                            oid_t table_oid,
                                                            oid_t index_oid,
-                                                           const std::vector<oid_t>& column_attoids);
+                                                           const std::vector<oid_t>& column_attoids,
+                                                           char indtype);
 
     // Writes pg_type + pg_depend (type→ns 'n').
     // type_spec may be empty for built-in types.
@@ -154,11 +157,13 @@ namespace components::catalog {
                                                 std::int64_t added_at_commit_id = 0,
                                                 std::int64_t dropped_at_commit_id = 0);
 
+    // indtype: same contract as build_create_index_writes — always written, never 0.
     vector::data_chunk_t build_pg_index_row(std::pmr::memory_resource* resource,
                                             oid_t index_oid,
                                             oid_t indrelid,
                                             const std::string& indkey,
-                                            bool indisvalid);
+                                            bool indisvalid,
+                                            char indtype);
 
     // pg_computed_column row builder for tests / primitive-write callers.
     // Schema: [relid, attoid, attname, atttypid, atttypspec, attversion,

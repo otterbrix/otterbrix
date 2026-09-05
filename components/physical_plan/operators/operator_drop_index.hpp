@@ -28,7 +28,7 @@ namespace components::operators {
         operator_drop_index_t(std::pmr::memory_resource* resource,
                               log_t log,
                               components::catalog::oid_t table_oid,
-                              std::string index_name,
+                              components::catalog::oid_t index_oid,
                               std::vector<catalog_delete_t> catalog_deletes);
 
         // Sourceless SINK leaf (no data pipeline, no children): the executor
@@ -41,7 +41,7 @@ namespace components::operators {
 
     private:
         components::catalog::oid_t table_oid_;
-        std::string index_name_;
+        components::catalog::oid_t index_oid_;
         std::vector<catalog_delete_t> catalog_deletes_;
     };
 

@@ -28,7 +28,6 @@ namespace components::logical_plan {
     //   type_oid_      — type
     //   index_oid_     — index
     //   table_oid()    — collection, view, sequence, macro, index (base field)
-    //   runtime_index_name_ — index only
     // The OIDs are stamped by enrich_logical_plan from the sibling
     // catalog_resolve_* nodes; they are INVALID_OID at parse time.
     class node_drop_t final : public node_t {
@@ -49,12 +48,6 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // Runtime label for the index actor dispatch (manager_index_t keys
-        // engine entries by (table_oid, name)). Stamped by enrich from the
-        // sibling catalog_resolve (kind=table) node; never user-typed via the ctor.
-        const std::string& runtime_index_name() const noexcept { return runtime_index_name_; }
-        void set_runtime_index_name(std::string name) { runtime_index_name_ = std::move(name); }
-
         // No setter — DROP is always-CASCADE; RESTRICT/CASCADE is not wired
         // from the parser, so behavior_ stays at its default.
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
@@ -67,7 +60,6 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
-        std::string runtime_index_name_;
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
     };
 

@@ -88,7 +88,7 @@ namespace components::operators {
         // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first
         // append_pg_catalog_row instead of the user append-first path. The row is
         // a ready-made pg_catalog tuple built by ddl_metadata_builder (atttypid /
-        // attoid already allocated), so the user preprocess — _id dedup, NOT-NULL
+        // attoid already allocated), so the user preprocess — NOT-NULL
         // checks, DEFAULT fill, type promotion, RETURNING readback — is skipped;
         // append_pg_catalog_row runs the lighter catalog preprocess on the agent.
         // The returned range MUST land in ctx->pg_catalog_appends (NOT dml_*):
@@ -148,7 +148,7 @@ namespace components::operators {
                 };
 
                 // Build the whole slice up front: storage_append consumes its copy
-                // (schema adoption / _id dedup mutate it), while index needs the
+                // (schema adoption / column expansion mutate it), while index needs the
                 // submitted rows intact. WAL is written WAL-FIRST by the disk agent
                 // inside storage_append (preprocess, allocate start_row, write
                 // PHYSICAL_INSERT, materialize — mailbox-atomic), so the operator
@@ -170,7 +170,7 @@ namespace components::operators {
                 }
 
                 // storage_append — WAL-FIRST canonical append (batched, handles
-                // schema adoption + _id dedup). The reply carries any
+                // schema adoption + column expansion). The reply carries any
                 // write_conflict / out_of_memory as a value.
                 auto [_a, af] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::storage_append,
@@ -184,7 +184,7 @@ namespace components::operators {
                 auto [start_row, count] = append_result.value();
 
                 // Mirror to index (txn-aware) — one batched send. Skipped when the
-                // append dropped every row (count==0, e.g. all duplicate _id).
+                // append materialized nothing (count==0, e.g. a not-owned-oid no-op).
                 if (mirror_index && count > 0) {
 #ifdef DEV_MODE
                     g_insert_index_mirror_sends.fetch_add(1, std::memory_order_relaxed);
@@ -215,13 +215,38 @@ namespace components::operators {
                     // present in the projected rows. The read returns
                     // ≤DEFAULT_VECTOR_CAPACITY chunks; project each into the
                     // cross-flush accumulator.
+                    //
+                    // A1: this is a POINT read by row id, not a positional window. Appends
+                    // within one txn are contiguous, so storage_append's reply range
+                    // [start_row, start_row + count) IS the set of ids just written — name
+                    // them explicitly instead of asking for whatever currently sits at those
+                    // positions.
+                    vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
+                    auto* ids = row_ids.data<int64_t>();
+                    for (uint64_t i = 0; i < count; i++) {
+                        ids[i] = static_cast<int64_t>(start_row + i);
+                    }
                     auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_scan_segment,
+                                                     &services::disk::manager_disk_t::storage_fetch,
                                                      ctx->session,
                                                      table_oid_,
-                                                     static_cast<int64_t>(start_row),
-                                                     count);
-                    auto segments = co_await std::move(sf);
+                                                     std::move(row_ids),
+                                                     count,
+                                                     std::vector<size_t>{});
+                    auto segments_r = co_await std::move(sf);
+                    if (segments_r.has_error()) {
+                        // A failed re-read (buffer-pool OOM / corrupt overflow block)
+                        // must fail the statement — RETURNING built from silently
+                        // empty cells is the data loss this channel exists to stop.
+                        // The rows ARE already appended (WAL-first): carry the range
+                        // with the error so record_flush registers it and the failed-
+                        // statement abort tail can revert the physical append.
+                        co_return dml_detail::flush_outcome_t{segments_r.error(),
+                                                              true,
+                                                              static_cast<int64_t>(start_row),
+                                                              count};
+                    }
+                    auto segments = std::move(segments_r.value());
                     for (auto& seg : segments) {
                         if (seg.size() == 0) {
                             continue;

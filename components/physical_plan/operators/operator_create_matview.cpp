@@ -14,43 +14,31 @@ namespace components::operators {
                                                          components::catalog::oid_t mv_oid,
                                                          components::catalog::oid_t namespace_oid,
                                                          std::vector<table::column_definition_t> columns,
-                                                         bool is_disk_storage,
                                                          std::vector<catalog_write_t> catalog_writes,
                                                          operator_ptr body_op)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , mv_oid_(mv_oid)
         , namespace_oid_(namespace_oid)
         , columns_(std::move(columns))
-        , is_disk_storage_(is_disk_storage)
         , catalog_writes_(std::move(catalog_writes))
         , body_op_(std::move(body_op)) {}
 
     actor_zeta::unique_future<void> operator_create_matview_t::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        // Create physical heap storage.
-        if (columns_.empty()) {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::create_storage,
-                                           ctx->session,
-                                           mv_oid_,
-                                           namespace_oid_);
-            co_await std::move(f);
-        } else if (is_disk_storage_) {
+        // Create physical heap storage. B1a: always disk-backed (plan-gen
+        // guarantees non-empty inferred columns for a matview —
+        // create_plan_create_matview refuses an empty set). B1b: a matview is
+        // relkind='m', NEVER computed — passed explicitly so even a degenerate
+        // zero-column matview could not come up as a dynamic-schema table.
+        {
             auto [_, f] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::create_storage_disk,
                                            ctx->session,
                                            mv_oid_,
                                            namespace_oid_,
-                                           std::move(columns_));
-            co_await std::move(f);
-        } else {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::create_storage_with_columns,
-                                           ctx->session,
-                                           mv_oid_,
-                                           namespace_oid_,
-                                           std::move(columns_));
+                                           std::move(columns_),
+                                           /*is_computed=*/false);
             co_await std::move(f);
         }
 

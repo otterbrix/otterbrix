@@ -280,3 +280,68 @@ TEST_CASE("wal_binary::data_chunk_binary_with_nulls") {
         REQUIRE(result.data[col].validity().row_is_valid(9));
     }
 }
+
+// The WAL chunk codec's hand-rolled type header had no STRUCT leg: the writer emitted
+// "no extension" and the reader rebuilt a bare STRUCT type; constructing the decoded
+// chunk then walked the missing struct extension's field types through a garbage
+// pointer — a FLAKY SIGSEGV at STARTUP (manager_wal_replicate's read_all_records) for
+// ANY log containing an insert into a table with a struct column. The header now
+// carries the canonical type spec (types::encode_type_spec / decode_type_spec), which
+// round-trips every persistable type exactly — struct fields, decimal width/scale,
+// nested children and aliases — so a new type can never again decode into a
+// crash-shaped half-type. (The nested column PAYLOAD is still not carried by this
+// codec — a separate known gap — but the TYPE and the null mask must round-trip.)
+TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+
+    std::pmr::vector<complex_logical_type> fields(&resource);
+    fields.emplace_back(logical_type::BIGINT, "a");
+    fields.emplace_back(logical_type::BIGINT, "b");
+    auto pair_type = complex_logical_type::create_struct("np_pair", fields);
+
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.push_back(pair_type);
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    for (uint64_t row = 0; row < 3; row++) {
+        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+        if (row == 1) {
+            chunk.set_value(1, row, logical_value_t{&resource, nullptr}); // whole-struct NULL
+        } else {
+            std::vector<logical_value_t> members;
+            members.emplace_back(&resource, static_cast<int64_t>(row * 10));
+            members.emplace_back(&resource, static_cast<int64_t>(row * 20));
+            chunk.set_value(1, row, logical_value_t::create_struct(&resource, pair_type, members));
+        }
+    }
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+    REQUIRE(buffer.size() > 0);
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+
+    REQUIRE(ok);
+    REQUIRE(result.column_count() == 2);
+    REQUIRE(result.size() == 3);
+
+    // The struct TYPE must round-trip completely: STRUCT tag, field count, field types.
+    const auto& decoded_type = result.data[1].type();
+    REQUIRE(decoded_type.type() == logical_type::STRUCT);
+    REQUIRE(decoded_type.child_types().size() == 2);
+    REQUIRE(decoded_type.child_types()[0].type() == logical_type::BIGINT);
+    REQUIRE(decoded_type.child_types()[1].type() == logical_type::BIGINT);
+
+    // The null mask covers every column, struct included: the whole-struct NULL survives.
+    REQUIRE(result.data[1].validity().row_is_valid(0));
+    REQUIRE_FALSE(result.data[1].validity().row_is_valid(1));
+    REQUIRE(result.data[1].validity().row_is_valid(2));
+
+    // The scalar column's data still round-trips alongside the struct column.
+    for (uint64_t row = 0; row < 3; row++) {
+        REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+    }
+}

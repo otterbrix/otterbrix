@@ -345,7 +345,9 @@ namespace services::wal {
     // W-TORN contract: the caller (manager_dispatcher_t after checkpoint_all)
     // must pass min(prev_checkpoint_wal_id_) across all DISK tables — NOT the
     // latest committed wal_id. The latest wal_id would discard records still
-    // needed if any table falls back to its .prev backup at next startup.
+    // needed if a table's next checkpoint round dies before its header commit:
+    // the two-slot root then reopens the SUPERSEDED root at next startup, whose
+    // WAL floor is the prev id.
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<void> wal_worker_t::truncate_before(session_id_t /*session*/,

@@ -76,7 +76,7 @@ namespace components::operators {
     // request into ≤ DEFAULT_VECTOR_CAPACITY chunks and stamps each chunk's absolute row_ids (so a
     // downstream DELETE/UPDATE/index sees the right rows), returning them as a vector that source_next
     // buffers. An empty window (or an OID this agent does not own) yields an empty vector.
-    actor_zeta::unique_future<std::pmr::vector<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
     index_scan::fetch_matched_window(pipeline::context_t* ctx) {
         const size_t count = (end_ > pos_) ? (end_ - pos_) : 0;
         if (count == 0) {
@@ -128,7 +128,17 @@ namespace components::operators {
         // ≤ DEFAULT_VECTOR_CAPACITY chunks buffered in batch_. Subsequent calls just drain the buffer.
         if (!fetched_) {
             fetched_ = true;
-            batch_ = co_await fetch_matched_window(ctx);
+            auto batch_r = co_await fetch_matched_window(ctx);
+            if (batch_r.has_error()) {
+                // The disk agent's point-fetch failed (buffer-pool OOM / corrupt
+                // overflow block): surface it through the source's own error channel
+                // instead of emitting silently empty rows — same convention as
+                // full_scan's fetch error path.
+                set_error(batch_r.error());
+                mark_failed();
+                co_return batch_r.convert_error<vector::data_chunk_t>();
+            }
+            batch_ = std::move(batch_r.value());
             batch_pos_ = 0;
         }
 

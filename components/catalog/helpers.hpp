@@ -69,6 +69,7 @@ namespace components::catalog {
         constexpr std::uint64_t indrelid = 1;
         constexpr std::uint64_t indkey = 2;
         constexpr std::uint64_t indisvalid = 3;
+        constexpr std::uint64_t indtype = 4;
     } // namespace pg_index_col
     namespace pg_computed_column_col {
         constexpr std::uint64_t relid = 0;

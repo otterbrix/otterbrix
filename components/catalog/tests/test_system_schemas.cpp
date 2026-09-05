@@ -131,7 +131,7 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
                     "attdefspec",
                     "added_at_commit_id",
                     "dropped_at_commit_id"});
-    require_layout("pg_index", {"indexrelid", "indrelid", "indkey", "indisvalid"});
+    require_layout("pg_index", {"indexrelid", "indrelid", "indkey", "indisvalid", "indtype"});
     require_layout("pg_computed_column",
                    {"relid", "attoid", "attname", "atttypid", "atttypspec", "attversion", "attrefcount"});
 }
@@ -194,6 +194,7 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     require_col("pg_index", pg_index_col::indrelid, "indrelid");
     require_col("pg_index", pg_index_col::indkey, "indkey");
     require_col("pg_index", pg_index_col::indisvalid, "indisvalid");
+    require_col("pg_index", pg_index_col::indtype, "indtype");
     // pg_computed_column
     require_col("pg_computed_column", pg_computed_column_col::relid, "relid");
     require_col("pg_computed_column", pg_computed_column_col::attoid, "attoid");

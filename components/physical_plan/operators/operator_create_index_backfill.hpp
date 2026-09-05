@@ -35,7 +35,6 @@ namespace components::operators {
     public:
         operator_create_index_backfill_t(std::pmr::memory_resource* resource,
                                          log_t log,
-                                         std::string index_name,
                                          components::logical_plan::index_type index_type,
                                          std::pmr::vector<components::expressions::key_t> keys,
                                          components::catalog::oid_t table_oid,
@@ -55,7 +54,6 @@ namespace components::operators {
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        std::string index_name_;
         components::logical_plan::index_type index_type_;
         std::pmr::vector<components::expressions::key_t> keys_;
         components::catalog::oid_t table_oid_;

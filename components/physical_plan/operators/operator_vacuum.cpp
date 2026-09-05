@@ -70,23 +70,52 @@ namespace components::operators {
         // repopulate their indexes: the compact pass above invalidated row positions.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
+        // A1: the read contract has exactly two legs — streaming-by-predicate
+        // (storage_fetch_next_batch) and point-by-row-id (storage_fetch). This used to be a
+        // third leg that replied with every batch at once; it is now the streaming leg
+        // drained to completion, which is the same result with an error channel. Draining is
+        // MANDATORY, not merely tidy: a live cursor gates compact() on its oid, so an
+        // abandoned one would wedge the very table VACUUM is here to reclaim. Hence the
+        // explicit release on the error exit (A4).
         std::pmr::vector<components::vector::data_chunk_t> pg_class_batches(resource_);
         {
-            auto [_sc, scf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::storage_scan,
-                                               ctx->session,
-                                               kPgClass,
-                                               std::unique_ptr<components::table::table_filter_t>{},
-                                               /*limit=*/int64_t{-1},
-                                               std::vector<size_t>{},
-                                               ctx->txn);
-            auto scan_r = co_await std::move(scf);
-            if (scan_r.has_error()) {
-                set_error(scan_r.error());
+            uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
+            bool scan_failed = false;
+            while (true) {
+                auto [_sc, scf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                   ctx->session,
+                                                   kPgClass,
+                                                   cursor_id,
+                                                   std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                   /*limit=*/int64_t{-1},
+                                                   std::vector<size_t>{},
+                                                   ctx->txn);
+                auto scan_r = co_await std::move(scf);
+                if (scan_r.has_error()) {
+                    set_error(scan_r.error());
+                    scan_failed = true;
+                    break;
+                }
+                auto reply = std::move(scan_r.value());
+                cursor_id = reply.cursor_id;
+                if (!reply.batch || reply.batch->size() == 0) {
+                    break; // drained: the agent replied an empty batch and erased the cursor
+                }
+                pg_class_batches.emplace_back(std::move(*reply.batch));
+            }
+            if (scan_failed) {
+                if (cursor_id != 0) {
+                    auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
+                                                       &services::disk::manager_disk_t::storage_close_cursor,
+                                                       ctx->session,
+                                                       kPgClass,
+                                                       cursor_id);
+                    co_await std::move(ccf);
+                }
                 mark_failed();
                 co_return;
             }
-            pg_class_batches = std::move(scan_r.value());
         }
         if (pg_class_batches.empty()) {
             mark_executed();
@@ -145,17 +174,48 @@ namespace components::operators {
             }
 
             // total==0 (table emptied by compact) still repopulates: the clear
-            // step inside repopulate_table wipes stale index entries.
-            // storage_scan_segment returns an empty vector for count==0.
+            // step inside repopulate_table wipes stale index entries. A drained scan of an
+            // empty table yields an empty vector, which is exactly what repopulate_table
+            // expects.
             std::pmr::vector<components::vector::data_chunk_t> scan_data(resource_);
             {
-                auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_scan_segment,
-                                                   ctx->session,
-                                                   tbl.table_oid,
-                                                   std::int64_t{0},
-                                                   total);
-                scan_data = co_await std::move(ssf);
+                uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
+                bool scan_failed = false;
+                while (true) {
+                    auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
+                                                       &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                       ctx->session,
+                                                       tbl.table_oid,
+                                                       cursor_id,
+                                                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                       /*limit=*/int64_t{-1},
+                                                       std::vector<size_t>{},
+                                                       ctx->txn);
+                    auto scan_r = co_await std::move(ssf);
+                    if (scan_r.has_error()) {
+                        set_error(scan_r.error());
+                        scan_failed = true;
+                        break;
+                    }
+                    auto reply = std::move(scan_r.value());
+                    cursor_id = reply.cursor_id;
+                    if (!reply.batch || reply.batch->size() == 0) {
+                        break;
+                    }
+                    scan_data.emplace_back(std::move(*reply.batch));
+                }
+                if (scan_failed) {
+                    if (cursor_id != 0) {
+                        auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
+                                                           &services::disk::manager_disk_t::storage_close_cursor,
+                                                           ctx->session,
+                                                           tbl.table_oid,
+                                                           cursor_id);
+                        co_await std::move(ccf);
+                    }
+                    mark_failed();
+                    co_return;
+                }
             }
 
             auto [_rp, rpf] = actor_zeta::send(ctx->index_address,
@@ -165,7 +225,15 @@ namespace components::operators {
                                                std::move(scan_data),
                                                total,
                                                ctx->execution_context.timezone_offset);
-            co_await std::move(rpf);
+            auto repopulate_error = co_await std::move(rpf);
+            if (repopulate_error.contains_error()) {
+                // Producer defect in the rebuild feed (scan chunks without
+                // physical row_ids): fail the VACUUM statement loudly rather
+                // than rebuild an index that lies.
+                set_error(repopulate_error);
+                mark_failed();
+                co_return;
+            }
         }
 
         // GC pg_computed_column rows for relkind='g' tables.

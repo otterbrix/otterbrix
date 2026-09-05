@@ -33,7 +33,6 @@ namespace components::operators {
                                   components::catalog::oid_t mv_oid,
                                   components::catalog::oid_t namespace_oid,
                                   std::vector<table::column_definition_t> columns,
-                                  bool is_disk_storage,
                                   std::vector<catalog_write_t> catalog_writes,
                                   operator_ptr body_op);
 
@@ -50,7 +49,6 @@ namespace components::operators {
         components::catalog::oid_t mv_oid_;
         components::catalog::oid_t namespace_oid_;
         std::vector<table::column_definition_t> columns_;
-        bool is_disk_storage_;
         std::vector<catalog_write_t> catalog_writes_;
         operator_ptr body_op_;
     };

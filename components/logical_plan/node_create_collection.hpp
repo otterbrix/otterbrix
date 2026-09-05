@@ -14,14 +14,12 @@ namespace components::logical_plan {
     public:
         explicit node_create_collection_t(std::pmr::memory_resource* resource,
                                           core::relname_t relname,
-                                          bool disk_storage = false,
                                           bool if_not_exists = false);
 
         node_create_collection_t(std::pmr::memory_resource* resource,
                                  core::relname_t relname,
                                  std::vector<table::column_definition_t> column_definitions,
                                  std::vector<table::table_constraint_t> constraints,
-                                 bool disk_storage = false,
                                  bool if_not_exists = false);
 
         std::pmr::vector<types::complex_logical_type> schema() const;
@@ -30,7 +28,6 @@ namespace components::logical_plan {
         const std::vector<table::column_definition_t>& column_definitions() const;
         const std::vector<table::table_constraint_t>& constraints() const;
 
-        bool is_disk_storage() const { return disk_storage_; }
         bool if_not_exists() const noexcept { return if_not_exists_; }
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
@@ -45,7 +42,6 @@ namespace components::logical_plan {
         std::string relname_;
         std::vector<table::column_definition_t> column_definitions_;
         std::vector<table::table_constraint_t> constraints_;
-        bool disk_storage_{false};
         bool if_not_exists_{false};
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
     };
@@ -59,7 +55,6 @@ namespace components::logical_plan {
                                                            core::relname_t relname,
                                                            std::vector<table::column_definition_t> column_definitions,
                                                            std::vector<table::table_constraint_t> constraints,
-                                                           bool disk_storage = false,
                                                            bool if_not_exists = false);
 
 } // namespace components::logical_plan

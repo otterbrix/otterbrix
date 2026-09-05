@@ -65,7 +65,7 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
         oids.oids.push_back(static_cast<oid_t>(1000 + i));
     }
 
-    auto writes = build_create_table_writes(&poison, "db", "t", columns, false, 100, oids);
+    auto writes = build_create_table_writes(&poison, "db", "t", columns, 100, oids);
 
     const auto* schema = find_system_table("pg_attribute");
     REQUIRE(schema != nullptr);
@@ -89,4 +89,50 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
     }
     // Positive control: if no pg_attribute chunk was produced the loop above checked nothing.
     REQUIRE(saw_pg_attribute);
+}
+
+// B1a: every table is disk-backed. The pg_class row's relstoragemode column stays
+// (write-only, no readers) and is ALWAYS written 'd' — for regular tables and for
+// the schemaless computed (relkind='g') creation path alike. This is the write-site
+// half of the B1a gate; the integration half (a plain CREATE TABLE producing a
+// .otbx) lives in test_persistence::b1a_disk_is_default.
+TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
+    using namespace components::catalog;
+
+    poison_resource_t poison(std::pmr::new_delete_resource());
+
+    const auto* schema = find_system_table("pg_class");
+    REQUIRE(schema != nullptr);
+
+    auto check_pg_class_mode = [&](const std::vector<catalog_write_t>& writes) {
+        bool saw_pg_class = false;
+        for (const auto& w : writes) {
+            if (w.table_oid != well_known_oid::pg_class_table) {
+                continue;
+            }
+            saw_pg_class = true;
+            REQUIRE(w.row.size() == 1);
+            REQUIRE_FALSE(w.row.is_null(pg_class_col::relstoragemode, 0));
+            CHECK(w.row.get_value<std::string_view>(pg_class_col::relstoragemode, 0) == "d");
+        }
+        REQUIRE(saw_pg_class);
+    };
+
+    // Regular table with columns.
+    {
+        std::vector<components::table::column_definition_t> columns;
+        columns.emplace_back("id", components::types::complex_logical_type(components::types::logical_type::BIGINT));
+        oid_batch_t oids;
+        for (oid_t i = 0; i < 8; ++i) {
+            oids.oids.push_back(static_cast<oid_t>(2000 + i));
+        }
+        check_pg_class_mode(build_create_table_writes(&poison, "db", "t_regular", columns, 100, oids));
+    }
+
+    // Schemaless computed table (relkind='g') — no columns, still 'd'.
+    {
+        oid_batch_t oids;
+        oids.oids.push_back(static_cast<oid_t>(3000));
+        check_pg_class_mode(build_create_table_writes(&poison, "db", "t_computed", {}, 100, oids, relkind::computed));
+    }
 }

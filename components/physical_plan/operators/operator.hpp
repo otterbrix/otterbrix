@@ -245,6 +245,17 @@ namespace components::operators {
         [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx);
 
+        // SOURCE: does this operator currently hold an OPEN, un-drained storage cursor?
+        // Only a scan source that opened one answers true (A4).
+        [[nodiscard]] virtual bool holds_open_cursor() const noexcept { return false; }
+
+        // SOURCE: release an open cursor without draining it. The executor calls this when it
+        // stops pumping a source early — an error mid-pump, a satisfied LIMIT, an abandoned
+        // sub-plan — because nothing agent-side reclaims an abandoned cursor and a live one
+        // permanently gates compact() on its table. Idempotent; default no-op for every
+        // operator that owns no cursor.
+        [[nodiscard]] virtual actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx);
+
         // STREAMING / SINK: consume exactly one input batch. A streaming operator
         // transforms `input` and appends 0+ chunks to `out`; a sink operator folds
         // `input` into bounded internal state and appends nothing. Synchronous: the

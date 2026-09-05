@@ -14,11 +14,11 @@ namespace components::operators {
     //   2. manager_index_t::cleanup_all_versions — drop index entries whose
     //      tuple versions were just reclaimed. Called once if index_address
     //      is set.
-    //   3. Iterate pg_class via storage_scan and repopulate indexes for every
+    //   3. Iterate pg_class via a drained fetch-next scan and repopulate indexes for every
     //      user relation (relkind 'r' = regular, 'g' = computing). Compact in
     //      step 1 changes row positions, so we must, per oid:
     //        a. storage_total_rows(oid)            — post-compact row count
-    //        b. storage_scan_segment(oid, 0, total) — read the consolidated rows
+    //        b. streaming fetch-next drained to completion — read the consolidated rows
     //        c. repopulate_table(oid, chunk, total) — clear on-disk index backing
     //           + in-memory engine, then re-insert at post-compact ids with
     //           txn_id=0 (committed-for-everyone).

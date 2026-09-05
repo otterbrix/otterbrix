@@ -196,7 +196,7 @@ namespace components::operators {
                                                        &services::index::manager_index_t::drop_index,
                                                        ctx->session,
                                                        idx.table_oid,
-                                                       services::index::index_name_t(idx.name.c_str()));
+                                                       idx.index_oid);
                     drop_index_futures.push_back(std::move(dif));
                 }
                 for (auto& f : drop_index_futures) {

@@ -115,7 +115,6 @@ namespace components::catalog {
                               const std::string& /*dbname*/, // namespace resolved via namespace_oid
                               const std::string& relname,
                               const std::vector<table::column_definition_t>& columns,
-                              bool is_disk_storage,
                               oid_t namespace_oid,
                               oid_batch_t& oid_batch,
                               char relkind_char) {
@@ -126,9 +125,10 @@ namespace components::catalog {
 
         // pg_class row (always exactly one).
         if (const auto* def = find_system_table("pg_class")) {
-            const char rk = is_disk_storage ? relstoragemode::disk : relstoragemode::in_memory;
+            // B1a: every table is disk-backed; relstoragemode stays as a write-only
+            // column and is always 'd'.
             const std::string relkind_str(1, relkind_char);
-            const std::string storagemode_str(1, rk);
+            const std::string storagemode_str(1, relstoragemode::disk);
 
             auto chunk =
                 make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
@@ -475,7 +475,8 @@ namespace components::catalog {
                                                            oid_t namespace_oid,
                                                            oid_t table_oid,
                                                            oid_t index_oid,
-                                                           const std::vector<oid_t>& column_attoids) {
+                                                           const std::vector<oid_t>& column_attoids,
+                                                           char indtype) {
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='i')
@@ -497,12 +498,14 @@ namespace components::catalog {
         if (const auto* def = find_system_table("pg_index")) {
             // indkey: CSV of attoids, already resolved by caller
             const std::string indkey = encode_oid_csv(column_attoids);
+            const std::string indtype_str(1, indtype);
             auto chunk =
                 make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, index_oid);
                     set_oid(c, 1, 0, table_oid);
                     set_str(c, 2, 0, indkey, r);
                     set_bool(c, 3, 0, false); // indisvalid
+                    set_str(c, 4, 0, indtype_str, r);
                 });
             result.push_back(make_write(pg_index_full, std::move(chunk)));
         }
@@ -797,17 +800,20 @@ namespace components::catalog {
                                             oid_t index_oid,
                                             oid_t indrelid,
                                             const std::string& indkey,
-                                            bool indisvalid) {
+                                            bool indisvalid,
+                                            char indtype) {
         const auto* def = find_system_table("pg_index");
         if (!def) {
             std::pmr::vector<types::complex_logical_type> empty_types(resource);
             return vector::data_chunk_t(resource, empty_types, 1);
         }
+        const std::string indtype_str(1, indtype);
         return make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
             set_oid(c, 0, 0, index_oid);
             set_oid(c, 1, 0, indrelid);
             set_str(c, 2, 0, indkey, r);
             set_bool(c, 3, 0, indisvalid);
+            set_str(c, 4, 0, indtype_str, r);
         });
     }
 

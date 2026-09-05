@@ -35,14 +35,12 @@ namespace components::operators {
     operator_create_index_backfill_t::operator_create_index_backfill_t(
         std::pmr::memory_resource* resource,
         log_t log,
-        std::string index_name,
         components::logical_plan::index_type index_type,
         std::pmr::vector<components::expressions::key_t> keys,
         components::catalog::oid_t table_oid,
         components::catalog::oid_t index_oid,
         std::string indkey)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
-        , index_name_(std::move(index_name))
         , index_type_(index_type)
         , keys_(std::move(keys))
         , table_oid_(table_oid)
@@ -68,7 +66,7 @@ namespace components::operators {
                                            &services::index::manager_index_t::create_index,
                                            ctx->session,
                                            table_oid_,
-                                           services::index::index_name_t(index_name_),
+                                           index_oid_,
                                            keys_,
                                            index_type_,
                                            ctx->execution_context.timezone_offset);
@@ -83,13 +81,13 @@ namespace components::operators {
         }
 
         // CREATE back-channel: record the index this statement brought into being
-        // (owning table oid + name) so the COMMIT publishes it and a same-txn
+        // (owning table oid + indexrelid) so the COMMIT publishes it and a same-txn
         // ABORT drops the still-uncommitted index (operator_abort_transaction
         // fans manager_index_t::drop_index per drained created_index). Mirror of
         // the operator_create_collection storage back-channel; gated on a
         // non-zero txn id (autocommit/bootstrap txn 0 commits the index inline).
         if (ctx->txn.transaction_id != 0) {
-            ctx->created_indexes.push_back(components::table::created_index_t{table_oid_, std::string{index_name_}});
+            ctx->created_indexes.push_back(components::table::created_index_t{table_oid_, index_oid_});
         }
 
         // WAL retention guard: register build_start_wal_position so a concurrent
@@ -280,7 +278,8 @@ namespace components::operators {
             // matching apply send (phase 3) — the phase split guarantees that.
             std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> old_chunks(resource_);
             old_chunks.resize(wal_records.size());
-            std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>>
+            std::pmr::vector<
+                actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>>
                 fetch_futures(resource_);
             std::pmr::vector<std::size_t> fetch_slots(resource_);
             for (std::size_t r = 0; r < wal_records.size(); ++r) {
@@ -329,8 +328,37 @@ namespace components::operators {
                 }
             }
 
+            // Phase 2: await every fetch back into its slot. An ERROR reply is NOT the
+            // tolerated EMPTY batch ("the rows are physically gone", which manager_index
+            // logs+skips): an index caught up from silently empty OLD chunks diverges
+            // from the table, so the CREATE INDEX must fail loudly instead. The first
+            // error wins, but every in-flight future is still awaited (completion-sync)
+            // so no reply lands on an abandoned continuation.
+            core::error_t fetch_error = core::error_t::no_error();
             for (std::size_t i = 0; i < fetch_futures.size(); ++i) {
-                old_chunks[fetch_slots[i]] = co_await std::move(fetch_futures[i]);
+                auto fetched_r = co_await std::move(fetch_futures[i]);
+                if (fetched_r.has_error()) {
+                    if (!fetch_error.contains_error()) {
+                        fetch_error = fetched_r.error();
+                    }
+                    continue;
+                }
+                old_chunks[fetch_slots[i]] = std::move(fetched_r.value());
+            }
+            if (fetch_error.contains_error()) {
+                // Mirror the streaming-scan / non-convergence exits: the index was never
+                // published and no snapshot saw it, so release the WAL retention guard
+                // before failing so the next checkpoint can truncate freely.
+                if (build_start_registered) {
+                    auto [_u, uf] = actor_zeta::send(ctx->wal_address,
+                                                     &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                                     ctx->session,
+                                                     build_start_wal_position);
+                    co_await std::move(uf);
+                    build_start_registered = false;
+                }
+                set_error(std::move(fetch_error));
+                co_return;
             }
 
             std::pmr::vector<actor_zeta::unique_future<void>> apply_futures(resource_);
@@ -454,11 +482,13 @@ namespace components::operators {
             if (ctx->txn.transaction_id != 0)
                 ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
 
-            auto valid_row = components::catalog::build_pg_index_row(resource(),
-                                                                     index_oid_,
-                                                                     table_oid_,
-                                                                     indkey_,
-                                                                     /*indisvalid=*/true);
+            auto valid_row = components::catalog::build_pg_index_row(
+                resource(),
+                index_oid_,
+                table_oid_,
+                indkey_,
+                /*indisvalid=*/true,
+                components::logical_plan::index_type_to_indtype_code(index_type_));
             auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::append_pg_catalog_row,
                                              exec_ctx,

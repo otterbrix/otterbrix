@@ -181,6 +181,26 @@ namespace components::operators {
         co_return co_await emit_or_skip(ctx, std::move(reply.batch));
     }
 
+    actor_zeta::unique_future<void> full_scan::release_cursor(pipeline::context_t* ctx) {
+        // Nothing to release: never opened, already drained (the agent erased its own entry),
+        // or already released.
+        if (cursor_id_ == 0 || drained_) {
+            co_return;
+        }
+        const uint64_t id = cursor_id_;
+        // Clear FIRST so a re-entry cannot double-send, and so the operator cannot be left
+        // pointing at a cursor the agent has dropped.
+        cursor_id_ = 0;
+        drained_ = true;
+        auto [_s, cf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_close_cursor,
+                                         ctx->session,
+                                         table_oid_,
+                                         id);
+        co_await std::move(cf);
+        co_return;
+    }
+
     // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit
     // above; every scan receives offset()==0, so there is no per-batch skip / re-fetch.)
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>

@@ -96,18 +96,54 @@ namespace components::operators {
                 }
 
                 // total==0 (table emptied by compact) still repopulates: the
-                // clear step inside repopulate_table wipes stale index entries.
-                // storage_scan_segment returns an empty vector for count==0, which
-                // is exactly what repopulate_table expects.
+                // clear step inside repopulate_table wipes stale index entries. A drained
+                // scan of an empty table yields an empty vector, which is exactly what
+                // repopulate_table expects.
+                //
+                // A1: the streaming leg replaces the removed positional-window leg. This
+                // rebuild runs AFTER checkpoint_all, so a cursor opened here cannot affect
+                // the round already done — but a LEAKED one would gate compact() on this oid
+                // for every round after it, permanently. The loop below therefore exits only
+                // drained-or-released, never with the cursor still open.
                 std::pmr::vector<components::vector::data_chunk_t> scan_data(resource_);
                 {
-                    auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_scan_segment,
-                                                       ctx->session,
-                                                       table_oid,
-                                                       std::int64_t{0},
-                                                       total);
-                    scan_data = co_await std::move(ssf);
+                    uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
+                    bool scan_failed = false;
+                    while (true) {
+                        auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
+                                                           &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                           ctx->session,
+                                                           table_oid,
+                                                           cursor_id,
+                                                           std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                           /*limit=*/int64_t{-1},
+                                                           std::vector<size_t>{},
+                                                           ctx->txn);
+                        auto scan_r = co_await std::move(ssf);
+                        if (scan_r.has_error()) {
+                            set_error(scan_r.error());
+                            scan_failed = true;
+                            break;
+                        }
+                        auto reply = std::move(scan_r.value());
+                        cursor_id = reply.cursor_id;
+                        if (!reply.batch || reply.batch->size() == 0) {
+                            break;
+                        }
+                        scan_data.emplace_back(std::move(*reply.batch));
+                    }
+                    if (scan_failed) {
+                        if (cursor_id != 0) {
+                            auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
+                                                               &services::disk::manager_disk_t::storage_close_cursor,
+                                                               ctx->session,
+                                                               table_oid,
+                                                               cursor_id);
+                            co_await std::move(ccf);
+                        }
+                        mark_failed();
+                        co_return;
+                    }
                 }
 
                 auto [_rp, rpf] = actor_zeta::send(ctx->index_address,
@@ -117,7 +153,15 @@ namespace components::operators {
                                                    std::move(scan_data),
                                                    total,
                                                    ctx->execution_context.timezone_offset);
-                co_await std::move(rpf);
+                auto repopulate_error = co_await std::move(rpf);
+                if (repopulate_error.contains_error()) {
+                    // Producer defect in the rebuild feed (scan chunks without
+                    // physical row_ids): fail the CHECKPOINT statement loudly
+                    // rather than rebuild an index that lies.
+                    set_error(repopulate_error);
+                    mark_failed();
+                    co_return;
+                }
             }
         }
 

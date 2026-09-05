@@ -191,7 +191,15 @@ namespace components::operators {
                                                    // No projection: which columns the cascade's consumers read is not
                                                    // proven here, and an unproven narrowing reads back stubs silently.
                                                    std::vector<size_t>{});
-                auto fetched = co_await std::move(ffut); // vector of ≤CAP chunks
+                auto fetched_r = co_await std::move(ffut); // vector of ≤CAP chunks
+                if (fetched_r.has_error()) {
+                    // A failed child-row read must abort the cascade: applying the
+                    // SET NULL / SET DEFAULT transform to silently-empty cells and
+                    // writing them back would corrupt the child rows.
+                    set_error(fetched_r.error());
+                    co_return;
+                }
+                auto fetched = std::move(fetched_r.value());
                 if (fetched.empty())
                     break;
 

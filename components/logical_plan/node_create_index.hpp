@@ -21,6 +21,14 @@ namespace components::logical_plan {
         no_valid = 255
     };
 
+    // pg_index.indtype single-char code (alphabet in catalog_codes.hpp) ↔ index_type.
+    // The encoder returns 0 for no_valid — never a writable value; the decoder returns
+    // no_valid for anything outside the alphabet — callers must reject BOTH loudly
+    // (rule 6: a pg_index row with a missing/unknown indtype is catalog corruption,
+    // not something to default around).
+    char index_type_to_indtype_code(index_type type) noexcept;
+    index_type index_type_from_indtype_code(char code) noexcept;
+
     class node_create_index_t final : public node_t {
     public:
         explicit node_create_index_t(std::pmr::memory_resource* resource,

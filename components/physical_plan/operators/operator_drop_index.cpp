@@ -11,7 +11,7 @@ namespace components::operators {
     operator_drop_index_t::operator_drop_index_t(std::pmr::memory_resource* resource,
                                                  log_t log,
                                                  components::catalog::oid_t table_oid,
-                                                 std::string index_name,
+                                                 components::catalog::oid_t index_oid,
                                                  std::vector<catalog_delete_t> catalog_deletes)
         // Re-using operator_type::create_collection — see the same comment in
         // operator_create_index_metadata_t. The type tag is internally
@@ -19,7 +19,7 @@ namespace components::operators {
         // as a write-only no-output step.
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , table_oid_(table_oid)
-        , index_name_(std::move(index_name))
+        , index_oid_(index_oid)
         , catalog_deletes_(std::move(catalog_deletes)) {}
 
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -45,14 +45,14 @@ namespace components::operators {
             }
         }
 
-        // Drop the in-memory index entry. Tolerant of an unknown name: no error
+        // Drop the in-memory index entry. Tolerant of an unknown oid: no error
         // if the engine never saw the index (metadata existed but backfill never ran).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::drop_index,
                                                ctx->session,
                                                table_oid_,
-                                               services::index::index_name_t(index_name_));
+                                               index_oid_);
             co_await std::move(ixf);
         }
 

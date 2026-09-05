@@ -13,7 +13,7 @@
 //   pg_namespace  — no `nspowner`           : no role/user system today.
 //   pg_class      — no `reltuples/relpages` : optimizer reads counts live from data_table_t.
 //                 — no `reltype`             : composite-row types not implemented.
-//                 — adds `relstoragemode`    : 'd'/'m' for DISK/IN_MEMORY (otterbrix-specific).
+//                 — adds `relstoragemode`    : always 'd' (B1a: disk-only; write-only column).
 //                 — relkind 'g' = computing : doc proposed 'c', but 'c' collides with
 //                                              PG's "composite type" relkind. 'g' aligns
 //                                              with PG GENERATED terminology.
@@ -38,9 +38,11 @@
 //                 — adds `conexpr`            : CHECK expr SQL text (stored verbatim;
 //                                              executor-side evaluation not yet wired).
 //                 — adds confrelid/confkey/conf{matchtype,deltype,updtype} : full FK metadata.
-//   pg_index      — no `indisprimary/indisunique/indtype` : PK/uniqueness is enforced via
-//                                              pg_constraint, not pg_index. Index implementation
-//                                              picker not exposed via SQL DDL yet.
+//   pg_index      — no `indisprimary/indisunique` : PK/uniqueness is enforced via
+//                                              pg_constraint, not pg_index.
+//                 — adds `indtype`            : single-char physical-backend code (see
+//                                              catalog_codes.hpp); restart picks the on-disk
+//                                              reader (bitcask vs B+tree) from it.
 //   pg_database   — added                     : full hierarchy database → namespace → relation.
 //                                              10th system table beyond PG's 9.
 //
@@ -85,7 +87,7 @@ namespace components::catalog {
                 "relkind",
                 str_col(),
                 true); // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite type, 'g' generated/computing
-            c.emplace_back("relstoragemode", str_col(), true); // 'd' DISK, 'm' IN_MEMORY (otterbrix-specific)
+            c.emplace_back("relstoragemode", str_col(), true); // always 'd' (B1a: disk-only, write-only)
             return c;
         }
 
@@ -195,6 +197,10 @@ namespace components::catalog {
             c.emplace_back("indisvalid",
                            bool_col(),
                            true); // false until backfill completes; planner ignores invalid indexes
+            c.emplace_back("indtype",
+                           str_col(),
+                           true); // single-char backend code (see catalog_codes.hpp indtype namespace);
+                                  // NOT nullable, no default — a row without it is catalog corruption
             return c;
         }
 

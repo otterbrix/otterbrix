@@ -75,7 +75,7 @@ namespace components::operators {
         // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent batches the
         // reply into ≤ DEFAULT_VECTOR_CAPACITY chunks (each stamped with its absolute row_ids), which
         // source_next buffers in batch_. An empty window yields an empty vector.
-        actor_zeta::unique_future<std::pmr::vector<vector::data_chunk_t>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
         fetch_matched_window(pipeline::context_t* ctx);
 
         components::catalog::oid_t table_oid_;

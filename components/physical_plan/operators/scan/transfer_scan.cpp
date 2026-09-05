@@ -33,6 +33,22 @@ namespace components::operators {
     // FIRST call OPENs a position-only cursor (no filter); subsequent calls ADVANCE it, one batch
     // each. At most one cross-actor fetch await per call, sequential across calls in this nested
     // operator coroutine — no lost-wakeup. Peak scan memory = one batch.
+    actor_zeta::unique_future<void> transfer_scan::release_cursor(pipeline::context_t* ctx) {
+        if (cursor_id_ == 0 || drained_) {
+            co_return;
+        }
+        const uint64_t id = cursor_id_;
+        cursor_id_ = 0;
+        drained_ = true;
+        auto [_s, cf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_close_cursor,
+                                         ctx->session,
+                                         table_oid_,
+                                         id);
+        co_await std::move(cf);
+        co_return;
+    }
+
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     transfer_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {

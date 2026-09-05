@@ -16,7 +16,7 @@ namespace components::operators {
     //   5. Index rebuild (if index_address present) — checkpoint_inner compact()s
     //      each table, renumbering row ids; the in-memory index engines hold
     //      positional refs into the pre-compact layout. For every all_indexed_oids
-    //      table: storage_total_rows -> storage_scan_segment(0, total) ->
+    //      table: storage_total_rows -> streaming fetch-next drained to completion ->
     //      repopulate_table (clears on-disk index backing + in-memory engine, then
     //      re-inserts at post-compact ids). total==0 still repopulates to wipe
     //      stale entries. MUST follow checkpoint_all (step 3).

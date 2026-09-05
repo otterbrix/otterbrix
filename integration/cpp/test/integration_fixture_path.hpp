@@ -45,3 +45,51 @@ inline const std::filesystem::path& integration_fixture_root() {
 inline std::filesystem::path integration_fixture_path(std::string_view name) {
     return integration_fixture_root() / name;
 }
+
+// The shared temporary directory the pid-qualified root sits in -- named ONCE, here,
+// derived from the root rather than spelled a second time, so there is exactly one place
+// in this directory that knows where fixtures live.
+inline const std::filesystem::path& integration_fixture_shared_root() {
+    static const std::filesystem::path shared = integration_fixture_root().parent_path();
+    return shared;
+}
+
+namespace integration_fixture_detail {
+
+    // Component-wise prefix test. Not `string().starts_with()`: that answers yes for
+    // "/tmp/otterbrix_integration_123" against a root of "/tmp/otterbrix_integration_12",
+    // which is a DIFFERENT process's directory.
+    [[nodiscard]] inline bool path_is_within(const std::filesystem::path& path,
+                                             const std::filesystem::path& prefix) {
+        auto p = path.begin();
+        const auto p_end = path.end();
+        for (auto q = prefix.begin(), q_end = prefix.end(); q != q_end; ++q, ++p) {
+            if (p == p_end || *p != *q) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+} // namespace integration_fixture_detail
+
+// Is `path` safe to hand to a fixture -- that is, is it NOT an unqualified root directly
+// under the shared temporary directory?
+//
+// Two answers are safe and one is not:
+//   * under integration_fixture_root()      -- qualified by this process's pid. Safe.
+//   * outside integration_fixture_shared_root() entirely -- another process's remove_all()
+//     cannot reach it through /tmp at all. Safe, and this is what keeps paths a test builds
+//     itself (a copy of a crashed directory, a caller-supplied root) working.
+//   * anywhere else under the shared temporary directory -- "/tmp/test_foo",
+//     "/tmp/otterbrix/integration/test_foo", even a hand-rolled "/tmp/test_foo_<pid>".
+//     REFUSED: the first two are shared by every binary running at once, and the third is a
+//     SECOND pid convention, which splits the fixture root in two and leaves neither
+//     cleanable by one rule.
+[[nodiscard]] inline bool integration_fixture_path_is_qualified(const std::filesystem::path& path) {
+    const std::filesystem::path normal = path.lexically_normal();
+    if (!integration_fixture_detail::path_is_within(normal, integration_fixture_shared_root())) {
+        return true;
+    }
+    return integration_fixture_detail::path_is_within(normal, integration_fixture_root());
+}

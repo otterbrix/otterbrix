@@ -8,6 +8,8 @@
 #include <components/sql/transformer/utils.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include "integration_fixture_path.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <filesystem>
@@ -25,7 +27,22 @@
 // builds a second config over the same directory and does not clear it). Those are the
 // minority, and they are exactly the ones for which a current_path() default would have been
 // hardest to notice.
+//
+// The path is also REFUSED unless it is qualified -- see
+// integration_fixture_path_is_qualified. That refusal is the structural half of this
+// directory's fixture rule: a new test file that writes "/tmp/test_new_thing" stops on its
+// very first run, in its own case, naming itself -- instead of passing on a quiet machine
+// and corrupting somebody else's data directory on a busy one. Discipline (review, a
+// checklist) had the opposite record here: three new literal roots arrived in one merge.
 inline configuration::config test_create_config(const std::filesystem::path& path) {
+    if (!integration_fixture_path_is_qualified(path)) {
+        FAIL("test_create_config: '" << path.string()
+                                     << "' is an unqualified fixture root: it sits directly under the shared '"
+                                     << integration_fixture_shared_root().string()
+                                     << "', where every test binary running at once clears and reseeds it. Build the "
+                                        "path with integration_fixture_path(\"<leaf>\") -- this process's root is '"
+                                     << integration_fixture_root().string() << "'.");
+    }
     return configuration::config::create_config(path);
     // To change log level
     // config.log.level =log_t::level::trace;

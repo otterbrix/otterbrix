@@ -178,6 +178,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_create_table_with_options.cpp
         test_drop_index_repeat.cpp
         test_drop_restrict_deptype.cpp
+        test_fixture_root_qualification.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow
@@ -185,6 +186,10 @@ set( ${PROJECT_NAME}_SOURCES
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
+
+# The fixture-root guard scans this directory's sources at run time; it needs to know where
+# they are. PRIVATE and not a header constant: the path is a property of THIS build.
+target_compile_definitions(${PROJECT_NAME} PRIVATE INTEGRATION_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE

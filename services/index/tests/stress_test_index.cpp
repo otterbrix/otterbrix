@@ -7,14 +7,13 @@
 #include <memory_resource>
 #include <random>
 #include <services/index/bitcask_index_disk.hpp>
-#include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>
 #include <set>
+#include <string_view>
 #include <unordered_set>
 
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
-using services::index::btree_index_disk_t;
 
 namespace {
     // bitcask's find answers with a core::result_wrapper_t now: a keydir walk that met a
@@ -25,6 +24,20 @@ namespace {
     template<typename found_t>
     auto rows_of(found_t&& found) {
         if constexpr (core::detail::result_like<std::remove_reference_t<found_t>>) {
+            // AND IT SAYS WHICH REFUSAL. A bare REQUIRE_FALSE prints "!true" and nothing
+            // else, which was the whole diagnosis a reader got for a case that fails
+            // intermittently -- while the refusal itself names the segment, the offset and
+            // the reason. Dropping them here is the same silence the store was audited for.
+            //
+            // THE TWO LINES ARE NOT TWO CHECKS OF THE SAME THING. Catch2's FAIL ENDS THE CASE
+            // -- it throws -- so nothing after it runs on the refusing path: that branch IS
+            // the assertion when a find refuses, and the REQUIRE_FALSE underneath is the
+            // assertion on every call that did not. (An earlier note here claimed the
+            // REQUIRE_FALSE stayed "unconditional so every call still counts", which is true
+            // only of the calls that reach it.)
+            if (found.has_error()) {
+                FAIL("find refused: " << std::string_view{found.error().what});
+            }
             REQUIRE_FALSE(found.has_error());
             return std::move(found.value());
         } else {

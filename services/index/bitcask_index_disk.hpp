@@ -279,7 +279,14 @@ namespace services::index {
         // built to report as a value.
         [[nodiscard]] core::error_t initialize_storage();
         [[nodiscard]] core::error_t load_from_disk();
-        void apply_merge_recovery_cleanup();
+        // AN UNFINISHED MERGE THAT CANNOT BE FINISHED IS NOT A TIDINESS PROBLEM. This used to
+        // be void, so a manifest it could not read, an unlink the device refused and a
+        // finished merge whose manifest was never removed all ended in the same silence -- on
+        // the path that OPENS the index. load_from_disk replays every segment it finds, so a
+        // source the merge already rewrote comes back into the keydir together with the keys
+        // the merge dropped: deletes returning as live rows, without a word. It answers now,
+        // and open() carries the answer out.
+        [[nodiscard]] core::error_t apply_merge_recovery_cleanup();
         // THE DIRECTORY LISTING IS A READ, AND A READ CAN REFUSE. This used to answer with a
         // plain vector built by the THROWING std::filesystem overloads on a -fno-exceptions
         // build (rule 2), which means a directory it could not enumerate came back as an
@@ -337,7 +344,10 @@ namespace services::index {
         [[nodiscard]] core::error_t recover_txn_log();
         std::filesystem::path txn_log_file_path() const;
         std::filesystem::path txn_applied_file_path() const;
-        uint64_t read_applied_log_offset() const;
+        // A RESULT, NOT A NUMBER: "no sidecar yet" is zero, "the sidecar is there and will not
+        // be read" is a refusal. They used to be the same zero, and the second one replayed an
+        // already-applied txn log from its start.
+        [[nodiscard]] core::result_wrapper_t<uint64_t> read_applied_log_offset() const;
         // M3.5: returns no_error() once the applied-offset sidecar is durably
         // rewritten, an index_create_fail error if the temp file cannot be
         // opened or flushed. The ctor-time recovery path treats a failure here
@@ -435,6 +445,23 @@ namespace services::index {
         // applied to a different file.
         static constexpr uint64_t no_tail_to_trim{UINT64_MAX};
         uint64_t active_segment_clean_end_{no_tail_to_trim};
+        // THE SAME MEASUREMENT, FOR THE TXN LOG, and the hole it closes is the worse of the
+        // two. recover_txn_log's walk stops at the first byte it cannot read as a frame --
+        // the truncated-tail break, or the loop condition when fewer than a header remain --
+        // and append_txn_record used to ask the DESCRIPTOR where to append instead, i.e.
+        // file_size(), which is past that point. One restart later the stump is an interior
+        // frame, and everything the log holds BEHIND it goes: a header whose magic this build
+        // does not recognise ends the readable frames, and a stump whose declared payload
+        // happens to fit inside the file the next frame grew reaches the CRC check and ends
+        // them there. Both of those used to REFUSE the open instead, permanently, over one
+        // record that ran out of device; both cut the tail now -- which is what makes cutting
+        // it at the RIGHT place, before anything is appended behind it, the difference between
+        // losing the stump and losing every frame written after it.
+        //
+        // Same lifecycle as active_segment_clean_end_: set on every road out of recovery,
+        // consumed (and put back to no_tail_to_trim) by the lazy open inside
+        // append_txn_record, so a measurement can never be applied to a different file.
+        uint64_t txn_log_clean_end_{no_tail_to_trim};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         bool bulk_mode_{false};
         bool bulk_rehash_guard_active_{false};
@@ -450,9 +477,16 @@ namespace services::index {
         // Allocated on resource_. Empty for a fresh, runtime-created instance
         // (no txn-log to gate).
         std::pmr::set<std::uint64_t> committed_txn_ids_;
-        // Set by load_from_disk when a segment's CRC check fails. The
-        // factory checks this flag to convert the failure into a
-        // core::error_t; the direct ctor asserts.
+        // Set by load_from_disk when a ROTATED segment's CRC check fails, and only then. The
+        // qualifier is the whole of the policy: nothing has appended to a rotated segment
+        // since the day it was rotated, so bytes that will not verify there are a DAMAGED FILE
+        // and the records behind them are rows find() would silently stop answering -- open()
+        // turns this flag into a core::error_t and the index does not register, which leaves
+        // the planner a full scan and a correct answer. The ACTIVE segment's failing CRC is
+        // the opposite case, a torn tail of the write path, and it is repaired in place rather
+        // than flagged here; it used to set this flag too, and the refusal that followed was
+        // permanent because open() checked the flag BEFORE the cut could run.
+        // The construct-and-open ctor aborts on what open() then returns.
         bool crc_failure_{false};
     };
 

@@ -296,4 +296,4 @@ CMakeUserPresets.json
 # local build trees (TSAN/ASAN side builds) and session-local agent settings
 build-tsan/
 build-*/
-.claude/
+.cache

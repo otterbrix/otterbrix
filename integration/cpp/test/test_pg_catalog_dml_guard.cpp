@@ -125,3 +125,27 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::insert_into_pg_class_cannot_m
                     "VALUES (999999, 'phantom', 1, 'r', 'd');");
     require_user_table_intact(dispatcher);
 }
+
+// DDL, not DML: once pg_class became resolvable through the ordinary resolver, DROP TABLE
+// and ALTER TABLE reach it through the DDL leg, which never crosses the DML validation
+// arms. Dropping pg_class takes the whole relation list with it — strictly worse than any
+// single DML above.
+TEST_CASE("integration::cpp::pg_catalog_dml_guard::ddl_cannot_drop_or_alter_the_catalog") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/ddl_pg_class"),
+                                                 /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_user_table(dispatcher);
+
+    require_refused(dispatcher, "DROP TABLE pg_catalog.pg_class;");
+    require_user_table_intact(dispatcher);
+
+    require_refused(dispatcher, "ALTER TABLE pg_catalog.pg_class ADD COLUMN smuggled BIGINT;");
+    require_user_table_intact(dispatcher);
+
+    // The namespace itself: PostgreSQL refuses to drop pg_catalog because the
+    // database system requires it. So does otterbrix.
+    require_refused(dispatcher, "DROP DATABASE pg_catalog;");
+    require_user_table_intact(dispatcher);
+}

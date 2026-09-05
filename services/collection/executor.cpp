@@ -1132,6 +1132,16 @@ namespace services::collection::executor {
                                 services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id);
                             err.contains_error()) {
                             error = make_cursor(resource(), err);
+                        } else if (components::catalog::is_catalog_table(drop_node->namespace_oid())) {
+                            // Built-in namespaces (pg_catalog and friends) are seeded at
+                            // bootstrap and nothing can recreate them; PostgreSQL refuses
+                            // dropping pg_catalog because the database system requires it.
+                            error = make_cursor(
+                                resource(),
+                                core::error_t{core::error_code_t::sql_parse_error,
+                                              std::pmr::string{"cannot drop a built-in namespace: the database "
+                                                               "system requires it",
+                                                               resource()}});
                         }
                         break;
                     case drop_target_kind::collection:
@@ -1140,6 +1150,14 @@ namespace services::collection::executor {
                                 services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id);
                             err.contains_error()) {
                             error = make_cursor(resource(), err);
+                        } else if (components::catalog::is_catalog_table(drop_node->table_oid())) {
+                            // Same rule as the DML validation arms: DDL never reaches a
+                            // system catalog. Dropping pg_class takes every relation's
+                            // name with it while their storage stays behind.
+                            error = make_cursor(
+                                resource(),
+                                core::error_t{core::error_code_t::sql_parse_error,
+                                              std::pmr::string{"cannot drop a system catalog table", resource()}});
                         }
                         break;
                     case drop_target_kind::type: {
@@ -1211,6 +1229,15 @@ namespace services::collection::executor {
                 // of each other, each guards a different moment.
                 const auto* alter_node =
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
+                if (components::catalog::is_catalog_table(alter_node->table_oid())) {
+                    // System catalog shape is fixed at bootstrap; altering it from SQL
+                    // desynchronizes every reader that addresses columns by position.
+                    error = make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"cannot alter a system catalog table", resource()}});
+                    break;
+                }
                 for (const auto& cmd : alter_node->subcommands()) {
                     if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
                         continue;

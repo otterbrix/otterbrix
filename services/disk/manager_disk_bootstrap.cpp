@@ -290,6 +290,97 @@ namespace services::disk {
             }
         }
 
+        // The catalog describes itself, the way PostgreSQL's does: pg_class carries a row
+        // for every system table and pg_attribute one for each of their columns. That is
+        // what lets SQL address `pg_catalog.pg_class` through the same resolver as any
+        // user relation. Runs when pg_class is fresh, and catches up databases created
+        // before self-description existed (loaded pg_class without a self-row). The probe
+        // keeps this idempotent: once the self-row persists, no start re-seeds. A probe
+        // ERROR seeds nothing — bootstrap_one already refused an unreadable pg_class, and
+        // guessing over a readable-but-odd one could double-seed.
+        {
+            const bool self_rows_missing = [&] {
+                if (freshly_created.count(pg_class_oid) != 0) {
+                    return true;
+                }
+                auto rk = relkind_for_oid_sync(catalog::well_known_oid::pg_class_table);
+                return !rk.has_error() && rk.value() == '\0';
+            }();
+            const bool self_rows_catch_up = self_rows_missing && freshly_created.count(pg_class_oid) == 0;
+            if (self_rows_missing) {
+                if (const auto* cls_def = catalog::find_system_table(pg_class_oid)) {
+                    const auto before = rows_in_sync(pg_class_oid);
+                    std::uint64_t written = 0;
+                    for (const auto& def : catalog::all_system_tables()) {
+                        const char relkind_ch = def.relkind;
+                        auto row = make_row(resource(), cls_def->columns, [&](data_chunk_t& chunk, auto*) {
+                            chunk.set_value(0, 0, def.relation_oid);
+                            chunk.set_value(1, 0, def.name);
+                            chunk.set_value(2, 0, def.namespace_oid);
+                            chunk.set_value(3, 0, std::string_view{&relkind_ch, 1});
+                            chunk.set_value(4, 0, std::string_view{"d"}); // disk-backed
+                        });
+                        seed_row(pg_class_oid, cls_def->name, row);
+                        ++written;
+                    }
+                    require_seeded(pg_class_oid, cls_def->name, before + written);
+                }
+                if (const auto* att_def = catalog::find_system_table(pg_attribute_oid)) {
+                    const auto before = rows_in_sync(pg_attribute_oid);
+                    std::uint64_t written = 0;
+                    for (const auto& def : catalog::all_system_tables()) {
+                        std::int32_t attnum = 0;
+                        for (const auto& col : def.columns) {
+                            ++attnum;
+                            // Deterministic identity below FIRST_USER_OID: system columns
+                            // are never altered, so a derived attoid stays stable across
+                            // starts and never meets the oid generator.
+                            const auto attoid = static_cast<catalog::oid_t>(
+                                def.relation_oid * 100 + static_cast<catalog::oid_t>(attnum));
+                            const auto atttypid = catalog::builtin_type_to_oid(col.type().type());
+                            const std::string typspec = catalog::encode_type_spec(col.type());
+                            auto row = make_row(resource(), att_def->columns, [&](data_chunk_t& chunk, auto*) {
+                                chunk.set_value(0, 0, attoid);
+                                chunk.set_value(1, 0, def.relation_oid);
+                                chunk.set_value(2, 0, std::string_view{col.name()});
+                                chunk.set_value(3, 0, atttypid);
+                                chunk.set_value(4, 0, attnum);
+                                chunk.set_value(5, 0, col.is_not_null());
+                                chunk.set_value(6, 0, false); // atthasdefault: system columns carry none
+                                chunk.set_value(7, 0, false); // attisdropped
+                                chunk.set_value(8, 0, std::string_view{typspec});
+                                chunk.set_value(9, 0, std::string_view{});
+                                chunk.set_value(10, 0, std::int64_t{0}); // added_at_commit_id
+                                chunk.set_value(11, 0, std::int64_t{0}); // dropped_at_commit_id
+                            });
+                            seed_row(pg_attribute_oid, att_def->name, row);
+                            ++written;
+                        }
+                    }
+                    require_seeded(pg_attribute_oid, att_def->name, before + written);
+                }
+            }
+            if (self_rows_catch_up) {
+                // The fresh-table checkpoint loop below only covers freshly_created;
+                // a caught-up database persists its new self-rows here or re-seeds
+                // them (idempotently) on the next start.
+                for (const auto tbl_oid : {pg_class_oid, pg_attribute_oid}) {
+                    const collection_storage_entry_t* entry = nullptr;
+                    if (!agents_.empty() && agents_[0] != nullptr) {
+                        entry = agents_[0]->storage_entry_sync(tbl_oid);
+                    }
+                    if (entry != nullptr) {
+                        auto cp_r = const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
+                        if (cp_r.has_error()) {
+                            warn(log_,
+                                 "manager_disk bootstrap: catalog self-row checkpoint failed for oid={}",
+                                 static_cast<unsigned>(tbl_oid));
+                        }
+                    }
+                }
+            }
+        }
+
         if (freshly_created.empty() ||
             freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
             // storage_entry_sync returns nullptr for a record-only marker; checkpoint runs

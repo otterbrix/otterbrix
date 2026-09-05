@@ -471,6 +471,22 @@ namespace components::sql::transform {
                             par.emplace_back(std::move(loc));
                             parameter_insert_map_.emplace(ref->number, std::move(par));
                         }
+                        // The column must exist NOW, at its written position: everything downstream
+                        // pairs chunk columns with the written list positionally, so a column first
+                        // materialized at bind time would land after every literal column and put
+                        // its values under another column's name. bind() retypes it from NA in place.
+                        auto it_column =
+                            std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
+                                return column.type().alias() == field_name;
+                            });
+                        if (it_column == chunk.data.end()) {
+                            vector::vector_t placeholder(resource_,
+                                                         types::complex_logical_type{types::logical_type::NA,
+                                                                                     field_name},
+                                                         chunk.capacity());
+                            placeholder.set_null(true);
+                            chunk.data.emplace_back(std::move(placeholder));
+                        }
                     } else if (nodeTag(it_value->data) == T_A_Expr) {
                         // Evaluate constant arithmetic at parse time
                         // TODO: move column matching to validation/optimizer phase for complex path resolution

@@ -165,11 +165,12 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_beside_a_
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(38,20));")->is_success());
 
     // A parameterised INSERT builds its rows through a second path (the chunks are rebuilt at
-    // bind time), so the literal's recorded coordinate has to survive that rebuild.
+    // bind time), so the literal's recorded coordinate has to survive that rebuild. The
+    // parameter leads on purpose: the literal's column is then NOT the chunk's first one.
     std::vector<std::pair<size_t, components::types::logical_value_t>> params{
         {1, components::types::logical_value_t{resource, static_cast<int64_t>(1)}}};
     auto insert = d->execute_sql_with_params(otterbrix::session_id_t(),
-                                             "INSERT INTO w.t (d, id) VALUES (0.12345678901234567890, $1);",
+                                             "INSERT INTO w.t (id, d) VALUES ($1, 0.12345678901234567890);",
                                              params);
     REQUIRE(insert->is_success());
 

@@ -618,6 +618,27 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    namespace {
+        // SQL DML never reaches a system catalog. pg_class IS the list of relations: a DELETE
+        // landing there erases user tables' names while their storage stays behind, an INSERT
+        // mints a relation nothing created. Refused by oid — the one identity every spelling
+        // of the name resolves to. Loud, never fatal.
+        core::error_t check_dml_target_not_catalog(std::pmr::memory_resource* resource,
+                                                   const components::logical_plan::node_t* node) {
+            if (!components::catalog::is_catalog_table(node->table_oid())) {
+                return core::error_t::no_error();
+            }
+            const auto* tbl = node->table_metadata();
+            std::pmr::string msg{"cannot modify system catalog", resource};
+            if (tbl && !tbl->name.empty()) {
+                msg += " \"";
+                msg.append(tbl->name.begin(), tbl->name.end());
+                msg += '"';
+            }
+            return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+        }
+    } // namespace
+
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
                                     const catalog_resolves_t* resolves,
                                     const std::string& alias,
@@ -1137,7 +1158,12 @@ namespace services::dispatcher {
                         incoming_schema = std::move(node_data_res.value());
                     }
                 } else if (auto* agg_node = static_cast<node_aggregate_t*>(node);
-                           !static_cast<const std::string&>(agg_node->dbname()).empty()) {
+                           !static_cast<const std::string&>(agg_node->relname()).empty()) {
+                    // Keyed on relname, not dbname: an unqualified table reference
+                    // resolves through the relname-only pg_class probe, and its
+                    // metadata lands on the node the same way a qualified one's does.
+                    // A CTE / derived-table / view reference never enters here — those
+                    // carry an empty relname and a child body (the node_data branch).
                     const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->dbname());
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
@@ -1152,16 +1178,21 @@ namespace services::dispatcher {
                         }
                     } else {
                         // Distinguish missing database from missing collection
-                        // so callers (and tests) get the right error code.
-                        if (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
-                                             components::catalog::INVALID_OID) {
+                        // so callers (and tests) get the right error code. For an
+                        // unqualified name there is no database to blame: the probe
+                        // searched every namespace, so the relation does not exist.
+                        if (!agg_dbname_s.empty() &&
+                            (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
+                                              components::catalog::INVALID_OID)) {
                             std::pmr::string msg{"database does not exist: ", resource};
                             msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
                             return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
                         }
                         std::pmr::string msg{"collection does not exist: ", resource};
-                        msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
-                        msg += '.';
+                        if (!agg_dbname_s.empty()) {
+                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
+                            msg += '.';
+                        }
                         msg.append(agg_relname_s.begin(), agg_relname_s.end());
                         return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                     }
@@ -2205,6 +2236,9 @@ namespace services::dispatcher {
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
+                if (auto guard = check_dml_target_not_catalog(resource, node); guard.contains_error()) {
+                    return guard;
+                }
                 const auto* tbl_ins = insert_node->table_metadata();
                 if (!tbl_ins) {
                     // node_insert_t carries only the (unresolved) table oid, no names.
@@ -2418,14 +2452,38 @@ namespace services::dispatcher {
                                 unchecked_columns.emplace(i);
                             }
 
+                            // A VALUES chunk names its columns with the written keys, so pair the
+                            // two by NAME; positional pairing silently misroutes the moment the
+                            // chunk's column order drifts from the written order. A SELECT source
+                            // (or an unnamed raw chunk) has no written names to pair by and keeps
+                            // the positional SQL semantics.
+                            const bool source_is_raw_values = node->children().front()->type() == node_type::data_t;
                             components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
                             bindings.reserve(incoming_schema.value().size());
                             for (size_t i = 0; i < incoming_schema.value().size(); i++) {
                                 // TODO: support partial inserts into complex types
                                 // for now only first order is checked
+                                size_t key_pos = i;
+                                if (!insert_node->key_translation().empty() && source_is_raw_values &&
+                                    incoming_schema.value()[i].type.has_alias()) {
+                                    const std::string written_name{incoming_schema.value()[i].type.alias()};
+                                    const auto& keys = insert_node->key_translation();
+                                    auto key_it =
+                                        std::find_if(keys.begin(), keys.end(), [&written_name](const auto& key) {
+                                            return key.as_string() == written_name;
+                                        });
+                                    if (key_it == keys.end()) {
+                                        return core::error_t(
+                                            core::error_code_t::schema_error,
+                                            std::pmr::string{"insert_node: VALUES column '" + written_name +
+                                                                 "' is not in the INSERT column list",
+                                                             resource});
+                                    }
+                                    key_pos = static_cast<size_t>(key_it - keys.begin());
+                                }
                                 size_t index = insert_node->key_translation().empty()
                                                    ? i
-                                                   : insert_node->key_translation()[i].path().front();
+                                                   : insert_node->key_translation()[key_pos].path().front();
                                 const auto& corresponding_table_type = table_schema[index].type;
                                 unchecked_columns.erase(index);
                                 const auto& incoming_type = incoming_schema.value()[i].type;
@@ -2435,7 +2493,7 @@ namespace services::dispatcher {
                                 // catalog column name otherwise.
                                 std::string target_name = insert_node->key_translation().empty()
                                                               ? tbl_ins->columns[index].attname
-                                                              : insert_node->key_translation()[i].as_string();
+                                                              : insert_node->key_translation()[key_pos].as_string();
                                 components::logical_plan::insert_column_binding_t binding{
                                     .target_index = index,
                                     .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
@@ -2463,14 +2521,14 @@ namespace services::dispatcher {
                             insert_node->set_column_bindings(std::move(bindings));
 
                             // validate_static_nulls: for literal VALUES, reject null in NOT NULL cols
-                            if (node->children().front()->type() == node_type::data_t && tbl_ins) {
+                            if (source_is_raw_values && tbl_ins) {
                                 const auto* dat = reinterpret_cast<const node_data_t*>(node->children().front().get());
                                 const auto& chunk = dat->data_chunk();
                                 const auto& cat_cols = tbl_ins->columns;
+                                // The bindings above already routed source column ci to its table
+                                // column, by name where the chunk is named.
                                 for (size_t ci = 0; ci < incoming_schema.value().size(); ++ci) {
-                                    size_t tbl_idx = insert_node->key_translation().empty()
-                                                         ? ci
-                                                         : insert_node->key_translation()[ci].path().front();
+                                    size_t tbl_idx = insert_node->column_bindings()[ci].target_index;
                                     if (tbl_idx >= cat_cols.size() || !cat_cols[tbl_idx].attnotnull)
                                         continue;
                                     for (std::uint64_t row = 0; row < chunk.size(); ++row) {
@@ -2508,6 +2566,9 @@ namespace services::dispatcher {
             }
             case node_type::delete_t:
             case node_type::update_t: {
+                if (auto guard = check_dml_target_not_catalog(resource, node); guard.contains_error()) {
+                    return guard;
+                }
                 node_match_t* node_match = nullptr;
                 node_t* node_data = nullptr;
                 for (const auto& child : node->children()) {

@@ -562,9 +562,23 @@ namespace services::dispatcher {
         // refresh the solely-owned default_tz_cat_ so subsequent session_tz()
         // reads see it. Only this loop thread mutates the catalog.
         if (!exec_result.applied_timezone.empty()) {
-            (void) default_tz_cat_.set_timezone(
+            auto tz_err = default_tz_cat_.set_timezone(
                 resource(),
                 std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
+            if (tz_err.contains_error()) {
+                // Unreachable today: operator_set_timezone_t validated this exact name
+                // with the SAME recognizer (session_catalog_t::set_timezone over
+                // timezone_to_offset) before persisting it. But a refusal here would
+                // mean pg_settings holds a zone the session cache does not — two
+                // sources of truth — so if the recognizers ever diverge, the statement
+                // is refused loudly instead of reporting success over the split.
+                error(log_,
+                      "manager_dispatcher_t::execute_plan: session timezone cache refused '{}' AFTER it was "
+                      "persisted to pg_settings: {}",
+                      std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()},
+                      tz_err.what);
+                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(tz_err));
+            }
         }
 
         trace(log_,
@@ -634,6 +648,13 @@ namespace services::dispatcher {
         // caller needs, and no synthesized text reproduces it. First error wins, every future is
         // still drained.
         core::error_t fanout_error = core::error_t::no_error();
+        // (executor index, uid) of every executor that DID register — the unwind set
+        // for every failure below this point. Without it, a registration the operator
+        // (or a sibling executor) later refused stayed in the per-executor registries,
+        // and a RETRY of the same CREATE FUNCTION met "already registered with this
+        // signature" instead of the real refusal.
+        std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered(resource());
+        registered.reserve(ack_futures.size());
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             auto res = co_await std::move(ack_futures[i]);
             if (!res) {
@@ -653,15 +674,18 @@ namespace services::dispatcher {
                 continue;
             }
             executor_uids.push_back(res->value());
+            registered.emplace_back(i, res->value());
         }
         if (fanout_error.contains_error()) {
             error(log_, "dispatcher_t::register_udf: executor fan-out refused: {}", fanout_error.what);
+            co_await unwind_udf_fanout_(session, std::move(registered));
             co_return fanout_error;
         }
 
         services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
         if (!op) {
+            co_await unwind_udf_fanout_(session, std::move(registered));
             co_return core::error_t{core::error_code_t::create_physical_plan_error,
                                     std::pmr::string{"register_udf: node_register_udf_t could not be lowered into an "
                                                      "operator",
@@ -699,15 +723,55 @@ namespace services::dispatcher {
         auto* ru = static_cast<components::operators::operator_register_udf_t*>(op.get());
         if (op->has_error()) {
             error(log_, "dispatcher_t::register_udf: {}", op->get_error().what);
+            // The operator's catalog half refused (conflict read, pg_proc write, ...).
+            // The per-executor registries were populated BEFORE it ran — unwind them,
+            // or the refused function keeps resolving in every executor of this
+            // process while no durable record of it exists.
+            co_await unwind_udf_fanout_(session, std::move(registered));
             co_return op->get_error();
         }
         if (!ru->success()) {
+            co_await unwind_udf_fanout_(session, std::move(registered));
             co_return core::error_t{core::error_code_t::other_error,
                                     std::pmr::string{"register_udf: the operator reported failure without naming a "
                                                      "reason",
                                                      resource()}};
         }
         co_return core::error_t::no_error();
+    }
+
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::unwind_udf_fanout_(
+        components::session::session_id_t session,
+        std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered) {
+        // Two-phase like the registration itself: send every unregister first, then
+        // drain every ack. Dropping by uid is exact — it removes precisely the entry
+        // this fan-out added, never a pre-existing overload of the same name.
+        std::pmr::vector<actor_zeta::unique_future<bool>> acks(resource());
+        acks.reserve(registered.size());
+        for (const auto& [idx, uid] : registered) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
+                executor_addresses_[idx],
+                &collection::executor::executor_t::unregister_udf_uid,
+                session,
+                uid);
+            if (needs_sched && executors_[idx]) {
+                scheduler_->enqueue(executors_[idx].get());
+            }
+            acks.push_back(std::move(fut));
+        }
+        for (std::size_t k = 0; k < acks.size(); ++k) {
+            const bool dropped = co_await std::move(acks[k]);
+            if (!dropped) {
+                // An executor that no longer holds the uid it just answered is a broken
+                // invariant, not a tolerable miss — name it loudly. Nothing more can be
+                // done from here: the registration this unwinds was already refused.
+                error(log_,
+                      "dispatcher_t::register_udf unwind: executor {} did not hold uid {} it had just answered",
+                      registered[k].first,
+                      registered[k].second);
+            }
+        }
+        co_return;
     }
 
     manager_dispatcher_t::unique_future<core::error_t>

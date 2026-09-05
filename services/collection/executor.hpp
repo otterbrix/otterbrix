@@ -266,6 +266,14 @@ namespace services::collection::executor {
                                            std::string name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
 
+        // Compensation for a register_udf fan-out whose statement later failed (the
+        // operator's catalog half refused, or a sibling executor did): drop the entry by
+        // the exact uid THIS executor answered, so a refused CREATE FUNCTION leaves no
+        // per-executor residue and a retry meets the catalog's refusal, not the leak's.
+        // Appended LAST in dispatch_traits — message ids are positional.
+        unique_future<bool> unregister_udf_uid(components::session::session_id_t session,
+                                               components::compute::function_uid uid);
+
         // Add / remove one cast in THIS executor's cast_registry_. Fanned out from
         // the dispatcher so every per-executor registry stays identical — the
         // registry is the sole runtime cast authority (there is no default one).
@@ -301,7 +309,8 @@ namespace services::collection::executor {
                                                             &executor_t::register_cast,
                                                             &executor_t::unregister_cast,
                                                             &executor_t::set_explain_renderer,
-                                                            &executor_t::poke_msg>;
+                                                            &executor_t::poke_msg,
+                                                            &executor_t::unregister_udf_uid>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -411,7 +420,10 @@ namespace services::collection::executor {
         }
 
         // Resolve the per-query renderer by slot `id`. An unregistered id yields the DEFAULT — slot 0
-        // (built-in postgres unless a host overwrote it) — a default value, not a fallback branch.
+        // (built-in postgres unless a host overwrote it) — a default value, not a fallback branch:
+        // render_id is a host-API knob (never SQL), the resolve-to-slot-0 contract is pinned by
+        // test_explain.cpp's out-of-range cases, and render_explain_ logs the mismatch at ERROR
+        // level so an id the host never registered cannot pass silently.
         [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
             if (explain_slot_registered_(id)) {
                 return explain_renderers_[id];

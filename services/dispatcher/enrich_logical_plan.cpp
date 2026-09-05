@@ -247,6 +247,15 @@ namespace services::catalog_resolve {
             std::string_view secondary_relname{};
             std::string_view namespace_dbname{};
             std::string_view type_name{};
+            // The database the SECONDARY relation lives in, when it differs from
+            // `dbname` (a cross-database `REFERENCES otherdb.parent`). Empty means
+            // "same as dbname" — the name-resolution default, not a fallback. The
+            // transformer registers the referenced table's resolve under its own
+            // (effective_ref_db) database; looking it up under the CHILD's database
+            // meant the resolve was never found, so a cross-database FK either
+            // refused a parent that exists or — with a same-named table in the
+            // child's database — bound to the WRONG parent.
+            std::string_view secondary_dbname{};
         };
 
         target_names_t target_names_of(const components::logical_plan::node_t* node) {
@@ -337,7 +346,7 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_constraint_t: {
                     const auto* d = static_cast<const node_create_constraint_t*>(node);
-                    return {d->dbname(), d->relname(), d->ref_relname()};
+                    return {d->dbname(), d->relname(), d->ref_relname(), {}, {}, d->ref_dbname()};
                 }
                 case node_type::create_matview_t: {
                     // Binds against its SOURCE table (whose columns the planner needs)
@@ -479,7 +488,12 @@ namespace services::catalog_resolve {
                 const entry_view_t rn{
                     resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
                 const entry_view_t rt{resolves.table_entry(names.dbname, names.relname)};
-                const entry_view_t rt_index{resolves.table_entry(names.dbname, names.secondary_relname)};
+                // The secondary relation (a DROP INDEX's index, an FK's referenced table)
+                // is looked up under ITS database: the transformer registered the resolve
+                // there, and find() compares the database name exactly.
+                const entry_view_t rt_index{resolves.table_entry(
+                    names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
+                    names.secondary_relname)};
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
                 // The table this node targets, pasted whole so validation reads
                 // columns / relkind / flags straight off the node.
@@ -709,12 +723,17 @@ namespace services::catalog_resolve {
                 entry.dbname = namespace_dbname;
                 resolves->ensure(resource, resolve_kind::namespace_).add(std::move(entry));
             }
-            for (const auto& relname : {names.relname, names.secondary_relname}) {
+            // The secondary relation registers under ITS database (empty = same as
+            // dbname) — registering an FK's referenced table under the CHILD's
+            // database produced a request that could never resolve.
+            const auto secondary_dbname = names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname;
+            for (const auto& [db, relname] : {std::pair{names.dbname, names.relname},
+                                              std::pair{secondary_dbname, names.secondary_relname}}) {
                 if (relname.empty()) {
                     continue;
                 }
                 resolve_entry_t entry;
-                entry.dbname = names.dbname;
+                entry.dbname = db;
                 entry.relname = relname;
                 resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
             }
@@ -941,11 +960,11 @@ namespace services::dispatcher { namespace {
         // answers `relation "nosuchtable" does not exist`; so does this.
         if (referenced == nullptr) {
             // Name the reference AS WRITTEN, qualifier included. The
-            // referenced table is looked up under the REFERENCING table's
-            // dbname, so `REFERENCES otherdb.parent` from a table in `db`
-            // does not resolve either — and an unqualified "parent does not
-            // exist" would be a lie there. Spelling the qualifier back at the
-            // user points at the half that did not match.
+            // referenced table is looked up under ITS OWN database now
+            // (ref_dbname when qualified, the child's otherwise — see
+            // bind_catalog_data's secondary_dbname), so reaching here means
+            // that table genuinely does not exist. Spelling the qualifier
+            // back at the user points at the half that did not match.
             std::string msg = describe_constraint();
             msg += ": referenced relation \"";
             if (!node->ref_dbname().empty()) {

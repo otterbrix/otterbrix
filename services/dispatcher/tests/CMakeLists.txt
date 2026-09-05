@@ -9,6 +9,7 @@ set(${PROJECT_NAME}_SOURCES
         test_stamp_scalar_types.cpp
         test_dispatcher_admin_errors.cpp
         test_oid_alloc_operator_refusal.cpp
+        test_wave_exec_dispatcher.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -268,6 +268,17 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
+        // register_udf failure unwind: drop the just-registered overload from every
+        // executor that ACKed the fan-out (by the exact uid each answered), so a
+        // CREATE FUNCTION refused AFTER the fan-out — by a sibling executor or by the
+        // operator's catalog half — leaves no per-executor residue. A MEMBER coroutine
+        // (not a lambda) so `this` supplies the frame memory_resource. Two-phase:
+        // send-all, then drain-all. Direct co_await from register_udf only — not a
+        // mailbox handler, not in dispatch_traits.
+        unique_future<void> unwind_udf_fanout_(
+            components::session::session_id_t session,
+            std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
+
         // Reads txn_manager_.lowest_active_snapshot_horizon() (commit-id value
         // space — matches the subscribers' dropped_at_commit_id sweep after
         // the dropped-committed remap); if it advanced past

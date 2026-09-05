@@ -9,6 +9,9 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace actor_zeta {
 
     using shared_work = scheduler::sharing_scheduler;
@@ -23,27 +26,21 @@ namespace actor_zeta {
         [[nodiscard]] inline auto send(actor::address_t target, Method method, Args&&... args)
             -> detail::send_result_t<Actor, typename type_traits::callable_trait<Method>::result_type> {
             using result_type = typename type_traits::callable_trait<Method>::result_type;
-            using value_type = typename type_traits::is_unique_future<result_type>::value_type;
 
             static_assert(type_traits::is_unique_future_v<result_type>, "Method must return unique_future<T>");
 
             if (!target) {
-                auto* resource = target.resource();
-                if constexpr (std::is_void_v<value_type>) {
-                    return {false, make_ready_future(resource)};
-                } else if constexpr (std::is_same_v<value_type, actor::address_t>) {
-                    return {false, make_ready_future<value_type>(resource, actor::address_t::empty_address())};
-                } else if constexpr (std::is_same_v<value_type, core::error_t>) {
-                    // core::error_t is intentionally not default-constructible (its no-error
-                    // state is only reachable via no_error()); the null-target branch yields a
-                    // ready future carrying the no-error sentinel.
-                    return {false, make_ready_future<value_type>(resource, core::error_t::no_error())};
-                } else if constexpr (std::is_constructible_v<value_type, std::pmr::memory_resource*> &&
-                                     !std::is_convertible_v<std::pmr::memory_resource*, value_type>) {
-                    return {false, make_ready_future<value_type>(resource, value_type{resource})};
-                } else {
-                    return {false, make_ready_future<value_type>(resource)};
-                }
+                // An empty target gets a LOUD refusal, in every build mode. The old shorthand
+                // promised a ready future with a default value — "nobody is listening" dressed
+                // as "answered, with nothing" (the interface overload below spells out why that
+                // shape is forbidden) — and built it on target.resource(), which is null for an
+                // empty address. So what it actually delivered was never the promised default:
+                // an assert-abort in Debug (make_ready_future's null-resource assert) and a
+                // null memory_resource dereference (SIGSEGV) under NDEBUG. Every live call
+                // site targets a spawned actor; the one contract an unreachable branch may
+                // keep is to refuse deliberately, with a message, instead of via UB.
+                std::fputs("actor_zeta::otterbrix::send: refusing to send to an empty target address\n", stderr);
+                std::abort();
             }
 
             auto* actor = static_cast<Actor*>(target.get());
@@ -86,10 +83,10 @@ namespace actor_zeta {
         // positional rule (action_id_impl -> find_method_index, which compares TYPES) at
         // compile time, and asks nothing of the contract but its declarations.
         //
-        // The empty-target shorthand of the send() above is deliberately NOT repeated
-        // here: every caller of this overload holds an address it got from a live agent,
-        // and a ready future for an empty one would turn "nobody is listening" into
-        // "answered, with nothing". actor-zeta asserts on the empty address instead.
+        // An empty target is refused here exactly like in the send() above: every caller
+        // of this overload holds an address it got from a live agent, and a ready future
+        // for an empty one would turn "nobody is listening" into "answered, with
+        // nothing". actor-zeta asserts on the empty address instead.
         template<auto MethodPtr,
                  typename... Args,
                  typename Interface = typename type_traits::callable_trait<decltype(MethodPtr)>::class_type>

@@ -2672,9 +2672,18 @@ namespace services::dispatcher {
     // from the plan + catalog types, never from row data), then STAMP them onto the node
     // so the physical-plan generator can build correctly-typed results over ZERO input
     // rows (PostgreSQL TupleDesc model). Interposing at this boundary captures every
-    // return path of validate_schema_impl's switch and every recursive child call. Error
-    // or empty-schema (DDL/control) results leave the node unstamped, so consumers
-    // degrade to today's data-derived behavior rather than a hard failure.
+    // return path of validate_schema_impl's switch and every recursive child call.
+    //
+    // Error and empty-schema results leave the node UNSTAMPED. Empty is legitimate for
+    // DDL/control nodes (they have no output columns) and LOAD-BEARING for
+    // dynamic-schema (relkind='g') scans, whose columns exist only in data — stamping
+    // an empty vector would make has_output_types() lie. The unstamped state is a
+    // CONTRACT, not a silent degradation: every consumer that REQUIRES a plan-time type
+    // must check has_output_types() and refuse loudly when it is absent (the executor's
+    // boolean-required / ARRAY-equality sub-query guards do exactly that); consumers
+    // that can answer from data (the 'g'-scan pipeline) may. Reading
+    // output_types().front() without the check is how an empty vector reached .front()
+    // under NDEBUG.
     core::result_wrapper_t<named_schema> validate_schema(const validation::validation_context_t& context,
                                                          node_t* node,
                                                          const components::logical_plan::storage_parameters& parameters,

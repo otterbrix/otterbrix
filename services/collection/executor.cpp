@@ -106,6 +106,7 @@ namespace services::collection::executor {
             actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
             actor_zeta::msg_id<executor_t, &executor_t::poke_msg>,
+            actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -247,6 +248,10 @@ namespace services::collection::executor {
             }
             case actor_zeta::msg_id<executor_t, &executor_t::poke_msg>: {
                 co_await actor_zeta::dispatch(this, &executor_t::poke_msg, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>: {
+                co_await actor_zeta::dispatch(this, &executor_t::unregister_udf_uid, msg);
                 break;
             }
             default:
@@ -439,8 +444,13 @@ namespace services::collection::executor {
         }
         const auto render = resolve_explain_renderer_(render_id);
         if (render_id != 0 && !explain_slot_registered_(render_id)) {
-            trace(log_,
-                  "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
+            // The resolve-to-slot-0 semantics are the registry's documented contract
+            // (host-API knob; pinned by test_explain.cpp's out-of-range cases), but the
+            // mismatch itself must be LOUD: a host asking for a renderer it never
+            // registered used to learn about it only at trace level.
+            error(log_,
+                  "executor::explain: render_id {} is not registered on this executor — rendering with the "
+                  "default (slot 0)",
                   render_id);
         }
         return render(resource(), root, analyze);
@@ -531,7 +541,21 @@ namespace services::collection::executor {
             // bool column anyway) is accepted — it selects nothing, not a type error.
             if (mapping.boolean_required) {
                 const auto& sub_node = plan.sub_queries[i];
-                assert(sub_node->has_output_types() && "boolean-required sub-query must be schema-stamped");
+                // The validator deliberately leaves a node UNSTAMPED when its resolved schema
+                // came back empty (a dynamic-schema scan has no plan-time columns — see
+                // validate_schema's tail note). This is reachable from plain SQL: a bare
+                // `WHERE (SELECT * FROM <computed table with no registered columns>)` arrives
+                // here typeless. The old assert compiled away under NDEBUG and the .front()
+                // below read an empty vector; refuse loudly instead.
+                if (!sub_node->has_output_types()) {
+                    co_return execute_result_t{make_cursor(
+                        resource(),
+                        core::error_t{
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"argument of WHERE/HAVING must be type boolean: the sub-query's "
+                                             "output type could not be resolved from the schema",
+                                             resource()}})};
+                }
                 const auto out_type = sub_node->output_types().front().type();
                 if (out_type != components::types::logical_type::BOOLEAN &&
                     out_type != components::types::logical_type::NA) {
@@ -572,7 +596,18 @@ namespace services::collection::executor {
                 // array. The element type is the sub-query's schema-derived output type (stamped by its
                 // own validation in the recursive execute_plan_full above).
                 const auto& sub_node = plan.sub_queries[i];
-                assert(sub_node->has_output_types() && "array-equality sub-query must be schema-stamped");
+                // Same unstamped-schema hole as the boolean_required guard above, through the
+                // `col = ARRAY(SELECT ...)` form: a 0-row result over a dynamic-schema scan
+                // arrives typeless, and the typed-empty-array rebuild below has no element
+                // type to build with. Refuse loudly — the old assert was NDEBUG-invisible.
+                if (!sub_node->has_output_types()) {
+                    co_return execute_result_t{make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"ARRAY(SELECT ...): the sub-query's element type could "
+                                                       "not be resolved from the schema",
+                                                       resource()}})};
+                }
                 plan.parameters->set_parameter(
                     mapping.id,
                     components::types::logical_value_t::create_array(resource(), sub_node->output_types().front(), {}));
@@ -1216,8 +1251,30 @@ namespace services::collection::executor {
             case node_type::create_view_t:
             case node_type::create_macro_t:
                 break;
-            case node_type::alter_table_t:
+            case node_type::alter_table_t: {
+                // ADD COLUMN writes a column type into the durable catalog exactly like
+                // CREATE TABLE does — gate it on the same persistable-type predicate. The
+                // SQL surface cannot spell a non-encodable type today (CREATE TYPE gates
+                // its own depth), so this is the last line of defence for host-built
+                // plans: without it the statement reported SUCCESS over a type the
+                // durable form refuses.
+                const auto* alter_node =
+                    static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
+                for (const auto& cmd : alter_node->subcommands()) {
+                    if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
+                        continue;
+                    }
+                    if (auto type_err = services::dispatcher::gate_persistable_type(resource(),
+                                                                                    "column '" + cmd.column.name() +
+                                                                                        "'",
+                                                                                    cmd.column.type());
+                        type_err.contains_error()) {
+                        error = make_cursor(resource(), type_err);
+                        break;
+                    }
+                }
                 break;
+            }
             case node_type::create_constraint_t: {
                 if (auto err = services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id);
                     err.contains_error()) {
@@ -1526,6 +1583,53 @@ namespace services::collection::executor {
                             }
                             break;
                         }
+                        // INSERT ... SELECT: no data_t child carries the columns. The pipeline
+                        // pushes the SELECT child's output chunk straight into operator_insert,
+                        // and on a computed target validate_schema skips set_column_bindings, so
+                        // NO rename happens: what lands in storage is exactly the SELECT's
+                        // stamped output schema (alias + type per column, the single canonical
+                        // type source). Register that — collecting only from VALUES chunks left
+                        // pg_computed_column EMPTY on a successful statement, and the catalog
+                        // then denied a column SELECT * could see (DROP COLUMN refused it).
+                        if (registered_cols.empty()) {
+                            const components::logical_plan::node_t* select_child = nullptr;
+                            for (const auto& child : effective_insert->children()) {
+                                if (child && child->type() != components::logical_plan::node_type::data_t) {
+                                    select_child = child.get();
+                                    break;
+                                }
+                            }
+                            if (select_child) {
+                                if (!select_child->has_output_types()) {
+                                    // A source whose schema the validator could not resolve
+                                    // (e.g. a scan of another column-less computed table):
+                                    // registering nothing would re-open the storage/catalog
+                                    // divergence, so the statement is refused instead.
+                                    co_return execute_result_t{make_cursor(
+                                        resource(),
+                                        core::error_t{
+                                            core::error_code_t::schema_error,
+                                            std::pmr::string{"INSERT ... SELECT into a dynamic-schema table: the "
+                                                             "source schema could not be resolved, so the written "
+                                                             "columns cannot be registered in the catalog",
+                                                             resource()}})};
+                                }
+                                registered_cols.reserve(select_child->output_types().size());
+                                for (const auto& type : select_child->output_types()) {
+                                    if (!type.has_alias()) {
+                                        co_return execute_result_t{make_cursor(
+                                            resource(),
+                                            core::error_t{
+                                                core::error_code_t::schema_error,
+                                                std::pmr::string{"INSERT ... SELECT into a dynamic-schema table: "
+                                                                 "every source column needs a name to register; "
+                                                                 "alias the expression (AS <name>)",
+                                                                 resource()}})};
+                                    }
+                                    registered_cols.emplace_back(type.alias(), type);
+                                }
+                            }
+                        }
                     }
 
                     // node_alter_column_t(op=add, computed=true) carrying the
@@ -1668,14 +1772,29 @@ namespace services::collection::executor {
                 }
             }
         }
-        // Unresolved-ALTER no-op guard: a plan whose LITERAL root is still
+        // Unresolved-ALTER guard: a plan whose LITERAL root is still
         // alter_table_t after the rewrites means rewrite_alter_table bailed
-        // (table_oid unresolved by enrich) — return no-op success. Wrapped
-        // plans (sequence_t root with an alter_table_t child) keep the error
-        // path through the pipeline.
+        // (table_oid unresolved by enrich). This used to answer an empty
+        // SUCCESS cursor — the client was told the ALTER applied while nothing
+        // happened — even though the planner's own comment promises "let
+        // execute_ddl error out" (its half now refuses, c355f572). Refuse,
+        // naming the table, exactly like CREATE INDEX / DROP INDEX on an
+        // unresolved target. Wrapped plans (sequence_t root with an
+        // alter_table_t child) keep the error path through the pipeline.
         if (original_type == node_type::alter_table_t && plan.sub_queries.back() &&
             plan.sub_queries.back()->type() == node_type::alter_table_t) {
-            co_return execute_result_t{make_cursor(resource())};
+            const auto* alter_node =
+                static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
+            std::pmr::string msg{resource()};
+            msg.append("ALTER TABLE: relation \"");
+            if (!alter_node->dbname().empty()) {
+                msg.append(alter_node->dbname().data(), alter_node->dbname().size());
+                msg.push_back('.');
+            }
+            msg.append(alter_node->relname().data(), alter_node->relname().size());
+            msg.append("\" does not exist");
+            co_return execute_result_t{
+                make_cursor(resource(), core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
         }
 
         // (O1) Single optimizer pass — runs HERE, after every planner rewrite
@@ -1689,11 +1808,15 @@ namespace services::collection::executor {
         // no agent to push to, so pushable aggregates stay coordinator-side there —
         // a precondition, not a fallback.
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
+        // optimizer_pass_ is the host's final rewrite (ctor chain: base_spaces ->
+        // dispatcher -> executor). It used to be stored here and never forwarded,
+        // so a host-injected pass was silently ignored on every query.
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
                                                                 &plan.catalog_resolves,
-                                                                can_push_to_agent);
+                                                                can_push_to_agent,
+                                                                optimizer_pass_);
 
         // Build-side selection: fetch live row counts for the child
         // tables of every INNER hash join so create_plan_join can put the smaller
@@ -1770,26 +1893,12 @@ namespace services::collection::executor {
                 co_await std::move(paf);
             }
 
-            // Heap delete-mark un-stamp, parity with operator_abort_transaction's
-            // storage_revert_deletes: an UPDATE/DELETE in this statement stamped
-            // delete marks (deleter == txn_id) on the old row versions before the
-            // failure surfaced. The marks are invisible to readers, but they
-            // PERSIST on the heap and chunk_vector_info::delete_rows skips an
-            // already-marked slot — so without the un-stamp every later UPDATE or
-            // DELETE of the same rows silently leaves the old version alive.
-            if (!exec_result.dml_deletes.empty() && disk_address_ != actor_zeta::address_t::empty_address()) {
-                std::set<components::catalog::oid_t> revert_delete_tables;
-                for (const auto& del : exec_result.dml_deletes) {
-                    revert_delete_tables.insert(del.table_oid);
-                }
-                components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.session_tz};
-                auto [_rd, rdf] = actor_zeta::send(
-                    disk_address_,
-                    &services::disk::manager_disk_t::storage_revert_deletes,
-                    rd_ctx,
-                    std::vector<components::catalog::oid_t>{revert_delete_tables.begin(), revert_delete_tables.end()});
-                co_await std::move(rdf);
-            }
+            // Heap delete-mark un-stamp happens ONCE, below the index revert: the
+            // base+catalog union block covers dml_deletes ∪ pg_catalog_delete_tables,
+            // a strict superset of what a dml_deletes-only revert here would touch.
+            // This spot used to hold that narrower storage_revert_deletes too — an
+            // idempotent but fully redundant second disk round-trip on every failed
+            // DML that carried deletes.
 
             // Index revert, two-phase (send-all then await-all), deduped per
             // table_oid. revert_insert ← pending index INSERT bucket (dml_appends);
@@ -1827,7 +1936,8 @@ namespace services::collection::executor {
                 }
             }
 
-            // Heap delete-mark un-stamp, mirroring operator_abort_transaction (1).
+            // Heap delete-mark un-stamp — the ONE storage_revert_deletes of this
+            // revert, mirroring operator_abort_transaction.
             // A DELETE/UPDATE stamped MVCC delete marks (deleter == this txn) BEFORE
             // the constraint check failed. The aborted txn never commits, so readers
             // still see the rows — but chunk_vector_info::delete_rows skips an
@@ -2258,6 +2368,12 @@ namespace services::collection::executor {
                                std::pmr::vector<components::types::complex_logical_type> inputs) {
         trace(log_, "executor::unregister_udf, session: {}, {}", session.data(), name);
         co_return function_registry_.remove_function_by_signature(name, inputs);
+    }
+
+    executor_t::unique_future<bool> executor_t::unregister_udf_uid(components::session::session_id_t session,
+                                                                   components::compute::function_uid uid) {
+        trace(log_, "executor::unregister_udf_uid, session: {}, uid: {}", session.data(), uid);
+        co_return function_registry_.remove_function(uid);
     }
 
     executor_t::unique_future<bool> executor_t::register_cast(components::session::session_id_t session,

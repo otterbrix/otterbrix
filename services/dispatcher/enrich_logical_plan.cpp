@@ -1032,6 +1032,47 @@ namespace services::dispatcher { namespace {
                     node->ref_table_oid() != components::catalog::INVALID_OID) {
                     const auto* rrt = resolves ? resolves->table_md(node->ref_table_oid()) : nullptr;
                     if (rrt) {
+                        // `REFERENCES parent` with the referenced column list omitted
+                        // binds to the parent's PRIMARY KEY. The transformer registered
+                        // the parent's constraint gather for exactly this case, so the
+                        // key is already here as pk_columns — a pure entry read, the
+                        // same shape as the DML branches above.
+                        //
+                        // Leaving the list empty is what used to write a pg_constraint
+                        // row with an empty confkey. operator_resolve_constraint drops
+                        // such a row (it needs BOTH name lists), so the FK the user
+                        // declared enforced nothing at all: orphans went in and
+                        // ON DELETE RESTRICT let the parent go.
+                        if (node->ref_col_names().empty()) {
+                            const auto* parent_constraints =
+                                resolves->constraints_for(node->ref_table_oid(), resolve_direction::outgoing);
+                            if (parent_constraints == nullptr || parent_constraints->pk_columns.empty()) {
+                                co_return core::error_t(
+                                    core::error_code_t::invalid_constraint,
+                                    std::pmr::string{"FK constraint \"" + node->name() +
+                                                         "\": there is no primary key for referenced table \"" +
+                                                         rrt->name + "\"",
+                                                     resource});
+                            }
+                            // The referencing list is paired with the primary key
+                            // POSITIONALLY, so a length disagreement has no pairing to
+                            // make. operator_fk_check / operator_fk_cascade catch this
+                            // shape at DML time; caught here it never reaches the
+                            // catalog, and the message can name the primary key.
+                            if (node->local_col_names().size() != parent_constraints->pk_columns.size()) {
+                                co_return core::error_t(
+                                    core::error_code_t::invalid_constraint,
+                                    std::pmr::string{
+                                        "FK constraint \"" + node->name() +
+                                            "\": foreign key column count mismatch — " +
+                                            std::to_string(node->local_col_names().size()) +
+                                            " referencing column(s) vs " +
+                                            std::to_string(parent_constraints->pk_columns.size()) +
+                                            " column(s) in the primary key of referenced table \"" + rrt->name + "\"",
+                                        resource});
+                            }
+                            node->set_ref_col_names(parent_constraints->pk_columns);
+                        }
                         std::vector<components::catalog::oid_t> ref_attoids;
                         for (const auto& col_name : node->ref_col_names()) {
                             for (const auto& ci : rrt->columns) {

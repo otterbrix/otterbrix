@@ -87,6 +87,8 @@ namespace components::table {
             state.child_states[i + 1].result_offset = state.result_offset;
             sub_columns[i]->scan(vector_index, state.child_states[i + 1], target_vector, target_count);
         }
+        // Every byte came off a child state; row_group_t only ever looks at THIS one.
+        state.collect_child_errors();
         return scan_count;
     }
 
@@ -113,6 +115,7 @@ namespace components::table {
                                            allow_updates,
                                            target_count);
         }
+        state.collect_child_errors(); // see scan()
         return scan_count;
     }
 
@@ -130,6 +133,7 @@ namespace components::table {
             state.child_states[i + 1].result_offset = state.result_offset;
             sub_columns[i]->scan_count(state.child_states[i + 1], target_vector, count);
         }
+        state.collect_child_errors(); // see scan()
         return scan_count;
     }
 
@@ -208,6 +212,7 @@ namespace components::table {
         for (uint64_t i = 0; i < child_entries.size(); i++) {
             sub_columns[i]->fetch(state.child_states[i + 1], row_id, *child_entries[i]);
         }
+        state.collect_child_errors(); // the fields read on child states; column_data_t::update reads this one
         return scan_count;
     }
 
@@ -257,13 +262,26 @@ namespace components::table {
                                          vector::vector_t& result,
                                          uint64_t result_idx) {
         auto& child_entries = result.entries();
-        for (uint64_t i = state.child_states.size(); i < child_entries.size() + 1; i++) {
-            auto child_state = std::make_unique<column_fetch_state>();
-            state.child_states.push_back(std::move(child_state));
+        // state.child(i), NOT a default-constructed column_fetch_state per child. A struct node
+        // owns no segments: every byte of this cell is read on a CHILD's state, so the child is
+        // the one that must know result_outlives_pins (or a big string in a field goes into the
+        // caller's chunk as a view into a pin that dies with `state`) and the child is the one
+        // whose fetch_error nobody above was reading.
+        auto& validity_state = state.child(0);
+        validity.fetch_row(validity_state, row_id, result, result_idx);
+        if (state.absorb_error(validity_state)) {
+            // First error aborts, as in row_group_t's gather: the remaining fields would only
+            // add cells nobody may trust to a chunk the caller must discard anyway.
+            return;
         }
-        validity.fetch_row(*state.child_states[0], row_id, result, result_idx);
         for (uint64_t i = 0; i < child_entries.size(); i++) {
-            sub_columns[i]->fetch_row(*state.child_states[i + 1], row_id, *child_entries[i], result_idx);
+            auto& field_state = state.child(i + 1);
+            sub_columns[i]->fetch_row(field_state, row_id, *child_entries[i], result_idx);
+            // The field absorbed its OWN children before returning, so this one check answers
+            // for every level below it -- a string two structs down included.
+            if (state.absorb_error(field_state)) {
+                return;
+            }
         }
     }
 

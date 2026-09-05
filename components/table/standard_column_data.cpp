@@ -58,6 +58,8 @@ namespace components::table {
         state.child_states[0].result_offset = state.result_offset;
         auto scan_count = column_data_t::scan(vector_index, state, result, target_count);
         validity.scan(vector_index, state.child_states[0], result, target_count);
+        // The validity child reads on its own state; row_group_t only judges this one.
+        state.collect_child_errors();
         return scan_count;
     }
 
@@ -70,6 +72,7 @@ namespace components::table {
         state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the same base
         auto scan_count = column_data_t::scan_committed(vector_index, state, result, allow_updates, target_count);
         validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
+        state.collect_child_errors(); // see scan()
         return scan_count;
     }
 
@@ -77,6 +80,7 @@ namespace components::table {
         state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the same base
         auto scan_count = column_data_t::scan_count(state, result, count);
         validity.scan_count(state.child_states[0], result, count);
+        state.collect_child_errors(); // see scan()
         return scan_count;
     }
 
@@ -131,6 +135,7 @@ namespace components::table {
         }
         auto scan_count = column_data_t::fetch(state, row_id, result);
         validity.fetch(state.child_states[0], row_id, result);
+        state.collect_child_errors(); // column_data_t::update reads state.scan_error after this
         return scan_count;
     }
 
@@ -161,11 +166,13 @@ namespace components::table {
                                            int64_t row_id,
                                            vector::vector_t& result,
                                            uint64_t result_idx) {
-        if (state.child_states.empty()) {
-            auto child_state = std::make_unique<column_fetch_state>();
-            state.child_states.push_back(std::move(child_state));
+        // state.child(0), not a default-constructed state: the validity bitmap's own pin OOM
+        // used to be recorded in a child nobody read (see column_fetch_state::child).
+        auto& validity_state = state.child(0);
+        validity.fetch_row(validity_state, row_id, result, result_idx);
+        if (state.absorb_error(validity_state)) {
+            return; // reading the value under a NULL mask we could not read answers nothing
         }
-        validity.fetch_row(*state.child_states[0], row_id, result, result_idx);
         column_data_t::fetch_row(state, row_id, result, result_idx);
     }
 

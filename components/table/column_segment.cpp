@@ -449,7 +449,16 @@ namespace components::table {
             if (state.result_outlives_pins) {
                 // The caller keeps this chunk after our pins are gone, so the bytes have to be the
                 // result's own. Same mechanism the bulk scan path uses.
-                auto& aux = static_cast<vector::string_vector_buffer_t&>(*result.auxiliary());
+                // Guard the heap the same way string_scan_partial does: a STRING vector built by
+                // a data_chunk_t already carries one, but this leg is now also reached for a
+                // STRUCT FIELD's vector, and interning into a missing/wrong-typed buffer would be
+                // exactly the dangling read this branch exists to prevent.
+                auto aux_buffer = result.auxiliary();
+                if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
+                    aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
+                    result.set_auxiliary(aux_buffer);
+                }
+                auto& aux = static_cast<vector::string_vector_buffer_t&>(*aux_buffer);
                 result_data[result_idx] =
                     fetch_string_owned(segment, dict, baseptr, dict_offset, string_length, aux, state.fetch_error);
             } else {

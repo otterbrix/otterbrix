@@ -130,6 +130,9 @@ namespace components::table {
         }
         state.last_offset = current_offset;
 
+        // The validity bitmap and every element were read on child states; row_group_t judges
+        // only this one.
+        state.collect_child_errors();
         result.set_list_size(child_scan_count + prev_size);
         return scan_count;
     }
@@ -353,14 +356,16 @@ namespace components::table {
                                        int64_t row_id,
                                        vector::vector_t& result,
                                        uint64_t result_idx) {
-        if (state.child_states.empty()) {
-            auto child_state = std::make_unique<column_fetch_state>();
-            state.child_states.push_back(std::move(child_state));
-        }
-
         auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
         auto end_offset = fetch_list_offset(row_id);
-        validity.fetch_row(*state.child_states[0], row_id, result, result_idx);
+        // state.child(0), not a default-constructed state: the validity bitmap's pin OOM used to
+        // land in a child nobody read (see column_fetch_state::child).
+        auto& validity_state = state.child(0);
+        validity.fetch_row(validity_state, row_id, result, result_idx);
+        if (state.absorb_error(validity_state)) {
+            // The lengths below are read off a mask this call failed to fill; stop instead.
+            return;
+        }
 
         auto& res_validity = result.validity();
         auto list_data = result.data<types::list_entry_t>();
@@ -384,6 +389,16 @@ namespace components::table {
                        child_column->max_entry());
             // scan_count (validity-aware) so NULL list elements survive a point fetch too.
             child_column->scan_count(*child_state, child_scan, child_scan_count);
+            // The elements are read on a SCAN state (the bulk leg owns its strings, so the
+            // pins half of the channel does not apply here) — but its scan_error is still an
+            // error of THIS fetch, and it was the only place a corrupt element was reported.
+            child_state->collect_child_errors();
+            if (child_state->has_error()) {
+                if (!state.fetch_error.contains_error()) {
+                    state.fetch_error = child_state->scan_error;
+                }
+                return;
+            }
 
             result.append(child_scan, child_scan_count);
         }

@@ -124,16 +124,31 @@ namespace components::sql::transform {
                         // FK requires BOTH the constrained table and the
                         // referenced table to be resolved at Pass 1 time.
                         const std::string fk_ref_db = fk_node->ref_dbname();
+                        std::string effective_ref_db;
                         std::vector<std::pair<std::string, std::string>> targets;
                         targets.emplace_back(db, rel);
                         if (!ref_rel.empty()) {
-                            const std::string& effective_ref_db = fk_ref_db.empty() ? db : fk_ref_db;
+                            effective_ref_db = fk_ref_db.empty() ? db : fk_ref_db;
                             targets.emplace_back(effective_ref_db, ref_rel);
                         }
                         // Both identities stay ON the node — enrich looks each up by
                         // name, so neither depends on registration order.
                         fk_node->set_ref_relname(ref_rel);
                         register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
+                        // `REFERENCES parent` with the referenced column list omitted
+                        // binds to the parent's PRIMARY KEY (SQL). opt_column_list
+                        // yields NIL — a shared EMPTY List, not a null pointer — so
+                        // "omitted" is an empty name list, never an absent pk_attrs.
+                        // The key lives in the parent's pg_constraint rows, so ask for
+                        // that table's constraint gather too: enrich reads pk_columns
+                        // straight off the entry instead of probing the catalog itself.
+                        if (fk_node->ref_col_names().empty() && !ref_rel.empty()) {
+                            register_catalog_resolve_table(resource_,
+                                                           &catalog_resolves_,
+                                                           effective_ref_db,
+                                                           ref_rel,
+                                                           constraint_resolve_kind::outgoing);
+                        }
                         return logical_plan::node_ptr{std::move(fk_node)};
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {

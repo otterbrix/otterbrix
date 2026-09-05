@@ -54,6 +54,31 @@ namespace components::table {
         }
     }
 
+    void column_scan_state::collect_child_errors() {
+        for (auto& child_state : child_states) {
+            child_state.collect_child_errors();
+            if (!scan_error.contains_error() && child_state.scan_error.contains_error()) {
+                scan_error = child_state.scan_error;
+            }
+        }
+    }
+
+    column_fetch_state& column_fetch_state::child(uint64_t index) {
+        while (child_states.size() <= index) {
+            child_states.push_back(std::make_unique<column_fetch_state>());
+        }
+        auto& child_state = *child_states[index];
+        child_state.result_outlives_pins = result_outlives_pins;
+        return child_state;
+    }
+
+    bool column_fetch_state::absorb_error(const column_fetch_state& child_state) {
+        if (child_state.fetch_error.contains_error() && !fetch_error.contains_error()) {
+            fetch_error = child_state.fetch_error;
+        }
+        return fetch_error.contains_error();
+    }
+
     storage::buffer_handle_t* column_fetch_state::get_or_insert_handle(column_segment_t& segment) {
         return get_or_insert_handle(segment.block);
     }

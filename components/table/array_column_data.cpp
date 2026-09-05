@@ -93,6 +93,8 @@ namespace components::table {
             }
         }
         uint64_t result_count = (arr_size * count - remaining_count) / arr_size;
+        // Validity and elements were read on child states; row_group_t judges only this one.
+        state.collect_child_errors();
         return result_count;
     }
 
@@ -111,6 +113,7 @@ namespace components::table {
         auto size = array_size();
         state.child_states[1].result_offset = state.result_offset * size;
         child_column->scan_count(state.child_states[1], child_vec, count * size);
+        state.collect_child_errors(); // see scan()
         return scan_count;
     }
 
@@ -269,11 +272,13 @@ namespace components::table {
                                         int64_t row_id,
                                         vector::vector_t& result,
                                         uint64_t result_idx) {
-        if (state.child_states.empty()) {
-            state.child_states.push_back(std::make_unique<column_fetch_state>());
+        // state.child(0), not a default-constructed state: the validity bitmap's pin OOM used to
+        // land in a child nobody read (see column_fetch_state::child).
+        auto& validity_state = state.child(0);
+        validity.fetch_row(validity_state, row_id, result, result_idx);
+        if (state.absorb_error(validity_state)) {
+            return;
         }
-
-        validity.fetch_row(*state.child_states[0], row_id, result, result_idx);
 
         auto& child_vec = result.entry();
         auto& child_type = type_.child_type();
@@ -286,6 +291,16 @@ namespace components::table {
         child_column->initialize_scan_with_offset(*child_state, child_offset);
         vector::vector_t child_scan(resource_, child_type, size);
         child_column->scan_count(*child_state, child_scan, size);
+        // The elements are read on a SCAN state (the bulk leg owns its strings, so the pins half
+        // of the channel does not apply here) — but its scan_error is still an error of THIS
+        // fetch, and it was the only place a corrupt element was reported.
+        child_state->collect_child_errors();
+        if (child_state->has_error()) {
+            if (!state.fetch_error.contains_error()) {
+                state.fetch_error = child_state->scan_error;
+            }
+            return;
+        }
         vector::vector_ops::copy(child_scan, child_vec, size, 0, result_idx * size);
     }
 

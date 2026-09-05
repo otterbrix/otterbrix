@@ -105,7 +105,11 @@ namespace components::table {
     };
 
     struct column_append_state {
-        column_segment_t* current;
+        // Initialized, unlike before: column_data_t::initialize_append assigns it, but the
+        // NESTED nodes (STRUCT/LIST/ARRAY own no data of their own, or delegate) never do, so
+        // a struct's own append state carried an indeterminate pointer that only luck kept
+        // unread.
+        column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
         std::unique_ptr<std::unique_lock<std::mutex>> lock;
         std::unique_ptr<storage::buffer_handle_t> handle;
@@ -139,6 +143,15 @@ namespace components::table {
         core::error_t scan_error{core::error_t::no_error()};
         bool has_error() const { return scan_error.contains_error(); }
 
+        // Lift the first error recorded anywhere in the child subtree into this state.
+        // A nested column (STRUCT fields, LIST/ARRAY elements, every validity bitmap) scans on
+        // its OWN child state and NOBODY above ever reads one: row_group_t judges the top-level
+        // column_scans[i] alone. Without this a leaf failure under a struct left the scan
+        // "successful" with empty/garbage cells. First error wins -- a later one must not
+        // overwrite the cause. Recursive, so a grandchild's error crosses every level even
+        // where the level in between has nothing of its own to report.
+        void collect_child_errors();
+
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);
         void initialize(const types::complex_logical_type& type);
         void next(uint64_t count);
@@ -158,6 +171,31 @@ namespace components::table {
         // OOM raised by the pin() inside get_or_insert_handle(); callers that route
         // through a column_scan_state copy it into scan_error.
         core::error_t fetch_error{core::error_t::no_error()};
+
+        // THE ONLY way to reach a child state, because both halves of this channel have to
+        // cross the parent/child boundary and a default-constructed child crossed neither:
+        //   * result_outlives_pins travels DOWN. A child's pins live in ITS `handles` map and
+        //     are released when THIS state dies, so a view the child borrows dangles exactly
+        //     like one borrowed here. A fresh child promised the opposite (false), and a big
+        //     string in a struct field went into the caller's chunk as a view into a block
+        //     nothing pinned any more.
+        //   * fetch_error travels UP, through absorb_error() below.
+        // Grows child_states as needed; the flag is re-stamped on every hand-out, because
+        // row_group_t::fetch_row reuses one state across columns and a caller may raise the
+        // flag after the first child already exists.
+        column_fetch_state& child(uint64_t index);
+
+        // Lift ONE child's error into this state (first error wins) and report whether this
+        // state now carries one. Every nested fetch_row absorbs from its own children before
+        // returning, so a single call answers for EVERY level below the child -- which is what
+        // lets a nested fetch_row abort on the first failing field instead of filling the rest
+        // of the cell with values nobody may trust.
+        //
+        // Without it a STRUCT column had no error channel at all: a struct owns no segments, so
+        // every byte of the cell is read on a child's state, and the single fetch_error each
+        // caller reads (table_storage_adapter_t::fetch, row_group_t::evaluate_predicate,
+        // row_group_t's gather) stayed clean while the field came back empty.
+        bool absorb_error(const column_fetch_state& child_state);
 
         // Returns nullptr and sets fetch_error on buffer-pool exhaustion.
         storage::buffer_handle_t* get_or_insert_handle(column_segment_t& segment);

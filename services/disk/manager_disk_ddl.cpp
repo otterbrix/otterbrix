@@ -50,6 +50,51 @@ namespace services::disk {
                                                                                components::catalog::oid_t target_oid) {
         // Single route to the agent inner body (the same body delete_pg_catalog_rows_many
         // loops, so both paths emit identical WAL records).
+        //
+        // BLOCKING DEBT — THIS ROUTE HAS NO ERROR CHANNEL, AND TWO CALLERS CAN NOW LEAVE A
+        // DUPLICATE ROW BEHIND. Name them, because the shape of the damage changed:
+        //
+        //   * operator_alter_column_rename_t::await_async_and_resume
+        //     (components/physical_plan/operators/operator_alter_column_rename.cpp, the send at
+        //     ~:219) deletes the pg_attribute row of `attoid`, then appends a replacement
+        //     carrying the new attname (~:247; that append's own refusal IS read). A refused
+        //     delete leaves BOTH rows live for one attoid: the column answers to its old name
+        //     and its new one at the same time.
+        //   * operator_create_index_backfill_t::await_async_and_resume
+        //     (components/physical_plan/operators/operator_create_index_backfill.cpp, ~:546)
+        //     deletes the pg_index row of `index_oid_`, then appends the indisvalid=true
+        //     replacement (~:563). A refused delete leaves indisvalid=false AND indisvalid=true
+        //     for one indexrelid.
+        //   * operator_delete::await_async_and_resume's catalog branch
+        //     (components/physical_plan/operators/operator_delete.cpp, ~:390) appends nothing,
+        //     so it keeps the older, milder failure: ONE row that should be gone, and a success
+        //     reported over it.
+        //
+        // WHY IT IS NEW. agent_disk_t::delete_pg_catalog_rows_inner used to log a refused
+        // PHYSICAL_DELETE and delete the rows anyway; storage then ran ahead of the journal but
+        // held ONE row. It now refuses to delete what it could not journal — correct in itself —
+        // and with no answer reaching the caller, the append that follows makes it two.
+        //
+        // WHAT IS LEFT OF IT. The two-row state had a SECOND, likelier cause that is now gone:
+        // the delete's scan carried no transaction, so inside a BEGIN it silently missed the row
+        // it was told to remove and the append landed on top. That happened on ordinary
+        // statements, no fault injection needed, and both operators are gated on it now —
+        // integration/cpp/test/test_catalog_delete_refusal.cpp,
+        // an_in_transaction_rename_leaves_one_attribute_row (it observed live 'c' AND live 'd')
+        // and an_in_transaction_create_index_leaves_one_pg_index_row (two pg_index rows for one
+        // indexrelid). What remains reachable is the refusal path itself: a journal that would
+        // not take the PHYSICAL_DELETE, or an owning agent holding no storage for the catalog
+        // oid.
+        //
+        // WHY IT IS NOT FIXED HERE. The fix is the one delete_pg_catalog_rows_many just had:
+        // widen the return to core::result_wrapper_t and make each caller read it. All three
+        // callers are outside this change's scope, and there is no half-measure available —
+        // widening the signature alone would compile, because a discarded co_await is legal, and
+        // would leave exactly the silent ignore rule 6 forbids. Routing through the batched twin
+        // with a one-element spec list (the move operator_alter_column_drop_t made for its live
+        // pg_attribute row) is the other way, and it edits the same three files.
+        //
+        // Until one of those happens the refusal is REPORTED here rather than dropped in silence.
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];
@@ -63,26 +108,56 @@ namespace services::disk {
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
-                co_await std::move(fut);
+                auto deleted = co_await std::move(fut);
+                if (deleted.has_error()) {
+                    error(log_,
+                          "manager_disk::delete_pg_catalog_rows: the scrub of catalog oid={} for target oid={} "
+                          "was refused and this route cannot report it: {}",
+                          static_cast<unsigned>(table_oid),
+                          static_cast<unsigned>(target_oid),
+                          deleted.error().what);
+                }
             }
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
+    // Loop-route per spec; each spec emits the same WAL + storage records as one singular
+    // delete_pg_catalog_rows call. Serialized (send, await, next send) so the WAL ordering
+    // matches N successive singular calls — which also means there is never more than one
+    // outstanding future here, so the first refusal can end the loop without abandoning a
+    // future whose reply would land on a frame that has already finished.
+    //
+    // BOTH ROUTING LEGS REFUSE rather than answer with a short count vector, for the reason
+    // append_pg_catalog_row's routing legs give: a manager with no agents, or an agent slot
+    // holding nothing, is a catalog scrub that did not happen, and "deleted 0 rows" is exactly
+    // what a healthy no-op looks like at every call site.
+    //
+    // AND IT STOPS AT THE FIRST REFUSAL. Continuing would be another mutation taken after the
+    // answer was already known — the ordering rule the callers above follow, applied to the
+    // loop itself.
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
     manager_disk_t::delete_pg_catalog_rows_many(execution_context_t ctx,
                                                 std::pmr::vector<pg_catalog_delete_spec_t> specs) {
-        // Loop-route per spec; each spec emits the same WAL + storage records as one
-        // singular delete_pg_catalog_rows call. Serialized (co_await per spec) so the
-        // WAL ordering matches N successive singular calls.
-        if (agents_.empty()) {
-            co_return;
+        std::pmr::vector<std::uint64_t> deleted_per_spec(resource());
+        // The one legitimate no-op: nothing was asked to be deleted. Zero specs in, zero counts
+        // out, no agent touched — and, unlike the legs below, no storage that should have been
+        // there is missing.
+        if (specs.empty()) {
+            co_return std::move(deleted_per_spec);
         }
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"delete_pg_catalog_rows_many: no disk agents", resource()}};
+        }
+        deleted_per_spec.reserve(specs.size());
         for (const auto& spec : specs) {
             const std::size_t idx = pool_idx_for_oid(spec.table_oid, agents_.size());
             auto& agent = agents_[idx];
             if (agent == nullptr) {
-                continue;
+                co_return core::error_t{
+                    core::error_code_t::io_error,
+                    std::pmr::string{"delete_pg_catalog_rows_many: owning disk agent is null", resource()}};
             }
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::delete_pg_catalog_rows_inner,
@@ -93,9 +168,13 @@ namespace services::disk {
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            co_await std::move(fut);
+            auto deleted = co_await std::move(fut);
+            if (deleted.has_error()) {
+                co_return deleted.convert_error<std::pmr::vector<std::uint64_t>>();
+            }
+            deleted_per_spec.push_back(deleted.value());
         }
-        co_return;
+        co_return std::move(deleted_per_spec);
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_fields(

@@ -126,6 +126,15 @@ namespace components::operators {
             constexpr catalog::oid_t pg_cast_coll = catalog::well_known_oid::pg_cast_table;
             constexpr catalog::oid_t pg_depend_coll = catalog::well_known_oid::pg_depend_table;
             std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
+            // WHICH ZERO IS AN ERROR HERE. Spec 0 is the pg_cast row whose oid find_cast_oid
+            // just READ out of pg_cast — the "there is no such cast" reading is already spent
+            // above, on INVALID_OID — so a delete that matched nothing means the row the read
+            // had in hand is still there and DROP CAST removed nothing at all. Spec 1 is the
+            // pg_depend row, which a cast may legitimately not have. The "just READ" argument
+            // holds because find_cast_oid scans pg_cast under ctx.txn and the delete's scan uses
+            // the same one: a read on a different snapshot than the delete would make this
+            // verdict fire on a cast created — or already dropped — in the open transaction.
+            constexpr std::size_t pg_cast_spec = 0;
             specs.push_back({pg_cast_coll, std::int64_t{0}, cast_oid});   // pg_cast.oid
             specs.push_back({pg_depend_coll, std::int64_t{1}, cast_oid}); // pg_depend.objid
             if (ctx->txn.transaction_id != 0) {
@@ -136,7 +145,22 @@ namespace components::operators {
                                              &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                              exec_ctx,
                                              std::move(specs));
-            co_await std::move(df);
+            auto deleted_r = co_await std::move(df);
+            if (deleted_r.has_error()) {
+                set_error(deleted_r.error());
+                mark_failed();
+                co_return;
+            }
+            const auto& deleted = deleted_r.value();
+            if (pg_cast_spec < deleted.size() && deleted[pg_cast_spec] == 0) {
+                set_error(core::error_t{core::error_code_t::other_error,
+                                        std::pmr::string{"unregister_cast: no pg_cast row was deleted for the "
+                                                         "(source, target) pair that had just resolved — the cast "
+                                                         "is still in the catalog",
+                                                         resource_}});
+                mark_failed();
+                co_return;
+            }
         }
 
         success_ = true;

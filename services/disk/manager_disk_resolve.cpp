@@ -83,14 +83,22 @@ namespace services::disk {
         co_return out;
     }
 
+    // ctx.txn, NOT the default snapshot. operator_unregister_udf_t reads this answer and then
+    // scrubs each m.oid through delete_pg_catalog_rows_many, treating a spec that deleted
+    // nothing as a refusal — "the function is still in the catalog". That verdict is only sound
+    // while the two see the same pg_proc: the delete's scan carries the caller's transaction
+    // (agent_disk_t::delete_pg_catalog_rows_inner), so a read on transaction_data{} would list
+    // rows this transaction has already deleted, and the scrub of a row that is gone would be
+    // reported as a catalog that refused to give it up.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
-    manager_disk_t::resolve_function_by_name(execution_context_t /*ctx*/,
+    manager_disk_t::resolve_function_by_name(execution_context_t ctx,
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
         auto batches_r = co_await scan_table(pg_proc_oid,
                                              std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6});
+                                             std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6},
+                                             ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<std::pmr::vector<resolve_function_result_t>>();
         }
@@ -121,13 +129,20 @@ namespace services::disk {
     // INVALID_OID stays the in-band "there is no such cast" INSIDE the wrapper: DROP CAST has
     // to tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing
     // the former into an error would destroy exactly that distinction.
+    //
+    // ctx.txn, for the reason given on resolve_function_by_name above: operator_unregister_cast_t
+    // turns THIS oid into a delete spec and reads a zero count as "the cast is still in the
+    // catalog". The delete sees the caller's transaction, so this read has to as well — both so
+    // a cast created in the open transaction can be found at all, and so one already dropped in
+    // it is reported as absent (do_not_exists) instead of as a scrub that was refused.
     manager_disk_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
-    manager_disk_t::find_cast_oid(execution_context_t /*ctx*/,
+    manager_disk_t::find_cast_oid(execution_context_t ctx,
                                   components::catalog::oid_t source_oid,
                                   components::catalog::oid_t target_oid) {
         auto batches_r = co_await scan_table(pg_cast_oid,
                                              std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1, 2});
+                                             std::vector<std::size_t>{0, 1, 2},
+                                             ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<components::catalog::oid_t>();
         }

@@ -2578,7 +2578,7 @@ namespace services::disk {
         co_return components::pg_catalog_append_range_t{table_oid, static_cast<int64_t>(start_row), count};
     }
 
-    agent_disk_t::unique_future<void>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::uint64_t>>
     agent_disk_t::delete_pg_catalog_rows_inner(execution_context_t ctx,
                                                components::catalog::oid_t table_oid,
                                                std::int64_t oid_col_idx,
@@ -2587,15 +2587,37 @@ namespace services::disk {
         // non-const data_table_t& overload (no const_cast).
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            co_return;
+            // NOT a routing miss, and the same leg append_pg_catalog_row_inner refuses on: the
+            // manager picked this agent with pool_idx_for_oid(table_oid), so the owner is decided
+            // before the message is sent and THIS agent is it. A missing entry means the owner
+            // holds no storage for that catalog table, so the rows the caller asked to be gone
+            // were neither found nor removed — and answering "deleted nothing" would be read as
+            // a healthy no-op by every caller.
+            std::pmr::string msg{"agent_disk::delete_pg_catalog_rows: no storage on the owning agent for catalog "
+                                 "oid ",
+                                 resource()};
+            msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+            msg += std::pmr::string{" — nothing was deleted", resource()};
+            co_return core::error_t{core::error_code_t::io_error, std::move(msg)};
         }
         auto& entry = it->second;
 
+        // THE SCAN CARRIES ctx.txn, and the delete is only allowed to judge what it can see.
+        // Without it the scan ran on transaction_data{0, 0} — direct writes only — while every
+        // caller that decides "0 deleted is a refusal" had READ the row it is deleting through
+        // a route that DOES carry the transaction (manager_disk_t::read_chunks_by_key ->
+        // agent_disk_t::read_chunks_by_key_inner, and the txn-aware resolve funnel). A catalog
+        // row written inside an explicit transaction is invisible to {0, 0} until the commit
+        // publishes it, so `BEGIN; ALTER TABLE t ADD COLUMN c; ALTER TABLE t DROP COLUMN c;`
+        // deleted nothing and the DROP refused a legal sequence — the read saw a row the delete
+        // was told did not exist. Gate: integration/cpp/test/test_catalog_delete_refusal.cpp,
+        // a_column_added_and_dropped_in_one_transaction_is_dropped.
         core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         detail::inline_scan(entry->table_storage.table(),
                             {oid_col_idx},
                             &scan_resource,
+                            ctx.txn,
                             [&, oid_col_idx](components::vector::data_chunk_t& chunk, uint64_t i) {
                                 if (chunk.is_null(static_cast<uint64_t>(oid_col_idx), i))
                                     return true;
@@ -2606,7 +2628,13 @@ namespace services::disk {
                                 return true;
                             });
         if (row_ids.empty()) {
-            co_return;
+            // The one legitimate emptiness at THIS floor: the scan ran and no row of this table
+            // VISIBLE TO ctx.txn carried that oid. Whether that is a healthy no-op or the sign
+            // of a catalog the caller has already read and expects to delete from is a question
+            // only the caller can answer, so the count travels up unjudged — and because the
+            // scan above shares the caller's snapshot, "the caller read it" and "the delete can
+            // see it" are now the same claim.
+            co_return std::uint64_t{0};
         }
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             std::pmr::vector<std::int64_t> wal_ids(row_ids.begin(), row_ids.end(), resource());
@@ -2620,16 +2648,19 @@ namespace services::disk {
                                              components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // Reported at error level and not propagated, exactly as the direct_delete_sync
-                // refusal a few lines below is: this handler's contract is unique_future<void>
-                // and has nowhere to put it. Giving delete_pg_catalog_rows a channel of its own
-                // is the same separate change that note already names.
+                // REFUSED, and the rows stay. This used to log and fall through to the delete
+                // below, which put storage one state ahead of a journal holding no record to
+                // replay it from — the delete would simply not exist after a restart. Same rule
+                // and same shape as append_pg_catalog_row_inner's WAL leg: the row whose journal
+                // record was refused is not written, and the row whose delete record was refused
+                // is not deleted.
                 error(log_,
                       "agent_disk[{}]::delete_pg_catalog_rows_inner: the PHYSICAL_DELETE did not reach the "
-                      "journal for oid={}: {}",
+                      "journal for oid={}, the rows are NOT deleted: {}",
                       pool_idx_,
                       static_cast<unsigned>(table_oid),
                       wal_result.error().what);
+                co_return wal_result.error();
             } else if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::delete_pg_catalog_rows_inner: WAL write returned zero id for oid={}",
@@ -2638,10 +2669,9 @@ namespace services::disk {
             }
         }
         // The storage was scanned two blocks up to produce `row_ids`, so the refusal
-        // direct_delete_sync now carries cannot be reached from here. READ IT ANYWAY and say
-        // so at error level: "cannot happen" is exactly what the assert this task removed
-        // claimed, and this handler's contract (unique_future<void>) has nowhere else to put
-        // it. Giving delete_pg_catalog_rows a channel of its own is a separate change.
+        // direct_delete_sync carries cannot be reached from here. READ IT ANYWAY, say so at
+        // error level, and REPORT it: "cannot happen" is exactly what the assert this leg
+        // replaced claimed, and the caller now has somewhere to put it.
         if (auto del_err = direct_delete_sync(table_oid, row_ids, static_cast<std::uint64_t>(row_ids.size()), ctx.txn);
             del_err.contains_error()) {
             error(log_,
@@ -2649,8 +2679,9 @@ namespace services::disk {
                   "delete: {}",
                   pool_idx_,
                   del_err.what);
+            co_return std::move(del_err);
         }
-        co_return;
+        co_return static_cast<std::uint64_t>(row_ids.size());
     }
 
     // Implementation pitfall (preserved from the manager body): data_table_t::update()
@@ -2685,9 +2716,33 @@ namespace services::disk {
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);
 
+        // transaction_data{} — WRITTEN OUT BECAUSE IT IS WRONG, AND IS NOT SAFE TO CORRECT YET.
+        //
+        // This patch runs at STEP 4 of operator_commit_transaction_t, whose own comment states
+        // the premise it depends on: "the rows still carry insert_id == transaction_id", i.e.
+        // they are not published yet, which is what makes patching them invisible to everyone
+        // else. transaction_data{} is horizon 0 with no owning transaction and cannot see a row
+        // in that state — so EVERY backfill of an in-transaction ALTER logs "attoid not found
+        // (skipping)" below and added_at_commit_id keeps its placeholder 0. Zero reads as "added
+        // before every snapshot", which shows the column to snapshots older than the ALTER that
+        // created it. The delete a few hundred lines up had exactly this defect and ctx.txn is
+        // exactly its fix.
+        //
+        // IT DOES NOT WORK HERE, and the failure is below this file: with ctx.txn the scan finds
+        // the row, and the direct_update_sync at the bottom of this body then dies in
+        // components::table::update_segment_t::merge_update_loop_internal
+        // (components/table/update_segment.hpp:830) on a base_info pointer that is not an
+        // address — reproducible on a plain autocommit ALTER ... ADD COLUMN. So this backfill
+        // has never once run against a real row, and the update-merge path it would drive does
+        // not survive being handed one. Both halves are one defect and need a red test at the
+        // components/table floor first; widening this scan before that only turns a silent
+        // no-op into a crash. Finding recorded in
+        // integration/cpp/test/test_catalog_delete_refusal.cpp,
+        // an_in_transaction_add_column_row_survives_the_commit.
         detail::inline_scan(tbl,
                             all_col_indices,
                             &scan_resource,
+                            components::table::transaction_data{},
                             [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                                 if (chunk.is_null(0, i))
                                     return true;
@@ -2771,8 +2826,11 @@ namespace services::disk {
                                              components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // Same as delete_pg_catalog_rows_inner: unique_future<void> has nowhere to put
-                // it, so it is reported at error level rather than dropped.
+                // This handler's contract is still unique_future<void>, so the refusal has
+                // nowhere to travel and is reported at error level rather than dropped. Where
+                // delete_pg_catalog_rows_inner stood a moment ago: the same hole, one method
+                // over, and closing it is the same kind of signature change through its own
+                // callers (operator_commit_transaction_t's backfill drain).
                 error(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the PHYSICAL_UPDATE did not "
                       "reach the journal for attoid={}: {}",
@@ -2788,8 +2846,9 @@ namespace services::disk {
             }
         }
 
-        // Same as delete_pg_catalog_rows_inner: the row was READ from this slice a few lines
-        // up, so the refusal is unreachable here — and is still reported rather than dropped.
+        // The row was READ from this slice a few lines up, so the refusal is unreachable here —
+        // and, this handler having no error channel of its own yet, it is reported rather than
+        // dropped.
         if (auto upd_err = direct_update_sync(pg_attr_oid, row_ids, patch); upd_err.contains_error()) {
             error(log_,
                   "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the slice it had just read "

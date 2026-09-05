@@ -381,20 +381,62 @@ namespace components::operators {
                                                  &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                                  exec_ctx,
                                                  std::move(dep_specs));
-            co_await std::move(depf);
+            auto dep_deleted = co_await std::move(depf);
+            // WHICH ZERO IS AN ERROR HERE — not this one. These specs are a scrub TEMPLATE
+            // applied per dependent object (pg_index/pg_constraint/pg_class/pg_depend for each
+            // dep row), so a spec that matches nothing is the template over-reaching, not a row
+            // that refused to go. The refusal itself is fatal, and has to be known BEFORE the
+            // live pg_attribute row below is touched: everything after this point half-applies
+            // the drop.
+            if (dep_deleted.has_error()) {
+                set_error(dep_deleted.error());
+                mark_failed();
+                co_return;
+            }
         }
 
         // soft-delete the column: drop original pg_attribute row,
         // then append a tombstone with attisdropped=true. The tombstone keeps
         // attnum so existing rows on disk that reference this slot remain
         // self-describing for MVCC visibility.
+        //
+        // THROUGH THE BATCHED TWIN, with one spec, for its ANSWER: the singular
+        // delete_pg_catalog_rows still returns void, and this is the delete of the whole
+        // statement — the row that says the column exists, read a few lines up (attoid, attnum,
+        // atttypid all come from it). A scrub that removed nothing here would leave the live row
+        // AND the tombstone appended below describing the same attoid, i.e. a column that is
+        // both there and dropped. Zero deleted is therefore an error, unlike every zero above.
+        //
+        // AND "READ A FEW LINES UP" IS ONLY AN ARGUMENT BECAUSE BOTH SIDES SHARE A SNAPSHOT.
+        // The read above went through read_chunks_by_key with THIS exec_ctx; the delete's scan
+        // runs under the same ctx.txn (agent_disk_t::delete_pg_catalog_rows_inner). While it did
+        // not — the scan carried no transaction at all — this verdict fired on
+        // `BEGIN; ALTER TABLE t ADD COLUMN c; ALTER TABLE t DROP COLUMN c;`: the read saw the
+        // uncommitted row and the delete could not, so a legal sequence was refused with "the
+        // column is still live in the catalog". Gate:
+        // integration/cpp/test/test_catalog_delete_refusal.cpp,
+        // a_column_added_and_dropped_in_one_transaction_is_dropped.
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> attr_specs(resource_);
+        attr_specs.push_back({pg_attr_oid, std::int64_t{0}, attoid});
         auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                         &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                          exec_ctx,
-                                         pg_attr_oid,
-                                         std::int64_t{0},
-                                         attoid);
-        co_await std::move(df);
+                                         std::move(attr_specs));
+        auto attr_deleted_r = co_await std::move(df);
+        if (attr_deleted_r.has_error()) {
+            set_error(attr_deleted_r.error());
+            mark_failed();
+            co_return;
+        }
+        const auto& attr_deleted = attr_deleted_r.value();
+        if (attr_deleted.empty() || attr_deleted.front() == 0) {
+            std::string msg = "operator_alter_column_drop: no pg_attribute row was deleted for attoid ";
+            msg += std::to_string(attoid);
+            msg += " — the column is still live in the catalog";
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+            mark_failed();
+            co_return;
+        }
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
 

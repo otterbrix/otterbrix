@@ -331,7 +331,21 @@ namespace components::operators {
                                                      &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                                      cc_ctx,
                                                      std::move(cc_specs));
-                    co_await std::move(df);
+                    auto deleted_r = co_await std::move(df);
+                    // WHICH ZERO IS AN ERROR HERE — none. This is a GC pass: a row that is
+                    // already gone is precisely the state it is working towards, so a spec that
+                    // matched nothing has done this operator's job for it.
+                    //
+                    // THE REFUSAL IS FATAL, AND IT HAS TO BE READ RIGHT HERE, ahead of the
+                    // compaction below. That step is SUBTRACTIVE — it drops every storage
+                    // column NOT in the live set re-read below — and it is a physical rebuild
+                    // that cannot be undone. Running it after a GC whose outcome is unknown
+                    // means dropping columns on the strength of a catalog state nobody
+                    // established.
+                    if (deleted_r.has_error()) {
+                        set_error(deleted_r.error());
+                        co_return;
+                    }
                     if (ctx->txn.transaction_id != 0) {
                         ctx->pg_catalog_delete_tables.insert(kPgComputedColumn);
                     }

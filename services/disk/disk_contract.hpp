@@ -111,10 +111,32 @@ namespace services::disk {
                                                                std::int64_t oid_col_idx,
                                                                components::catalog::oid_t target_oid);
 
-        // Batched WAL-safe delete: loops the singular delete_pg_catalog_rows logic
-        // per spec, emitting the same WAL records as N singular calls.
-        actor_zeta::unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
-                                                                    std::pmr::vector<pg_catalog_delete_spec_t> specs);
+        // Batched WAL-safe delete: loops the singular delete_pg_catalog_rows logic per spec,
+        // emitting the same WAL records as N singular calls. Answers with the number of rows
+        // deleted for EACH spec, in spec order (result.size() == specs.size()), or refuses.
+        //
+        // THE ERROR CHANNEL IS THE POINT, and it is the same one append_pg_catalog_row carries.
+        // This method used to answer with nothing at all, so its six callers ended their catalog
+        // work with a bare `co_await` and could not tell a completed scrub from one that never
+        // happened: DROP FUNCTION / DROP CAST / ALTER DROP COLUMN / the DROP cascade / VACUUM /
+        // DROP INDEX all reported success over rows still on the platter.
+        //
+        // A ZERO count is an honest answer — "no row of that table that ctx.txn CAN SEE carried
+        // that oid" — and NOT an error, because whether that is legitimate depends on the
+        // caller: the operator that just READ the row it is deleting must treat 0 as a refusal,
+        // the one over-generating a scrub template must not. The failures — no agents, an owning
+        // agent with no storage for the catalog oid, a refused journal record, a refused delete —
+        // travel the wrapper.
+        //
+        // "CAN SEE" IS PART OF THE CONTRACT, not an implementation detail, and the "just READ it"
+        // verdict above is only sound because of it: the delete's scan runs under ctx.txn
+        // (agent_disk_t::delete_pg_catalog_rows_inner), the same snapshot read_chunks_by_key /
+        // scan_by_keys / the resolve funnel serve their answers from. A caller that mixes the two
+        // — reading through a route that carries no transaction and deleting through this one, or
+        // the reverse — reintroduces the exact defect this pairing closes: rows one side can see
+        // and the other cannot, reported as a catalog that refused to give a row up.
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
+        delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
         // Patches each backfill's pg_attribute row with the shared `commit_id` written
         // into the added_at or dropped_at column (selected by the marker's kind).

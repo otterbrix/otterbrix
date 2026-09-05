@@ -89,7 +89,25 @@ namespace components::operators {
             // depends on an intervening read.
             std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
             specs.reserve(matches.size() * 3);
+            // WHICH ZERO IS AN ERROR HERE. The pg_depend rows are optional: a function with no
+            // dependency rows deletes none of them and that is healthy. The pg_proc rows are
+            // not — every one of them was just READ, out of pg_proc, under this same context,
+            // which is where m.oid comes from. A pg_proc delete that matched nothing therefore
+            // did not remove the row the read had in hand, and DROP FUNCTION must not go on to
+            // take the overload out of the registry over a catalog that still describes it.
+            // "The read had it in hand" is an argument only because both sides share a snapshot:
+            // resolve_function_by_name scans pg_proc under ctx.txn and so does the delete
+            // (agent_disk_t::delete_pg_catalog_rows_inner). Either one reading a different
+            // catalog than the other turns this verdict into a refusal of legal statements.
+            //
+            // An EMPTY spec list is the different, legitimate emptiness, and it stays silent:
+            // the registry answered for this signature but pg_proc holds no row for it — a
+            // builtin, or a function mirrored into the process registry without a catalog row.
+            // There is nothing to scrub and nothing to refuse.
+            std::pmr::vector<std::size_t> pg_proc_specs(resource_);
+            pg_proc_specs.reserve(matches.size());
             for (auto& m : matches) {
+                pg_proc_specs.push_back(specs.size());
                 specs.push_back({pg_proc_coll, std::int64_t{0}, m.oid});
                 specs.push_back({pg_depend_coll, std::int64_t{1}, m.oid});
                 specs.push_back({pg_depend_coll, std::int64_t{3}, m.oid});
@@ -103,7 +121,28 @@ namespace components::operators {
                                                  &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                                  exec_ctx,
                                                  std::move(specs));
-                co_await std::move(df);
+                auto deleted_r = co_await std::move(df);
+                // STILL AHEAD OF THE REGISTRY REMOVAL, which is the whole point of the order
+                // this operator already keeps: a refused scrub must be known before the only
+                // mutation runs, or the function is gone from every lookup in this process
+                // while its pg_proc row still claims it exists.
+                if (deleted_r.has_error()) {
+                    set_error(deleted_r.error());
+                    mark_failed();
+                    co_return;
+                }
+                const auto& deleted = deleted_r.value();
+                for (const auto i : pg_proc_specs) {
+                    if (i < deleted.size() && deleted[i] == 0) {
+                        set_error(core::error_t{core::error_code_t::other_error,
+                                                std::pmr::string{"unregister_udf: no pg_proc row was deleted for '" +
+                                                                     function_name_ +
+                                                                     "' — the function is still in the catalog",
+                                                                 resource_}});
+                        mark_failed();
+                        co_return;
+                    }
+                }
             }
         }
 

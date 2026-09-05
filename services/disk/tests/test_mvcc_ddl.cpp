@@ -542,3 +542,88 @@ TEST_CASE("services::disk::mvcc::vacuum_insert_concurrent_TODO") {
          "handled by VACUUM's lowest_active_start_time horizon — uncommitted "
          "INSERTs invisible to VACUUM, fully-committed rows are stable.");
 }
+
+// ===========================================================================
+// THE PER-SPEC COUNT ITSELF: WHAT delete_pg_catalog_rows_many ANSWERS WITH.
+//
+// Six operators now decide whether a DDL statement succeeded by indexing into this vector —
+// "spec i deleted 0 rows" is a refusal for the specs that name a row the operator had already
+// read, and a healthy no-op for the specs that are a scrub template. That reading needs two
+// things from this reply and had a test for neither: the counts must be POSITIONAL (one entry
+// per spec, in spec order, so deleted[i] really is about specs[i]) and a zero must be an
+// honest count rather than an error.
+// ===========================================================================
+TEST_CASE("services::disk::mvcc::delete_many_counts_each_spec_in_order") {
+    fixture fx;
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("counted_ns"));
+    constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
+
+    // Spec 0 names a row that is there, spec 1 an oid no pg_namespace row carries, spec 2 the
+    // same row as spec 0 — which spec 0 has already taken, so it can only answer zero. The
+    // middle one is what makes the answer positional rather than "a count per row deleted".
+    const catalog::oid_t absent_oid = ns_oid + 100000;
+    std::pmr::vector<pg_catalog_delete_spec_t> specs(&fx.resource);
+    specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
+    specs.push_back({pg_ns, std::int64_t{0}, absent_oid});
+    specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
+
+    auto deleted = fx.invoke(&manager_disk_t::delete_pg_catalog_rows_many, fx.auto_ctx(), std::move(specs));
+    REQUIRE_FALSE(deleted.has_error());
+    REQUIRE(deleted.value().size() == 3);
+    CHECK(deleted.value()[0] == 1);
+    CHECK(deleted.value()[1] == 0);
+    CHECK(deleted.value()[2] == 0);
+}
+
+// ===========================================================================
+// THE DELETE SEES WHAT ITS OWN TRANSACTION SEES — the floor under the "zero is a refusal"
+// verdicts, and the defect that made them fire on legal statements.
+//
+// agent_disk_t::delete_pg_catalog_rows_inner used to scan with no transaction at all, so
+// collection_scan_state::txn stayed {0, 0}: rows written INSIDE a transaction (insert_id ==
+// transaction_id) were invisible to the very transaction that wrote them. Every caller that
+// reads a zero here as "the row I just read is still in the catalog" — ALTER TABLE DROP COLUMN
+// on its live pg_attribute row, DROP INDEX on its identity rows, DROP FUNCTION on pg_proc, DROP
+// CAST on pg_cast — was therefore refusing whenever the row it named had been created in the
+// open transaction. Its own read routes (read_chunks_by_key and the resolve funnel) carry
+// ctx.txn and could see the row perfectly well.
+//
+// The count of 1 here IS the guard those verdicts stand on: before the fix it was 0, and 0 is
+// the value they turn into "the catalog would not give the row up".
+// ===========================================================================
+TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
+    fixture fx;
+    const uint64_t txn1 = TRANSACTION_ID_START + 555;
+    constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
+
+    // A pg_namespace row appended by txn1 and NOT published: exactly the state a catalog row
+    // written earlier in an explicit transaction is in when a later statement of the same
+    // transaction comes to delete it.
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    const components::catalog::oid_t ns_oid = oids[0];
+    auto writes = components::catalog::build_create_namespace_writes(&fx.resource, std::string("own_ns"), ns_oid);
+    for (auto& w : writes) {
+        disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), w.table_oid, std::move(w.row)));
+    }
+
+    // Another transaction must NOT see it — that half was never broken, and it is what keeps
+    // this case from passing by "the scan sees everything".
+    {
+        std::pmr::vector<pg_catalog_delete_spec_t> other(&fx.resource);
+        other.push_back({pg_ns, std::int64_t{0}, ns_oid});
+        auto by_other = fx.invoke(&manager_disk_t::delete_pg_catalog_rows_many,
+                                  fx.txn_ctx(TRANSACTION_ID_START + 556),
+                                  std::move(other));
+        REQUIRE_FALSE(by_other.has_error());
+        REQUIRE(by_other.value().size() == 1);
+        CHECK(by_other.value()[0] == 0);
+    }
+
+    std::pmr::vector<pg_catalog_delete_spec_t> specs(&fx.resource);
+    specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
+    auto deleted = fx.invoke(&manager_disk_t::delete_pg_catalog_rows_many, fx.txn_ctx(txn1), std::move(specs));
+    REQUIRE_FALSE(deleted.has_error());
+    REQUIRE(deleted.value().size() == 1);
+    CHECK(deleted.value()[0] == 1);
+}

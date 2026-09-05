@@ -868,10 +868,13 @@ namespace services::disk {
                                                    std::int64_t oid_col_idx,
                                                    components::catalog::oid_t target_oid);
 
-        // Batched delete_pg_catalog_rows: loops the singular inner logic per spec,
-        // emitting the same WAL records as N singular calls.
-        unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
-                                                        std::pmr::vector<pg_catalog_delete_spec_t> specs);
+        // Batched delete_pg_catalog_rows: loops the singular inner logic per spec, emitting the
+        // same WAL records as N singular calls, and reports how many rows EACH spec deleted (in
+        // spec order) or the reason the scrub did not happen. See disk_contract.hpp: a zero
+        // count is an honest "nothing carried that oid" and the caller decides whether that is
+        // legitimate; every refusal travels the wrapper instead of being reported as a no-op.
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
+        delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
         // Patch each backfill's pg_attribute row keyed by `attoid` (col 0): write the
         // shared `commit_id` into col 10 (added_at_commit_id) when kind==added_at, else

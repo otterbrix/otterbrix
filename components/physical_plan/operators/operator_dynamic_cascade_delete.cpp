@@ -273,7 +273,19 @@ namespace components::operators {
                                              &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                              exec_ctx,
                                              std::move(catalog_specs));
-            co_await std::move(df);
+            auto deleted_r = co_await std::move(df);
+            // WHICH ZERO IS AN ERROR HERE — none of them, and the comment above says why: the
+            // spec list is deliberately OVER-GENERATED (deletes_for_classid re-issues the whole
+            // per-classid template for every step, e.g. pg_sequence and pg_rewrite rows for a
+            // plain table), so a count of 0 is the template over-reaching and carries no
+            // information about the object being dropped. The REFUSAL does, and it is read
+            // BEFORE the storage/index marks below: those marks are what a COMMIT turns into an
+            // irreversible teardown, and taking them over a catalog that still describes the
+            // table is the half-applied DROP this operator exists to avoid.
+            if (deleted_r.has_error()) {
+                set_error(deleted_r.error());
+                co_return;
+            }
         }
 
         // Mark the storage + index entry dropped per table, but DO NOT physically

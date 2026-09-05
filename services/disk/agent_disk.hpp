@@ -593,11 +593,26 @@ namespace services::disk {
 
         // delete_pg_catalog_rows_inner — scan this agent's slice for rows whose
         //   column[oid_col_idx] == target_oid, WAL physical_delete, then delete via the
-        //   agent's own direct_delete_sync. No-op if not owned or no match.
-        unique_future<void> delete_pg_catalog_rows_inner(execution_context_t ctx,
-                                                         components::catalog::oid_t table_oid,
-                                                         std::int64_t oid_col_idx,
-                                                         components::catalog::oid_t target_oid);
+        //   agent's own direct_delete_sync. Returns HOW MANY rows it deleted, or the reason it
+        //   deleted none.
+        //
+        //   THE ERROR CHANNEL IS THE POINT, exactly as in append_pg_catalog_row_inner above,
+        //   and it closes the same reading in the opposite direction: this body used to answer
+        //   with nothing at all, so its three failures (an owning agent that holds no storage
+        //   for the catalog oid, a REFUSED journal record, a refused delete) were logged and
+        //   swallowed, and every DROP above it reported success over rows still on the platter.
+        //   The refused journal record now also STOPS the delete: storage must not move one
+        //   state ahead of a journal that has no record to replay it from.
+        //
+        //   A count of 0 is an honest answer — no row of that table VISIBLE TO ctx.txn carried
+        //   that oid — and the CALLER decides whether that is legitimate. The scan runs under
+        //   ctx.txn precisely so that "the caller read this row" and "this body can see it" are
+        //   the same claim; see the note on the scan in the body.
+        unique_future<core::result_wrapper_t<std::uint64_t>>
+        delete_pg_catalog_rows_inner(execution_context_t ctx,
+                                     components::catalog::oid_t table_oid,
+                                     std::int64_t oid_col_idx,
+                                     components::catalog::oid_t target_oid);
 
         // update_pg_attribute_commit_id_field_inner — patch the pg_attribute row keyed
         //   by attoid: read the full row, mutate col 10 (added_at) or 11 (dropped_at) to
